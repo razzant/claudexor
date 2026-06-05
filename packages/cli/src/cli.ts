@@ -79,6 +79,11 @@ const MODES = new Set<ModeKind>([
   "benchmark",
 ]);
 
+/** Accept the hyphenated mode spellings used in docs (until-convergence, max-attempts). */
+function normalizeMode(s: string): ModeKind {
+  return s.trim().replace(/-/g, "_") as ModeKind;
+}
+
 function harnessList(args: ParsedArgs): string[] | undefined {
   const h = flagStr(args, "harness");
   return h ? h.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
@@ -208,8 +213,15 @@ async function main(): Promise<number> {
 
     case "run": {
       const modeStr = flagStr(args, "mode");
-      const mode: ModeKind = modeStr && MODES.has(modeStr as ModeKind) ? (modeStr as ModeKind) : "daily";
-      return orchestrate(args, mode, json);
+      if (modeStr !== undefined) {
+        const mode = normalizeMode(modeStr);
+        if (!MODES.has(mode)) {
+          process.stderr.write(`claudex: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
+          return 2;
+        }
+        return orchestrate(args, mode, json);
+      }
+      return orchestrate(args, "daily", json);
     }
 
     case "race":
