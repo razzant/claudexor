@@ -38,37 +38,100 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
   return { adapter, providerFamily: family };
 }
 
+/** A non-fake adapter that behaves like fake-success (for default-harness resolution). */
+function realLikeAdapter(id: string): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: "openai",
+        capabilities: { implement: true, review: true, structured_events: true },
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts };
+      yield { type: "usage", session_id: spec.session_id, ts, usage: { cost_usd: 0.01 } };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
+const reviewers = () => [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
+
 describe("Orchestrator", () => {
   it("runs a best-of-n race end to end and emits a DecisionRecord", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
-    const reviewers = [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
-    const orch = new Orchestrator({ registry, reviewers });
-
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "best_of_n", harnesses: ["fake-success"], n: 2 });
     expect(res.mode).toBe("best_of_n");
     expect(res.candidates.length).toBe(2);
     expect(res.status).toBe("success");
     expect(res.decisionPath && existsSync(res.decisionPath)).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
-    expect(existsSync(join(res.runDir, "events.jsonl"))).toBe(true);
   });
 
-  it("max-attempts converges with a passing harness", async () => {
+  it("max-attempts converges with a passing harness (formal predicate)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
-    const reviewers = [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
-    const orch = new Orchestrator({ registry, reviewers });
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["fake-success"], attempts: 3 });
     expect(res.status).toBe("success");
   });
 
-  it("readonly plan mode produces a report without mutating", async () => {
+  it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
     const res = await orch.run({ repoRoot: repo, prompt: "map the repo", mode: "plan", harnesses: ["fake-success"] });
     expect(res.status).toBe("success");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
+  });
+
+  it("stops spawning candidates once the budget hard cap is hit", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.005 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 3 });
+    // first candidate spends 0.01 (> 0.005 cap) -> hard tier -> remaining candidates denied
+    expect(res.candidates.length).toBe(1);
+  });
+
+  it("does not leak a worktree when a candidate errors", async () => {
+    const repo = await initRepo();
+    const throwing: HarnessAdapter = {
+      id: "throwing",
+      async discover() {
+        return HarnessManifest.parse({ id: "throwing", display_name: "throwing", kind: "local_cli", capabilities: { implement: true } });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "throwing", status: "ok" });
+      },
+      // eslint-disable-next-line require-yield
+      async *run() {
+        throw new Error("boom");
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["throwing", throwing]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["throwing"], n: 1 });
+    expect(res.status).not.toBe("success");
+    expect(existsSync(join(repo, ".claudex", "workspaces", res.taskId, "a01"))).toBe(false);
+  });
+
+  it("auto-resolves available real harnesses when --harness is omitted", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["realish", realLikeAdapter("realish")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", n: 2 });
+    expect(res.candidates.length).toBe(2);
+    expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
 });

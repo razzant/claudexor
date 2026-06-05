@@ -18,23 +18,24 @@ import { WorkspaceManager } from "@claudex/workspace";
 import { HarnessGateway } from "@claudex/gateway";
 import {
   type GateSpec,
+  ReadinessLedger,
   type ReviewerSpec,
+  evaluateConvergence,
+  failureSignature,
   gatesPassed,
-  reviewMatrix,
+  reviewCandidate,
   revalidateFindings,
   runGates,
 } from "@claudex/review";
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
-import { type SynthesisMode, decideSynthesis } from "@claudex/synthesis";
+import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
 import { BudgetLedger } from "@claudex/budget";
 import { hashJson, newId, nowIso, redactSecrets } from "@claudex/util";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
-  /** Explicit reviewer panel (else resolved from the gateway: distinct families). */
   reviewers?: ReviewerSpec[];
   portfolio?: Portfolio;
-  /** Max USD for the whole run (drives the circuit breaker). */
   maxUsd?: number | null;
 }
 
@@ -59,6 +60,7 @@ export interface OrchestratorResult {
   summary: string;
   candidates: { attemptId: string; harnessId: string; status: string }[];
   decisionPath?: string;
+  reviewVerified?: boolean;
 }
 
 interface CandidateRun {
@@ -68,7 +70,7 @@ interface CandidateRun {
   diff: string;
   gates: GateResult[];
   cost: number;
-  envelope: WorkspaceEnvelope;
+  errored: boolean;
 }
 
 const LABELS = "ABCDEFGHIJ".split("");
@@ -92,18 +94,17 @@ export class Orchestrator {
       case "max_attempts":
         return this.runConvergence(input, mode, input.attempts ?? 3);
       case "plan":
+        return this.runPlan(input);
       case "readonly_swarm":
-        return this.runReadonly(input, mode);
+        return this.runAudit(input);
       case "daily":
       default:
         return this.runDaily(input);
     }
   }
 
-  /** Daily mode delegates to the minimal single-attempt engine (native parity). */
   private async runDaily(input: RunInput): Promise<OrchestratorResult> {
-    let harnessId = input.harnesses?.[0];
-    if (!harnessId) harnessId = (await this.gateway.resolve()).id;
+    const harnessId = input.harnesses?.[0] ?? (await this.gateway.resolve()).id;
     const engine = new ExecutionEngine(this.deps.registry);
     const res = await engine.run({ repoRoot: input.repoRoot, prompt: input.prompt, harnessId, mode: "daily" });
     return {
@@ -136,21 +137,23 @@ export class Orchestrator {
     return specs;
   }
 
-  private candidateHarnesses(input: RunInput): HarnessAdapter[] {
-    const ids = input.harnesses ?? [];
-    const adapters: HarnessAdapter[] = [];
-    for (const id of ids) {
-      const a = this.deps.registry.get(id);
-      if (a) adapters.push(a);
+  /** Resolve candidate adapters: explicit `--harness`, else available real harnesses; expand to n. */
+  private async resolveCandidateAdapters(input: RunInput): Promise<HarnessAdapter[]> {
+    let ids = input.harnesses;
+    if (!ids || ids.length === 0) {
+      ids = await this.gateway.availableReal();
+      if (ids.length === 0) {
+        throw new HarnessUnavailableError(
+          "no available harness for this mode; install codex/claude/cursor/opencode, or pass --harness",
+        );
+      }
     }
-    if (adapters.length > 0) {
-      // expand to n by repeating the pool (diverse seeds) when n exceeds pool size
-      const n = input.n ?? adapters.length;
-      const out: HarnessAdapter[] = [];
-      for (let i = 0; i < n; i++) out.push(adapters[i % adapters.length] as HarnessAdapter);
-      return out;
-    }
-    return adapters;
+    const pool = ids.map((id) => this.deps.registry.get(id)).filter((a): a is HarnessAdapter => Boolean(a));
+    if (pool.length === 0) throw new HarnessUnavailableError(`none of the requested harnesses are registered: ${ids.join(", ")}`);
+    const n = input.n ?? pool.length;
+    const out: HarnessAdapter[] = [];
+    for (let i = 0; i < n; i++) out.push(pool[i % pool.length] as HarnessAdapter);
+    return out;
   }
 
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
@@ -169,42 +172,34 @@ export class Orchestrator {
     return contract.tests.commands.map((c) => ({ id: c.id, command: c.command, required: c.required }));
   }
 
-  private async runCandidate(
+  /** Run one candidate inside an already-created envelope. Never creates/disposes the envelope. */
+  private async runCandidateInEnvelope(
     adapter: HarnessAdapter,
-    label: string,
+    envelope: WorkspaceEnvelope,
     attemptId: string,
+    label: string,
     contract: TaskContract,
+    prompt: string,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     wsm: WorkspaceManager,
     ledger: BudgetLedger,
   ): Promise<CandidateRun> {
-    const lease = ledger.reserve({
-      taskId: contract.task_id,
-      attemptId,
-      intent: "implement",
-      harnessId: adapter.id,
-    });
-    const envelope = await wsm.create({
-      taskId: contract.task_id,
-      attemptId,
-      baseRef: contract.repo.base_ref,
-      dirtyPolicy: "snapshot",
-    });
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent: "implement",
-      prompt: contract.user_intent.raw,
+      prompt,
       cwd: envelope.worktree_path,
       access: "workspace_write",
       env: wsm.envFor(envelope),
     });
 
     let cost = 0;
+    let errored = false;
     for await (const ev of adapter.run(spec)) {
       if (ev.type === "usage" && ev.usage?.cost_usd) cost += ev.usage.cost_usd;
+      if (ev.type === "error") errored = true;
     }
-    if (lease.lease?.lease_id) ledger.settle(lease.lease.lease_id, cost);
 
     const diff = await wsm.diff(envelope);
     const gates = await runGates(this.gateSpecs(contract), {
@@ -218,25 +213,34 @@ export class Orchestrator {
       attempt_id: attemptId,
       harness_id: adapter.id,
       cost_usd: cost,
+      errored,
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
       branch: envelope.branch_name,
     });
-
-    return { attemptId, harnessId: adapter.id, label, diff, gates, cost, envelope };
+    return { attemptId, harnessId: adapter.id, label, diff, gates, cost, errored };
   }
 
-  private toEvidence(run: CandidateRun, contract: TaskContract, findings: ReviewFinding[], finalReviewClean: boolean): CandidateEvidence {
-    const passed = gatesPassed(run.gates);
+  private toEvidence(
+    run: CandidateRun,
+    contract: TaskContract,
+    findings: ReviewFinding[],
+    finalReviewClean: boolean,
+  ): CandidateEvidence {
+    const passed = gatesPassed(run.gates) && !run.errored;
     const acTotal = Math.max(1, contract.success_criteria.length);
     const acCovered = passed
       ? contract.success_criteria.length > 0
         ? contract.success_criteria.map((c) => c.id)
         : ["AC-implicit"]
       : [];
+    // Treat a harness error as a failed required gate so it cannot win arbitration.
+    const gates = run.errored
+      ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed" as const, duration_ms: 0, required: true }]
+      : run.gates;
     return {
       attemptId: run.attemptId,
       label: run.label,
-      gates: run.gates,
+      gates,
       acceptanceCovered: acCovered,
       acceptanceTotal: acTotal,
       findings,
@@ -264,7 +268,6 @@ export class Orchestrator {
 
     const contextPack = await buildContextPack(input.repoRoot, contract).catch(() => null);
     if (contextPack) store.writeYaml(join(paths.contextDir, "context_pack.yaml"), contextPack);
-    log.emit("context.pack.created", { hash: contextPack?.hash ?? null });
 
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, {
@@ -273,53 +276,80 @@ export class Orchestrator {
       tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
     });
 
-    const adapters = this.candidateHarnesses(input);
-    if (adapters.length === 0) {
-      throw new HarnessUnavailableError("no candidate harnesses; pass --harness or install one");
-    }
+    const adapters = await this.resolveCandidateAdapters(input);
+    const reviewers = await this.resolveReviewers();
+    const reviewVerified = reviewers.length >= 2;
 
     const runs: CandidateRun[] = [];
+    let budgetStopped = false;
     for (let i = 0; i < adapters.length; i++) {
       const adapter = adapters[i] as HarnessAdapter;
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
       const label = `Candidate ${LABELS[i] ?? i + 1}`;
-      log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
-      const run = await this.runCandidate(adapter, label, attemptId, contract, store, paths, wsm, ledger);
-      log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
-      runs.push(run);
+
+      const lease = ledger.reserve({ taskId, attemptId, intent: "implement", harnessId: adapter.id });
+      if (!lease.granted) {
+        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId });
+        budgetStopped = true;
+        break; // hard cap: do not spawn more paid work
+      }
+
+      const envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+      try {
+        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
+        const run = await this.runCandidateInEnvelope(
+          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger,
+        );
+        ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
+        runs.push(run);
+      } catch (err) {
+        ledger.settle(lease.lease?.lease_id ?? "", 0);
+        log.emit("run.failed", { harness_id: adapter.id, attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
+        runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true });
+      } finally {
+        await wsm.dispose(envelope); // no worktree leak even on error
+      }
     }
 
-    const reviewers = await this.resolveReviewers();
-    log.emit("review.started", { reviewers: reviewers.length });
-    const matrix = await reviewMatrix(
-      runs.map((r) => ({ attemptId: r.attemptId, label: r.label, diff: r.diff, evidenceDir: reviewDir, cwd: input.repoRoot })),
-      reviewers,
-    );
-
-    const evidences: CandidateEvidence[] = [];
-    for (const run of runs) {
-      const m = matrix.find((x) => x.attemptId === run.attemptId);
-      const revalidated = m ? await revalidateFindings(m.result.findings) : [];
-      const crossFamily = m?.result.crossFamilyVerified ?? false;
-      const noBlockers = !revalidated.some((f) => isBlocking(f));
-      // If no reviewers are available, fall back to gates-only cleanliness (route unverified).
-      const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) : crossFamily && noBlockers;
-      store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
-        attempt_id: run.attemptId,
-        cross_family_verified: crossFamily,
-        findings: revalidated,
-        route_proofs: m?.result.routeProofs ?? [],
-      });
-      for (const f of revalidated) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
-      evidences.push(this.toEvidence(run, contract, revalidated, finalReviewClean));
+    if (runs.length === 0) {
+      throw new HarnessUnavailableError("no candidates produced (budget exhausted before any run)");
     }
 
+    log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
+    const evidences = await this.reviewRuns(runs, reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
+
+    // Synthesis: if worthwhile, run a synthesizer as a NEW, re-checked candidate.
     const synth = decideSynthesis(evidences, input.synthesis ?? "auto");
     store.writeYaml(join(paths.arbitrationDir, "synthesis.yaml"), synth);
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
+    if (synth.synthesize && !budgetStopped) {
+      const lease = ledger.reserve({ taskId, attemptId: "synth", intent: "synthesize", harnessId: adapters[0]?.id ?? "synth" });
+      if (lease.granted) {
+        const plan = buildSynthesisPlan(evidences);
+        const sourceDiffs = runs.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
+        const synthAdapter = adapters[0] as HarnessAdapter;
+        const envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+        try {
+          const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
+          const run = await this.runCandidateInEnvelope(
+            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger,
+          );
+          ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+          const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
+          evidences.push(...synthEvidence);
+          runs.push(run);
+        } catch (err) {
+          ledger.settle(lease.lease?.lease_id ?? "", 0);
+          log.emit("run.failed", { attempt_id: "synth", error: err instanceof Error ? err.message : String(err) });
+        } finally {
+          await wsm.dispose(envelope);
+        }
+      }
+    }
 
     const result = arbitrate(evidences, { exactUsd: ledger.spend() });
-    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), result.decision);
+    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), { ...result.decision, review_verified: reviewVerified });
     store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     log.emit("arbitration.completed", { winner: result.decision.winner, status: result.decision.status });
@@ -332,20 +362,13 @@ export class Orchestrator {
         kind: mode === "create" ? "new_repo" : "patch",
         source_task_id: taskId,
         producer_attempt_id: winnerRun.attemptId,
-        meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode },
+        meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode, review_verified: reviewVerified, budget_stopped: budgetStopped },
       });
-      store.writeText(
-        join(paths.finalDir, "summary.md"),
-        renderSummary(runId, mode, result.decision, evidences, synth.reason),
-      );
+      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, result.decision, evidences, synth.reason, reviewVerified));
     }
 
-    for (const run of runs) await wsm.dispose(run.envelope);
-
     log.emit("work_product.emitted", { winner: result.decision.winner });
-    log.emit(result.decision.status === "success" ? "run.completed" : "run.failed", {
-      status: result.decision.status,
-    });
+    log.emit(result.decision.status === "success" ? "run.completed" : "run.failed", { status: result.decision.status });
 
     return {
       runId,
@@ -355,20 +378,50 @@ export class Orchestrator {
       winner: result.decision.winner,
       runDir: paths.root,
       summary: result.decision.why_winner,
-      candidates: runs.map((r) => ({
-        attemptId: r.attemptId,
-        harnessId: r.harnessId,
-        status: gatesPassed(r.gates) ? "green" : "red",
-      })),
+      candidates: runs
+        .filter((r) => r.attemptId !== "synth")
+        .map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, status: gatesPassed(r.gates) && !r.errored ? "green" : "red" })),
       decisionPath,
+      reviewVerified,
     };
   }
 
-  private async runConvergence(
-    input: RunInput,
-    mode: ModeKind,
-    maxAttempts: number | null,
-  ): Promise<OrchestratorResult> {
+  /** Review a set of runs and return their evidence (with finalReviewClean + review_verified caveat). */
+  private async reviewRuns(
+    runs: CandidateRun[],
+    reviewers: ReviewerSpec[],
+    reviewVerified: boolean,
+    reviewDir: string,
+    cwd: string,
+    contract: TaskContract,
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+    log: EventLog,
+  ): Promise<CandidateEvidence[]> {
+    const evidences: CandidateEvidence[] = [];
+    for (const run of runs) {
+      const result =
+        reviewers.length > 0
+          ? await reviewCandidate({ candidateLabel: run.label, diff: run.diff, evidenceDir: reviewDir, cwd, reviewers })
+          : { findings: [], routeProofs: [], crossFamilyVerified: false, distinctProviders: [] };
+      const revalidated = await revalidateFindings(result.findings);
+      const noBlockers = !revalidated.some((f) => isBlocking(f));
+      // Honest: if reviewers are unavailable, fall back to gates-only and mark review_verified=false.
+      const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) && !run.errored : result.crossFamilyVerified && noBlockers;
+      store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
+        attempt_id: run.attemptId,
+        review_verified: reviewVerified && result.crossFamilyVerified,
+        cross_family_verified: result.crossFamilyVerified,
+        findings: revalidated,
+        route_proofs: result.routeProofs,
+      });
+      for (const f of revalidated) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
+      evidences.push(this.toEvidence(run, contract, revalidated, finalReviewClean));
+    }
+    return evidences;
+  }
+
+  private async runConvergence(input: RunInput, mode: ModeKind, maxAttempts: number | null): Promise<OrchestratorResult> {
     const taskId = newId("task");
     const runId = newId("run");
     const store = new ArtifactStore(input.repoRoot);
@@ -376,6 +429,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId);
     const wsm = new WorkspaceManager(input.repoRoot);
     const ledger = new BudgetLedger({ maxUsd: this.deps.maxUsd ?? null });
+    const readiness = new ReadinessLedger();
     const contract = this.buildContract(input, taskId, mode);
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
@@ -383,85 +437,195 @@ export class Orchestrator {
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, { userIntent: input.prompt, diff: "(per-attempt)\n" });
     const reviewers = await this.resolveReviewers();
+    const reviewVerified = reviewers.length >= 2;
+
+    // One envelope carried forward across attempts so the harness can repair its own work.
+    const adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined });
+    let adapterIdx = 0;
+    let adapter = adapterPool[0] as HarnessAdapter;
+    const envelope = await wsm.create({ taskId, attemptId: "converge", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
 
     let attempt = 0;
     let converged = false;
-    let lastWinner: CandidateRun | null = null;
-    const hardCeiling = maxAttempts ?? 50; // safety ceiling for until-convergence in absence of budget caps
+    let stalled = false;
+    let exhausted = false;
+    let lastFindings: ReviewFinding[] = [];
+    let lastRun: CandidateRun | null = null;
 
-    while (attempt < hardCeiling) {
-      attempt += 1;
-      const attemptId = `a${String(attempt).padStart(2, "0")}`;
-      const adapter = this.deps.registry.get(input.harnesses?.[0] ?? (await this.gateway.resolve()).id);
-      if (!adapter) break;
-      const run = await this.runCandidate(adapter, `Attempt ${attempt}`, attemptId, contract, store, paths, wsm, ledger);
-      lastWinner = run;
+    try {
+      for (;;) {
+        attempt += 1;
+        const attemptId = `a${String(attempt).padStart(2, "0")}`;
+        const lease = ledger.reserve({ taskId, attemptId, intent: "repair", harnessId: adapter.id });
+        if (!lease.granted) {
+          exhausted = true;
+          break;
+        }
 
-      const matrix = await reviewMatrix(
-        [{ attemptId, label: `Attempt ${attempt}`, diff: run.diff, evidenceDir: reviewDir, cwd: input.repoRoot }],
-        reviewers,
-      );
-      const revalidated = matrix[0] ? await revalidateFindings(matrix[0].result.findings) : [];
-      const noBlockers = !revalidated.some((f) => isBlocking(f));
-      const crossFamily = matrix[0]?.result.crossFamilyVerified ?? false;
-      const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) : crossFamily && noBlockers;
-      const passed = gatesPassed(run.gates);
+        const prompt =
+          attempt === 1
+            ? contract.user_intent.raw
+            : `${contract.user_intent.raw}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}`;
 
-      await wsm.dispose(run.envelope);
+        const run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger);
+        ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+        lastRun = run;
 
-      if (passed && noBlockers && finalReviewClean) {
-        converged = true;
-        break;
+        const reviewResult =
+          reviewers.length > 0
+            ? await reviewCandidate({ candidateLabel: `Attempt ${attempt}`, diff: run.diff, evidenceDir: reviewDir, cwd: input.repoRoot, reviewers })
+            : { findings: [], routeProofs: [], crossFamilyVerified: false, distinctProviders: [] };
+        const revalidated = await revalidateFindings(reviewResult.findings);
+        lastFindings = revalidated;
+        const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) && !run.errored : reviewResult.crossFamilyVerified && !revalidated.some((f) => isBlocking(f));
+
+        const conv = evaluateConvergence({
+          predicate: contract.convergence,
+          gates: run.errored ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed", duration_ms: 0, required: true }] : run.gates,
+          findings: revalidated,
+          finalReviewClean,
+          diffStableAfterReview: true,
+        });
+        log.emit("finding.revalidated", { attempt_id: attemptId, converged: conv.converged, reasons: conv.reasons });
+
+        if (conv.converged) {
+          converged = true;
+          break;
+        }
+
+        const sig = failureSignature(conv.reasons);
+        readiness.recordRound(sig, conv.reasons.join("; "));
+
+        if (maxAttempts !== null && attempt >= maxAttempts) break;
+        if (ledger.tier() === "hard") {
+          exhausted = true;
+          break;
+        }
+        if (readiness.isStalled(sig)) {
+          // Change strategy: rotate harness if another is available; otherwise stop (no progress).
+          if (adapterPool.length > 1) {
+            adapterIdx = (adapterIdx + 1) % adapterPool.length;
+            adapter = adapterPool[adapterIdx] as HarnessAdapter;
+            log.emit("harness.started", { harness_id: adapter.id, reason: "stall: switched harness" });
+          } else {
+            stalled = true;
+            break;
+          }
+        }
       }
-      if (ledger.tier() === "hard") break;
+    } finally {
+      await wsm.dispose(envelope);
     }
 
-    const status: RunStatus = converged ? "success" : maxAttempts !== null ? "not_converged" : "exhausted";
+    const status: RunStatus = converged
+      ? "success"
+      : maxAttempts !== null
+        ? "not_converged"
+        : stalled
+          ? "not_converged"
+          : exhausted
+            ? "exhausted"
+            : "not_converged";
     log.emit(converged ? "run.completed" : "run.failed", { status, attempts: attempt });
     return {
       runId,
       taskId,
       mode,
       status,
-      winner: lastWinner?.attemptId ?? null,
+      winner: lastRun?.attemptId ?? null,
       runDir: paths.root,
       summary: converged ? `converged in ${attempt} attempt(s)` : `${status} after ${attempt} attempt(s)`,
-      candidates: lastWinner ? [{ attemptId: lastWinner.attemptId, harnessId: lastWinner.harnessId, status }] : [],
+      candidates: lastRun ? [{ attemptId: lastRun.attemptId, harnessId: lastRun.harnessId, status }] : [],
+      reviewVerified,
     };
   }
 
-  /** plan / readonly_swarm: run harnesses read-only and produce a report. */
-  private async runReadonly(input: RunInput, mode: ModeKind): Promise<OrchestratorResult> {
+  /** plan mode: multi-harness planning -> aggregate -> (optional) plan review -> SpecPack. Read-only. */
+  private async runPlan(input: RunInput): Promise<OrchestratorResult> {
     const taskId = newId("task");
     const runId = newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId);
-    log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
+    log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    const adapter = this.deps.registry.get(input.harnesses?.[0] ?? (await this.gateway.resolve()).id);
-    if (!adapter) throw new HarnessUnavailableError("no harness available for read-only run");
-
-    const spec = HarnessRunSpec.parse({
-      session_id: newId("ses"),
-      intent: mode === "plan" ? "plan" : "audit",
-      prompt: input.prompt,
-      cwd: input.repoRoot,
-      access: "readonly",
-    });
-    const parts: string[] = [];
-    for await (const ev of adapter.run(spec)) {
-      if (ev.type === "message" && ev.text) parts.push(ev.text);
+    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined });
+    const plans: { id: string; text: string }[] = [];
+    for (const adapter of adapters) {
+      const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "plan", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
+      const parts: string[] = [];
+      for await (const ev of adapter.run(spec)) if (ev.type === "message" && ev.text) parts.push(ev.text);
+      const text = parts.join("\n").trim() || "(no output)";
+      plans.push({ id: adapter.id, text });
+      store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
     }
-    const report = parts.join("\n").trim() || "(no output)";
-    const reportPath = join(paths.finalDir, mode === "plan" ? "plan.md" : "report.md");
-    store.writeText(reportPath, `# ${mode} report\n\n${redactSecrets(report)}\n`);
+
+    const reviewers = await this.resolveReviewers();
+    let ambiguities: ReviewFinding[] = [];
+    if (reviewers.length > 0 && plans.length > 0) {
+      const reviewDir = join(paths.root, "review-evidence");
+      writeEvidencePacket(reviewDir, { userIntent: input.prompt, diff: "(plan review — no code diff)\n" });
+      const res = await reviewCandidate({
+        candidateLabel: "Plan",
+        diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
+        evidenceDir: reviewDir,
+        cwd: input.repoRoot,
+        reviewers,
+      });
+      ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
+      store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs });
+    }
+
+    const specPack = [
+      `# SpecPack (plan ${runId})`,
+      "",
+      `## Intent\n${input.prompt}`,
+      "",
+      `## Plans (${plans.length} harness${plans.length === 1 ? "" : "es"})`,
+      ...plans.map((p) => `\n### ${p.id}\n${redactSecrets(p.text)}`),
+      "",
+      "## Open questions / ambiguities (resolve interactively before `claudex run`)",
+      ambiguities.length > 0 ? ambiguities.map((a) => `- ${a.claim}`).join("\n") : "- (none surfaced by plan review; the live user interview is the interactive layer)",
+    ].join("\n");
+    store.writeText(join(paths.finalDir, "plan.md"), specPack + "\n");
     log.emit("run.completed", { status: "success" });
 
     return {
       runId,
       taskId,
-      mode,
+      mode: "plan",
+      status: "success",
+      winner: null,
+      runDir: paths.root,
+      summary: `SpecPack from ${plans.length} harness plan(s); ${ambiguities.length} open question(s).`,
+      candidates: plans.map((p) => ({ attemptId: "plan", harnessId: p.id, status: "success" })),
+    };
+  }
+
+  /** readonly_swarm: single read-only audit/map report. */
+  private async runAudit(input: RunInput): Promise<OrchestratorResult> {
+    const taskId = newId("task");
+    const runId = newId("run");
+    const store = new ArtifactStore(input.repoRoot);
+    const paths = store.createRun(runId);
+    const log = new EventLog(paths.eventsPath, runId, taskId);
+    log.emit("run.created", { mode: "readonly_swarm", prompt: redactSecrets(input.prompt) });
+
+    const adapter = input.harnesses?.[0]
+      ? (this.deps.registry.get(input.harnesses[0]) ?? (await this.gateway.resolve()))
+      : await this.gateway.resolve();
+
+    const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "audit", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
+    const parts: string[] = [];
+    for await (const ev of adapter.run(spec)) if (ev.type === "message" && ev.text) parts.push(ev.text);
+    const report = parts.join("\n").trim() || "(no output)";
+    store.writeText(join(paths.finalDir, "report.md"), `# Audit report\n\n${redactSecrets(report)}\n`);
+    log.emit("run.completed", { status: "success" });
+
+    return {
+      runId,
+      taskId,
+      mode: "readonly_swarm",
       status: "success",
       winner: null,
       runDir: paths.root,
@@ -471,29 +635,44 @@ export class Orchestrator {
   }
 }
 
+function formatFindings(findings: ReviewFinding[]): string {
+  if (findings.length === 0) return "(no findings recorded)";
+  return findings
+    .map(
+      (f) =>
+        `- [${f.severity}/${f.status}] ${f.claim}` +
+        (f.evidence.files.length > 0 ? ` (${f.evidence.files.map((x) => x.path).join(", ")})` : "") +
+        (f.proposed_fix ? ` -> fix: ${f.proposed_fix}` : ""),
+    )
+    .join("\n");
+}
+
 function renderSummary(
   runId: string,
   mode: ModeKind,
   decision: { winner: string | null; status: string; why_winner: string; apply_recommendation: string },
   evidences: CandidateEvidence[],
   synthReason: string,
+  reviewVerified: boolean,
 ): string {
-  const lines = [
-    `# Run ${runId} (${mode})`,
-    "",
-    `- Status: ${decision.status}`,
-    `- Winner: ${decision.winner ?? "none"}`,
-    `- Apply: ${decision.apply_recommendation}`,
-    `- Synthesis: ${synthReason}`,
-    "",
-    "## Candidates",
-    ...evidences.map(
-      (e) =>
-        `- ${e.label} (${e.attemptId}): gates ${e.testsPassed}/${e.testsTotal}, blockers ${e.findings.filter((f) => isBlocking(f)).length}, cleanReview ${e.finalReviewClean}`,
-    ),
-    "",
-    `## Why winner`,
-    decision.why_winner,
-  ];
-  return lines.join("\n") + "\n";
+  return (
+    [
+      `# Run ${runId} (${mode})`,
+      "",
+      `- Status: ${decision.status}`,
+      `- Winner: ${decision.winner ?? "none"}`,
+      `- Apply: ${decision.apply_recommendation}`,
+      `- Review verified (cross-family): ${reviewVerified}`,
+      `- Synthesis: ${synthReason}`,
+      "",
+      "## Candidates",
+      ...evidences.map(
+        (e) =>
+          `- ${e.label} (${e.attemptId}): gates ${e.testsPassed}/${e.testsTotal}, blockers ${e.findings.filter((f) => isBlocking(f)).length}, cleanReview ${e.finalReviewClean}`,
+      ),
+      "",
+      "## Why winner",
+      decision.why_winner,
+    ].join("\n") + "\n"
+  );
 }
