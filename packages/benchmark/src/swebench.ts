@@ -20,7 +20,9 @@ export function writePredictions(predictions: Prediction[], path: string): void 
     model_patch: p.model_patch,
   }));
   if (path.endsWith(".jsonl")) {
-    writeText(path, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const body = rows.map((r) => JSON.stringify(r)).join("\n");
+    // Avoid a lone blank line for empty input (the harness json.loads each line).
+    writeText(path, body ? body + "\n" : "");
   } else {
     writeJson(path, rows);
   }

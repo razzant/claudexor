@@ -59,17 +59,22 @@
         "budget_summary": {
           "type": "object",
           "properties": {
-            "exact_usd": {
+            "spend_usd": {
               "type": [
                 "number",
                 "null"
               ],
               "default": null
+            },
+            "estimated": {
+              "type": "boolean",
+              "default": false
             }
           },
           "additionalProperties": false,
           "default": {
-            "exact_usd": null
+            "spend_usd": null,
+            "estimated": false
           }
         },
         "apply_recommendation": {

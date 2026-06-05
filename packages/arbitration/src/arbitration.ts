@@ -146,7 +146,7 @@ function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseCompariso
  */
 export function arbitrate(
   candidates: CandidateEvidence[],
-  opts: { exactUsd?: number | null } = {},
+  opts: { spendUsd?: number | null; estimatedSpend?: boolean } = {},
 ): ArbitrationResult {
   if (candidates.length === 0) {
     return {
@@ -202,7 +202,10 @@ export function arbitrate(
       `required gates ${requiredGatesPassed(winner) ? "passed" : "FAILED"}`,
       `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
     ],
-    budget_summary: { exact_usd: opts.exactUsd ?? winner.costUsd ?? null },
+    budget_summary: {
+      spend_usd: opts.spendUsd ?? winner.costUsd ?? null,
+      estimated: opts.estimatedSpend ?? false,
+    },
     apply_recommendation: winnerOk
       ? confidence >= 0.8
         ? "apply"

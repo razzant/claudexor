@@ -42,9 +42,12 @@ export const DecisionRecord = z.object({
   final_checks: z.array(z.string()).default([]),
   budget_summary: z
     .object({
-      exact_usd: z.number().nullable().default(null),
+      // Total settled spend. `estimated` is true when any of it is token-derived
+      // (e.g. codex) rather than natively reported — never present an estimate as exact.
+      spend_usd: z.number().nullable().default(null),
+      estimated: z.boolean().default(false),
     })
-    .default({ exact_usd: null }),
+    .default({ spend_usd: null, estimated: false }),
   apply_recommendation: ApplyRecommendation.default("inspect"),
 });
 export type DecisionRecord = z.infer<typeof DecisionRecord>;

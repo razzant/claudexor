@@ -67,4 +67,15 @@ describe("arbitrate", () => {
     expect(res.decision.winner).toBeNull();
     expect(res.decision.status).toBe("failed");
   });
+
+  it("records spend honestly and never labels estimated spend as exact", () => {
+    const a = candidate("A");
+    const exact = arbitrate([a], { spendUsd: 0.5 });
+    expect(exact.decision.budget_summary.spend_usd).toBeCloseTo(0.5);
+    expect(exact.decision.budget_summary.estimated).toBe(false);
+
+    const estimated = arbitrate([a], { spendUsd: 0.5, estimatedSpend: true });
+    expect(estimated.decision.budget_summary.spend_usd).toBeCloseTo(0.5);
+    expect(estimated.decision.budget_summary.estimated).toBe(true);
+  });
 });

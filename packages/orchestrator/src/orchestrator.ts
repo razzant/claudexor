@@ -88,6 +88,8 @@ interface CandidateRun {
   gates: GateResult[];
   cost: number;
   errored: boolean;
+  /** True when any of `cost` is token-estimated (not natively reported). */
+  costEstimated: boolean;
 }
 
 const LABELS = "ABCDEFGHIJ".split("");
@@ -243,9 +245,13 @@ export class Orchestrator {
     });
 
     let cost = 0;
+    let costEstimated = false;
     let errored = false;
     for await (const ev of adapter.run(spec)) {
-      if (ev.type === "usage" && ev.usage?.cost_usd) cost += ev.usage.cost_usd;
+      if (ev.type === "usage" && ev.usage?.cost_usd) {
+        cost += ev.usage.cost_usd;
+        if (ev.usage.estimated) costEstimated = true;
+      }
       if (ev.type === "error") errored = true;
       // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
       const obs = observationFromEvent(adapter.id, ev);
@@ -268,7 +274,7 @@ export class Orchestrator {
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
       branch: envelope.branch_name,
     });
-    return { attemptId, harnessId: adapter.id, label, diff, gates, cost, errored };
+    return { attemptId, harnessId: adapter.id, label, diff, gates, cost, errored, costEstimated };
   }
 
   private toEvidence(
@@ -358,7 +364,7 @@ export class Orchestrator {
       } catch (err) {
         ledger.settle(lease.lease?.lease_id ?? "", 0);
         log.emit("run.failed", { harness_id: adapter.id, attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
-        runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true });
+        runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true, costEstimated: false });
       } finally {
         if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
       }
@@ -401,7 +407,10 @@ export class Orchestrator {
       }
     }
 
-    const result = arbitrate(evidences, { exactUsd: ledger.spend() });
+    const result = arbitrate(evidences, {
+      spendUsd: ledger.spend(),
+      estimatedSpend: runs.some((r) => r.costEstimated),
+    });
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), { ...result.decision, review_verified: reviewVerified });
     store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
@@ -537,7 +546,7 @@ export class Orchestrator {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
           ledger.settle(lease.lease?.lease_id ?? "", 0);
           log.emit("run.failed", { attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
-          run = { attemptId, harnessId: adapter.id, label: `Attempt ${attempt}`, diff: "", gates: [], cost: 0, errored: true };
+          run = { attemptId, harnessId: adapter.id, label: `Attempt ${attempt}`, diff: "", gates: [], cost: 0, errored: true, costEstimated: false };
         }
         lastRun = run;
 

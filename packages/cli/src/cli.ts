@@ -141,7 +141,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     process.stderr.write('claudex: missing prompt\n');
     return 2;
   }
-  const maxUsd = floatFlag(args, "max-usd");
+  const maxUsdRaw = floatFlag(args, "max-usd");
+  const maxUsd = maxUsdRaw !== undefined && maxUsdRaw >= 0 ? maxUsdRaw : undefined;
   const orch = new Orchestrator({
     registry: buildRegistry(),
     maxUsd: maxUsd ?? null,
@@ -349,7 +350,13 @@ async function main(): Promise<number> {
           print(SWE_BENCH_EVAL_INSTRUCTIONS);
           return 0;
         }
-        const orch = new Orchestrator({ registry: buildRegistry(), portfolio: "benchmark" });
+        const benchMaxUsd = floatFlag(args, "max-usd");
+        const orch = new Orchestrator({
+          registry: buildRegistry(),
+          portfolio: "benchmark",
+          maxUsd: benchMaxUsd ?? null,
+          reviewerModels: reviewerModels(args),
+        });
         const res = await runBenchmark(
           tasks,
           async (t) => {
@@ -358,6 +365,7 @@ async function main(): Promise<number> {
               prompt: t.problem_statement,
               mode: "best_of_n",
               n: intFlag(args, "n") ?? 1,
+              maxUsd: benchMaxUsd ?? null,
             });
             let patch = "";
             try {
