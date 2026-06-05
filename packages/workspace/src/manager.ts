@@ -1,5 +1,5 @@
-import { cpSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudex/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudex/schema";
 import { WorkspaceError } from "@claudex/core";
@@ -59,8 +59,12 @@ export class WorkspaceManager {
       }
     }
 
-    const path = join(this.workspacesDir(), opts.taskId, opts.attemptId);
-    ensureDir(join(this.workspacesDir(), opts.taskId));
+    // Envelope base holds the worktree plus scoped dirs as SIBLINGS. The worktree
+    // is a subdir so that harness-written HOME state (auth tokens, caches, plugins,
+    // session logs) lives outside the git working tree and never lands in the diff.
+    const base = join(this.workspacesDir(), opts.taskId, opts.attemptId);
+    ensureDir(base);
+    const path = join(base, "tree");
     const branch = `claudex/${opts.taskId}/${opts.attemptId}`;
     await worktreeAdd(this.repoRoot, path, branch, baseSha);
 
@@ -69,10 +73,10 @@ export class WorkspaceManager {
       this.copyDirtyFiles(porcelain, path);
     }
 
-    const homeDir = join(path, ".claudex-home");
-    const envDir = join(path, ".claudex-env");
-    const logsDir = join(path, ".claudex-logs");
-    const artifactsDir = join(path, ".claudex-artifacts");
+    const homeDir = join(base, "home");
+    const envDir = join(base, "env");
+    const logsDir = join(base, "logs");
+    const artifactsDir = join(base, "artifacts");
     const codexHome = join(homeDir, ".codex");
     const claudeConfig = join(homeDir, ".claude");
     const cursorConfig = join(homeDir, ".cursor");
@@ -140,6 +144,13 @@ export class WorkspaceManager {
   async dispose(env: WorkspaceEnvelope): Promise<void> {
     try {
       await worktreeRemove(this.repoRoot, env.worktree_path);
+    } catch {
+      /* best-effort */
+    }
+    // Remove the whole envelope base (worktree + scoped home/env/logs/artifacts),
+    // including any seeded credentials, so nothing sensitive lingers on disk.
+    try {
+      rmSync(dirname(env.worktree_path), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }

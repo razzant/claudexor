@@ -30,12 +30,19 @@ describe("WorkspaceManager", () => {
     expect(scoped.CLAUDE_CONFIG_DIR).toContain(".claude");
 
     writeFileSync(join(env.worktree_path, "NEW.txt"), "hello world\n");
+    // Simulate a harness writing secrets/state into its scoped HOME (e.g. codex auth.json).
+    writeFileSync(join(env.harness_config_dirs["codex_home"] as string, "auth.json"), '{"OPENAI_API_KEY":"sk-secret"}\n');
     const diff = await mgr.diff(env);
     expect(diff).toContain("NEW.txt");
     expect(diff).toContain("hello world");
+    // Scoped HOME lives outside the worktree, so its contents must never leak into the diff.
+    expect(diff).not.toContain("auth.json");
+    expect(diff).not.toContain("sk-secret");
 
     await mgr.dispose(env);
     expect(existsSync(env.worktree_path)).toBe(false);
+    // Dispose also removes the scoped dirs (no lingering credentials).
+    expect(existsSync(env.home_dir)).toBe(false);
   });
 
   it("refuses a dirty repo by default, allows snapshot", async () => {
