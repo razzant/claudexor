@@ -19,6 +19,9 @@ coverage/
 # Adversarial review evidence packets (local by default)
 .adversarial-review/
 
+# Local operator guidance (not public repo docs)
+AGENTS.md
+
 # Local toolchain
 .toolchain/
 

@@ -1,64 +1,267 @@
 # Claudex
 
-> Harness-agnostic, local-first, evidence-driven AI coding control plane.
+Claudex is a local-first control plane for AI coding harnesses. It runs Codex
+CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
+behind one typed interface.
 
-Claudex orchestrates **Codex CLI**, **Claude Code**, **Cursor CLI**, and **OpenCode** (plus future harnesses) as interchangeable *harnesses* — no privileged harness, no hardcoded roles. It adds best-of-n tournaments, cross-family adversarial review with evidence-grounded findings, budget/quota balancing across subscriptions and API keys, and reproducible benchmark runs.
+The core rule is simple: a harness is not a role. Roles are intents such as
+`plan`, `implement`, `repair`, `review`, `compare`, `synthesize`, `audit`, and
+`benchmark`. Any harness that declares the capability can be assigned the intent.
 
-It collapses cleanly to a single native harness: configure only Codex and it feels like Codex plus artifacts, policies, and a budget ledger; add Claude and it becomes stronger through cross-review and synthesis.
+Current status: **v0.1.0 engineering preview**. The repo has the breadth-first
+control-plane skeleton, real Codex/Claude dogfood, typed artifacts, and CI. Some
+important v0.2 pieces are still explicit gaps, especially config-driven
+deterministic gates.
 
-> Status: **v0.1.0 — under active construction** (breadth-first build). Codename `Claudex`; package/binary name is kept abstract pending a naming gate. Ships a reproducible SWE-bench Verified runner.
+## What It Does
 
-## Why
+Claudex adds a reproducible layer around native coding tools:
 
-The leader among Codex / Claude / Cursor / OpenCode keeps changing. Switching, combining, reviewing, and budget-balancing them by hand is tedious. Claudex turns unstable AI coding agents into a reproducible, evidence-driven, budget-aware software development system — and the best performance is at the seam, where harnesses check each other.
+- single-harness runs when only one tool is configured;
+- best-of-n races in isolated git worktrees;
+- cross-family review when multiple providers are available;
+- convergence loops that feed accepted findings back into repair attempts;
+- structured artifacts under `.claudex/runs/<run_id>/`;
+- budget/quota accounting and observed rate-limit handling;
+- CLI, daemon, MCP, ACP, and plugin surfaces over the same control plane;
+- benchmark runner scaffolding, including SWE-bench Verified prediction output.
 
-## Core ideas
+It does not replace the native tools. It controls how they are selected, isolated,
+reviewed, and delivered.
 
-- **No privileged harness, no hardcoded roles.** Every role (plan / implement / review / synthesize / arbitrate / benchmark …) is an *intent*; any harness that declares the capability can be assigned it.
-- **Evidence over vibes.** Findings require `file:line` / diff / command / log evidence; winners are chosen by hard gates and acceptance coverage first, LLM judgment only as a grounded tiebreak.
-- **No silent truncation.** Context is accounted for; omissions are explicit.
-- **Files-first SSOT.** Append-only JSONL event log + typed YAML/JSON artifacts under `.claudex/`.
-- **Local-first & privacy-first.** Your credentials, your machine; no SaaS broker.
-
-## Modes
-
-`daily` · `plan` · `create` (from scratch) · `race` (best-of-n) · `until-convergence` · `max-attempts` · `audit/map` (read-only swarm) · `benchmark`.
-
-## Quickstart
+## Install From Source
 
 ```bash
-pnpm install && pnpm build && pnpm test
-node packages/cli/dist/cli.js doctor          # detect + conformance-test harnesses
-node packages/cli/dist/cli.js run "fix the flaky auth refresh"
-node packages/cli/dist/cli.js race "implement feature X" --n 4
-node packages/cli/dist/cli.js inspect <run_id>
+git clone https://github.com/joi-lab/claudex.git
+cd claudex
+pnpm install --frozen-lockfile
+pnpm build
+pnpm test
 ```
 
-> Local Node note: on macOS 26.4 the OS code-signing monitor SIGKILLs Homebrew's
-> adhoc-signed `node`. Use an official notarized Node (e.g. under `~/.claudex/node`).
+Local macOS note: if Homebrew's `node` is killed by the OS code-signing monitor,
+use an official notarized Node distribution on `PATH`.
 
-## CLI surface
+Run the local CLI:
 
-`init` · `doctor` · `run` (`--mode`) · `race` · `plan` · `create` · `audit`/`map` ·
-`until-convergence`/`max-attempts` (via `--mode`) · `inspect <run_id>` ·
-`apply <run_id>` (`--mode apply|commit|branch|pr` / `--dry-run`) ·
-`daemon start|status|stop|logs` · `mcp serve` · `acp serve` ·
-`plugin install <cursor|claude|codex|opencode>` · `bench list|instructions|run` ·
-`release check-name <name>` · `harness list`. Every command supports `--json`.
+```bash
+node packages/cli/dist/cli.js help
+node packages/cli/dist/cli.js doctor
+```
 
-## Embedding
+`doctor` checks which harnesses are installed and authenticated. A healthy
+Codex/Claude setup looks like this:
 
-Claudex exposes a stable CLI `--json`, a JSON-RPC-over-stdio boundary, and an MCP
-server so other agents (e.g. Ouroboros) can use it as an edit/review substrate.
-See [docs/EMBEDDING.md](docs/EMBEDDING.md).
+```text
+[ok] codex codex-cli 0.137.0
+[ok] claude 2.1.165 (Claude Code)
+```
+
+Cursor and OpenCode may be unavailable until their CLIs are installed. That is a
+degraded but valid state.
+
+## Basic Usage
+
+For examples below, define a short alias while developing from source:
+
+```bash
+alias claudex='node /path/to/claudex/packages/cli/dist/cli.js'
+```
+
+### Single Harness
+
+Force one harness:
+
+```bash
+claudex run "fix the failing auth refresh test" --harness codex
+claudex run "summarize the migration risk" --harness claude --json
+```
+
+If only one harness is configured, Claudex should collapse to that native tool
+plus structured run artifacts.
+
+### Best-of-N Race
+
+Run Codex and Claude in separate envelopes, review the candidate diffs, and
+arbitrate a winner:
+
+```bash
+claudex race "fix add() in src/math.js and keep the patch minimal" \
+  --harness codex,claude \
+  --n 2 \
+  --json
+```
+
+Inspect the result:
+
+```bash
+claudex inspect <run_id>
+claudex apply <run_id> --dry-run
+```
+
+`apply --dry-run` checks whether `final/patch.diff` applies cleanly without
+mutating the repo.
+
+### Convergence
+
+Run a repair loop until the convergence predicate is met, budget/quota is
+exhausted, or the task stalls:
+
+```bash
+claudex run "fix the bug and address accepted review findings" \
+  --mode until-convergence \
+  --harness codex,claude
+```
+
+Use a bounded loop when you want an explicit cap:
+
+```bash
+claudex run "try to repair the failing parser test" \
+  --mode max-attempts \
+  --attempts 3 \
+  --harness claude
+```
+
+Hyphenated mode names are accepted (`until-convergence`, `max-attempts`).
+Unknown modes fail loudly instead of falling back to `daily`.
+
+### Planning
+
+Produce a read-only SpecPack:
+
+```bash
+claudex plan "design a config-to-gates implementation" --harness codex,claude
+```
+
+Plan mode collects plans from configured harnesses and writes `final/plan.md`.
+The live interactive interview layer is still a v0.2 follow-up.
+
+## MCP, ACP, And Daemon
+
+MCP stdio server:
+
+```bash
+claudex mcp serve
+```
+
+Available MCP tools in v0.1:
+
+- `claudex_run`
+- `claudex_race`
+- `claudex_plan`
+- `claudex_create`
+- `claudex_status`
+
+ACP stdio server:
+
+```bash
+claudex acp serve
+```
+
+Optional local daemon:
+
+```bash
+claudex daemon start
+claudex daemon status --json
+claudex daemon logs
+claudex daemon stop
+```
+
+The daemon is local-only and uses the same runner as the CLI.
+
+## Benchmark Runner
+
+List available benchmark surfaces:
+
+```bash
+claudex bench list
+```
+
+Generate SWE-bench prediction output from prepared task rows:
+
+```bash
+claudex bench run swe-bench \
+  --tasks tasks.jsonl \
+  --predictions predictions.json \
+  --workdir /path/to/prepared/instance/repos
+```
+
+Without `--workdir`, the command writes skeleton predictions and prints setup
+instructions. External evaluator tooling and prepared per-instance repos are
+still required for full evaluation.
+
+## Artifact Layout
+
+Every run creates a directory under `.claudex/runs/<run_id>/`:
+
+```text
+events.jsonl
+context/task.yaml
+attempts/a01/attempt.yaml
+attempts/a01/patch.diff
+reviews/a01.yaml
+arbitration/decision.yaml
+final/patch.diff
+final/work_product.yaml
+final/summary.md
+```
+
+Files are the source of truth. Terminal output is only a projection.
+
+## Architecture
+
+The current package map and data flow are documented in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Important boundaries:
+
+- `packages/schema` owns contracts and generated JSON Schema.
+- `packages/harness-*` adapters translate native tool I/O into typed events.
+- `packages/workspace` owns worktree envelopes and scoped harness homes.
+- `packages/orchestrator` owns race, convergence, plan, and audit modes.
+- `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
+  validation logic.
+- CLI, daemon, MCP, ACP, and plugins are thin surfaces.
+
+## Current Limitations
+
+These are known v0.1 limits, not hidden guarantees:
+
+- Deterministic gates are not yet populated from config or CLI. `TaskContract`
+  supports `tests.commands`, but the CLI does not build them yet, so
+  `gatesPassed([])` is currently vacuously true. Wiring config-to-gates is the
+  highest-value v0.2 task.
+- `readonly_swarm` is currently a single read-only audit report.
+- Plan mode writes open questions but does not yet run an interactive interview.
+- Fresh-envelope final verification is not fully wired for every mode.
+- Cursor and OpenCode adapters exist but need live dogfood on machines where
+  their CLIs are installed.
+
+## Development
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm schema:gen
+git diff --exit-code packages/schema/generated
+```
+
+There is no root `pnpm lint` script in v0.1.
 
 ## Documentation
 
-- [docs/SPEC.md](docs/SPEC.md) — canonical technical specification.
-- [docs/PLAN.md](docs/PLAN.md) — the build plan.
-- [docs/DECISIONS.md](docs/DECISIONS.md) — design decision log.
-- [AGENTS.md](AGENTS.md) — guidance for agents (and humans) working in this repo.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): current codebase map and
+  invariants.
+- [`docs/SPEC.md`](docs/SPEC.md): canonical technical specification.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md): design decisions from planning.
+- [`docs/PLAN.md`](docs/PLAN.md): original breadth-first build plan.
+- [`docs/REVIEW.md`](docs/REVIEW.md): adversarial review history and dogfood
+  findings.
+- [`docs/EMBEDDING.md`](docs/EMBEDDING.md): embedding/Ouroboros integration
+  contract.
 
 ## License
 
-[MIT](LICENSE) © 2026 joi-lab
+[MIT](LICENSE) (c) 2026 joi-lab

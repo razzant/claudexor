@@ -8,7 +8,8 @@ context:
   agents_md_first: true
   never_silent_truncate: true
   mandatory_files:
-    - AGENTS.md
+    - README.md
+    - docs/ARCHITECTURE.md
   include: []
   exclude: []
 tests:

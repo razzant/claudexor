@@ -61,6 +61,28 @@ describe("ContextPack", () => {
     expect(pack.hash).toMatch(/^sha256:/);
     expect(pack.atlas.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("uses public repo docs, not local AGENTS.md, as default mandatory context", async () => {
+    const repo = tmp();
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    writeFileSync(join(repo, "docs", "ARCHITECTURE.md"), "# arch\n");
+    writeFileSync(join(repo, "AGENTS.md"), "# local only\n");
+    const contract = TaskContract.parse({
+      schema_version: 1,
+      task_id: "t",
+      created_at: "2026-01-01T00:00:00Z",
+      repo: { root: repo, base_ref: "HEAD" },
+      mode: { kind: "daily" },
+      user_intent: { raw: "x" },
+    });
+    const pack = await buildContextPack(repo, contract, { tokenLimit: 100_000 });
+    const mandatoryPaths = pack.files.mandatory.map((f) => f.path);
+    expect(mandatoryPaths).toHaveLength(2);
+    expect(mandatoryPaths).toEqual(expect.arrayContaining(["README.md", "docs/ARCHITECTURE.md"]));
+    expect(mandatoryPaths).not.toContain("AGENTS.md");
+    expect(pack.instructions.some((p) => p.endsWith("AGENTS.md"))).toBe(true);
+  });
 });
 
 describe("evidence packet", () => {

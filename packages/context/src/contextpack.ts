@@ -10,6 +10,8 @@ export interface ContextPackOptions extends AtlasOptions {
   failOnMissingMandatory?: boolean;
 }
 
+export const DEFAULT_MANDATORY_CONTEXT = ["README.md", "docs/ARCHITECTURE.md"];
+
 /**
  * Build a deterministic, hashable ContextPack. Every tracked path is accounted
  * for via the Scope Atlas; omissions are explicit. Fails closed when caller-
@@ -21,7 +23,7 @@ export async function buildContextPack(
   opts: ContextPackOptions = {},
 ): Promise<ContextPack> {
   const usingExplicitMandatory = opts.mandatory !== undefined;
-  const mandatory = opts.mandatory ?? ["AGENTS.md", "README.md"];
+  const mandatory = opts.mandatory ?? DEFAULT_MANDATORY_CONTEXT;
   const atlas = await buildScopeAtlas(repoRoot, { ...opts, mandatory });
 
   if (usingExplicitMandatory && (opts.failOnMissingMandatory ?? true) && atlas.missingMandatory.length > 0) {
