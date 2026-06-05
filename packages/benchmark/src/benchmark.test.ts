@@ -11,12 +11,30 @@ function tmp(): string {
 }
 
 describe("swebench predictions + report", () => {
-  it("writes predictions in sb-cli map format", () => {
+  it("writes a .json prediction list with instance_id (official harness shape)", () => {
     const path = join(tmp(), "preds.json");
     writePredictions([{ instance_id: "a__b-1", model_name_or_path: "claudex", model_patch: "diff --git" }], path);
     const j = JSON.parse(readFileSync(path, "utf8"));
-    expect(j["a__b-1"].model_patch).toBe("diff --git");
-    expect(j["a__b-1"].model_name_or_path).toBe("claudex");
+    expect(Array.isArray(j)).toBe(true);
+    expect(j[0].instance_id).toBe("a__b-1");
+    expect(j[0].model_patch).toBe("diff --git");
+    expect(j[0].model_name_or_path).toBe("claudex");
+  });
+
+  it("writes .jsonl predictions one id-bearing object per line", () => {
+    const path = join(tmp(), "preds.jsonl");
+    writePredictions(
+      [
+        { instance_id: "a__b-1", model_name_or_path: "claudex", model_patch: "p1" },
+        { instance_id: "a__b-2", model_name_or_path: "claudex", model_patch: "p2" },
+      ],
+      path,
+    );
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    const first = JSON.parse(lines[0]);
+    expect(first.instance_id).toBe("a__b-1");
+    expect(first.model_patch).toBe("p1");
   });
 
   it("parses the resolved_ids report shape", () => {
