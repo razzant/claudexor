@@ -3,12 +3,14 @@ import type {
   GateResult,
   ModeKind,
   Portfolio,
+  ProjectConfig,
   ReviewFinding,
   RunStatus,
   TaskContract,
   WorkspaceEnvelope,
 } from "@claudex/schema";
 import { HarnessRunSpec, TaskContract as TaskContractSchema, isBlocking } from "@claudex/schema";
+import { loadConfig } from "@claudex/config";
 import type { AdapterRegistry, HarnessAdapter } from "@claudex/core";
 import { ExecutionEngine, HarnessUnavailableError } from "@claudex/core";
 import { ArtifactStore } from "@claudex/artifact-store";
@@ -37,6 +39,12 @@ export interface OrchestratorDeps {
   reviewers?: ReviewerSpec[];
   portfolio?: Portfolio;
   maxUsd?: number | null;
+  /**
+   * Optional per-provider-family reviewer model override (e.g. a cheaper model
+   * for benchmark portfolios). No hardcoded versions: the caller supplies the
+   * model id, default keeps each harness's own default reviewer model.
+   */
+  reviewerModels?: Record<string, string>;
 }
 
 export interface RunInput {
@@ -48,6 +56,10 @@ export interface RunInput {
   baseRef?: string;
   attempts?: number | null;
   synthesis?: SynthesisMode;
+  /** Explicit deterministic gate commands (e.g. from `--test` or a bench runner). */
+  tests?: string[];
+  /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
+  maxUsd?: number | null;
 }
 
 export interface OrchestratorResult {
@@ -128,7 +140,11 @@ export class Orchestrator {
         const m = await adapter.discover();
         if (m.kind === "fake" || seen.has(m.provider_family)) continue;
         seen.add(m.provider_family);
-        specs.push({ adapter, providerFamily: m.provider_family });
+        specs.push({
+          adapter,
+          providerFamily: m.provider_family,
+          requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
+        });
       } catch {
         /* unavailable */
       }
@@ -156,7 +172,23 @@ export class Orchestrator {
     return out;
   }
 
+  private projectConfig(repoRoot: string): ProjectConfig | null {
+    try {
+      return loadConfig(repoRoot).project;
+    } catch {
+      return null;
+    }
+  }
+
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
+    const cfg = this.projectConfig(input.repoRoot);
+    // Deterministic gate commands come from `--test`/bench runner first, then the
+    // versioned project config. Without these, gateSpecs is empty and convergence
+    // is review-only; with them, convergence is test-driven.
+    const commands = [...(input.tests ?? []), ...(cfg?.tests?.commands ?? [])]
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .map((command, i) => ({ id: `gate-${i + 1}`, command, required: true }));
     return TaskContractSchema.parse({
       schema_version: 1,
       task_id: taskId,
@@ -164,7 +196,11 @@ export class Orchestrator {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
       user_intent: { raw: input.prompt },
-      budget: { portfolio: this.deps.portfolio ?? "daily-rich" },
+      tests: { commands },
+      budget: {
+        portfolio: this.deps.portfolio ?? cfg?.budget?.portfolio ?? "daily-rich",
+        max_usd: input.maxUsd ?? this.deps.maxUsd ?? null,
+      },
     });
   }
 
@@ -262,10 +298,10 @@ export class Orchestrator {
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId);
     const wsm = new WorkspaceManager(input.repoRoot);
-    const ledger = new BudgetLedger({ maxUsd: this.deps.maxUsd ?? null });
 
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
     const contract = this.buildContract(input, taskId, mode);
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -435,9 +471,9 @@ export class Orchestrator {
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId);
     const wsm = new WorkspaceManager(input.repoRoot);
-    const ledger = new BudgetLedger({ maxUsd: this.deps.maxUsd ?? null });
     const readiness = new ReadinessLedger();
     const contract = this.buildContract(input, taskId, mode);
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
 

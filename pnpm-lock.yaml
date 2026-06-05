@@ -294,6 +294,9 @@ importers:
       '@claudex/budget':
         specifier: workspace:*
         version: link:../budget
+      '@claudex/config':
+        specifier: workspace:*
+        version: link:../config
       '@claudex/context':
         specifier: workspace:*
         version: link:../context

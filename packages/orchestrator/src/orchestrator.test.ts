@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -39,7 +39,7 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
 }
 
 /** A non-fake adapter that behaves like fake-success (for default-harness resolution). */
-function realLikeAdapter(id: string): HarnessAdapter {
+function realLikeAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -47,7 +47,7 @@ function realLikeAdapter(id: string): HarnessAdapter {
         id,
         display_name: id,
         kind: "local_cli",
-        provider_family: "openai",
+        provider_family: family,
         capabilities: { implement: true, review: true, structured_events: true },
       });
     },
@@ -116,6 +116,24 @@ describe("Orchestrator", () => {
     expect(res.candidates.length).toBe(1);
   });
 
+  it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+
+    // A failing gate must make the candidate red (gates are no longer vacuous).
+    const failed = await orch.run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, tests: ["exit 1"],
+    });
+    expect(failed.candidates[0]?.status).toBe("red");
+
+    // A passing gate keeps the candidate green.
+    const passed = await orch.run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, tests: ["true"],
+    });
+    expect(passed.candidates[0]?.status).toBe("green");
+  });
+
   it("does not leak a worktree when a candidate errors", async () => {
     const repo = await initRepo();
     const throwing: HarnessAdapter = {
@@ -136,6 +154,23 @@ describe("Orchestrator", () => {
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["throwing"], n: 1 });
     expect(res.status).not.toBe("success");
     expect(existsSync(join(repo, ".claudex", "workspaces", res.taskId, "a01"))).toBe(false);
+  });
+
+  it("applies a per-family reviewer model override (cheaper reviewer)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+      ["rev-openai", realLikeAdapter("rev-openai", "openai")],
+      ["rev-anthropic", realLikeAdapter("rev-anthropic", "anthropic")],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewerModels: { openai: "o-cheap-model", anthropic: "a-cheap-model" },
+    });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1 });
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(reviewYaml).toContain("o-cheap-model");
+    expect(reviewYaml).toContain("a-cheap-model");
   });
 
   it("auto-resolves available real harnesses when --harness is omitted", async () => {

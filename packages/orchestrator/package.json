@@ -20,6 +20,7 @@
     "@claudex/arbitration": "workspace:*",
     "@claudex/artifact-store": "workspace:*",
     "@claudex/budget": "workspace:*",
+    "@claudex/config": "workspace:*",
     "@claudex/context": "workspace:*",
     "@claudex/core": "workspace:*",
     "@claudex/event-log": "workspace:*",

@@ -65,6 +65,9 @@ Options:
   --mode <mode>            daily | plan | create | best_of_n | until_convergence | max_attempts | readonly_swarm | benchmark
   --n <N>                  Candidates for best-of-n
   --attempts <N>           Max attempts (max_attempts mode)
+  --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
+  --max-usd <amount>       Hard per-run spend cap (USD)
+  --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --json                   Machine-readable JSON output
 `;
 
@@ -96,13 +99,44 @@ function intFlag(args: ParsedArgs, key: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function floatFlag(args: ParsedArgs, key: string): number | undefined {
+  const v = flagStr(args, key);
+  if (v === undefined) return undefined;
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Deterministic gate commands from `--test "<cmd>"`; multiple via `;;` separator. */
+function testCommands(args: ParsedArgs): string[] | undefined {
+  const v = flagStr(args, "test");
+  if (v === undefined) return undefined;
+  return v.split(";;").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. */
+function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
+  const v = flagStr(args, "reviewer-model");
+  if (v === undefined) return undefined;
+  const map: Record<string, string> = {};
+  for (const pair of v.split(",")) {
+    const [family, model] = pair.split("=").map((s) => s.trim());
+    if (family && model) map[family] = model;
+  }
+  return Object.keys(map).length > 0 ? map : undefined;
+}
+
 async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Promise<number> {
   const prompt = args._.slice(1).join(" ").trim();
   if (!prompt && mode !== "readonly_swarm") {
     process.stderr.write('claudex: missing prompt\n');
     return 2;
   }
-  const orch = new Orchestrator({ registry: buildRegistry() });
+  const maxUsd = floatFlag(args, "max-usd");
+  const orch = new Orchestrator({
+    registry: buildRegistry(),
+    maxUsd: maxUsd ?? null,
+    reviewerModels: reviewerModels(args),
+  });
   try {
     const res = await orch.run({
       repoRoot: process.cwd(),
@@ -111,6 +145,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       harnesses: harnessList(args),
       n: intFlag(args, "n"),
       attempts: intFlag(args, "attempts") ?? null,
+      tests: testCommands(args),
+      maxUsd: maxUsd ?? null,
     });
     if (json) {
       printJson(res);
