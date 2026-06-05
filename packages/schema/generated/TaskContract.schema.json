@@ -1,0 +1,363 @@
+{
+  "$ref": "#/definitions/TaskContract",
+  "definitions": {
+    "TaskContract": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "object",
+          "properties": {
+            "root": {
+              "type": "string"
+            },
+            "base_ref": {
+              "type": "string"
+            },
+            "base_sha": {
+              "type": "string"
+            },
+            "dirty_policy": {
+              "type": "string",
+              "enum": [
+                "refuse",
+                "include",
+                "stash",
+                "copy",
+                "snapshot"
+              ],
+              "default": "refuse"
+            }
+          },
+          "required": [
+            "root",
+            "base_ref"
+          ],
+          "additionalProperties": false
+        },
+        "mode": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "daily",
+                "plan",
+                "create",
+                "best_of_n",
+                "until_convergence",
+                "max_attempts",
+                "readonly_swarm",
+                "benchmark"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "user_intent": {
+          "type": "object",
+          "properties": {
+            "raw": {
+              "type": "string"
+            },
+            "normalized": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "raw"
+          ],
+          "additionalProperties": false
+        },
+        "success_criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/TaskContract/properties/task_id"
+              },
+              "text": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "id",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "non_goals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "forbidden_approaches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "decided_tradeoffs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "allowed_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "forbidden_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "protected_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "compatibility": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "tests": {
+          "type": "object",
+          "properties": {
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/TaskContract/properties/task_id"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "id",
+                  "command"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "commands": []
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "properties": {
+            "mutation_mode": {
+              "type": "string",
+              "enum": [
+                "native_live",
+                "envelope_live",
+                "artifact_only",
+                "branch",
+                "commit",
+                "pr",
+                "new_repo_materialize",
+                "native"
+              ],
+              "default": "envelope_live"
+            },
+            "apply_policy": {
+              "type": "string",
+              "enum": [
+                "never",
+                "ask",
+                "auto_if_green",
+                "auto_if_consilium_approves",
+                "always",
+                "native"
+              ],
+              "default": "ask"
+            },
+            "apply_scope": {
+              "type": "string",
+              "enum": [
+                "all",
+                "selected_files",
+                "selected_hunks",
+                "interactive"
+              ],
+              "default": "all"
+            },
+            "materialize_policy": {
+              "type": "string",
+              "enum": [
+                "ask",
+                "auto_if_green",
+                "always"
+              ],
+              "default": "ask"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "access": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "external_sandbox_full",
+                "inherit_native"
+              ],
+              "default": "workspace_write"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "profile": "workspace_write"
+          }
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "portfolio": {
+              "type": "string",
+              "default": "daily-rich"
+            },
+            "max_usd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            },
+            "max_attempts": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "convergence": {
+          "type": "object",
+          "properties": {
+            "require_tests_pass": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_no_accepted_block_open": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_no_accepted_fix_first_open": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_rebuttals_not_overturned": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_final_cross_family_clean_review": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_final_diff_stable_after_review": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "context_policy": {
+          "type": "object",
+          "properties": {
+            "no_silent_truncation": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "no_silent_truncation": true
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "task_id",
+        "created_at",
+        "repo",
+        "mode",
+        "user_intent"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

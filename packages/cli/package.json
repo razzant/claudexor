@@ -1,0 +1,23 @@
+{
+  "name": "@claudex/cli",
+  "version": "0.1.0",
+  "description": "Claudex CLI (claudex). Thin surface over the ExecutionEngine.",
+  "type": "module",
+  "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
+  "bin": {
+    "claudex": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudex/config": "workspace:*",
+    "@claudex/core": "workspace:*",
+    "@claudex/harness-fake": "workspace:*",
+    "@claudex/schema": "workspace:*",
+    "@claudex/util": "workspace:*"
+  }
+}

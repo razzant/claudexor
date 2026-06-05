@@ -1,0 +1,204 @@
+{
+  "$ref": "#/definitions/HarnessManifest",
+  "definitions": {
+    "HarnessManifest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local_cli",
+            "local_server",
+            "sdk",
+            "remote_api",
+            "external_adapter",
+            "fake"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "adapter_version": {
+          "type": "string"
+        },
+        "provider_family": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic",
+            "google",
+            "cursor",
+            "opencode",
+            "xai",
+            "local",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "plan": {
+              "type": "boolean",
+              "default": false
+            },
+            "spec": {
+              "type": "boolean",
+              "default": false
+            },
+            "implement": {
+              "type": "boolean",
+              "default": false
+            },
+            "create_from_scratch": {
+              "type": "boolean",
+              "default": false
+            },
+            "repair": {
+              "type": "boolean",
+              "default": false
+            },
+            "review": {
+              "type": "boolean",
+              "default": false
+            },
+            "verify": {
+              "type": "boolean",
+              "default": false
+            },
+            "compare": {
+              "type": "boolean",
+              "default": false
+            },
+            "synthesize": {
+              "type": "boolean",
+              "default": false
+            },
+            "shell": {
+              "type": "boolean",
+              "default": false
+            },
+            "read_files": {
+              "type": "boolean",
+              "default": false
+            },
+            "edit_files": {
+              "type": "boolean",
+              "default": false
+            },
+            "apply_patch": {
+              "type": "boolean",
+              "default": false
+            },
+            "structured_events": {
+              "type": "boolean",
+              "default": false
+            },
+            "structured_output": {
+              "type": "boolean",
+              "default": false
+            },
+            "json_schema_output": {
+              "type": "boolean",
+              "default": false
+            },
+            "resume": {
+              "type": "boolean",
+              "default": false
+            },
+            "cancel": {
+              "type": "boolean",
+              "default": false
+            },
+            "mcp": {
+              "type": "boolean",
+              "default": false
+            },
+            "plugins": {
+              "type": "boolean",
+              "default": false
+            },
+            "worktree_native": {
+              "type": "boolean",
+              "default": false
+            },
+            "quota_signal": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "native",
+                "observed",
+                "manual",
+                "unknown"
+              ],
+              "default": "unknown"
+            },
+            "usage_signal": {
+              "$ref": "#/definitions/HarnessManifest/properties/capabilities/properties/quota_signal",
+              "default": "unknown"
+            }
+          },
+          "additionalProperties": false
+        },
+        "auth_modes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "local_session",
+              "api_key",
+              "none"
+            ]
+          },
+          "default": []
+        },
+        "access_profiles_supported": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "readonly",
+              "workspace_write",
+              "full",
+              "external_sandbox_full",
+              "inherit_native"
+            ]
+          },
+          "default": []
+        },
+        "models": {
+          "type": "object",
+          "properties": {
+            "discovery": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable",
+                "experimental"
+              ],
+              "default": "unavailable"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "discovery": "unavailable"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "kind",
+        "capabilities"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

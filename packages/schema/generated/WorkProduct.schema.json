@@ -1,0 +1,60 @@
+{
+  "$ref": "#/definitions/WorkProduct",
+  "definitions": {
+    "WorkProduct": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "patch",
+            "new_repo",
+            "branch",
+            "commit",
+            "pr",
+            "report",
+            "artifact_bundle",
+            "benchmark_submission"
+          ]
+        },
+        "source_task_id": {
+          "$ref": "#/definitions/WorkProduct/properties/id"
+        },
+        "producer_attempt_id": {
+          "$ref": "#/definitions/WorkProduct/properties/id"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "evidence_dir": {
+          "type": "string"
+        },
+        "decision_record_path": {
+          "type": "string"
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": {},
+          "default": {}
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "source_task_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

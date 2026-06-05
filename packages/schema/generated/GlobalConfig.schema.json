@@ -1,0 +1,77 @@
+{
+  "$ref": "#/definitions/GlobalConfig",
+  "definitions": {
+    "GlobalConfig": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1,
+          "default": 1
+        },
+        "default_portfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "benchmark",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ],
+          "default": "daily-rich"
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "max_usd_per_run": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_usd_per_day": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "harnesses": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

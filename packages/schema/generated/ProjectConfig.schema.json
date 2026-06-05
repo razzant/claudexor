@@ -1,0 +1,169 @@
+{
+  "$ref": "#/definitions/ProjectConfig",
+  "definitions": {
+    "ProjectConfig": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1,
+          "default": 1
+        },
+        "project": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "language_stack": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "package_manager": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "language_stack": []
+          }
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "agents_md_first": {
+              "type": "boolean",
+              "default": true
+            },
+            "never_silent_truncate": {
+              "type": "boolean",
+              "default": true
+            },
+            "mandatory_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "tests": {
+          "type": "object",
+          "properties": {
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "commands": []
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "properties": {
+            "default_mutation_mode": {
+              "type": "string",
+              "enum": [
+                "native_live",
+                "envelope_live",
+                "artifact_only",
+                "branch",
+                "commit",
+                "pr",
+                "new_repo_materialize",
+                "native"
+              ],
+              "default": "envelope_live"
+            },
+            "default_apply_policy": {
+              "type": "string",
+              "enum": [
+                "never",
+                "ask",
+                "auto_if_green",
+                "auto_if_consilium_approves",
+                "always",
+                "native"
+              ],
+              "default": "ask"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "default_attempts": {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0,
+              "default": 3
+            },
+            "strictness": {
+              "type": "string",
+              "enum": [
+                "advisory",
+                "block"
+              ],
+              "default": "block"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "portfolio": {
+              "type": "string",
+              "enum": [
+                "daily-rich",
+                "balanced",
+                "cheapest",
+                "strongest",
+                "burn",
+                "benchmark",
+                "subscription-first",
+                "api-overflow",
+                "conserve-claude",
+                "conserve-codex"
+              ],
+              "default": "daily-rich"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "portfolio": "daily-rich"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "$ref": "#/definitions/TrustConfig",
+  "definitions": {
+    "TrustConfig": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1,
+          "default": 1
+        },
+        "repo_hash": {
+          "type": "string"
+        },
+        "access_default": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ],
+          "default": "workspace_write"
+        },
+        "allow_full_access": {
+          "type": "boolean",
+          "default": false
+        },
+        "full_access_requires_prompt": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_api_budget_usd_per_day": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preferred_harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

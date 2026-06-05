@@ -1,0 +1,95 @@
+{
+  "$ref": "#/definitions/ConformanceReport",
+  "definitions": {
+    "ConformanceReport": {
+      "type": "object",
+      "properties": {
+        "harness_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "skip"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "id",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "enabled_intents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "spec",
+              "implement",
+              "create_from_scratch",
+              "repair",
+              "review",
+              "verify",
+              "compare",
+              "synthesize",
+              "arbitrate",
+              "benchmark",
+              "explain",
+              "audit"
+            ]
+          },
+          "default": []
+        },
+        "disabled_intents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConformanceReport/properties/enabled_intents/items"
+          },
+          "default": []
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "harness_id",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

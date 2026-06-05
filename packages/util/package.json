@@ -1,0 +1,19 @@
+{
+  "name": "@claudex/util",
+  "version": "0.1.0",
+  "description": "Low-level utilities (ids, hashing, fs, redaction) with no Claudex deps.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}

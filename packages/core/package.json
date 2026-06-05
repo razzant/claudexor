@@ -1,0 +1,26 @@
+{
+  "name": "@claudex/core",
+  "version": "0.1.0",
+  "description": "ExecutionEngine, HarnessAdapter contract, and typed errors. The one pipeline every surface calls.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudex/artifact-store": "workspace:*",
+    "@claudex/config": "workspace:*",
+    "@claudex/event-log": "workspace:*",
+    "@claudex/schema": "workspace:*",
+    "@claudex/util": "workspace:*"
+  }
+}

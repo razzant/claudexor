@@ -1,0 +1,96 @@
+{
+  "$ref": "#/definitions/RouteProof",
+  "definitions": {
+    "RouteProof": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "type": "object",
+          "properties": {
+            "harness_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "provider_family": {
+              "type": "string",
+              "enum": [
+                "openai",
+                "anthropic",
+                "google",
+                "cursor",
+                "opencode",
+                "xai",
+                "local",
+                "unknown"
+              ]
+            },
+            "model_hint": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "harness_id",
+            "provider_family"
+          ],
+          "additionalProperties": false
+        },
+        "observed": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "model_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "type": "string",
+              "enum": [
+                "stream_event",
+                "metadata",
+                "model_catalog",
+                "transcript",
+                "unavailable"
+              ],
+              "default": "unavailable"
+            }
+          },
+          "additionalProperties": false
+        },
+        "diversity_against": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RouteProof/properties/requested/properties/harness_id"
+          },
+          "default": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unverified",
+            "same_model_fallback"
+          ]
+        }
+      },
+      "required": [
+        "requested",
+        "observed",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

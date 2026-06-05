@@ -1,0 +1,55 @@
+{
+  "$ref": "#/definitions/RunEvent",
+  "definitions": {
+    "RunEvent": {
+      "type": "object",
+      "properties": {
+        "ts": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "$ref": "#/definitions/RunEvent/properties/run_id"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "run.created",
+            "task.contract.created",
+            "context.pack.created",
+            "budget.lease.created",
+            "budget.observation",
+            "harness.started",
+            "harness.event",
+            "harness.completed",
+            "gate.started",
+            "gate.completed",
+            "review.started",
+            "review.finding.proposed",
+            "finding.revalidated",
+            "synthesis.started",
+            "arbitration.completed",
+            "work_product.emitted",
+            "run.completed",
+            "run.failed"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {},
+          "default": {}
+        }
+      },
+      "required": [
+        "ts",
+        "run_id",
+        "task_id",
+        "type"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "$ref": "#/definitions/BudgetLease",
+  "definitions": {
+    "BudgetLease": {
+      "type": "object",
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+        },
+        "attempt_id": {
+          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+        },
+        "intent": {
+          "type": "string",
+          "enum": [
+            "plan",
+            "spec",
+            "implement",
+            "create_from_scratch",
+            "repair",
+            "review",
+            "verify",
+            "compare",
+            "synthesize",
+            "arbitrate",
+            "benchmark",
+            "explain",
+            "audit"
+          ]
+        },
+        "harness_id": {
+          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+        },
+        "model_hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "auth_mode": {
+          "type": "string",
+          "enum": [
+            "local_session",
+            "api_key",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "budget_class": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "native",
+            "observed",
+            "manual",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "max_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "subscription_pressure_limit": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "burn",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "reason": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "reserved",
+            "settled",
+            "cancelled"
+          ],
+          "default": "reserved"
+        }
+      },
+      "required": [
+        "lease_id",
+        "task_id",
+        "intent",
+        "harness_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

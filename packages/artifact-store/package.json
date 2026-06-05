@@ -1,0 +1,23 @@
+{
+  "name": "@claudex/artifact-store",
+  "version": "0.1.0",
+  "description": "Files-first canonical artifact store (repo-local .claudex/runs layout).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudex/util": "workspace:*",
+    "yaml": "^2.6.1"
+  }
+}

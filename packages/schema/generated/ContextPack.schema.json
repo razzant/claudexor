@@ -1,0 +1,157 @@
+{
+  "$ref": "#/definitions/ContextPack",
+  "definitions": {
+    "ContextPack": {
+      "type": "object",
+      "properties": {
+        "task_contract_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hash": {
+          "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+        },
+        "files": {
+          "type": "object",
+          "properties": {
+            "mandatory": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "hash": {
+                    "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+                  }
+                },
+                "required": [
+                  "path",
+                  "hash"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            },
+            "included": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ContextPack/properties/files/properties/mandatory/items"
+              },
+              "default": []
+            },
+            "omitted": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "replacement": {
+                    "type": "string",
+                    "enum": [
+                      "summary",
+                      "map",
+                      "index",
+                      "none"
+                    ],
+                    "default": "none"
+                  },
+                  "hash": {
+                    "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+                  }
+                },
+                "required": [
+                  "path",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        },
+        "atlas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "disposition": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "included",
+                  "manifest_only",
+                  "excluded",
+                  "sensitive",
+                  "binary",
+                  "vendored",
+                  "oversized",
+                  "read_error",
+                  "omitted"
+                ]
+              },
+              "hash": {
+                "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "disposition"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "token_budget": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0
+            },
+            "estimated_used": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "limit",
+            "estimated_used"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "task_contract_hash",
+        "hash",
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$ref": "#/definitions/DecisionRecord",
+  "definitions": {
+    "DecisionRecord": {
+      "type": "object",
+      "properties": {
+        "winner": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "success",
+            "not_converged",
+            "failed",
+            "exhausted",
+            "cancelled"
+          ]
+        },
+        "why_winner": {
+          "type": "string",
+          "default": ""
+        },
+        "why_not_others": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "accepted_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "final_checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "budget_summary": {
+          "type": "object",
+          "properties": {
+            "exact_usd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "exact_usd": null
+          }
+        },
+        "apply_recommendation": {
+          "type": "string",
+          "enum": [
+            "apply",
+            "inspect",
+            "continue",
+            "split_task",
+            "human_review"
+          ],
+          "default": "inspect"
+        }
+      },
+      "required": [
+        "winner",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

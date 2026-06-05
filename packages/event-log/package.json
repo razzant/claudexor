@@ -1,0 +1,23 @@
+{
+  "name": "@claudex/event-log",
+  "version": "0.1.0",
+  "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudex/schema": "workspace:*",
+    "@claudex/util": "workspace:*"
+  }
+}
