@@ -149,6 +149,8 @@ export class WorkspaceManager {
     }
     // Remove the whole envelope base (worktree + scoped home/env/logs/artifacts),
     // including any seeded credentials, so nothing sensitive lingers on disk.
+    // Invariant: create() is the sole producer of worktree_path and always sets it to
+    // `<workspacesDir>/<taskId>/<attemptId>/tree`, so dirname() is exactly that unique base.
     try {
       rmSync(dirname(env.worktree_path), { recursive: true, force: true });
     } catch {

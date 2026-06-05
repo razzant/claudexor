@@ -39,3 +39,20 @@ single-harness `readonly_swarm`, final fresh-envelope re-verify, synthesizer = a
 ## Outcome
 All three critics: **SAFE TO COMMIT**. No remaining hard blocker the author agrees with.
 The declined items are tracked as v0.2 follow-ups.
+
+## Round 4 — real-harness dogfood (verified multi-model)
+After installing real Codex (`codex-cli 0.137.0`) and Claude (`claude 2.1.165`) and dogfooding on a
+throwaway repo, three independent critics reviewed only the resulting fixes (`git 2d20492..HEAD`):
+**GPT-5.5-extra-high** (OpenAI), **Gemini-3.1-pro** (Google), **Claude-Opus-4.8-thinking-max** (Anthropic).
+Dogfood-confirmed blockers fixed:
+- codex api_key auth: seed `auth.json` into the isolated CODEX_HOME (codex 0.137 ignores `OPENAI_API_KEY`
+  with an empty home → 401 on `/v1/responses`). Daily mode is a guaranteed no-op (uses native codex auth).
+- workspace leak: envelope scoped dirs (home/env/logs/artifacts) moved OUT of the worktree so `git add -A`
+  no longer captures harness HOME state (was leaking the seeded API key + plugin files into `patch.diff`).
+- cli footgun: `--mode` now accepts hyphenated aliases and rejects unknown modes loudly (was silently
+  downgrading `--mode until-convergence` to `daily`).
+Result: a real Codex-vs-Claude `race` converges to **success** with a clean, single-file `patch.diff`
+that `apply --dry-run` accepts; `max_attempts` convergence + `plan` + daily + MCP/ACP/daemon all smoke clean.
+All three critics: **SAFE TO COMMIT**, no hard blockers (verified against code, not just the changelog).
+Disclosed v0.2 follow-up (not a regression of this diff): nothing populates `contract.tests.commands`,
+so deterministic gates are vacuous from the CLI — convergence is review-driven until config→gates is wired.
