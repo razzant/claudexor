@@ -33,6 +33,15 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
 
+  packages/adapter-protocol:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+
   packages/artifact-store:
     dependencies:
       '@claudex/util':
@@ -50,6 +59,15 @@ importers:
       '@claudex/core':
         specifier: workspace:*
         version: link:../core
+      '@claudex/gateway':
+        specifier: workspace:*
+        version: link:../gateway
+      '@claudex/harness-claude':
+        specifier: workspace:*
+        version: link:../harness-claude
+      '@claudex/harness-codex':
+        specifier: workspace:*
+        version: link:../harness-codex
       '@claudex/harness-fake':
         specifier: workspace:*
         version: link:../harness-fake
@@ -92,6 +110,39 @@ importers:
 
   packages/event-log:
     dependencies:
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/gateway:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/harness-claude:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/harness-codex:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema

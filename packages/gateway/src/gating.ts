@@ -1,0 +1,47 @@
+import type { ConformanceReport, HarnessCapabilities, HarnessManifest, Intent } from "@claudex/schema";
+
+/** Intents that must not be played by a degraded adapter unless it explicitly still enables them. */
+export const CRITICAL_INTENTS: Intent[] = [
+  "review",
+  "arbitrate",
+  "benchmark",
+  "synthesize",
+  "verify",
+];
+
+/** Map declared capabilities to the intents an adapter could in principle play. */
+export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
+  const intents: Intent[] = [];
+  if (caps.plan) intents.push("plan", "spec");
+  if (caps.implement) intents.push("implement", "repair", "benchmark");
+  if (caps.create_from_scratch) intents.push("create_from_scratch");
+  if (caps.review) intents.push("review");
+  if (caps.verify) intents.push("verify");
+  if (caps.compare) intents.push("compare", "arbitrate");
+  if (caps.synthesize) intents.push("synthesize");
+  if (caps.read_files) intents.push("explain", "audit");
+  return [...new Set(intents)];
+}
+
+/**
+ * Compute the intents an adapter may actually be assigned, gating critical roles
+ * behind conformance. A degraded adapter keeps only the intents it explicitly
+ * still enables; an unavailable adapter gets none.
+ */
+export function allowedIntents(manifest: HarnessManifest, report: ConformanceReport | null): Intent[] {
+  const base = capabilityIntents(manifest.capabilities);
+  if (!report || report.status === "unavailable") return [];
+  if (report.status === "ok") {
+    // If the report enumerates enabled intents, intersect; otherwise trust capabilities.
+    if (report.enabled_intents.length > 0) {
+      return base.filter((i) => report.enabled_intents.includes(i));
+    }
+    return base;
+  }
+  // degraded: drop critical intents unless explicitly re-enabled by the report.
+  return base.filter((i) => {
+    if (report.disabled_intents.includes(i)) return false;
+    if (CRITICAL_INTENTS.includes(i)) return report.enabled_intents.includes(i);
+    return true;
+  });
+}

@@ -16,6 +16,9 @@
   "dependencies": {
     "@claudex/config": "workspace:*",
     "@claudex/core": "workspace:*",
+    "@claudex/gateway": "workspace:*",
+    "@claudex/harness-claude": "workspace:*",
+    "@claudex/harness-codex": "workspace:*",
     "@claudex/harness-fake": "workspace:*",
     "@claudex/schema": "workspace:*",
     "@claudex/util": "workspace:*"

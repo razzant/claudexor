@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { ExecutionEngine, runDoctor } from "@claudex/core";
+import { ExecutionEngine } from "@claudex/core";
+import { HarnessGateway } from "@claudex/gateway";
 import { initProjectConfig } from "@claudex/config";
 import type { ModeKind } from "@claudex/schema";
 import { ModeKind as ModeKindEnum } from "@claudex/schema";
 import { flagBool, flagStr, parseArgs } from "./args.js";
-import { buildRegistry } from "./registry.js";
+import { buildGateway, buildRegistry } from "./registry.js";
 
 const HELP = `claudex — harness-agnostic AI coding control plane (v0.1.0)
 
 Usage:
   claudex init                      Scaffold repo-local config (.claudex/config.yaml)
-  claudex doctor [--harness <id>]   Detect + conformance-test harnesses
+  claudex doctor [--harness <id>] [--all]   Detect + conformance-test harnesses (--all includes fakes)
   claudex run "<prompt>" [opts]     Run a task through the ExecutionEngine
   claudex harness list              List registered harnesses
   claudex help                      Show this help
@@ -49,16 +50,19 @@ async function main(): Promise<number> {
     }
 
     case "doctor": {
-      const reports = await runDoctor(buildRegistry(), { cwd });
+      const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
+      const statuses = await gateway.statusAll({ cwd });
       const only = flagStr(args, "harness");
-      const filtered = only ? reports.filter((r) => r.harness_id === only) : reports;
+      const filtered = only ? statuses.filter((s) => s.id === only) : statuses;
       if (json) {
         printJson({ harnesses: filtered });
         return 0;
       }
-      for (const r of filtered) {
-        print(`${statusGlyph(r.status)} ${r.harness_id}`);
-        if (r.reasons.length) print(`    reasons: ${r.reasons.join(", ")}`);
+      for (const s of filtered) {
+        const ver = s.manifest?.version ? ` ${s.manifest.version}` : "";
+        print(`${statusGlyph(s.status)} ${s.id}${ver}`);
+        if (s.enabledIntents.length) print(`    intents: ${s.enabledIntents.join(", ")}`);
+        if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
       }
       return 0;
     }
@@ -74,13 +78,18 @@ async function main(): Promise<number> {
         modeStr && (ModeKindEnum.options as readonly string[]).includes(modeStr)
           ? (modeStr as ModeKind)
           : undefined;
-      const engine = new ExecutionEngine(buildRegistry());
-      const res = await engine.run({
-        repoRoot: cwd,
-        prompt,
-        harnessId: flagStr(args, "harness"),
-        mode,
-      });
+      const registry = buildRegistry();
+      let harnessId = flagStr(args, "harness");
+      if (!harnessId) {
+        try {
+          harnessId = (await new HarnessGateway(registry).resolve()).id;
+        } catch (err) {
+          process.stderr.write(`claudex: ${err instanceof Error ? err.message : String(err)}\n`);
+          return 1;
+        }
+      }
+      const engine = new ExecutionEngine(registry);
+      const res = await engine.run({ repoRoot: cwd, prompt, harnessId, mode });
       if (json) {
         printJson(res);
         return res.status === "success" ? 0 : 1;
