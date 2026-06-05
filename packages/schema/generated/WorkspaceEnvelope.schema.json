@@ -1,0 +1,155 @@
+{
+  "$ref": "#/definitions/WorkspaceEnvelope",
+  "definitions": {
+    "WorkspaceEnvelope": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "$ref": "#/definitions/WorkspaceEnvelope/properties/id"
+        },
+        "attempt_id": {
+          "$ref": "#/definitions/WorkspaceEnvelope/properties/id"
+        },
+        "repo_root": {
+          "type": "string"
+        },
+        "base_ref": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "worktree_path": {
+          "type": "string"
+        },
+        "branch_name": {
+          "type": "string"
+        },
+        "env_dir": {
+          "type": "string"
+        },
+        "home_dir": {
+          "type": "string"
+        },
+        "harness_config_dirs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "ports": {
+          "type": "object",
+          "properties": {
+            "allocated": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "allocated": []
+          }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "start_command": {
+                "type": "string"
+              },
+              "health_check": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "name",
+              "start_command"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "sandbox": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "none",
+                "native",
+                "docker",
+                "devcontainer",
+                "remote"
+              ],
+              "default": "none"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "mode": "none"
+          }
+        },
+        "policy_profile": {
+          "type": "string",
+          "default": "workspace_write"
+        },
+        "dirty_policy": {
+          "type": "string",
+          "enum": [
+            "refuse",
+            "include",
+            "stash",
+            "copy",
+            "snapshot"
+          ],
+          "default": "refuse"
+        },
+        "logs_dir": {
+          "type": "string"
+        },
+        "artifacts_dir": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "task_id",
+        "attempt_id",
+        "repo_root",
+        "base_ref",
+        "worktree_path",
+        "branch_name",
+        "env_dir",
+        "home_dir",
+        "logs_dir",
+        "artifacts_dir",
+        "created_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

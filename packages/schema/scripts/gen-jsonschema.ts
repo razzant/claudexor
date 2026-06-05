@@ -21,6 +21,7 @@ import {
   TaskContract,
   TrustConfig,
   WorkProduct,
+  WorkspaceEnvelope,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,7 @@ const schemas = {
   ProjectConfig,
   GlobalConfig,
   TrustConfig,
+  WorkspaceEnvelope,
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {
