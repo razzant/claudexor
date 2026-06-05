@@ -1,0 +1,82 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { TaskContract } from "@claudex/schema";
+import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
+import { buildScopeAtlas } from "./atlas.js";
+import { buildContextPack } from "./contextpack.js";
+import { incrementRound, preflightEvidence, readRound, writeEvidencePacket } from "./evidence.js";
+
+function tmp(): string {
+  return mkdtempSync(join(tmpdir(), "claudex-ctx-"));
+}
+
+describe("ScopeAtlas", () => {
+  it("classifies every path and omits over budget (no silent truncation)", async () => {
+    const repo = tmp();
+    mkdirSync(join(repo, "src"));
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n".repeat(5));
+    writeFileSync(join(repo, "src", "b.ts"), "export const b = 2;\n".repeat(5));
+    writeFileSync(join(repo, ".env"), "SECRET=1\n");
+    writeFileSync(join(repo, "logo.png"), "binarybytes");
+    writeFileSync(join(repo, "pnpm-lock.yaml"), "lock\n");
+
+    const res = await buildScopeAtlas(repo, { tokenLimit: 5 });
+    const byPath = Object.fromEntries(res.atlas.map((e) => [e.path, e.disposition]));
+    expect(byPath[".env"]).toBe("sensitive");
+    expect(byPath["logo.png"]).toBe("binary");
+    expect(byPath["pnpm-lock.yaml"]).toBe("manifest_only");
+    expect(res.atlas.length).toBe(5); // every file accounted for
+    expect(res.omitted.length).toBeGreaterThanOrEqual(1); // budget forced omission
+  });
+});
+
+describe("AGENTS.md discovery", () => {
+  it("loads nested files root-first so the closest wins", () => {
+    const repo = tmp();
+    mkdirSync(join(repo, "pkg"));
+    writeFileSync(join(repo, "AGENTS.md"), "ROOT RULES");
+    writeFileSync(join(repo, "pkg", "AGENTS.md"), "PKG RULES");
+    const docs = discoverAgentsFiles(repo, join(repo, "pkg"));
+    expect(docs.map((d) => d.content)).toEqual(["ROOT RULES", "PKG RULES"]);
+    const { text } = loadAgentsInstructions(repo, join(repo, "pkg"));
+    expect(text.indexOf("ROOT RULES")).toBeLessThan(text.indexOf("PKG RULES"));
+  });
+});
+
+describe("ContextPack", () => {
+  it("produces a hashable pack accounting for files", async () => {
+    const repo = tmp();
+    writeFileSync(join(repo, "x.ts"), "export const x = 1;\n");
+    const contract = TaskContract.parse({
+      schema_version: 1,
+      task_id: "t",
+      created_at: "2026-01-01T00:00:00Z",
+      repo: { root: repo, base_ref: "HEAD" },
+      mode: { kind: "daily" },
+      user_intent: { raw: "x" },
+    });
+    const pack = await buildContextPack(repo, contract, { tokenLimit: 100_000 });
+    expect(pack.hash).toMatch(/^sha256:/);
+    expect(pack.atlas.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("evidence packet", () => {
+  it("writes mandatory files, preflight passes, round increments", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    writeEvidencePacket(dir, { userIntent: "do X", diff: "diff --git a b\n" });
+    expect(preflightEvidence(dir).ok).toBe(true);
+    expect(readRound(dir)).toBe(0);
+    expect(incrementRound(dir)).toBe(1);
+    expect(readRound(dir)).toBe(1);
+  });
+
+  it("preflight fails closed when a mandatory file is missing", () => {
+    const dir = join(tmp(), "empty-review");
+    const pf = preflightEvidence(dir);
+    expect(pf.ok).toBe(false);
+    expect(pf.missing).toContain("USER_INTENT.md");
+  });
+});
