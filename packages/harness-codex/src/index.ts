@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudex/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
@@ -6,6 +8,38 @@ import { nowIso } from "@claudex/util";
 import { parseCodexEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEX_CODEX_BIN || "codex";
+
+/**
+ * Resolve an OpenAI API key for codex from the environment. Claudex-managed
+ * `api_key` auth mirrors the harness's own variable (`OPENAI_API_KEY`); a
+ * dedicated `CLAUDEX_CODEX_API_KEY` can override it for multi-key setups.
+ */
+function codexApiKey(): string | undefined {
+  return process.env.CLAUDEX_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
+}
+
+/**
+ * Seed `api_key` auth into an isolated CODEX_HOME. Codex does not read
+ * `OPENAI_API_KEY` from the environment when run against an empty config dir
+ * (it requires `auth.json`), so an envelope-scoped CODEX_HOME would otherwise
+ * fail with 401 even though a key is available. We write the same file
+ * `codex login --with-api-key` produces. No-op when not isolated (use codex's
+ * native auth), when no key is available, or when auth already exists.
+ */
+export function ensureCodexApiAuth(env?: Record<string, string>): void {
+  const home = env?.["CODEX_HOME"];
+  if (!home) return;
+  const apiKey = codexApiKey();
+  if (!apiKey) return;
+  const authPath = join(home, "auth.json");
+  if (existsSync(authPath)) return;
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", { mode: 0o600 });
+  } catch {
+    /* best-effort: codex will surface an auth error if this did not take */
+  }
+}
 
 function sandboxArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -126,6 +160,7 @@ export function createCodexAdapter(): HarnessAdapter {
 }
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+  ensureCodexApiAuth(spec.env);
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
   args.push(spec.prompt);
