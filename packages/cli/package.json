@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@claudex/acp-server": "workspace:*",
+    "@claudex/benchmark": "workspace:*",
     "@claudex/config": "workspace:*",
     "@claudex/core": "workspace:*",
     "@claudex/daemon": "workspace:*",

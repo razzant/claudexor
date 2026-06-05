@@ -2,8 +2,15 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudex/orchestrator";
+import {
+  SWE_BENCH_EVAL_INSTRUCTIONS,
+  loadTasksFromJsonl,
+  runBenchmark,
+  writePredictions,
+} from "@claudex/benchmark";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
 import { AcpServer } from "@claudex/acp-server";
@@ -42,6 +49,7 @@ Usage:
   claudex mcp serve                     Expose Claudex as an MCP server (stdio)
   claudex acp serve                     Expose Claudex as an ACP agent (stdio)
   claudex plugin install <host>         Install thin host plugin (cursor|claude|codex|opencode)
+  claudex bench list|instructions|run   SWE-bench Verified (+ scaffolds)
   claudex harness list                  List registered harnesses
   claudex help                          Show this help
 
@@ -234,6 +242,71 @@ async function main(): Promise<number> {
         return 0;
       }
       print("usage: claudex acp serve");
+      return 2;
+    }
+
+    case "bench": {
+      const sub = args._[1];
+      if (sub === "list") {
+        print("swe-bench-verified [implemented]");
+        print("terminal-bench-2.1 [scaffold]");
+        print("osworld [scaffold]");
+        print("programbench [scaffold]");
+        return 0;
+      }
+      if (sub === "instructions") {
+        print(SWE_BENCH_EVAL_INSTRUCTIONS);
+        return 0;
+      }
+      if (sub === "run") {
+        const name = args._[2] ?? "swe-bench";
+        if (!name.startsWith("swe")) {
+          print(`${name} is scaffolded; see 'claudex bench list'`);
+          return 2;
+        }
+        const tasksFile = flagStr(args, "tasks");
+        const out = flagStr(args, "predictions") ?? "predictions.json";
+        const workdir = flagStr(args, "workdir");
+        if (!tasksFile) {
+          print("usage: claudex bench run swe-bench --tasks <tasks.jsonl> --predictions <out.json> [--workdir <dir>]");
+          return 2;
+        }
+        const tasks = loadTasksFromJsonl(tasksFile);
+        if (!workdir) {
+          writePredictions(
+            tasks.map((t) => ({ instance_id: t.instance_id, model_name_or_path: "claudex", model_patch: "" })),
+            out,
+          );
+          print(`wrote ${tasks.length} skeleton predictions to ${out}`);
+          print("(no --workdir: prepare per-instance repos at <workdir>/<instance_id> to actually solve.)");
+          print(SWE_BENCH_EVAL_INSTRUCTIONS);
+          return 0;
+        }
+        const orch = new Orchestrator({ registry: buildRegistry(), portfolio: "benchmark" });
+        const res = await runBenchmark(
+          tasks,
+          async (t) => {
+            const r = await orch.run({
+              repoRoot: join(workdir, t.instance_id),
+              prompt: t.problem_statement,
+              mode: "best_of_n",
+              n: intFlag(args, "n") ?? 1,
+            });
+            let patch = "";
+            try {
+              patch = readFileSync(join(r.runDir, "final", "patch.diff"), "utf8");
+            } catch {
+              patch = "";
+            }
+            return { patch };
+          },
+          { predictionsPath: out, modelName: "claudex" },
+        );
+        print(`wrote ${res.predictions.length} predictions to ${out}`);
+        print(SWE_BENCH_EVAL_INSTRUCTIONS);
+        return 0;
+      }
+      print("usage: claudex bench list|instructions|run");
       return 2;
     }
 

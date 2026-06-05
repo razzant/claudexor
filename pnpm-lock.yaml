@@ -59,6 +59,15 @@ importers:
         specifier: ^2.6.1
         version: 2.9.0
 
+  packages/benchmark:
+    dependencies:
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/budget:
     dependencies:
       '@claudex/schema':
@@ -73,6 +82,9 @@ importers:
       '@claudex/acp-server':
         specifier: workspace:*
         version: link:../acp-server
+      '@claudex/benchmark':
+        specifier: workspace:*
+        version: link:../benchmark
       '@claudex/config':
         specifier: workspace:*
         version: link:../config
