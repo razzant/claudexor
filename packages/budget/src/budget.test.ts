@@ -90,4 +90,12 @@ describe("router", () => {
     expect(led.cooldownActive("codex")).toBe(true);
     expect(selectHarness([cand("codex", "openai")], { portfolio: "daily-rich", ledger: led })).toBeNull();
   });
+
+  it("rate-limit detector is conservative (no spurious cooldown)", () => {
+    const ts = new Date().toISOString();
+    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "received 429 items" })).toBeNull();
+    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "the quota field is missing" })).toBeNull();
+    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })?.kind).toBe("rate_limited");
+    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "UsageLimitExceeded" })?.kind).toBe("rate_limited");
+  });
 });

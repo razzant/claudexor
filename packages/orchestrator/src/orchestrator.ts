@@ -450,7 +450,7 @@ export class Orchestrator {
     const adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined });
     let adapterIdx = 0;
     let adapter = adapterPool[0] as HarnessAdapter;
-    const envelope = await wsm.create({ taskId, attemptId: "converge", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+    let envelope: WorkspaceEnvelope | undefined;
 
     let attempt = 0;
     let converged = false;
@@ -466,6 +466,7 @@ export class Orchestrator {
     const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.id));
 
     try {
+      envelope = await wsm.create({ taskId, attemptId: "converge", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
       for (;;) {
         attempt += 1;
         const attemptId = `a${String(attempt).padStart(2, "0")}`;
@@ -480,8 +481,16 @@ export class Orchestrator {
             ? contract.user_intent.raw
             : `${contract.user_intent.raw}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}`;
 
-        const run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger);
-        ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+        let run: CandidateRun;
+        try {
+          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger);
+          ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+        } catch (err) {
+          // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
+          ledger.settle(lease.lease?.lease_id ?? "", 0);
+          log.emit("run.failed", { attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
+          run = { attemptId, harnessId: adapter.id, label: `Attempt ${attempt}`, diff: "", gates: [], cost: 0, errored: true };
+        }
         lastRun = run;
 
         const reviewResult =
@@ -534,7 +543,7 @@ export class Orchestrator {
         }
       }
     } finally {
-      await wsm.dispose(envelope);
+      if (envelope) await wsm.dispose(envelope);
     }
 
     const status: RunStatus = converged ? "success" : exhausted ? "exhausted" : "not_converged";

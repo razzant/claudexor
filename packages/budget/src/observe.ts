@@ -3,6 +3,11 @@ import { nowIso } from "@claudex/util";
 
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 
+// Conservative rate-limit/quota detector: requires real rate-limit phrasing or an HTTP-429
+// context, so an unrelated error that merely contains "429" or "quota" does not trip a cooldown.
+const RATE_LIMIT_RE =
+  /rate.?limit|usage.?limit|usagelimitexceeded|too many requests|quota[ _-]?(?:exceeded|exhausted|reached)|(?:http|status|code)[ :/]?429|429 too many/i;
+
 /**
  * Best-effort extraction of an observed budget/quota signal from a harness event.
  * This is adapter-output parsing of stable signals (allowed), not governance —
@@ -13,7 +18,7 @@ export function observationFromEvent(harnessId: string, ev: HarnessEvent): Budge
     return { harness_id: harnessId, ts: nowIso(), quality: "exact", kind: "spend", usd: ev.usage.cost_usd };
   }
 
-  if (ev.type === "error" && /rate.?limit|usage.?limit|usagelimitexceeded|quota|429/i.test(ev.error ?? "")) {
+  if (ev.type === "error" && RATE_LIMIT_RE.test(ev.error ?? "")) {
     const resets = typeof ev.payload?.["resets_at"] === "string" ? (ev.payload["resets_at"] as string) : null;
     return {
       harness_id: harnessId,
