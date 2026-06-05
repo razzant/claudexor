@@ -82,6 +82,9 @@ importers:
       '@claudex/acp-server':
         specifier: workspace:*
         version: link:../acp-server
+      '@claudex/artifact-store':
+        specifier: workspace:*
+        version: link:../artifact-store
       '@claudex/benchmark':
         specifier: workspace:*
         version: link:../benchmark
@@ -94,6 +97,9 @@ importers:
       '@claudex/daemon':
         specifier: workspace:*
         version: link:../daemon
+      '@claudex/delivery':
+        specifier: workspace:*
+        version: link:../delivery
       '@claudex/gateway':
         specifier: workspace:*
         version: link:../gateway

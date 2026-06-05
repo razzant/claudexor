@@ -11,6 +11,10 @@ import {
   runBenchmark,
   writePredictions,
 } from "@claudex/benchmark";
+import { ArtifactStore } from "@claudex/artifact-store";
+import { type DeliverMode, checkPatch, deliver } from "@claudex/delivery";
+import { readTextSafe } from "@claudex/util";
+import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
 import { AcpServer } from "@claudex/acp-server";
@@ -45,6 +49,9 @@ Usage:
   claudex plan "<prompt>"               Read-only planning report
   claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
   claudex audit | map                   Read-only repo audit / map
+  claudex inspect <run_id>              Inspect a run's decision + artifacts
+  claudex apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
+  claudex release check-name <name>     Naming gate (npm/pypi/crates/github)
   claudex daemon start|status|stop|logs Optional local daemon (claudexd)
   claudex mcp serve                     Expose Claudex as an MCP server (stdio)
   claudex acp serve                     Expose Claudex as an ACP agent (stdio)
@@ -307,6 +314,71 @@ async function main(): Promise<number> {
         return 0;
       }
       print("usage: claudex bench list|instructions|run");
+      return 2;
+    }
+
+    case "inspect": {
+      const runId = args._[1];
+      if (!runId) {
+        print("usage: claudex inspect <run_id>");
+        return 2;
+      }
+      const store = new ArtifactStore(process.cwd());
+      const paths = store.runPaths(runId);
+      const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
+      const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
+      if (json) {
+        printJson({ runId, runDir: paths.root, decision, work_product: workProduct });
+        return decision || workProduct ? 0 : 1;
+      }
+      const summary = readTextSafe(join(paths.finalDir, "summary.md"));
+      print(`run ${runId} @ ${paths.root}`);
+      print(summary ?? "(no summary — run may not exist)");
+      return summary ? 0 : 1;
+    }
+
+    case "apply": {
+      const runId = args._[1];
+      if (!runId) {
+        print("usage: claudex apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]");
+        return 2;
+      }
+      const store = new ArtifactStore(process.cwd());
+      const patch = readTextSafe(join(store.runPaths(runId).finalDir, "patch.diff"));
+      if (!patch || patch.trim().length === 0) {
+        print(`no patch found for run ${runId}`);
+        return 1;
+      }
+      if (flagBool(args, "dry-run")) {
+        const r = await checkPatch(process.cwd(), patch);
+        print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
+        return r.ok ? 0 : 1;
+      }
+      const mode = (flagStr(args, "mode") ?? "apply") as DeliverMode;
+      const res = await deliver(process.cwd(), patch, { mode, message: `claudex: apply ${runId}` });
+      if (json) printJson(res);
+      else
+        print(
+          `${res.mode}: applied=${res.applied}` +
+            (res.commit ? ` commit=${res.commit.slice(0, 8)}` : "") +
+            (res.branch ? ` branch=${res.branch}` : "") +
+            (res.detail ? ` (${res.detail})` : ""),
+        );
+      return res.applied || res.mode === "artifact_only" ? 0 : 1;
+    }
+
+    case "release": {
+      if (args._[1] === "check-name") {
+        const name = args._[2] ?? "claudex";
+        const checks = await checkName(name);
+        if (json) printJson({ name, checks });
+        else {
+          print(`naming gate for "${name}":`);
+          for (const c of checks) print(`  ${c.available ? "[free] " : "[taken]"} ${c.registry}: ${c.detail}`);
+        }
+        return 0;
+      }
+      print("usage: claudex release check-name <name>");
       return 2;
     }
 

@@ -24,16 +24,33 @@ The leader among Codex / Claude / Cursor / OpenCode keeps changing. Switching, c
 
 `daily` · `plan` · `create` (from scratch) · `race` (best-of-n) · `until-convergence` · `max-attempts` · `audit/map` (read-only swarm) · `benchmark`.
 
-## Quickstart (target UX)
+## Quickstart
 
 ```bash
-pnpm install && pnpm build
-claudex init          # scaffold repo-local config
-claudex doctor        # detect + conformance-test harnesses
-claudex run "fix the flaky auth refresh"
-claudex race "implement feature X" --n 4
-claudex inspect <run_id>
+pnpm install && pnpm build && pnpm test
+node packages/cli/dist/cli.js doctor          # detect + conformance-test harnesses
+node packages/cli/dist/cli.js run "fix the flaky auth refresh"
+node packages/cli/dist/cli.js race "implement feature X" --n 4
+node packages/cli/dist/cli.js inspect <run_id>
 ```
+
+> Local Node note: on macOS 26.4 the OS code-signing monitor SIGKILLs Homebrew's
+> adhoc-signed `node`. Use an official notarized Node (e.g. under `~/.claudex/node`).
+
+## CLI surface
+
+`init` · `doctor` · `run` (`--mode`) · `race` · `plan` · `create` · `audit`/`map` ·
+`until-convergence`/`max-attempts` (via `--mode`) · `inspect <run_id>` ·
+`apply <run_id>` (`--mode apply|commit|branch|pr` / `--dry-run`) ·
+`daemon start|status|stop|logs` · `mcp serve` · `acp serve` ·
+`plugin install <cursor|claude|codex|opencode>` · `bench list|instructions|run` ·
+`release check-name <name>` · `harness list`. Every command supports `--json`.
+
+## Embedding
+
+Claudex exposes a stable CLI `--json`, a JSON-RPC-over-stdio boundary, and an MCP
+server so other agents (e.g. Ouroboros) can use it as an edit/review substrate.
+See [docs/EMBEDDING.md](docs/EMBEDDING.md).
 
 ## Documentation
 

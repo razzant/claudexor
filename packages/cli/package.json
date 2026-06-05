@@ -16,8 +16,10 @@
   },
   "dependencies": {
     "@claudex/acp-server": "workspace:*",
+    "@claudex/artifact-store": "workspace:*",
     "@claudex/benchmark": "workspace:*",
     "@claudex/config": "workspace:*",
+    "@claudex/delivery": "workspace:*",
     "@claudex/core": "workspace:*",
     "@claudex/daemon": "workspace:*",
     "@claudex/mcp-server": "workspace:*",
