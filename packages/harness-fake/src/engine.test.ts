@@ -2,7 +2,9 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { HarnessAdapter } from "@claudex/core";
 import { ExecutionEngine, runDoctor } from "@claudex/core";
+import { ConformanceReport, HarnessManifest, type HarnessRunSpec } from "@claudex/schema";
 import { createFakeHarness, FAKE_KINDS } from "./index.js";
 
 function registry() {
@@ -23,6 +25,28 @@ describe("ExecutionEngine + fake harness", () => {
     expect(events).toContain("run.completed");
     expect(events).toContain("work_product.emitted");
     expect(res.costUsd).toBeCloseTo(0.01);
+  });
+
+  it("forwards access profile and model hint to the harness (daily)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudex-test-"));
+    let seen: HarnessRunSpec | undefined;
+    const capture: HarnessAdapter = {
+      id: "capture",
+      async discover() {
+        return HarnessManifest.parse({ id: "capture", display_name: "capture", kind: "local_cli", capabilities: { implement: true } });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "capture", status: "ok" });
+      },
+      async *run(spec) {
+        seen = spec;
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const engine = new ExecutionEngine(new Map([["capture", capture]]));
+    await engine.run({ repoRoot: repo, prompt: "x", harnessId: "capture", access: "full", model: "some-model" });
+    expect(seen?.access).toBe("full");
+    expect(seen?.model_hint).toBe("some-model");
   });
 
   it("marks fake-fail-tests as failed", async () => {

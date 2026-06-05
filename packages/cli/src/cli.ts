@@ -68,6 +68,8 @@ Options:
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
+  --access <profile>       Daily access: readonly|workspace_write|full|inherit_native
+  --model <id>             Model hint forwarded to the harness (daily)
   --json                   Machine-readable JSON output
 `;
 
@@ -113,6 +115,14 @@ function testCommands(args: ParsedArgs): string[] | undefined {
   return v.split(";;").map((s) => s.trim()).filter(Boolean);
 }
 
+const ACCESS_PROFILES = new Set(["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"]);
+
+/** Access profile from `--access`; ignored (undefined) if not a known profile. */
+function accessProfile(args: ParsedArgs): "readonly" | "workspace_write" | "full" | "external_sandbox_full" | "inherit_native" | undefined {
+  const v = flagStr(args, "access");
+  return v && ACCESS_PROFILES.has(v) ? (v as never) : undefined;
+}
+
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. */
 function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
   const v = flagStr(args, "reviewer-model");
@@ -147,6 +157,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       attempts: intFlag(args, "attempts") ?? null,
       tests: testCommands(args),
       maxUsd: maxUsd ?? null,
+      access: accessProfile(args),
+      model: flagStr(args, "model"),
     });
     if (json) {
       printJson(res);

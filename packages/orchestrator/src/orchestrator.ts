@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type {
+  AccessProfile,
   GateResult,
   ModeKind,
   Portfolio,
@@ -60,6 +61,10 @@ export interface RunInput {
   tests?: string[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
+  /** Access profile (daily mode); e.g. `full` for autonomous terminal tasks. */
+  access?: AccessProfile;
+  /** Optional model hint forwarded to the harness (daily mode). */
+  model?: string;
 }
 
 export interface OrchestratorResult {
@@ -118,7 +123,14 @@ export class Orchestrator {
   private async runDaily(input: RunInput): Promise<OrchestratorResult> {
     const harnessId = input.harnesses?.[0] ?? (await this.gateway.resolve()).id;
     const engine = new ExecutionEngine(this.deps.registry);
-    const res = await engine.run({ repoRoot: input.repoRoot, prompt: input.prompt, harnessId, mode: "daily" });
+    const res = await engine.run({
+      repoRoot: input.repoRoot,
+      prompt: input.prompt,
+      harnessId,
+      mode: "daily",
+      access: input.access,
+      model: input.model,
+    });
     return {
       runId: res.runId,
       taskId: res.taskId,

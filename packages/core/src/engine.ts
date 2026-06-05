@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { ModeKind, RunStatus, WorkProduct as WorkProductType } from "@claudex/schema";
+import type { AccessProfile, ModeKind, RunStatus, WorkProduct as WorkProductType } from "@claudex/schema";
 import { HarnessRunSpec, TaskContract, WorkProduct } from "@claudex/schema";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { EventLog } from "@claudex/event-log";
@@ -13,6 +13,11 @@ export interface RunInput {
   harnessId?: string;
   mode?: ModeKind;
   baseRef?: string;
+  /** Access profile for the harness (default workspace_write). `full` lets a harness
+   *  act autonomously on the whole environment (needed e.g. for terminal tasks). */
+  access?: AccessProfile;
+  /** Optional model hint forwarded to the harness. */
+  model?: string;
 }
 
 export interface RunResult {
@@ -84,6 +89,8 @@ export class ExecutionEngine {
       intent: "implement",
       prompt: input.prompt,
       cwd: input.repoRoot,
+      access: input.access ?? "workspace_write",
+      model_hint: input.model ?? null,
     });
     log.emit("harness.started", { harness_id: adapter.id, session_id: sessionId });
 
