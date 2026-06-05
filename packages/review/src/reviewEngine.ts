@@ -100,3 +100,36 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     distinctProviders: diversity.distinct,
   };
 }
+
+export interface MatrixCandidate {
+  attemptId: string;
+  label: string;
+  diff: string;
+  evidenceDir: string;
+  cwd: string;
+}
+
+export interface CandidateReview {
+  attemptId: string;
+  label: string;
+  result: ReviewCandidateResult;
+}
+
+/** Cross-review matrix: review every candidate with the same panel of reviewers. */
+export async function reviewMatrix(
+  candidates: MatrixCandidate[],
+  reviewers: ReviewerSpec[],
+): Promise<CandidateReview[]> {
+  const out: CandidateReview[] = [];
+  for (const c of candidates) {
+    const result = await reviewCandidate({
+      candidateLabel: c.label,
+      diff: c.diff,
+      evidenceDir: c.evidenceDir,
+      cwd: c.cwd,
+      reviewers,
+    });
+    out.push({ attemptId: c.attemptId, label: c.label, result });
+  }
+  return out;
+}

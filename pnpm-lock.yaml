@@ -42,6 +42,12 @@ importers:
         specifier: workspace:*
         version: link:../schema
 
+  packages/arbitration:
+    dependencies:
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+
   packages/artifact-store:
     dependencies:
       '@claudex/util':
@@ -213,6 +219,12 @@ importers:
       zod-to-json-schema:
         specifier: ^3.24.1
         version: 3.25.2(zod@3.25.76)
+
+  packages/synthesis:
+    dependencies:
+      '@claudex/arbitration':
+        specifier: workspace:*
+        version: link:../arbitration
 
   packages/util: {}
 
