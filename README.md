@@ -6,7 +6,7 @@ Claudex orchestrates **Codex CLI**, **Claude Code**, **Cursor CLI**, and **OpenC
 
 It collapses cleanly to a single native harness: configure only Codex and it feels like Codex plus artifacts, policies, and a budget ledger; add Claude and it becomes stronger through cross-review and synthesis.
 
-> Status: **v0.1.0 — under active construction** (breadth-first build). Codename `Claudex`; package/binary name is kept abstract pending a naming gate. Benchmark-first proof target: SWE-bench Verified.
+> Status: **v0.1.0 — under active construction** (breadth-first build). Codename `Claudex`; package/binary name is kept abstract pending a naming gate. Ships a reproducible SWE-bench Verified runner.
 
 ## Why
 

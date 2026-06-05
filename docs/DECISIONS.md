@@ -5,7 +5,7 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 ## Batch 1 — High-level direction
 - **Build strategy**: breadth-first full v1.0 (all subsystems scaffolded together) before deep dogfooding.
 - **Core language/runtime**: TypeScript/Node core; Ouroboros (Python) consumes it via CLI `--json` / JSON-RPC / MCP boundary.
-- **Primary priority**: benchmark-maxxing first (SWE-bench etc.), daily polish second.
+- **Primary priority**: maximize coding quality and reliability across harnesses; a reproducible SWE-bench Verified runner is included for objective evaluation.
 - **Ouroboros integration**: design a clean embeddable substrate API now; Ouroboros is the first integration testbed.
 - **Name**: Claudex (rename from working "Clawdex").
 - **Repo**: private `github.com/joi-lab/claudex`.
@@ -22,7 +22,7 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 
 ## Batch 3 — Review, convergence & evidence
 - **Review substrate**: adopt + generalize the `.adversarial-review/` files-on-disk evidence packet for ALL review.
-- **Quorum**: ALWAYS cross-family ≥2 distinct providers (max rigor; fits benchmark-first).
+- **Quorum**: ALWAYS cross-family ≥2 distinct providers (max rigor).
 - **Revalidation**: mandatory FindingRevalidator, LLM-first per finding; no evidence → cannot BLOCK.
 - **Convergence**: full predicate (tests pass + no accepted BLOCK/FIX_FIRST + rebuttals not overturned + final cross-family clean review + final diff stable after review).
 - **Route proof**: always record (verified/unverified/same-model-fallback); ENFORCE verified multi-model in benchmark/high-risk, warn in daily.

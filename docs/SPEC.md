@@ -2,7 +2,7 @@
 
 Status: living spec. Supersedes the original working draft; incorporates 2026 harness research, competitor-pitfall research, and the planning-quiz decisions ([DECISIONS.md](DECISIONS.md)).
 
-Primary runtime: TypeScript / Node (ESM). Primary proof target: SWE-bench Verified. Working name: Claudex (package/binary name abstract pending naming gate).
+Primary runtime: TypeScript / Node (ESM). Ships a reproducible SWE-bench Verified runner. Working name: Claudex (package/binary name abstract pending naming gate).
 
 ---
 
@@ -13,7 +13,7 @@ Primary runtime: TypeScript / Node (ESM). Primary proof target: SWE-bench Verifi
 ## 1. Philosophy
 
 - **No privileged harness, no hardcoded roles.** Roles are *intents* (`plan, spec, implement, create, repair, review, verify, compare, synthesize, arbitrate, benchmark, explain, audit`). Any harness whose `HarnessManifest` declares the capability can be assigned an intent, subject to budget/conformance.
-- **Daily-driver first in feel, benchmark-proof first in priority.** It must be pleasant for daily use AND demonstrably beat single-harness baselines on benchmarks.
+- **Daily-driver quality, measurably better than any single harness.** It must be pleasant for daily use AND demonstrably stronger than any single configured harness on its own.
 - **Full capability pass-through.** Claudex never makes a harness weaker than native; dangerous modes are explicit, recorded, and never granted by versioned repo config.
 - **Ouroboros-preserved principles**: SSOT over scattered state; typed artifacts over terminal scraping; external workspace guardrails; no silent truncation; no regex governance; high reasoning/output budgets for core loops; meta-solutions over symptom patches; fail loudly; review freshness after diff changes.
 

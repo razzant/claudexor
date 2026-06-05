@@ -2,7 +2,7 @@
 
 Harness-agnostic, local-first, evidence-driven development control plane. Orchestrates Codex / Claude Code / Cursor CLI / OpenCode (and future harnesses) as interchangeable *harnesses* — no privileged harness, no hardcoded roles. Collapses cleanly to a single native harness when only one is configured.
 
-> Codename **Claudex** (binary/package name kept abstract; run a naming gate before any public release — "claudex"/"codex" proximity + collisions). TypeScript/Node, breadth-first full v1.0, **benchmark-first** proof target (SWE-bench Verified), embeddable so Ouroboros can replace its `claude_code.py`.
+> Codename **Claudex** (binary/package name kept abstract; run a naming gate before any public release — "claudex"/"codex" proximity + collisions). TypeScript/Node, breadth-first full v1.0, with a reproducible SWE-bench Verified runner, embeddable so Ouroboros can replace its `claude_code.py`.
 
 ---
 
@@ -10,7 +10,7 @@ Harness-agnostic, local-first, evidence-driven development control plane. Orches
 
 - **Name/brand**: Claudex. **Repo**: private `github.com/joi-lab/claudex`. **License**: MIT.
 - **Runtime**: TypeScript/Node core; language-agnostic boundary (CLI `--json` + JSON-RPC-over-stdio + MCP) so Python (Ouroboros) consumes it.
-- **Scope**: breadth-first full v1.0 (all 8 modes). **Priority**: benchmark-maxxing first.
+- **Scope**: breadth-first full v1.0 (all 8 modes). **Priority**: top-tier coding quality across harnesses.
 - **Ouroboros**: design the embeddable substrate API now; Ouroboros is the first integration testbed.
 - **Tooling**: pnpm + Turborepo + Changesets; Zod schemas → generated JSON Schema; Vitest; ESM; Node LTS; npm-first distribution.
 - **SSOT**: files-first canonical (`.claudex/` JSONL events + YAML/JSON artifacts), optional rebuildable SQLite index.
