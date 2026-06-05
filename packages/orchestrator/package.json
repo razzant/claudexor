@@ -1,0 +1,36 @@
+{
+  "name": "@claudex/orchestrator",
+  "version": "0.1.0",
+  "description": "Hub that composes all subsystems and implements the execution modes (race, convergence, daily, plan, create, audit, benchmark).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudex/arbitration": "workspace:*",
+    "@claudex/artifact-store": "workspace:*",
+    "@claudex/budget": "workspace:*",
+    "@claudex/context": "workspace:*",
+    "@claudex/core": "workspace:*",
+    "@claudex/event-log": "workspace:*",
+    "@claudex/gateway": "workspace:*",
+    "@claudex/review": "workspace:*",
+    "@claudex/schema": "workspace:*",
+    "@claudex/synthesis": "workspace:*",
+    "@claudex/util": "workspace:*",
+    "@claudex/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "@claudex/harness-fake": "workspace:*"
+  }
+}

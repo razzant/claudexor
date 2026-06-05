@@ -17,6 +17,7 @@
     "@claudex/config": "workspace:*",
     "@claudex/core": "workspace:*",
     "@claudex/gateway": "workspace:*",
+    "@claudex/orchestrator": "workspace:*",
     "@claudex/harness-claude": "workspace:*",
     "@claudex/harness-codex": "workspace:*",
     "@claudex/harness-fake": "workspace:*",

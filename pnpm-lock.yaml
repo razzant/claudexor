@@ -86,6 +86,9 @@ importers:
       '@claudex/harness-fake':
         specifier: workspace:*
         version: link:../harness-fake
+      '@claudex/orchestrator':
+        specifier: workspace:*
+        version: link:../orchestrator
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
@@ -197,6 +200,49 @@ importers:
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
+
+  packages/orchestrator:
+    dependencies:
+      '@claudex/arbitration':
+        specifier: workspace:*
+        version: link:../arbitration
+      '@claudex/artifact-store':
+        specifier: workspace:*
+        version: link:../artifact-store
+      '@claudex/budget':
+        specifier: workspace:*
+        version: link:../budget
+      '@claudex/context':
+        specifier: workspace:*
+        version: link:../context
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/event-log':
+        specifier: workspace:*
+        version: link:../event-log
+      '@claudex/gateway':
+        specifier: workspace:*
+        version: link:../gateway
+      '@claudex/review':
+        specifier: workspace:*
+        version: link:../review
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/synthesis':
+        specifier: workspace:*
+        version: link:../synthesis
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+      '@claudex/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+    devDependencies:
+      '@claudex/harness-fake':
+        specifier: workspace:*
+        version: link:../harness-fake
 
   packages/policy:
     dependencies:
