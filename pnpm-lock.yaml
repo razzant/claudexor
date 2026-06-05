@@ -33,6 +33,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
 
+  packages/acp-server: {}
+
   packages/adapter-protocol:
     dependencies:
       '@claudex/core':
@@ -68,6 +70,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@claudex/acp-server':
+        specifier: workspace:*
+        version: link:../acp-server
       '@claudex/config':
         specifier: workspace:*
         version: link:../config
@@ -98,6 +103,9 @@ importers:
       '@claudex/harness-raw-api':
         specifier: workspace:*
         version: link:../harness-raw-api
+      '@claudex/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@claudex/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
@@ -254,6 +262,8 @@ importers:
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
+
+  packages/mcp-server: {}
 
   packages/orchestrator:
     dependencies:

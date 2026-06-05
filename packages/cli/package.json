@@ -15,9 +15,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@claudex/acp-server": "workspace:*",
     "@claudex/config": "workspace:*",
     "@claudex/core": "workspace:*",
     "@claudex/daemon": "workspace:*",
+    "@claudex/mcp-server": "workspace:*",
     "@claudex/gateway": "workspace:*",
     "@claudex/orchestrator": "workspace:*",
     "@claudex/harness-claude": "workspace:*",

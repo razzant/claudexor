@@ -5,10 +5,28 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudex/orchestrator";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
+import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
+import { AcpServer } from "@claudex/acp-server";
 import { initProjectConfig } from "@claudex/config";
 import type { ModeKind } from "@claudex/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
+import { type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function orchestratorRunner() {
+  const orch = new Orchestrator({ registry: buildRegistry() });
+  return async (p: any) => {
+    if (p?.mode === "__status") return { harnesses: [...buildRegistry().keys()] };
+    return orch.run({
+      repoRoot: process.cwd(),
+      prompt: String(p?.prompt ?? ""),
+      mode: p?.mode,
+      harnesses: p?.harness ? [String(p.harness)] : undefined,
+      n: typeof p?.n === "number" ? p.n : undefined,
+    });
+  };
+}
 
 const HELP = `claudex — harness-agnostic AI coding control plane (v0.1.0)
 
@@ -21,6 +39,9 @@ Usage:
   claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
   claudex audit | map                   Read-only repo audit / map
   claudex daemon start|status|stop|logs Optional local daemon (claudexd)
+  claudex mcp serve                     Expose Claudex as an MCP server (stdio)
+  claudex acp serve                     Expose Claudex as an ACP agent (stdio)
+  claudex plugin install <host>         Install thin host plugin (cursor|claude|codex|opencode)
   claudex harness list                  List registered harnesses
   claudex help                          Show this help
 
@@ -191,6 +212,46 @@ async function main(): Promise<number> {
 
     case "daemon":
       return daemonCommand(args, json);
+
+    case "mcp": {
+      if (args._[1] === "serve") {
+        await new McpServer({
+          tools: defaultClaudexTools(orchestratorRunner()),
+          transport: { read: process.stdin, write: process.stdout },
+        }).serve();
+        return 0;
+      }
+      print("usage: claudex mcp serve");
+      return 2;
+    }
+
+    case "acp": {
+      if (args._[1] === "serve") {
+        await new AcpServer({
+          runner: orchestratorRunner(),
+          transport: { read: process.stdin, write: process.stdout },
+        }).serve();
+        return 0;
+      }
+      print("usage: claudex acp serve");
+      return 2;
+    }
+
+    case "plugin": {
+      const sub = args._[1];
+      const host = args._[2] as PluginHost | undefined;
+      if (sub === "install" && host) {
+        const r = installPlugin(host);
+        if (json) printJson(r);
+        else {
+          print(`installed claudex plugin for ${host}: ${r.path}`);
+          print(`  ${r.note}`);
+        }
+        return 0;
+      }
+      print("usage: claudex plugin install <cursor|claude|codex|opencode>");
+      return 2;
+    }
 
     case "harness": {
       const sub = args._[1];
