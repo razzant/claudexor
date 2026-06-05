@@ -86,9 +86,18 @@ importers:
       '@claudex/harness-codex':
         specifier: workspace:*
         version: link:../harness-codex
+      '@claudex/harness-cursor':
+        specifier: workspace:*
+        version: link:../harness-cursor
       '@claudex/harness-fake':
         specifier: workspace:*
         version: link:../harness-fake
+      '@claudex/harness-opencode':
+        specifier: workspace:*
+        version: link:../harness-opencode
+      '@claudex/harness-raw-api':
+        specifier: workspace:*
+        version: link:../harness-raw-api
       '@claudex/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
@@ -198,7 +207,43 @@ importers:
         specifier: workspace:*
         version: link:../util
 
+  packages/harness-cursor:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/harness-fake:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/harness-opencode:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/harness-raw-api:
     dependencies:
       '@claudex/core':
         specifier: workspace:*

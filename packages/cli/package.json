@@ -22,7 +22,10 @@
     "@claudex/orchestrator": "workspace:*",
     "@claudex/harness-claude": "workspace:*",
     "@claudex/harness-codex": "workspace:*",
+    "@claudex/harness-cursor": "workspace:*",
     "@claudex/harness-fake": "workspace:*",
+    "@claudex/harness-opencode": "workspace:*",
+    "@claudex/harness-raw-api": "workspace:*",
     "@claudex/schema": "workspace:*",
     "@claudex/util": "workspace:*"
   }
