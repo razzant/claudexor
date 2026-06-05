@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Claudex repo-local runtime artifacts (canonical artifacts are committed selectively per-project)
+.claudex/runs/
+.claudex/workspaces/
+.claudex/cache/
+.claudex/logs/
+.claudex/local.yaml
+
+# Adversarial review evidence packets (local by default)
+.adversarial-review/
+
+# Local toolchain
+.toolchain/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Logs / misc
+*.log
+*.tgz
