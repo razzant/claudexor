@@ -74,6 +74,9 @@ importers:
       '@claudex/core':
         specifier: workspace:*
         version: link:../core
+      '@claudex/daemon':
+        specifier: workspace:*
+        version: link:../daemon
       '@claudex/gateway':
         specifier: workspace:*
         version: link:../gateway
@@ -134,6 +137,12 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/daemon:
+    dependencies:
       '@claudex/util':
         specifier: workspace:*
         version: link:../util

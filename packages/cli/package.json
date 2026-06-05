@@ -6,7 +6,8 @@
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
   "bin": {
-    "claudex": "./dist/cli.js"
+    "claudex": "./dist/cli.js",
+    "claudexd": "./dist/claudexd.js"
   },
   "files": ["dist"],
   "scripts": {
@@ -16,6 +17,7 @@
   "dependencies": {
     "@claudex/config": "workspace:*",
     "@claudex/core": "workspace:*",
+    "@claudex/daemon": "workspace:*",
     "@claudex/gateway": "workspace:*",
     "@claudex/orchestrator": "workspace:*",
     "@claudex/harness-claude": "workspace:*",

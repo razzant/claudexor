@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import process from "node:process";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudex/orchestrator";
+import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { initProjectConfig } from "@claudex/config";
 import type { ModeKind } from "@claudex/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
@@ -16,6 +20,7 @@ Usage:
   claudex plan "<prompt>"               Read-only planning report
   claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
   claudex audit | map                   Read-only repo audit / map
+  claudex daemon start|status|stop|logs Optional local daemon (claudexd)
   claudex harness list                  List registered harnesses
   claudex help                          Show this help
 
@@ -94,6 +99,45 @@ function statusGlyph(status: string): string {
   return status === "ok" ? "[ok]" : status === "degraded" ? "[degraded]" : "[unavailable]";
 }
 
+async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const sub = args._[1] ?? "status";
+  if (sub === "start") {
+    const daemonScript = fileURLToPath(new URL("./claudexd.js", import.meta.url));
+    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore" });
+    child.unref();
+    print(`claudexd starting (pid ${child.pid}); socket ${defaultSocketPath()}`);
+    return 0;
+  }
+  const token = readToken();
+  if (!token) {
+    print("daemon not initialized — run: claudex daemon start");
+    return 1;
+  }
+  const client = new DaemonClient(defaultSocketPath(), token);
+  try {
+    if (sub === "status") {
+      const health = await client.health();
+      if (json) printJson(health);
+      else print(`claudexd: ${JSON.stringify(health)}`);
+      return 0;
+    }
+    if (sub === "stop") {
+      await client.shutdown();
+      print("claudexd shutting down");
+      return 0;
+    }
+    if (sub === "logs") {
+      print(readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n"));
+      return 0;
+    }
+    print("usage: claudex daemon start|status|stop|logs");
+    return 2;
+  } catch (err) {
+    print(`claudexd not reachable (${err instanceof Error ? err.message : String(err)})`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const json = flagBool(args, "json");
@@ -144,6 +188,9 @@ async function main(): Promise<number> {
     case "audit":
     case "map":
       return orchestrate(args, "readonly_swarm", json);
+
+    case "daemon":
+      return daemonCommand(args, json);
 
     case "harness": {
       const sub = args._[1];
