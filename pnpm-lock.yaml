@@ -120,6 +120,15 @@ importers:
         specifier: workspace:*
         version: link:../util
 
+  packages/delivery:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/event-log:
     dependencies:
       '@claudex/schema':
@@ -163,6 +172,27 @@ importers:
         version: link:../util
 
   packages/harness-fake:
+    dependencies:
+      '@claudex/core':
+        specifier: workspace:*
+        version: link:../core
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
+  packages/policy:
+    dependencies:
+      '@claudex/context':
+        specifier: workspace:*
+        version: link:../context
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/review:
     dependencies:
       '@claudex/core':
         specifier: workspace:*
