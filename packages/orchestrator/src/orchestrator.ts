@@ -29,7 +29,7 @@ import {
 } from "@claudex/review";
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
-import { BudgetLedger } from "@claudex/budget";
+import { BudgetLedger, observationFromEvent } from "@claudex/budget";
 import { hashJson, newId, nowIso, redactSecrets } from "@claudex/util";
 
 export interface OrchestratorDeps {
@@ -199,6 +199,9 @@ export class Orchestrator {
     for await (const ev of adapter.run(spec)) {
       if (ev.type === "usage" && ev.usage?.cost_usd) cost += ev.usage.cost_usd;
       if (ev.type === "error") errored = true;
+      // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
+      const obs = observationFromEvent(adapter.id, ev);
+      if (obs) ledger.observe(obs);
     }
 
     const diff = await wsm.diff(envelope);
@@ -294,9 +297,10 @@ export class Orchestrator {
         break; // hard cap: do not spawn more paid work
       }
 
-      const envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+      let envelope: WorkspaceEnvelope | undefined;
       try {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
+        envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
           adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger,
         );
@@ -308,7 +312,7 @@ export class Orchestrator {
         log.emit("run.failed", { harness_id: adapter.id, attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
         runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true });
       } finally {
-        await wsm.dispose(envelope); // no worktree leak even on error
+        if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
       }
     }
 
@@ -326,11 +330,12 @@ export class Orchestrator {
     if (synth.synthesize && !budgetStopped) {
       const lease = ledger.reserve({ taskId, attemptId: "synth", intent: "synthesize", harnessId: adapters[0]?.id ?? "synth" });
       if (lease.granted) {
-        const plan = buildSynthesisPlan(evidences);
-        const sourceDiffs = runs.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
-        const synthAdapter = adapters[0] as HarnessAdapter;
-        const envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+        let envelope: WorkspaceEnvelope | undefined;
         try {
+          const plan = buildSynthesisPlan(evidences);
+          const sourceDiffs = runs.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
+          const synthAdapter = adapters[0] as HarnessAdapter;
+          envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
             synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger,
@@ -343,7 +348,7 @@ export class Orchestrator {
           ledger.settle(lease.lease?.lease_id ?? "", 0);
           log.emit("run.failed", { attempt_id: "synth", error: err instanceof Error ? err.message : String(err) });
         } finally {
-          await wsm.dispose(envelope);
+          if (envelope) await wsm.dispose(envelope);
         }
       }
     }
@@ -378,9 +383,11 @@ export class Orchestrator {
       winner: result.decision.winner,
       runDir: paths.root,
       summary: result.decision.why_winner,
-      candidates: runs
-        .filter((r) => r.attemptId !== "synth")
-        .map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, status: gatesPassed(r.gates) && !r.errored ? "green" : "red" })),
+      candidates: runs.map((r) => ({
+        attemptId: r.attemptId,
+        harnessId: r.harnessId,
+        status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
+      })),
       decisionPath,
       reviewVerified,
     };
@@ -447,10 +454,16 @@ export class Orchestrator {
 
     let attempt = 0;
     let converged = false;
-    let stalled = false;
     let exhausted = false;
     let lastFindings: ReviewFinding[] = [];
     let lastRun: CandidateRun | null = null;
+    let triedSinceProgress = new Set<string>();
+    let lastSig = "";
+    // until_convergence has NO fixed attempt cap; it stops on convergence, budget hard tier,
+    // observed quota cooldown across all harnesses, or genuine no-progress (a stall on the same
+    // failure signature after every available harness has tried it).
+    const stallThreshold = mode === "until_convergence" ? 4 : 2;
+    const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.id));
 
     try {
       for (;;) {
@@ -495,21 +508,28 @@ export class Orchestrator {
 
         const sig = failureSignature(conv.reasons);
         readiness.recordRound(sig, conv.reasons.join("; "));
+        if (sig !== lastSig) {
+          triedSinceProgress = new Set();
+          lastSig = sig;
+        }
+        triedSinceProgress.add(adapter.id);
 
-        if (maxAttempts !== null && attempt >= maxAttempts) break;
         if (ledger.tier() === "hard") {
           exhausted = true;
           break;
         }
-        if (readiness.isStalled(sig)) {
-          // Change strategy: rotate harness if another is available; otherwise stop (no progress).
-          if (adapterPool.length > 1) {
+        if (allCooledDown()) {
+          exhausted = true; // quota exhausted across all harnesses
+          break;
+        }
+        if (maxAttempts !== null && attempt >= maxAttempts) break;
+        if (readiness.isStalled(sig, stallThreshold)) {
+          if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
             adapterIdx = (adapterIdx + 1) % adapterPool.length;
             adapter = adapterPool[adapterIdx] as HarnessAdapter;
             log.emit("harness.started", { harness_id: adapter.id, reason: "stall: switched harness" });
           } else {
-            stalled = true;
-            break;
+            break; // tried every available harness on this failure and still stuck -> stop
           }
         }
       }
@@ -517,15 +537,25 @@ export class Orchestrator {
       await wsm.dispose(envelope);
     }
 
-    const status: RunStatus = converged
-      ? "success"
-      : maxAttempts !== null
-        ? "not_converged"
-        : stalled
-          ? "not_converged"
-          : exhausted
-            ? "exhausted"
-            : "not_converged";
+    const status: RunStatus = converged ? "success" : exhausted ? "exhausted" : "not_converged";
+
+    // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
+    if (lastRun) {
+      store.writeText(join(paths.finalDir, "patch.diff"), lastRun.diff);
+      store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+        id: newId("wp"),
+        kind: "patch",
+        source_task_id: taskId,
+        producer_attempt_id: lastRun.attemptId,
+        meta: { harness_id: lastRun.harnessId, mode, attempts: attempt, status, review_verified: reviewVerified },
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${reviewVerified}\n`,
+      );
+    }
+
+    log.emit("work_product.emitted", { winner: lastRun?.attemptId ?? null });
     log.emit(converged ? "run.completed" : "run.failed", { status, attempts: attempt });
     return {
       runId,

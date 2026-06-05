@@ -72,19 +72,31 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "best_of_n", harnesses: ["fake-success"], n: 2 });
     expect(res.mode).toBe("best_of_n");
-    expect(res.candidates.length).toBe(2);
+    expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.status).toBe("success");
+    // the winner is always present in the returned candidates (incl. a synthesis candidate)
+    expect(res.winner && res.candidates.some((c) => c.attemptId === res.winner)).toBeTruthy();
     expect(res.decisionPath && existsSync(res.decisionPath)).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
-  it("max-attempts converges with a passing harness (formal predicate)", async () => {
+  it("max-attempts converges and delivers to final/ (apply/inspect can use it)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["fake-success"], attempts: 3 });
     expect(res.status).toBe("success");
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
+
+  it("until-convergence terminates on no-progress (bounded, not infinite)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_convergence", harnesses: ["fake-fail-tests"] });
+    expect(["not_converged", "exhausted"]).toContain(res.status);
+  }, 20000);
 
   it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
@@ -131,7 +143,7 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["realish", realLikeAdapter("realish")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", n: 2 });
-    expect(res.candidates.length).toBe(2);
+    expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
 });
