@@ -1,0 +1,161 @@
+import type { BudgetLease, BudgetObservation, Intent } from "@claudex/schema";
+import { BudgetLease as BudgetLeaseSchema } from "@claudex/schema";
+import { newId, nowIso, sha256 } from "@claudex/util";
+
+export type CircuitTier = "ok" | "soft" | "downgrade" | "hard";
+
+export interface BudgetLimits {
+  maxUsd?: number | null;
+}
+
+export interface CircuitThresholds {
+  soft: number;
+  downgrade: number;
+  hard: number;
+}
+
+export interface ReserveInput {
+  taskId: string;
+  attemptId?: string;
+  intent: Intent;
+  harnessId: string;
+  modelHint?: string | null;
+  maxUsd?: number | null;
+  reason?: string[];
+}
+
+export interface ReserveResult {
+  granted: boolean;
+  tier: CircuitTier;
+  lease?: BudgetLease;
+  reason?: string;
+}
+
+/** Stable fingerprint of a prompt for loop detection. */
+export function promptFingerprint(prompt: string): string {
+  return sha256(prompt.trim().replace(/\s+/g, " ").toLowerCase());
+}
+
+/**
+ * Dollar-based budget ledger with pre-call reservation, prompt-fingerprint loop
+ * detection, and a 3-tier circuit breaker (soft-warn -> downgrade -> hard-kill).
+ * Sub-ledgers (children) roll their spend up to the parent.
+ */
+export class BudgetLedger {
+  private readonly leases = new Map<string, BudgetLease>();
+  private readonly observations: BudgetObservation[] = [];
+  private readonly promptCounts = new Map<string, number>();
+  private spendUsd = 0;
+
+  constructor(
+    private readonly limits: BudgetLimits = {},
+    private readonly thresholds: CircuitThresholds = { soft: 0.75, downgrade: 0.9, hard: 1.0 },
+    private readonly parent?: BudgetLedger,
+  ) {}
+
+  /** Create a child sub-ledger whose spend rolls up to this one. */
+  child(limits: BudgetLimits = {}): BudgetLedger {
+    return new BudgetLedger(limits, this.thresholds, this);
+  }
+
+  tier(): CircuitTier {
+    const cap = this.limits.maxUsd ?? null;
+    const localTier = ((): CircuitTier => {
+      if (cap === null || cap <= 0) return "ok";
+      const ratio = this.spendUsd / cap;
+      if (ratio >= this.thresholds.hard) return "hard";
+      if (ratio >= this.thresholds.downgrade) return "downgrade";
+      if (ratio >= this.thresholds.soft) return "soft";
+      return "ok";
+    })();
+    const parentTier = this.parent?.tier() ?? "ok";
+    return mostSevere(localTier, parentTier);
+  }
+
+  reserve(input: ReserveInput): ReserveResult {
+    const tier = this.tier();
+    if (tier === "hard") {
+      return { granted: false, tier, reason: "budget exhausted (hard cap reached)" };
+    }
+    const lease = BudgetLeaseSchema.parse({
+      lease_id: newId("lease"),
+      task_id: input.taskId,
+      attempt_id: input.attemptId,
+      intent: input.intent,
+      harness_id: input.harnessId,
+      model_hint: input.modelHint ?? null,
+      max_usd: input.maxUsd ?? null,
+      reason: input.reason ?? [],
+      created_at: nowIso(),
+      state: "reserved",
+    });
+    this.leases.set(lease.lease_id, lease);
+    return { granted: true, tier, lease };
+  }
+
+  settle(leaseId: string, actualUsd: number): void {
+    const lease = this.leases.get(leaseId);
+    if (lease) lease.state = "settled";
+    this.spendUsd += actualUsd;
+    this.parent?.addRollupSpend(actualUsd);
+  }
+
+  cancel(leaseId: string): void {
+    const lease = this.leases.get(leaseId);
+    if (lease) lease.state = "cancelled";
+  }
+
+  private addRollupSpend(usd: number): void {
+    this.spendUsd += usd;
+    this.parent?.addRollupSpend(usd);
+  }
+
+  spend(): number {
+    return this.spendUsd;
+  }
+
+  observe(o: BudgetObservation): void {
+    this.observations.push(o);
+  }
+
+  observationsFor(harnessId: string): BudgetObservation[] {
+    return this.observations.filter((o) => o.harness_id === harnessId);
+  }
+
+  /** True if the harness is in an active cooldown (from an observed rate-limit). */
+  cooldownActive(harnessId: string, now: number = Date.now()): boolean {
+    return this.observationsFor(harnessId).some((o) => {
+      if (!o.cooldown_until) return false;
+      const t = Date.parse(o.cooldown_until);
+      return Number.isFinite(t) && t > now;
+    });
+  }
+
+  /** Observed remaining headroom (0..1) for a harness, or 1 if unknown. */
+  headroom(harnessId: string): number {
+    const used = this.observationsFor(harnessId)
+      .map((o) => o.used_percent)
+      .filter((v): v is number => typeof v === "number");
+    if (used.length === 0) return 1;
+    const maxUsed = Math.max(...used);
+    return Math.max(0, 1 - maxUsed / 100);
+  }
+
+  recordPrompt(fingerprint: string): number {
+    const n = (this.promptCounts.get(fingerprint) ?? 0) + 1;
+    this.promptCounts.set(fingerprint, n);
+    return n;
+  }
+
+  isLoop(fingerprint: string, threshold = 3): boolean {
+    return (this.promptCounts.get(fingerprint) ?? 0) >= threshold;
+  }
+}
+
+function severity(t: CircuitTier): number {
+  return { ok: 0, soft: 1, downgrade: 2, hard: 3 }[t];
+}
+
+function mostSevere(a: CircuitTier, b: CircuitTier): CircuitTier {
+  return severity(a) >= severity(b) ? a : b;
+}

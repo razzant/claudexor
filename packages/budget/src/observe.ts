@@ -1,0 +1,45 @@
+import type { BudgetObservation, HarnessEvent } from "@claudex/schema";
+import { nowIso } from "@claudex/util";
+
+const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * Best-effort extraction of an observed budget/quota signal from a harness event.
+ * This is adapter-output parsing of stable signals (allowed), not governance —
+ * subscription balancing is honest "observed best-effort", never exact-claimed.
+ */
+export function observationFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation | null {
+  if (ev.type === "usage" && typeof ev.usage?.cost_usd === "number" && ev.usage.cost_usd > 0) {
+    return { harness_id: harnessId, ts: nowIso(), quality: "exact", kind: "spend", usd: ev.usage.cost_usd };
+  }
+
+  if (ev.type === "error" && /rate.?limit|usage.?limit|usagelimitexceeded|quota|429/i.test(ev.error ?? "")) {
+    const resets = typeof ev.payload?.["resets_at"] === "string" ? (ev.payload["resets_at"] as string) : null;
+    return {
+      harness_id: harnessId,
+      ts: nowIso(),
+      quality: "observed",
+      kind: "rate_limited",
+      resets_at: resets,
+      cooldown_until: resets ?? new Date(Date.now() + DEFAULT_COOLDOWN_MS).toISOString(),
+      detail: ev.error,
+    };
+  }
+
+  if (ev.type === "thinking" && ev.payload?.["api_retry"] === true) {
+    const err = String(ev.payload["error"] ?? "");
+    if (/rate_limit|overloaded/i.test(err)) {
+      const delay = Number(ev.payload["retry_delay_ms"] ?? 0);
+      return {
+        harness_id: harnessId,
+        ts: nowIso(),
+        quality: "observed",
+        kind: "rate_limited",
+        cooldown_until: new Date(Date.now() + (delay > 0 ? delay : DEFAULT_COOLDOWN_MS)).toISOString(),
+        detail: err,
+      };
+    }
+  }
+
+  return null;
+}

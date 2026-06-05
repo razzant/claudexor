@@ -57,6 +57,15 @@ importers:
         specifier: ^2.6.1
         version: 2.9.0
 
+  packages/budget:
+    dependencies:
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/cli:
     dependencies:
       '@claudex/config':
@@ -219,6 +228,12 @@ importers:
       zod-to-json-schema:
         specifier: ^3.24.1
         version: 3.25.2(zod@3.25.76)
+
+  packages/secrets:
+    dependencies:
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/synthesis:
     dependencies:
