@@ -117,6 +117,8 @@ export const HarnessEvent = z.object({
       output_tokens: z.number().int().nonnegative().optional(),
       cached_input_tokens: z.number().int().nonnegative().optional(),
       cost_usd: z.number().nonnegative().optional(),
+      /** True when cost_usd is derived from token pricing (not natively reported). */
+      estimated: z.boolean().optional(),
     })
     .optional(),
   observed_model: z.string().optional(),

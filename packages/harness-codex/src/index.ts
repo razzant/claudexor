@@ -6,6 +6,7 @@ import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
 import { nowIso } from "@claudex/util";
 import { parseCodexEvent } from "./parse.js";
+import { estimateCodexCostUsd } from "./pricing.js";
 
 const BIN = process.env.CLAUDEX_CODEX_BIN || "codex";
 
@@ -165,6 +166,10 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (spec.model_hint) args.push("-m", spec.model_hint);
   args.push(spec.prompt);
 
+  // Codex reports tokens but no $cost; estimate it from the (hint/configured)
+  // model so the budget ledger does not see every codex run as free.
+  const model = spec.model_hint ?? process.env.CLAUDEX_CODEX_MODEL ?? null;
+
   let sawError = false;
   let exitCode: number | null = null;
   try {
@@ -179,6 +184,14 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
         const out = parseCodexEvent(obj, spec.session_id);
         if (out) {
           if (out.type === "error") sawError = true;
+          if (out.type === "usage" && out.usage && out.usage.cost_usd === undefined) {
+            const est = estimateCodexCostUsd(model, out.usage);
+            if (est !== undefined) {
+              out.usage.cost_usd = est;
+              out.usage.estimated = true;
+              if (model) out.observed_model = model;
+            }
+          }
           yield out;
         }
       } else if (ev.type === "exit") {

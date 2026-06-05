@@ -15,7 +15,10 @@ const RATE_LIMIT_RE =
  */
 export function observationFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation | null {
   if (ev.type === "usage" && typeof ev.usage?.cost_usd === "number" && ev.usage.cost_usd > 0) {
-    return { harness_id: harnessId, ts: nowIso(), quality: "exact", kind: "spend", usd: ev.usage.cost_usd };
+    // Token-derived costs (e.g. codex) are honest estimates -> "observed"; only
+    // natively-reported costs (e.g. claude) are "exact".
+    const quality = ev.usage.estimated ? "observed" : "exact";
+    return { harness_id: harnessId, ts: nowIso(), quality, kind: "spend", usd: ev.usage.cost_usd };
   }
 
   if (ev.type === "error" && RATE_LIMIT_RE.test(ev.error ?? "")) {
