@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { DaemonServer, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudex/daemon";
 import { Orchestrator } from "@claudex/orchestrator";
 import { buildRegistry } from "./registry.js";
@@ -15,6 +16,8 @@ async function main(): Promise<void> {
   const server = new DaemonServer({
     socketPath,
     token,
+    // Durable run registry so the run list survives a daemon/Mac restart.
+    persistPath: join(daemonDir(), "jobs.json"),
     runner: async (params, ctx) => {
       const p = (params ?? {}) as any;
       return orchestrator.run({

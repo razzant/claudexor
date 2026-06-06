@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -140,6 +140,42 @@ describe("daemon", () => {
       expect(list.some((r) => r.id === jobId && r.state === "succeeded")).toBe(true);
     } finally {
       await b.stop();
+    }
+  }, 20000);
+
+  it("persists runId at run start and never writes the raw result to disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-redact";
+    const SECRET_SUMMARY = "RAW-MODEL-OUTPUT-do-not-persist";
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath,
+      runner: async (_params, ctx) => {
+        ctx.onRunStart({ runId: "run-redact-1", taskId: "t", runDir: "/tmp/run-redact-1" });
+        return { summary: SECRET_SUMMARY };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const job = await client.enqueue({ x: 1 });
+      let st = await client.status(job.id);
+      for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
+        await sleep(10);
+        st = await client.status(job.id);
+      }
+      expect(st.state).toBe("succeeded");
+      // status (over the local token-gated socket) still returns the result in memory
+      expect((st.result as { summary: string }).summary).toBe(SECRET_SUMMARY);
+      // but the durable file must NOT contain the raw result, and must keep the runId pointer
+      const onDisk = readFileSync(persistPath, "utf8");
+      expect(onDisk).not.toContain(SECRET_SUMMARY);
+      expect(onDisk).toContain("run-redact-1");
+    } finally {
+      await server.stop();
     }
   }, 20000);
 });

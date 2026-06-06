@@ -1,7 +1,8 @@
 import { type Server, type Socket, createServer } from "node:net";
-import { rmSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { newId, nowIso, pathExists, readJsonSafe, writeJson } from "@claudex/util";
+import { newId, nowIso, pathExists, readJsonSafe } from "@claudex/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -20,6 +21,8 @@ export interface DaemonOptions {
   maxConcurrent?: number;
   /** Optional JSON file to persist the job registry across restarts (durable run list). */
   persistPath?: string;
+  /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
+  maxHistory?: number;
 }
 
 export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
@@ -41,9 +44,10 @@ export interface JobRecord {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Local daemon: Unix-socket JSON-RPC with token auth + a single-worker FIFO
- * queue. It does NOT contain a second scheduler — it calls the injected runner
- * (the same ExecutionEngine/Orchestrator the CLI uses).
+ * Local daemon: Unix-socket JSON-RPC with token auth + a bounded-concurrency
+ * worker pool (up to maxConcurrent jobs in parallel) backed by an optional
+ * durable, atomically-written job registry. It does NOT contain a second
+ * scheduler — it calls the injected runner (the same Orchestrator the CLI uses).
  */
 export class DaemonServer {
   private server?: Server;
@@ -172,13 +176,48 @@ export class DaemonServer {
     return this.opts.maxConcurrent ?? 4;
   }
 
-  /** Best-effort persistence of the job registry. Canonical run state is .claudex/runs. */
+  /**
+   * Best-effort durable persistence of the job registry. Writes atomically
+   * (temp file + rename) so a crash mid-write cannot corrupt/drop the registry.
+   * The raw run `result` is intentionally NOT persisted: canonical output lives
+   * in .claudex/runs (redacted), and result.summary can contain raw model text —
+   * keeping it out of jobs.json upholds the redaction-at-persistence invariant.
+   */
   private persist(): void {
-    if (!this.opts.persistPath) return;
+    const path = this.opts.persistPath;
+    if (!path) return;
     try {
-      writeJson(this.opts.persistPath, [...this.records.values()]);
+      const view = [...this.records.values()].map((r) => ({
+        id: r.id,
+        state: r.state,
+        params: r.params,
+        error: r.error,
+        createdAt: r.createdAt,
+        runId: r.runId,
+        runDir: r.runDir,
+        startedAt: r.startedAt,
+        finishedAt: r.finishedAt,
+      }));
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n");
+      renameSync(tmp, path);
     } catch {
       /* best-effort; never break a run on a persistence failure */
+    }
+  }
+
+  /** Bound memory/disk: prune the oldest terminal jobs beyond maxHistory. */
+  private pruneHistory(): void {
+    const cap = this.opts.maxHistory ?? 500;
+    const terminal = [...this.records.values()].filter(
+      (r) => r.state !== "running" && r.state !== "queued",
+    );
+    if (terminal.length <= cap) return;
+    terminal.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    for (const r of terminal.slice(0, terminal.length - cap)) {
+      this.records.delete(r.id);
+      this.cancelled.delete(r.id);
     }
   }
 
@@ -220,6 +259,9 @@ export class DaemonServer {
         onRunStart: (info) => {
           rec.runId = info.runId;
           rec.runDir = info.runDir;
+          // Persist the pointer immediately so a mid-run crash still reloads with
+          // runId/runDir to locate .claudex/runs/<runId> (the recovery path).
+          this.persist();
         },
       });
       rec.state = controller.signal.aborted ? "cancelled" : "succeeded";
@@ -230,6 +272,7 @@ export class DaemonServer {
       rec.finishedAt = nowIso();
       this.controllers.delete(id);
       this.active -= 1;
+      this.pruneHistory();
       this.persist();
       this.drain();
     }
