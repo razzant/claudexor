@@ -1,0 +1,272 @@
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
+import { newId } from "@claudex/util";
+import { EventBus } from "./event-bus.js";
+
+/** Context handed to the runner so a run can be observed live and cancelled. */
+export interface RunContext {
+  signal: AbortSignal;
+  onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
+  onEvent: (event: unknown) => void;
+  onHarnessEvent: (event: unknown) => void;
+}
+
+export type ControlRunner = (params: unknown, ctx: RunContext) => Promise<unknown>;
+
+export interface ControlApiOptions {
+  /** Per-user bearer token required on every request (loopback is not trusted alone). */
+  token: string;
+  /** Injected engine runner (the same Orchestrator the CLI uses) — no second scheduler. */
+  runner: ControlRunner;
+  /** Loopback host. Default 127.0.0.1. */
+  host?: string;
+  /** Port; 0 picks a free port (read it back via address()). Default 0. */
+  port?: number;
+  eventBus?: EventBus;
+}
+
+interface RunHandle {
+  runId: string;
+  taskId: string;
+  runDir: string;
+  controller: AbortController;
+  state: "running" | "succeeded" | "failed" | "cancelled";
+  error?: string;
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/** Host/Origin must be loopback — defends against DNS-rebinding from a browser. */
+function hostIsLoopback(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  const host = hostHeader.split(":")[0]?.trim().toLowerCase() ?? "";
+  return LOOPBACK_HOSTS.has(host) || LOOPBACK_HOSTS.has(hostHeader.toLowerCase());
+}
+
+function originIsLoopback(origin: string | undefined): boolean {
+  if (!origin) return true; // non-browser clients (Swift URLSession) omit Origin
+  try {
+    return LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Loopback HTTP+SSE control surface. Commands are POSTs; live progress is an SSE
+ * stream with Last-Event-ID replay. It binds to loopback, requires a bearer token,
+ * and validates Host/Origin. It owns no scheduling logic — it calls the injected runner.
+ */
+export class ControlApiServer {
+  private server?: Server;
+  private readonly bus: EventBus;
+  private readonly runs = new Map<string, RunHandle>();
+
+  constructor(private readonly opts: ControlApiOptions) {
+    this.bus = opts.eventBus ?? new EventBus();
+  }
+
+  async start(): Promise<{ host: string; port: number }> {
+    const host = this.opts.host ?? "127.0.0.1";
+    const port = this.opts.port ?? 0;
+    await new Promise<void>((resolve, reject) => {
+      this.server = createServer((req, res) => this.onRequest(req, res));
+      this.server.once("error", reject);
+      this.server.listen(port, host, () => resolve());
+    });
+    const addr = this.server?.address();
+    const boundPort = typeof addr === "object" && addr ? addr.port : port;
+    return { host, port: boundPort };
+  }
+
+  async stop(): Promise<void> {
+    for (const h of this.runs.values()) h.controller.abort();
+    await new Promise<void>((resolve) => {
+      if (!this.server) return resolve();
+      this.server.close(() => resolve());
+    });
+  }
+
+  private authorized(req: IncomingMessage): boolean {
+    if (!hostIsLoopback(req.headers.host) || !originIsLoopback(req.headers.origin as string | undefined)) {
+      return false;
+    }
+    const auth = req.headers.authorization ?? "";
+    const m = /^Bearer\s+(.+)$/i.exec(auth);
+    const token = m?.[1]?.trim();
+    return token === this.opts.token;
+  }
+
+  private json(res: ServerResponse, status: number, body: unknown): void {
+    const text = JSON.stringify(body);
+    res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text) });
+    res.end(text);
+  }
+
+  private async readBody(req: IncomingMessage): Promise<unknown> {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > 10 * 1024 * 1024) throw new Error("request body too large");
+      chunks.push(chunk as Buffer);
+    }
+    if (chunks.length === 0) return {};
+    const raw = Buffer.concat(chunks).toString("utf8").trim();
+    if (!raw) return {};
+    return JSON.parse(raw);
+  }
+
+  private onRequest(req: IncomingMessage, res: ServerResponse): void {
+    void this.handle(req, res).catch((err) => {
+      if (!res.headersSent) this.json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      else res.end();
+    });
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+    const method = req.method ?? "GET";
+
+    if (method === "GET" && path === "/healthz") {
+      // Health is unauthenticated but still loopback-guarded.
+      if (!hostIsLoopback(req.headers.host)) return this.json(res, 403, { error: "forbidden" });
+      return this.json(res, 200, { ok: true, runs: this.runs.size });
+    }
+
+    if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
+
+    if (method === "POST" && path === "/runs") {
+      const params = await this.readBody(req);
+      return this.startRun(params, res);
+    }
+
+    const eventsMatch = /^\/runs\/([^/]+)\/events$/.exec(path);
+    if (method === "GET" && eventsMatch) {
+      return this.streamEvents(decodeURIComponent(eventsMatch[1] as string), req, res);
+    }
+
+    const cancelMatch = /^\/runs\/([^/]+)\/cancel$/.exec(path);
+    if (method === "POST" && cancelMatch) {
+      const runId = decodeURIComponent(cancelMatch[1] as string);
+      const handle = this.runs.get(runId);
+      if (!handle) return this.json(res, 404, { error: "no such run" });
+      handle.controller.abort();
+      return this.json(res, 200, { runId, cancelled: true });
+    }
+
+    if (method === "GET" && path === "/runs") {
+      return this.json(res, 200, {
+        runs: [...this.runs.values()].map((h) => ({ runId: h.runId, state: h.state, runDir: h.runDir })),
+      });
+    }
+
+    return this.json(res, 404, { error: "not found" });
+  }
+
+  /** Start a run; respond with the runId as soon as it is known, then stream to the bus. */
+  private startRun(params: unknown, res: ServerResponse): void {
+    const controller = new AbortController();
+    let responded = false;
+    const provisionalId = newId("run");
+
+    const respondOnce = (info: { runId: string; taskId: string; runDir: string }) => {
+      if (responded) return;
+      responded = true;
+      this.runs.set(info.runId, { ...info, controller, state: "running" });
+      this.json(res, 200, info);
+    };
+
+    // Holder (not a bare `let`) so TS keeps the narrowed type across the closures
+    // that assign it inside the runner callbacks.
+    const ref: { current: { runId: string; taskId: string; runDir: string } | null } = { current: null };
+
+    void (async () => {
+      try {
+        await this.opts.runner(params, {
+          signal: controller.signal,
+          onRunStart: (info) => {
+            ref.current = info;
+            respondOnce(info);
+          },
+          onEvent: (event) => {
+            if (ref.current) this.bus.publish(ref.current.runId, "run", event);
+          },
+          onHarnessEvent: (event) => {
+            if (ref.current) this.bus.publish(ref.current.runId, "harness", event);
+          },
+        });
+        if (ref.current) {
+          const h = this.runs.get(ref.current.runId);
+          if (h) h.state = controller.signal.aborted ? "cancelled" : "succeeded";
+          this.bus.complete(ref.current.runId);
+        }
+        // Guarantee a response even if the runner never called onRunStart.
+        if (!responded) {
+          responded = true;
+          this.json(res, 200, ref.current ?? { runId: provisionalId, taskId: "", runDir: "" });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (ref.current) {
+          const h = this.runs.get(ref.current.runId);
+          if (h) {
+            h.state = controller.signal.aborted ? "cancelled" : "failed";
+            h.error = message;
+          }
+          this.bus.publish(ref.current.runId, "error", { message });
+          this.bus.complete(ref.current.runId);
+        }
+        if (!responded) {
+          responded = true;
+          this.json(res, 500, { error: message, runId: provisionalId });
+        }
+      }
+    })();
+  }
+
+  /** SSE stream for a run, honoring Last-Event-ID replay. */
+  private streamEvents(runId: string, req: IncomingMessage, res: ServerResponse): void {
+    const headerId = Number(req.headers["last-event-id"]);
+    const queryId = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("lastEventId"));
+    const lastEventId = Number.isFinite(headerId) && headerId > 0 ? headerId : Number.isFinite(queryId) ? queryId : 0;
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+    res.write(": connected\n\n");
+
+    const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
+    let ended = false;
+    let unsubscribe = () => {};
+    const finish = () => {
+      if (ended) return;
+      ended = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      res.write(`event: end\ndata: {}\n\n`);
+      res.end();
+    };
+
+    unsubscribe = this.bus.subscribe(runId, lastEventId, (env) => {
+      res.write(`id: ${env.seq}\nevent: ${env.kind}\ndata: ${JSON.stringify(env.event)}\n\n`);
+    });
+
+    // If the run already finished, replay above is complete — close the stream now.
+    if (this.bus.isDone(runId)) {
+      finish();
+      return;
+    }
+
+    const onComplete = this.bus.onComplete(runId, finish);
+    const close = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      onComplete();
+    };
+    req.on("close", close);
+    res.on("close", close);
+  }
+}
