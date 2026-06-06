@@ -2,10 +2,12 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   GateResult,
+  HarnessEvent,
   ModeKind,
   Portfolio,
   ProjectConfig,
   ReviewFinding,
+  RunEvent,
   RunStatus,
   TaskContract,
   WorkspaceEnvelope,
@@ -33,7 +35,7 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
 import { BudgetLedger, observationFromEvent } from "@claudex/budget";
-import { hashJson, newId, nowIso, redactSecrets } from "@claudex/util";
+import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
@@ -65,6 +67,17 @@ export interface RunInput {
   access?: AccessProfile;
   /** Optional model hint forwarded to the harness (daily mode). */
   model?: string;
+  /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
+  runId?: string;
+  taskId?: string;
+  /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
+  onEvent?: (event: RunEvent) => void;
+  /** In-process sink for the full per-harness event stream (richer than RunEvent). */
+  onHarnessEvent?: (event: HarnessEvent) => void;
+  /** Called once when the run id/dir are known, before any harness work begins. */
+  onRunStart?: (info: { runId: string; taskId: string; runDir: string }) => void;
+  /** Cancellation: aborts the run and cancels in-flight harness work. */
+  signal?: AbortSignal;
 }
 
 export interface OrchestratorResult {
@@ -132,6 +145,12 @@ export class Orchestrator {
       mode: "daily",
       access: input.access,
       model: input.model,
+      runId: input.runId,
+      taskId: input.taskId,
+      onEvent: input.onEvent,
+      onHarnessEvent: input.onHarnessEvent,
+      onRunStart: input.onRunStart,
+      signal: input.signal,
     });
     return {
       runId: res.runId,
@@ -222,6 +241,19 @@ export class Orchestrator {
     return contract.tests.commands.map((c) => ({ id: c.id, command: c.command, required: c.required }));
   }
 
+  /** Terminal result for a cancelled run: emits run.failed with status "cancelled" so every mode ends consistently. */
+  private cancelledResult(
+    log: EventLog,
+    runId: string,
+    taskId: string,
+    mode: ModeKind,
+    runDir: string,
+    candidates: { attemptId: string; harnessId: string; status: string }[],
+  ): OrchestratorResult {
+    log.emit("run.failed", { status: "cancelled" });
+    return { runId, taskId, mode, status: "cancelled", winner: null, runDir, summary: "run cancelled", candidates };
+  }
+
   /** Run one candidate inside an already-created envelope. Never creates/disposes the envelope. */
   private async runCandidateInEnvelope(
     adapter: HarnessAdapter,
@@ -234,6 +266,8 @@ export class Orchestrator {
     paths: ReturnType<ArtifactStore["runPaths"]>,
     wsm: WorkspaceManager,
     ledger: BudgetLedger,
+    onHarnessEvent?: (event: HarnessEvent) => void,
+    signal?: AbortSignal,
   ): Promise<CandidateRun> {
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
@@ -247,15 +281,28 @@ export class Orchestrator {
     let cost = 0;
     let costEstimated = false;
     let errored = false;
-    for await (const ev of adapter.run(spec)) {
-      if (ev.type === "usage" && ev.usage?.cost_usd) {
-        cost += ev.usage.cost_usd;
-        if (ev.usage.estimated) costEstimated = true;
+    const onAbort = () => {
+      void adapter.cancel?.(spec.session_id)?.catch(() => {});
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      for await (const ev of adapter.run(spec)) {
+        if (signal?.aborted) break;
+        safeInvoke(onHarnessEvent, ev);
+        if (ev.type === "usage" && ev.usage?.cost_usd) {
+          cost += ev.usage.cost_usd;
+          if (ev.usage.estimated) costEstimated = true;
+        }
+        if (ev.type === "error") errored = true;
+        // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
+        const obs = observationFromEvent(adapter.id, ev);
+        if (obs) ledger.observe(obs);
       }
-      if (ev.type === "error") errored = true;
-      // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
-      const obs = observationFromEvent(adapter.id, ev);
-      if (obs) ledger.observe(obs);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
 
     const diff = await wsm.diff(envelope);
@@ -310,13 +357,14 @@ export class Orchestrator {
   }
 
   private async runRace(input: RunInput, mode: ModeKind): Promise<OrchestratorResult> {
-    const taskId = newId("task");
-    const runId = newId("run");
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     const wsm = new WorkspaceManager(input.repoRoot);
 
+    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
     const contract = this.buildContract(input, taskId, mode);
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
@@ -340,6 +388,7 @@ export class Orchestrator {
     const runs: CandidateRun[] = [];
     let budgetStopped = false;
     for (let i = 0; i < adapters.length; i++) {
+      if (input.signal?.aborted) break;
       const adapter = adapters[i] as HarnessAdapter;
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
       const label = `Candidate ${LABELS[i] ?? i + 1}`;
@@ -356,7 +405,7 @@ export class Orchestrator {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
         envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
-          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger,
+          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, input.onHarnessEvent, input.signal,
         );
         ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
@@ -368,6 +417,21 @@ export class Orchestrator {
       } finally {
         if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
       }
+    }
+
+    if (input.signal?.aborted) {
+      return this.cancelledResult(
+        log,
+        runId,
+        taskId,
+        mode,
+        paths.root,
+        runs.map((r) => ({
+          attemptId: r.attemptId,
+          harnessId: r.harnessId,
+          status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
+        })),
+      );
     }
 
     if (runs.length === 0) {
@@ -392,7 +456,7 @@ export class Orchestrator {
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
-            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger,
+            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, input.onHarnessEvent, input.signal,
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
           const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
@@ -486,16 +550,17 @@ export class Orchestrator {
   }
 
   private async runConvergence(input: RunInput, mode: ModeKind, maxAttempts: number | null): Promise<OrchestratorResult> {
-    const taskId = newId("task");
-    const runId = newId("run");
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     const wsm = new WorkspaceManager(input.repoRoot);
     const readiness = new ReadinessLedger();
     const contract = this.buildContract(input, taskId, mode);
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
 
     const reviewDir = join(paths.root, "review-evidence");
@@ -525,6 +590,7 @@ export class Orchestrator {
     try {
       envelope = await wsm.create({ taskId, attemptId: "converge", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
       for (;;) {
+        if (input.signal?.aborted) break;
         attempt += 1;
         const attemptId = `a${String(attempt).padStart(2, "0")}`;
         const lease = ledger.reserve({ taskId, attemptId, intent: "repair", harnessId: adapter.id });
@@ -540,7 +606,7 @@ export class Orchestrator {
 
         let run: CandidateRun;
         try {
-          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger);
+          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.onHarnessEvent, input.signal);
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         } catch (err) {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
@@ -603,7 +669,13 @@ export class Orchestrator {
       if (envelope) await wsm.dispose(envelope);
     }
 
-    const status: RunStatus = converged ? "success" : exhausted ? "exhausted" : "not_converged";
+    const status: RunStatus = input.signal?.aborted
+      ? "cancelled"
+      : converged
+        ? "success"
+        : exhausted
+          ? "exhausted"
+          : "not_converged";
 
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
     if (lastRun) {
@@ -638,22 +710,50 @@ export class Orchestrator {
 
   /** plan mode: multi-harness planning -> aggregate -> (optional) plan review -> SpecPack. Read-only. */
   private async runPlan(input: RunInput): Promise<OrchestratorResult> {
-    const taskId = newId("task");
-    const runId = newId("run");
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
     const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined });
     const plans: { id: string; text: string }[] = [];
     for (const adapter of adapters) {
+      if (input.signal?.aborted) break;
       const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "plan", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
       const parts: string[] = [];
-      for await (const ev of adapter.run(spec)) if (ev.type === "message" && ev.text) parts.push(ev.text);
+      const onAbort = () => {
+        void adapter.cancel?.(spec.session_id)?.catch(() => {});
+      };
+      if (input.signal) {
+        if (input.signal.aborted) onAbort();
+        else input.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      try {
+        for await (const ev of adapter.run(spec)) {
+          if (input.signal?.aborted) break;
+          safeInvoke(input.onHarnessEvent, ev);
+          if (ev.type === "message" && ev.text) parts.push(ev.text);
+        }
+      } finally {
+        input.signal?.removeEventListener("abort", onAbort);
+      }
       const text = parts.join("\n").trim() || "(no output)";
       plans.push({ id: adapter.id, text });
       store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
+    }
+
+    if (input.signal?.aborted) {
+      return this.cancelledResult(
+        log,
+        runId,
+        taskId,
+        "plan",
+        paths.root,
+        plans.map((p) => ({ attemptId: "plan", harnessId: p.id, status: "cancelled" })),
+      );
     }
 
     const reviewers = await this.resolveReviewers();
@@ -700,11 +800,12 @@ export class Orchestrator {
 
   /** readonly_swarm: single read-only audit/map report. */
   private async runAudit(input: RunInput): Promise<OrchestratorResult> {
-    const taskId = newId("task");
-    const runId = newId("run");
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "readonly_swarm", prompt: redactSecrets(input.prompt) });
 
     const adapter = input.harnesses?.[0]
@@ -713,7 +814,27 @@ export class Orchestrator {
 
     const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "audit", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
     const parts: string[] = [];
-    for await (const ev of adapter.run(spec)) if (ev.type === "message" && ev.text) parts.push(ev.text);
+    const onAbort = () => {
+      void adapter.cancel?.(spec.session_id)?.catch(() => {});
+    };
+    if (input.signal) {
+      if (input.signal.aborted) onAbort();
+      else input.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      for await (const ev of adapter.run(spec)) {
+        if (input.signal?.aborted) break;
+        safeInvoke(input.onHarnessEvent, ev);
+        if (ev.type === "message" && ev.text) parts.push(ev.text);
+      }
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
+    }
+    if (input.signal?.aborted) {
+      return this.cancelledResult(log, runId, taskId, "readonly_swarm", paths.root, [
+        { attemptId: "a01", harnessId: adapter.id, status: "cancelled" },
+      ]);
+    }
     const report = parts.join("\n").trim() || "(no output)";
     store.writeText(join(paths.finalDir, "report.md"), `# Audit report\n\n${redactSecrets(report)}\n`);
     log.emit("run.completed", { status: "success" });

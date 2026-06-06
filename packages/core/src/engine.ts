@@ -1,9 +1,16 @@
 import { join } from "node:path";
-import type { AccessProfile, ModeKind, RunStatus, WorkProduct as WorkProductType } from "@claudex/schema";
+import type {
+  AccessProfile,
+  HarnessEvent,
+  ModeKind,
+  RunEvent,
+  RunStatus,
+  WorkProduct as WorkProductType,
+} from "@claudex/schema";
 import { HarnessRunSpec, TaskContract, WorkProduct } from "@claudex/schema";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { EventLog } from "@claudex/event-log";
-import { hashJson, newId, nowIso, redactSecrets } from "@claudex/util";
+import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
 import type { AdapterRegistry } from "./adapter.js";
 import { HarnessUnavailableError } from "./errors.js";
 
@@ -18,6 +25,17 @@ export interface RunInput {
   access?: AccessProfile;
   /** Optional model hint forwarded to the harness. */
   model?: string;
+  /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
+  runId?: string;
+  taskId?: string;
+  /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
+  onEvent?: (event: RunEvent) => void;
+  /** In-process sink for the full per-harness event stream (richer than RunEvent). */
+  onHarnessEvent?: (event: HarnessEvent) => void;
+  /** Called once when the run id/dir are known, before any harness work begins. */
+  onRunStart?: (info: { runId: string; taskId: string; runDir: string }) => void;
+  /** Cancellation: aborts the run and cancels in-flight harness work. */
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -56,13 +74,14 @@ export class ExecutionEngine {
   }
 
   async run(input: RunInput): Promise<RunResult> {
-    const taskId = newId("task");
-    const runId = newId("run");
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
     const mode: ModeKind = input.mode ?? "daily";
 
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
 
     const contract = TaskContract.parse({
@@ -100,9 +119,22 @@ export class ExecutionEngine {
     let status: RunStatus = "success";
     let errorText = "";
 
+    const onAbort = () => {
+      void adapter.cancel?.(sessionId)?.catch(() => {});
+    };
+    if (input.signal) {
+      if (input.signal.aborted) onAbort();
+      else input.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     try {
       for await (const ev of adapter.run(spec)) {
+        if (input.signal?.aborted) {
+          status = "cancelled";
+          break;
+        }
         log.emit("harness.event", { harness_id: adapter.id, event_type: ev.type });
+        safeInvoke(input.onHarnessEvent, ev);
         if (ev.type === "message" && ev.text) messages.push(ev.text);
         if (ev.type === "file_change") {
           const p = ev.payload?.["path"];
@@ -115,8 +147,14 @@ export class ExecutionEngine {
         }
       }
     } catch (err) {
-      status = "failed";
-      errorText = err instanceof Error ? err.message : String(err);
+      if (input.signal?.aborted) {
+        status = "cancelled";
+      } else {
+        status = "failed";
+        errorText = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
     }
 
     log.emit("harness.completed", { harness_id: adapter.id, status, cost_usd: costUsd });
@@ -147,7 +185,7 @@ export class ExecutionEngine {
       `# Run ${runId}\n\n- Harness: ${adapter.id}\n- Status: ${status}\n- Cost: $${costUsd.toFixed(4)}\n\n## Output\n\n${redactSecrets(summary)}\n`,
     );
     log.emit("work_product.emitted", { kind: "patch", work_product_id: workProduct.id });
-    log.emit(status === "failed" ? "run.failed" : "run.completed", { status });
+    log.emit(status === "success" ? "run.completed" : "run.failed", { status });
 
     return {
       runId,

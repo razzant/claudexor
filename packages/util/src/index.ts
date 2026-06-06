@@ -113,3 +113,17 @@ export function redactSecrets(text: string): string {
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, "[redacted]");
   return out;
 }
+
+/**
+ * Invoke an optional observer callback without letting its errors affect the
+ * caller. Observers (GUI/service event sinks, run-start hooks) are untrusted:
+ * a throwing observer must never change canonical run state or terminal status.
+ */
+export function safeInvoke<T>(fn: ((arg: T) => void) | undefined, arg: T): void {
+  if (!fn) return;
+  try {
+    fn(arg);
+  } catch {
+    /* observer errors are isolated from control-plane state */
+  }
+}

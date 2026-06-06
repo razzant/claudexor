@@ -11,6 +11,13 @@ export class EventLog {
     private readonly path: string,
     private readonly runId: string,
     private readonly taskId: string,
+    /**
+     * Optional in-process sink invoked after each event is persisted. Lets a
+     * long-running service / GUI observe the live RunEvent stream without
+     * tailing the file. The file remains the canonical log; a throwing sink
+     * must never break a run, so sink errors are swallowed.
+     */
+    private readonly onEmit?: (event: RunEvent) => void,
   ) {}
 
   /** Append a typed run event. Validates against the schema before writing. */
@@ -23,6 +30,13 @@ export class EventLog {
       payload,
     });
     appendLine(this.path, JSON.stringify(event));
+    if (this.onEmit) {
+      try {
+        this.onEmit(event);
+      } catch {
+        /* sink errors must never break the canonical run */
+      }
+    }
     return event;
   }
 

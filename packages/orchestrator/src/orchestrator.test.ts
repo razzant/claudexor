@@ -181,4 +181,92 @@ describe("Orchestrator", () => {
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
+
+  it("surfaces runId early and streams events via in-proc hooks (daily)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry });
+    const runEvents: string[] = [];
+    const harnessEvents: string[] = [];
+    let startedRunId: string | null = null;
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "daily",
+      harnesses: ["fake-success"],
+      onRunStart: (i) => {
+        startedRunId = i.runId;
+      },
+      onEvent: (e) => runEvents.push(e.type),
+      onHarnessEvent: (e) => harnessEvents.push(e.type),
+    });
+    expect(startedRunId).toBe(res.runId);
+    expect(runEvents).toContain("run.created");
+    expect(runEvents).toContain("run.completed");
+    expect(harnessEvents).toContain("message");
+  });
+
+  it("honors a pre-aborted signal (daily -> cancelled, no harness work forwarded)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry });
+    const ac = new AbortController();
+    ac.abort();
+    const harnessEvents: string[] = [];
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "daily",
+      harnesses: ["fake-success"],
+      signal: ac.signal,
+      onHarnessEvent: (e) => harnessEvents.push(e.type),
+    });
+    expect(res.status).toBe("cancelled");
+    expect(harnessEvents.length).toBe(0);
+  });
+
+  it("isolates a throwing onHarnessEvent observer (daily stays success)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "daily",
+      harnesses: ["fake-success"],
+      onHarnessEvent: () => {
+        throw new Error("observer boom");
+      },
+    });
+    expect(res.status).toBe("success");
+  });
+
+  it("isolates a throwing onHarnessEvent observer in best_of_n (candidate not failed by observer)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "best_of_n",
+      harnesses: ["fake-success"],
+      n: 1,
+      onHarnessEvent: () => {
+        throw new Error("observer boom");
+      },
+    });
+    expect(res.status).toBe("success");
+  });
+
+  it("a pre-aborted signal yields a cancelled result (plan + best_of_n, no misleading errors)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const ac = new AbortController();
+    ac.abort();
+    const plan = await orch.run({ repoRoot: repo, prompt: "x", mode: "plan", harnesses: ["fake-success"], signal: ac.signal });
+    expect(plan.status).toBe("cancelled");
+    const race = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 2, signal: ac.signal });
+    expect(race.status).toBe("cancelled");
+  });
 });
