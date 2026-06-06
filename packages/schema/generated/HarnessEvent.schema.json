@@ -1,0 +1,74 @@
+{
+  "$ref": "#/definitions/HarnessEvent",
+  "definitions": {
+    "HarnessEvent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "started",
+            "thinking",
+            "message",
+            "tool_call",
+            "file_change",
+            "usage",
+            "error",
+            "completed"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cached_input_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cost_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "estimated": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "observed_model": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

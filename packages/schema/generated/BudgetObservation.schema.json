@@ -1,0 +1,66 @@
+{
+  "$ref": "#/definitions/BudgetObservation",
+  "definitions": {
+    "BudgetObservation": {
+      "type": "object",
+      "properties": {
+        "harness_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "native",
+            "observed",
+            "manual",
+            "unknown"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "spend",
+            "rate_limited",
+            "used_percent",
+            "cooldown",
+            "reset_hint",
+            "manual"
+          ]
+        },
+        "usd": {
+          "type": "number"
+        },
+        "used_percent": {
+          "type": "number"
+        },
+        "resets_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cooldown_until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "harness_id",
+        "ts",
+        "quality",
+        "kind"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
