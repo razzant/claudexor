@@ -181,4 +181,28 @@ describe("Orchestrator", () => {
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
+
+  it("in-place convergence runs against a non-git live dir and never deletes it", async () => {
+    // A plain (non-git) directory standing in for a stateful benchmark container's /app.
+    const dir = mkdtempSync(join(tmpdir(), "claudex-orch-inplace-"));
+    writeFileSync(join(dir, "task.txt"), "do the thing\n");
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    // Two clean cross-family reviewers -> review-only convergence succeeds on attempt 1.
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: dir,
+      prompt: "x",
+      mode: "max_attempts",
+      harnesses: ["fake-success"],
+      attempts: 2,
+      inPlace: true,
+      access: "full",
+    });
+    expect(res.status).toBe("success");
+    // The live dir and its file survive (dispose must not delete the tree in-place).
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, "task.txt"))).toBe(true);
+    // No scoped envelope leaks after dispose.
+    expect(existsSync(join(dir, ".claudex", "workspaces", res.taskId, "converge"))).toBe(false);
+  });
 });

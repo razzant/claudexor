@@ -56,4 +56,32 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.worktree_path)).toBe(true);
     await mgr.dispose(env);
   });
+
+  it("in-place: works on a non-git dir, diffs via snapshot, and dispose never deletes the live tree", async () => {
+    // A plain (non-git) directory stands in for a benchmark container's /app.
+    const dir = mkdtempSync(join(tmpdir(), "claudex-inplace-"));
+    writeFileSync(join(dir, "a.txt"), "one\n");
+    const mgr = new WorkspaceManager(dir);
+
+    const env = await mgr.create({ taskId: "t-ip", attemptId: "converge", inPlace: true });
+    // The envelope points at the live tree; base_sha is null (no git) and scoped HOME is outside it.
+    expect(env.worktree_path).toBe(dir);
+    expect(env.base_sha).toBeNull();
+    expect(existsSync(env.harness_config_dirs["codex_home"] as string)).toBe(true);
+
+    // Simulate the harness mutating the live tree in place.
+    writeFileSync(join(dir, "a.txt"), "two\n");
+    writeFileSync(join(dir, "b.txt"), "new file\n");
+    const diff = await mgr.diff(env);
+    expect(diff).toContain("b.txt");
+
+    await mgr.dispose(env);
+    // The live tree and its files survive dispose (never rm the repo root)...
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, "a.txt"))).toBe(true);
+    expect(existsSync(join(dir, "b.txt"))).toBe(true);
+    // ...but the scoped envelope base (home + baseline) is removed.
+    expect(existsSync(env.home_dir)).toBe(false);
+    expect(existsSync(join(dir, ".claudex", "workspaces", "t-ip", "converge"))).toBe(false);
+  });
 });

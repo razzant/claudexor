@@ -1,8 +1,8 @@
-import { cpSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudex/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudex/schema";
-import { WorkspaceError } from "@claudex/core";
+import { runCapture, WorkspaceError } from "@claudex/core";
 import { ensureDir, newId, nowIso } from "@claudex/util";
 import {
   diffStaged,
@@ -23,6 +23,14 @@ export interface CreateEnvelopeOptions {
   accessProfile?: AccessProfile;
   dirtyPolicy?: DirtyPolicy;
   ports?: number;
+  /**
+   * Run against the live `repoRoot` directly instead of an isolated git worktree.
+   * Used for stateful benchmark containers (e.g. Terminal-Bench `/app`) that may
+   * not be a git repo and whose runtime STATE — not a patch — is the deliverable.
+   * `dispose()` never deletes the live tree in this mode; a best-effort baseline
+   * snapshot backs `diff()` and reviewers also read the live tree directly.
+   */
+  inPlace?: boolean;
 }
 
 /**
@@ -37,7 +45,64 @@ export class WorkspaceManager {
     return join(this.repoRoot, ".claudex", "workspaces");
   }
 
+  /** The scoped envelope base for a task/attempt. The sole on-disk root we delete on dispose. */
+  private envelopeBase(taskId: string, attemptId: string): string {
+    return join(this.workspacesDir(), taskId, attemptId);
+  }
+
   async create(opts: CreateEnvelopeOptions): Promise<WorkspaceEnvelope> {
+    // Envelope base holds scoped dirs (HOME + per-harness config) and, for git
+    // mode, the worktree as a subdir — so harness-written HOME state (auth tokens,
+    // caches, plugins, session logs) lives outside the work tree and never lands
+    // in a diff.
+    const base = this.envelopeBase(opts.taskId, opts.attemptId);
+    ensureDir(base);
+    const homeDir = join(base, "home");
+    const envDir = join(base, "env");
+    const logsDir = join(base, "logs");
+    const artifactsDir = join(base, "artifacts");
+    const codexHome = join(homeDir, ".codex");
+    const claudeConfig = join(homeDir, ".claude");
+    const cursorConfig = join(homeDir, ".cursor");
+    const opencodeConfig = join(homeDir, ".config", "opencode");
+    for (const d of [homeDir, envDir, logsDir, artifactsDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) {
+      ensureDir(d);
+    }
+    const harnessConfigDirs = {
+      codex_home: codexHome,
+      claude_config: claudeConfig,
+      cursor_config: cursorConfig,
+      opencode_config: opencodeConfig,
+    };
+    const ports = await allocatePorts(opts.ports ?? 0);
+
+    // In-place mode: mutate the live repoRoot directly (no git, no worktree). Used
+    // for stateful benchmark containers where the runtime state is the deliverable.
+    if (opts.inPlace) {
+      this.snapshotBaseline(base);
+      return WorkspaceEnvelopeSchema.parse({
+        id: newId("env"),
+        task_id: opts.taskId,
+        attempt_id: opts.attemptId,
+        repo_root: this.repoRoot,
+        base_ref: opts.baseRef ?? "HEAD",
+        base_sha: null,
+        worktree_path: this.repoRoot,
+        branch_name: "inplace",
+        env_dir: envDir,
+        home_dir: homeDir,
+        harness_config_dirs: harnessConfigDirs,
+        ports: { allocated: ports },
+        services: [],
+        sandbox: { mode: "none" },
+        policy_profile: opts.accessProfile ?? "workspace_write",
+        dirty_policy: opts.dirtyPolicy ?? "refuse",
+        logs_dir: logsDir,
+        artifacts_dir: artifactsDir,
+        created_at: nowIso(),
+      });
+    }
+
     if (!(await isGitRepo(this.repoRoot))) {
       throw new WorkspaceError(`not a git repository: ${this.repoRoot}`);
     }
@@ -59,11 +124,6 @@ export class WorkspaceManager {
       }
     }
 
-    // Envelope base holds the worktree plus scoped dirs as SIBLINGS. The worktree
-    // is a subdir so that harness-written HOME state (auth tokens, caches, plugins,
-    // session logs) lives outside the git working tree and never lands in the diff.
-    const base = join(this.workspacesDir(), opts.taskId, opts.attemptId);
-    ensureDir(base);
     const path = join(base, "tree");
     const branch = `claudex/${opts.taskId}/${opts.attemptId}`;
     await worktreeAdd(this.repoRoot, path, branch, baseSha);
@@ -72,20 +132,6 @@ export class WorkspaceManager {
     if (dirty && dirtyPolicy === "copy") {
       this.copyDirtyFiles(porcelain, path);
     }
-
-    const homeDir = join(base, "home");
-    const envDir = join(base, "env");
-    const logsDir = join(base, "logs");
-    const artifactsDir = join(base, "artifacts");
-    const codexHome = join(homeDir, ".codex");
-    const claudeConfig = join(homeDir, ".claude");
-    const cursorConfig = join(homeDir, ".cursor");
-    const opencodeConfig = join(homeDir, ".config", "opencode");
-    for (const d of [homeDir, envDir, logsDir, artifactsDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) {
-      ensureDir(d);
-    }
-
-    const ports = await allocatePorts(opts.ports ?? 0);
 
     return WorkspaceEnvelopeSchema.parse({
       id: newId("env"),
@@ -98,12 +144,7 @@ export class WorkspaceManager {
       branch_name: branch,
       env_dir: envDir,
       home_dir: homeDir,
-      harness_config_dirs: {
-        codex_home: codexHome,
-        claude_config: claudeConfig,
-        cursor_config: cursorConfig,
-        opencode_config: opencodeConfig,
-      },
+      harness_config_dirs: harnessConfigDirs,
       ports: { allocated: ports },
       services: [],
       sandbox: { mode: "none" },
@@ -113,6 +154,28 @@ export class WorkspaceManager {
       artifacts_dir: artifactsDir,
       created_at: nowIso(),
     });
+  }
+
+  /**
+   * Best-effort baseline copy of the live tree for in-place diff(). Copies each
+   * top-level entry individually (skipping heavy/ephemeral dirs, notably `.claudex`
+   * which holds this base) — this both prunes noise and avoids Node's "cannot copy
+   * a directory into its own subdirectory" guard, since the baseline lives under
+   * `.claudex`. On any failure the baseline is simply absent and diff() returns
+   * empty; reviewers still read the live tree directly.
+   */
+  private snapshotBaseline(base: string): void {
+    const baseline = join(base, "baseline");
+    const skip = new Set([".git", ".claudex", "node_modules", "__pycache__", ".venv", "venv"]);
+    try {
+      ensureDir(baseline);
+      for (const entry of readdirSync(this.repoRoot)) {
+        if (skip.has(entry)) continue;
+        cpSync(join(this.repoRoot, entry), join(baseline, entry), { recursive: true });
+      }
+    } catch {
+      /* baseline unavailable -> diff() falls back to empty */
+    }
   }
 
   private copyDirtyFiles(porcelain: string, destRoot: string): void {
@@ -138,25 +201,54 @@ export class WorkspaceManager {
   }
 
   async diff(env: WorkspaceEnvelope): Promise<string> {
+    // In-place: there is no git worktree. Diff the best-effort baseline snapshot
+    // against the live tree; if no baseline was captured, return empty (reviewers
+    // read the live tree directly, and arbitration treats diffSize as optional).
+    if (env.worktree_path === env.repo_root) {
+      const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
+      if (!existsSync(baseline)) return "";
+      try {
+        const r = await runCapture(
+          "diff",
+          ["-ruN", "-x", ".git", "-x", ".claudex", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
+          { timeoutMs: 120_000 },
+        );
+        const CAP = 200_000;
+        return r.stdout.length > CAP ? r.stdout.slice(0, CAP) + "\n... [diff truncated]\n" : r.stdout;
+      } catch {
+        // best-effort: if `diff` is unavailable the loop still works (reviewers read the live tree)
+        return "";
+      }
+    }
     return diffStaged(env.worktree_path);
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {
+    // In-place envelopes point worktree_path at the live repo root; NEVER remove a
+    // worktree or the tree itself in that case.
+    const inPlace = env.worktree_path === env.repo_root;
+    if (!inPlace) {
+      try {
+        await worktreeRemove(this.repoRoot, env.worktree_path);
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Remove only the scoped envelope base (worktree + scoped home/env/logs/artifacts/
+    // baseline, including any seeded credentials), derived from task/attempt ids.
+    // For git mode this equals dirname(worktree_path); for in-place it is a sibling
+    // under `.claudex/workspaces`, so deriving from ids is exactly what prevents
+    // dispose() from ever deleting the live tree.
     try {
-      await worktreeRemove(this.repoRoot, env.worktree_path);
+      rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
-    // Remove the whole envelope base (worktree + scoped home/env/logs/artifacts),
-    // including any seeded credentials, so nothing sensitive lingers on disk.
-    // Invariant: create() is the sole producer of worktree_path and always sets it to
-    // `<workspacesDir>/<taskId>/<attemptId>/tree`, so dirname() is exactly that unique base.
     try {
-      rmSync(dirname(env.worktree_path), { recursive: true, force: true });
+      await worktreePrune(this.repoRoot);
     } catch {
-      /* best-effort */
+      /* best-effort (repo may not be git in in-place mode) */
     }
-    await worktreePrune(this.repoRoot);
   }
 
   async prune(): Promise<void> {
