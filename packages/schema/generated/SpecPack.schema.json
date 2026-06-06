@@ -1,0 +1,336 @@
+{
+  "$ref": "#/definitions/SpecPack",
+  "definitions": {
+    "SpecPack": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "default": 1
+        },
+        "frozen": {
+          "type": "boolean",
+          "default": false
+        },
+        "intent": {
+          "type": "object",
+          "properties": {
+            "raw": {
+              "type": "string"
+            },
+            "normalized": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "raw"
+          ],
+          "additionalProperties": false
+        },
+        "summary": {
+          "type": "string",
+          "default": ""
+        },
+        "success_criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecPack/properties/id"
+              },
+              "behavior": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "id",
+              "behavior"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "non_goals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "forbidden_approaches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "decided_tradeoffs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "allowed_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "forbidden_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "protected_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "compatibility": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecPack/properties/id"
+              },
+              "command": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "id",
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecPack/properties/id"
+              },
+              "title": {
+                "type": "string"
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecPack/properties/id"
+                },
+                "default": []
+              },
+              "done": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "id",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecPack/properties/id"
+              },
+              "claim": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "resolved"
+                ],
+                "default": "open"
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "id",
+              "claim"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "interview": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/SpecPack/properties/id"
+                  },
+                  "tier": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "single",
+                      "multi",
+                      "text"
+                    ],
+                    "default": "single"
+                  },
+                  "options": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "$ref": "#/definitions/SpecPack/properties/id"
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  },
+                  "allow_text": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "rationale": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            },
+            "answers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "question_id": {
+                    "$ref": "#/definitions/SpecPack/properties/id"
+                  },
+                  "option_ids": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/SpecPack/properties/id"
+                    },
+                    "default": []
+                  },
+                  "text": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "question_id"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "questions": [],
+            "answers": []
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "created_at",
+        "intent"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -7,6 +7,7 @@
  */
 export * from "./primitives.js";
 export * from "./task.js";
+export * from "./spec.js";
 export * from "./context.js";
 export * from "./harness.js";
 export * from "./review.js";

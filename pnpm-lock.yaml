@@ -287,6 +287,15 @@ importers:
         specifier: workspace:*
         version: link:../util
 
+  packages/interview:
+    dependencies:
+      '@claudex/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/mcp-server: {}
 
   packages/orchestrator:
