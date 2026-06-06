@@ -21,7 +21,7 @@ function notImplemented(id: string, docs: string): BenchmarkScaffold {
 
 export const terminalBench = notImplemented(
   "terminal-bench-2.1",
-  "https://www.tbench.ai/ — wrap the Terminal-Bench harness; solver runs `claudex run` per task in the provided environment.",
+  "Run via the Harbor suite at benchmarks/terminal_bench/ (in-place convergence + cross-family review), not this in-CLI scaffold. See benchmarks/terminal_bench/README.md.",
 );
 
 export const osWorld = notImplemented(

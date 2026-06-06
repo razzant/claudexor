@@ -1,0 +1,12 @@
+# Terminal-Bench 2.1 pilot task set. One full task id per line (# comments / blanks ignored).
+# Task ids carry the dataset org prefix; list all 89 with:
+#   python3 -c "import asyncio;from harbor.registry.client.package import PackageDatasetClient as C;\
+#   print('\n'.join(sorted(t.get_name() for t in asyncio.run(C().get_dataset_metadata('terminal-bench/terminal-bench-2-1@latest')).task_ids)))"
+#
+# The same ids go to every arm so the comparison is apples-to-apples. This is a light,
+# moderate subset (avoids multi-hour ML/build/qemu tasks) suitable for a first pilot.
+terminal-bench/sqlite-db-truncate
+terminal-bench/password-recovery
+terminal-bench/log-summary-date-ranges
+terminal-bench/regex-log
+terminal-bench/openssl-selfsigned-cert
