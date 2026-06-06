@@ -158,6 +158,12 @@ importers:
         specifier: workspace:*
         version: link:../util
 
+  packages/control-api:
+    dependencies:
+      '@claudex/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/core:
     dependencies:
       '@claudex/artifact-store':
