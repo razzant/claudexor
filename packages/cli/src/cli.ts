@@ -13,16 +13,24 @@ import {
 } from "@claudex/benchmark";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { type DeliverMode, checkPatch, deliver } from "@claudex/delivery";
-import { readTextSafe } from "@claudex/util";
+import { ensureDir, hashJson, readTextSafe, writeJson } from "@claudex/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
 import { AcpServer } from "@claudex/acp-server";
 import { initProjectConfig } from "@claudex/config";
-import type { ModeKind } from "@claudex/schema";
+import { type ModeKind, SpecPack as SpecPackSchema } from "@claudex/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
 import { type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
+import {
+  extractQuestionsFromPlan,
+  freezeSpecFromGrounding,
+  loadPreviousSpec,
+  persistSpec,
+  readAnswers,
+  type SpecCommandResult,
+} from "./spec.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
@@ -47,6 +55,7 @@ Usage:
   claudex run "<prompt>" [opts]         Run a task (default mode: daily)
   claudex race "<prompt>" [--n N]       Best-of-n tournament with cross-family review
   claudex plan "<prompt>"               Read-only planning report
+  claudex spec "<prompt>" [--answers file]  Multi-harness plan grounding -> quiz -> frozen SpecPack
   claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
   claudex audit | map                   Read-only repo audit / map
   claudex inspect <run_id>              Inspect a run's decision + artifacts
@@ -72,6 +81,9 @@ Options:
   --model <id>             Model hint forwarded to the harness (daily)
   --in-place               Convergence runs against the live cwd (no git worktree);
                            for stateful benchmark containers (e.g. Terminal-Bench /app)
+  --answers <file>         Answers JSON for claudex spec (batch mode)
+  --previous <spec.json>   Previous SpecPack JSON for section-level diff
+  --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
   --json                   Machine-readable JSON output
 `;
 
@@ -138,7 +150,31 @@ function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
 }
 
 async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Promise<number> {
-  const prompt = args._.slice(1).join(" ").trim();
+  const rawPrompt = args._.slice(1).join(" ").trim();
+  const specPath = flagStr(args, "spec");
+  const spec = specPath ? SpecPackSchema.parse(JSON.parse(readFileSync(specPath, "utf8"))) : null;
+  const prompt = spec
+    ? [
+        rawPrompt || spec.intent.raw,
+        "",
+        "Use this frozen Claudex SpecPack as the contract. Do not re-litigate settled choices; implement against the acceptance criteria and tests.",
+        "",
+        `Spec id: ${spec.id} v${spec.version}`,
+        `Spec hash: ${hashJson(spec)}`,
+        "",
+        "## Summary",
+        spec.summary || "(none)",
+        "",
+        "## Acceptance Criteria",
+        ...(spec.success_criteria.length ? spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`) : ["- (none)"]),
+        "",
+        "## Non-goals",
+        ...(spec.non_goals.length ? spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),
+        "",
+        "## Forbidden approaches",
+        ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
+      ].join("\n")
+    : rawPrompt;
   if (!prompt && mode !== "readonly_swarm") {
     process.stderr.write('claudex: missing prompt\n');
     return 2;
@@ -158,7 +194,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       harnesses: harnessList(args),
       n: intFlag(args, "n"),
       attempts: intFlag(args, "attempts") ?? null,
-      tests: testCommands(args),
+      tests: testCommands(args) ?? spec?.tests.map((t) => t.command),
       maxUsd: maxUsd ?? null,
       access: accessProfile(args),
       model: flagStr(args, "model"),
@@ -176,6 +212,93 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     return res.status === "success" ? 0 : 1;
   } catch (err) {
     process.stderr.write(`claudex: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const prompt = args._.slice(1).join(" ").trim();
+  if (!prompt) {
+    process.stderr.write("claudex: missing spec prompt\n");
+    return 2;
+  }
+  const answersPath = flagStr(args, "answers");
+  try {
+    const answers = answersPath ? readAnswers(answersPath) : null;
+    let planRunId = answers?.planRunId ?? "";
+    let planDir = answers?.planDir ?? "";
+    let planText = planDir ? (readTextSafe(join(planDir, "final", "plan.md")) ?? "") : "";
+
+    if (!planText) {
+      if (answersPath) {
+        throw new Error("answers file does not contain a usable planDir/final/plan.md; re-run without --answers to generate a fresh questions file");
+      }
+      const orch = new Orchestrator({
+        registry: buildRegistry(),
+        reviewerModels: reviewerModels(args),
+      });
+      const plan = await orch.run({
+        repoRoot: process.cwd(),
+        prompt,
+        mode: "plan",
+        harnesses: harnessList(args),
+        n: intFlag(args, "n"),
+        access: "readonly",
+      });
+      planRunId = plan.runId;
+      planDir = plan.runDir;
+      planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
+    }
+
+    const questions = extractQuestionsFromPlan(planText);
+
+    if (!answersPath) {
+      const draftDir = join(process.cwd(), ".claudex", "specs", "drafts", planRunId);
+      ensureDir(draftDir);
+      const questionsPath = join(draftDir, "questions.json");
+      writeJson(questionsPath, { prompt, planRunId, planDir, questions, answers: [] });
+      const result: SpecCommandResult = {
+        status: "questions",
+        planRunId,
+        planDir,
+        questionsPath,
+        questions,
+      };
+      if (json) printJson(result);
+      else {
+        print(`plan grounding run: ${planRunId}`);
+        print(`questions: ${questionsPath}`);
+        print(`answer with: claudex spec ${JSON.stringify(prompt)} --answers ${questionsPath}${harnessList(args) ? ` --harness ${(harnessList(args) ?? []).join(",")}` : ""}`);
+      }
+      return 0;
+    }
+
+    const spec = await freezeSpecFromGrounding(prompt, planText, answers ?? readAnswers(answersPath));
+    const persisted = persistSpec(process.cwd(), spec, planText, loadPreviousSpec(flagStr(args, "previous")));
+    const specJsonPath = join(persisted.specDir, "spec.json");
+    const runHint = `claudex race --spec ${JSON.stringify(specJsonPath)}`;
+    const result: SpecCommandResult = {
+      status: "frozen",
+      planRunId,
+      planDir,
+      specId: spec.id,
+      specDir: persisted.specDir,
+      specHash: persisted.specHash,
+      runHint,
+      questions,
+      changes: persisted.changes,
+    };
+    if (json) printJson(result);
+    else {
+      print(`frozen SpecPack: ${spec.id} v${spec.version}`);
+      print(`  dir: ${persisted.specDir}`);
+      print(`  hash: ${persisted.specHash}`);
+      print(`  native projection: ${join(persisted.specDir, "PLANS.md")}`);
+      print(`run: ${runHint}`);
+    }
+    return 0;
+  } catch (err) {
+    process.stderr.write(`claudex spec: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -271,8 +394,13 @@ async function main(): Promise<number> {
           process.stderr.write(`claudex: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
           return 2;
         }
+        if (mode === "daily" && flagStr(args, "spec")) {
+          process.stderr.write("claudex: --spec requires a gated mode; use 'claudex race --spec <file>' or 'claudex run --mode max-attempts --spec <file>'\n");
+          return 2;
+        }
         return orchestrate(args, mode, json);
       }
+      if (flagStr(args, "spec")) return orchestrate(args, "max_attempts", json);
       return orchestrate(args, "daily", json);
     }
 
@@ -281,6 +409,9 @@ async function main(): Promise<number> {
 
     case "plan":
       return orchestrate(args, "plan", json);
+
+    case "spec":
+      return specCommand(args, json);
 
     case "create":
       return orchestrate(args, "create", json);

@@ -121,6 +121,9 @@ importers:
       '@claudex/harness-raw-api':
         specifier: workspace:*
         version: link:../harness-raw-api
+      '@claudex/interview':
+        specifier: workspace:*
+        version: link:../interview
       '@claudex/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server

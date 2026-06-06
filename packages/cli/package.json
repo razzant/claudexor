@@ -24,6 +24,7 @@
     "@claudex/daemon": "workspace:*",
     "@claudex/mcp-server": "workspace:*",
     "@claudex/gateway": "workspace:*",
+    "@claudex/interview": "workspace:*",
     "@claudex/orchestrator": "workspace:*",
     "@claudex/harness-claude": "workspace:*",
     "@claudex/harness-codex": "workspace:*",
