@@ -28,6 +28,10 @@ async function main(): Promise<void> {
         harnesses: p.harnesses,
         n: p.n,
         attempts: p.attempts ?? null,
+        // Policy from the GUI composer / API client (applied, not just displayed).
+        maxUsd: p.maxUsd ?? null,
+        access: p.access,
+        tests: Array.isArray(p.tests) ? p.tests : undefined,
         signal: ctx.signal,
         onRunStart: ctx.onRunStart,
       });

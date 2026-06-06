@@ -63,6 +63,27 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
   };
 }
 
+/** A reviewer/planner-only adapter (like raw-api): cannot implement/edit. */
+function noImplementAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id, display_name: id, kind: "remote_api", provider_family: family,
+        capabilities: { plan: true, review: true, implement: false, edit_files: false },
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review", "plan"] });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
 const reviewers = () => [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
 
 describe("Orchestrator", () => {
@@ -114,6 +135,30 @@ describe("Orchestrator", () => {
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 3 });
     // first candidate spends 0.01 (> 0.005 cap) -> hard tier -> remaining candidates denied
     expect(res.candidates.length).toBe(1);
+  });
+
+  it("capability-gates candidates: a non-implementing harness is dropped from an implement race", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["raw-ish", noImplementAdapter("raw-ish")],
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish", "fake-success"], n: 2 });
+    // Primary candidates (a01..) must all be the implementing harness; raw-ish is excluded.
+    const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+    expect(primary.length).toBe(2);
+    expect(primary.every((c) => c.harnessId === "fake-success")).toBe(true);
+    expect(res.candidates.every((c) => c.harnessId !== "raw-ish")).toBe(true);
+  });
+
+  it("fails loudly when no available harness can perform the intent", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(
+      orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish"], n: 1 }),
+    ).rejects.toThrow(/perform 'implement'/);
   });
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {

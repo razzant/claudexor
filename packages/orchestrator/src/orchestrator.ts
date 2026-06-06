@@ -2,7 +2,9 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   GateResult,
+  HarnessCapabilities,
   HarnessEvent,
+  Intent,
   ModeKind,
   Portfolio,
   ProjectConfig,
@@ -192,8 +194,33 @@ export class Orchestrator {
     return specs;
   }
 
-  /** Resolve candidate adapters: explicit `--harness`, else available real harnesses; expand to n. */
-  private async resolveCandidateAdapters(input: RunInput): Promise<HarnessAdapter[]> {
+  /** The producing intent a candidate plays for a given mode (not hardcoded to implement). */
+  private candidateIntent(mode: ModeKind): Intent {
+    switch (mode) {
+      case "create": return "create_from_scratch";
+      default: return "implement"; // best_of_n / max_attempts / until_convergence / benchmark
+    }
+  }
+
+  /** Whether a harness's declared capabilities allow it to PRODUCE work for this intent. */
+  private supportsIntent(caps: HarnessCapabilities, intent: Intent): boolean {
+    switch (intent) {
+      case "create_from_scratch": return caps.create_from_scratch;
+      case "implement":
+      case "repair":
+      case "benchmark": return caps.implement;
+      case "synthesize": return caps.synthesize;
+      default: return true; // plan/audit/review/etc. are gated elsewhere
+    }
+  }
+
+  /**
+   * Resolve candidate adapters: explicit `--harness`, else available real harnesses, then
+   * **capability-gate** to those that can actually produce work for `intent` (e.g. a
+   * raw-API reviewer with `implement: false` is dropped from an implement race), and
+   * expand to n. Fails loudly if nothing can perform the intent.
+   */
+  private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<HarnessAdapter[]> {
     let ids = input.harnesses;
     if (!ids || ids.length === 0) {
       ids = await this.gateway.availableReal();
@@ -203,12 +230,35 @@ export class Orchestrator {
         );
       }
     }
-    const pool = ids.map((id) => this.deps.registry.get(id)).filter((a): a is HarnessAdapter => Boolean(a));
-    if (pool.length === 0) throw new HarnessUnavailableError(`none of the requested harnesses are registered: ${ids.join(", ")}`);
+    const pool: HarnessAdapter[] = [];
+    const dropped: string[] = [];
+    for (const id of ids) {
+      const adapter = this.deps.registry.get(id);
+      if (!adapter) { dropped.push(`${id} (not registered)`); continue; }
+      let caps: HarnessCapabilities | undefined;
+      try {
+        caps = (await adapter.discover()).capabilities;
+      } catch {
+        dropped.push(`${id} (unavailable)`);
+        continue;
+      }
+      if (this.supportsIntent(caps, intent)) pool.push(adapter);
+      else dropped.push(`${id} (cannot ${intent})`);
+    }
+    if (pool.length === 0) {
+      throw new HarnessUnavailableError(
+        `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
+      );
+    }
     const n = input.n ?? pool.length;
     const out: HarnessAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(pool[i % pool.length] as HarnessAdapter);
     return out;
+  }
+
+  /** Honest cross-family route proof: verified only when ≥2 DISTINCT provider families review. */
+  private routeVerified(reviewers: ReviewerSpec[]): boolean {
+    return new Set(reviewers.map((r) => r.providerFamily)).size >= 2;
   }
 
   private projectConfig(repoRoot: string): ProjectConfig | null {
@@ -275,10 +325,11 @@ export class Orchestrator {
     access: AccessProfile = "workspace_write",
     onHarnessEvent?: (event: HarnessEvent) => void,
     signal?: AbortSignal,
+    intent: Intent = "implement",
   ): Promise<CandidateRun> {
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
-      intent: "implement",
+      intent,
       prompt,
       cwd: envelope.worktree_path,
       access,
@@ -388,9 +439,9 @@ export class Orchestrator {
       tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
     });
 
-    const adapters = await this.resolveCandidateAdapters(input);
+    const adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode));
     const reviewers = await this.resolveReviewers();
-    const reviewVerified = reviewers.length >= 2;
+    const reviewVerified = this.routeVerified(reviewers);
 
     const runs: CandidateRun[] = [];
     let budgetStopped = false;
@@ -412,7 +463,7 @@ export class Orchestrator {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
         envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
-          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal,
+          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, this.candidateIntent(mode),
         );
         ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
@@ -573,10 +624,10 @@ export class Orchestrator {
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, { userIntent: input.prompt, diff: "(per-attempt)\n" });
     const reviewers = await this.resolveReviewers();
-    const reviewVerified = reviewers.length >= 2;
+    const reviewVerified = this.routeVerified(reviewers);
 
     // One envelope carried forward across attempts so the harness can repair its own work.
-    const adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined });
+    const adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined }, this.candidateIntent(mode));
     let adapterIdx = 0;
     let adapter = adapterPool[0] as HarnessAdapter;
     let envelope: WorkspaceEnvelope | undefined;
@@ -732,7 +783,7 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined });
+    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "audit");
     const plans: { id: string; text: string }[] = [];
     for (const adapter of adapters) {
       if (input.signal?.aborted) break;
