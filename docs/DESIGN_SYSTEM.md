@@ -162,7 +162,7 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Mission-control dashboard (signature screen).** A long run at a glance:
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
-    node animates (calm). 
+    node animates (calm).
   - **Candidate cards**: per-harness chips colored by `harness/*`, showing gates, cost
     (with estimated-vs-exact badge), review state.
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
