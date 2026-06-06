@@ -110,6 +110,44 @@ describe("ControlApiServer", () => {
     });
   });
 
+  it("replays only events after Last-Event-ID on reconnect (HTTP boundary)", async () => {
+    const runner: ControlRunner = async (_params, ctx) => {
+      ctx.onRunStart({ runId: "run-replay", taskId: "t", runDir: "/tmp/run-replay" });
+      ctx.onEvent({ type: "EVENT_ONE" }); // seq 1
+      ctx.onEvent({ type: "EVENT_TWO" }); // seq 2
+      ctx.onEvent({ type: "EVENT_THREE" }); // seq 3
+      return { ok: true };
+    };
+    await withServer(runner, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      const info = (await start.json()) as { runId: string };
+
+      // Reconnect requesting everything after seq 2 -> only EVENT_THREE replays.
+      const sse = await fetch(`${base}/runs/${info.runId}/events`, {
+        headers: { authorization: `Bearer ${token}`, "last-event-id": "2" },
+      });
+      const text = await sse.text();
+      expect(text).not.toContain("EVENT_ONE");
+      expect(text).not.toContain("EVENT_TWO");
+      expect(text).toContain("EVENT_THREE");
+      expect(text).toContain("id: 3");
+      expect(text).toContain("event: end");
+    });
+  });
+
+  it("returns 404 streaming an unknown/evicted run", async () => {
+    await withServer(async () => ({}), async (base) => {
+      const res = await fetch(`${base}/runs/run-does-not-exist/events`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
   it("cancels a running job via the abort signal", async () => {
     let aborted = false;
     const runner: ControlRunner = async (_params, ctx) => {

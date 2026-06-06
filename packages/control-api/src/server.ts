@@ -22,6 +22,12 @@ export interface ControlApiOptions {
   /** Port; 0 picks a free port (read it back via address()). Default 0. */
   port?: number;
   eventBus?: EventBus;
+  /**
+   * How long after a run completes to keep its in-memory handle + event buffer for
+   * reconnecting clients before eviction (ms). Bounds memory for a long-lived service.
+   * Default 5 min. Canonical history lives in .claudex/runs; late clients get a `gap`.
+   */
+  runRetentionMs?: number;
 }
 
 interface RunHandle {
@@ -55,14 +61,36 @@ function originIsLoopback(origin: string | undefined): boolean {
  * Loopback HTTP+SSE control surface. Commands are POSTs; live progress is an SSE
  * stream with Last-Event-ID replay. It binds to loopback, requires a bearer token,
  * and validates Host/Origin. It owns no scheduling logic — it calls the injected runner.
+ *
+ * Layering (decided during adversarial review): the daemon (packages/daemon) is the
+ * DURABLE job scheduler (unix socket, crash-persistent registry, queue); this surface
+ * is the LIVE observation viewport (HTTP/SSE, ephemeral in-memory fan-out). They are
+ * complementary, not duplicates. `GET /runs` here lists only in-process live runs; the
+ * durable cross-restart list is the daemon's. When control-api is wired into claudexd,
+ * its injected runner will delegate to the daemon and the two `RunContext` shapes will
+ * be unified into packages/schema.
  */
 export class ControlApiServer {
   private server?: Server;
   private readonly bus: EventBus;
   private readonly runs = new Map<string, RunHandle>();
+  private readonly evictTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly sseClients = new Set<ServerResponse>();
 
   constructor(private readonly opts: ControlApiOptions) {
     this.bus = opts.eventBus ?? new EventBus();
+  }
+
+  /** Evict a completed run's handle + event buffer after the retention window. */
+  private scheduleEvict(runId: string): void {
+    const ttl = this.opts.runRetentionMs ?? 5 * 60_000;
+    const timer = setTimeout(() => {
+      this.bus.evict(runId);
+      this.runs.delete(runId);
+      this.evictTimers.delete(timer);
+    }, ttl);
+    timer.unref?.();
+    this.evictTimers.add(timer);
   }
 
   async start(): Promise<{ host: string; port: number }> {
@@ -80,6 +108,17 @@ export class ControlApiServer {
 
   async stop(): Promise<void> {
     for (const h of this.runs.values()) h.controller.abort();
+    for (const timer of this.evictTimers) clearTimeout(timer);
+    this.evictTimers.clear();
+    // End open SSE streams so server.close() can drain instead of hanging on them.
+    for (const res of this.sseClients) {
+      try {
+        res.end();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.sseClients.clear();
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
@@ -200,6 +239,7 @@ export class ControlApiServer {
           const h = this.runs.get(ref.current.runId);
           if (h) h.state = controller.signal.aborted ? "cancelled" : "succeeded";
           this.bus.complete(ref.current.runId);
+          this.scheduleEvict(ref.current.runId);
         }
         // Guarantee a response even if the runner never called onRunStart.
         if (!responded) {
@@ -216,6 +256,7 @@ export class ControlApiServer {
           }
           this.bus.publish(ref.current.runId, "error", { message });
           this.bus.complete(ref.current.runId);
+          this.scheduleEvict(ref.current.runId);
         }
         if (!responded) {
           responded = true;
@@ -227,9 +268,19 @@ export class ControlApiServer {
 
   /** SSE stream for a run, honoring Last-Event-ID replay. */
   private streamEvents(runId: string, req: IncomingMessage, res: ServerResponse): void {
-    const headerId = Number(req.headers["last-event-id"]);
-    const queryId = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("lastEventId"));
-    const lastEventId = Number.isFinite(headerId) && headerId > 0 ? headerId : Number.isFinite(queryId) ? queryId : 0;
+    // A client only learns a runId from POST /runs (which inserts it into `runs`
+    // before responding), so an unknown id means an evicted/never-started run.
+    if (!this.runs.has(runId)) {
+      return this.json(res, 404, { error: "no such run" });
+    }
+
+    // Parse Last-Event-ID from the SSE header (preferred) or ?lastEventId=, handling
+    // 0 correctly (header "0" is a valid resume point, not "absent").
+    const rawHeader = req.headers["last-event-id"];
+    const headerId = rawHeader !== undefined ? Number(rawHeader) : Number.NaN;
+    const rawQuery = new URL(req.url ?? "/", "http://localhost").searchParams.get("lastEventId");
+    const queryId = rawQuery !== null ? Number(rawQuery) : Number.NaN;
+    const lastEventId = Number.isFinite(headerId) ? headerId : Number.isFinite(queryId) ? queryId : 0;
 
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -237,6 +288,7 @@ export class ControlApiServer {
       connection: "keep-alive",
     });
     res.write(": connected\n\n");
+    this.sseClients.add(res);
 
     const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
     let ended = false;
@@ -246,6 +298,7 @@ export class ControlApiServer {
       ended = true;
       clearInterval(heartbeat);
       unsubscribe();
+      this.sseClients.delete(res);
       res.write(`event: end\ndata: {}\n\n`);
       res.end();
     };
@@ -265,6 +318,7 @@ export class ControlApiServer {
       clearInterval(heartbeat);
       unsubscribe();
       onComplete();
+      this.sseClients.delete(res);
     };
     req.on("close", close);
     res.on("close", close);
