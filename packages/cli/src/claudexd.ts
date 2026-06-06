@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const server = new DaemonServer({
     socketPath,
     token,
-    runner: async (params) => {
+    runner: async (params, ctx) => {
       const p = (params ?? {}) as any;
       return orchestrator.run({
         repoRoot: p.repoRoot ?? process.cwd(),
@@ -24,6 +24,8 @@ async function main(): Promise<void> {
         harnesses: p.harnesses,
         n: p.n,
         attempts: p.attempts ?? null,
+        signal: ctx.signal,
+        onRunStart: ctx.onRunStart,
       });
     },
   });

@@ -1,17 +1,28 @@
 import { type Server, type Socket, createServer } from "node:net";
 import { rmSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { newId, nowIso } from "@claudex/util";
+import { newId, nowIso, pathExists, readJsonSafe, writeJson } from "@claudex/util";
 
-export type RunnerFn = (params: unknown) => Promise<unknown>;
+/** Context the daemon supplies to the runner so a job can be observed and cancelled. */
+export interface RunContext {
+  signal: AbortSignal;
+  /** Called by the runner once the run id/dir are known (lets a client tail events.jsonl). */
+  onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
+}
+
+export type RunnerFn = (params: unknown, ctx: RunContext) => Promise<unknown>;
 
 export interface DaemonOptions {
   socketPath: string;
   token: string;
   runner: RunnerFn;
+  /** Max concurrently-running jobs (parallel projects/runs). Default 4. */
+  maxConcurrent?: number;
+  /** Optional JSON file to persist the job registry across restarts (durable run list). */
+  persistPath?: string;
 }
 
-export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
 export interface JobRecord {
   id: string;
@@ -20,6 +31,11 @@ export interface JobRecord {
   result?: unknown;
   error?: string;
   createdAt: string;
+  /** Surfaced as soon as the run starts so a client can tail .claudex/runs/<runId>/events.jsonl. */
+  runId?: string;
+  runDir?: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -34,13 +50,15 @@ export class DaemonServer {
   private readonly queue: string[] = [];
   private readonly records = new Map<string, JobRecord>();
   private readonly cancelled = new Set<string>();
-  private working = false;
+  private readonly controllers = new Map<string, AbortController>();
+  private active = 0;
   private readonly startedAt = Date.now();
   private onClosed?: () => void;
 
   constructor(private readonly opts: DaemonOptions) {}
 
   async start(): Promise<void> {
+    this.load();
     try {
       rmSync(this.opts.socketPath, { force: true });
     } catch {
@@ -112,13 +130,15 @@ export class DaemonServer {
           ok: true,
           uptime_ms: Date.now() - this.startedAt,
           queue: this.queue.length,
-          running: this.working,
+          running: this.active > 0,
+          active: this.active,
           jobs: this.records.size,
         };
       case "claudex.enqueue": {
         const id = newId("job");
         this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
         this.queue.push(id);
+        this.persist();
         void this.drain();
         return { id, state: "queued" };
       }
@@ -134,6 +154,10 @@ export class DaemonServer {
         this.cancelled.add(jid);
         const rec = this.records.get(jid);
         if (rec && rec.state === "queued") rec.state = "cancelled";
+        // Abort the in-flight run; the runner (Orchestrator) honors the signal,
+        // cancels the harness, then settles this job as cancelled.
+        this.controllers.get(jid)?.abort();
+        this.persist();
         return { id: jid, cancelled: true };
       }
       case "claudex.shutdown":
@@ -144,29 +168,70 @@ export class DaemonServer {
     }
   }
 
-  private async drain(): Promise<void> {
-    if (this.working) return;
-    this.working = true;
+  private get maxConcurrent(): number {
+    return this.opts.maxConcurrent ?? 4;
+  }
+
+  /** Best-effort persistence of the job registry. Canonical run state is .claudex/runs. */
+  private persist(): void {
+    if (!this.opts.persistPath) return;
     try {
-      while (this.queue.length > 0) {
-        const id = this.queue.shift() as string;
-        const rec = this.records.get(id);
-        if (!rec) continue;
-        if (this.cancelled.has(id)) {
-          rec.state = "cancelled";
-          continue;
-        }
-        rec.state = "running";
-        try {
-          rec.result = await this.opts.runner(rec.params);
-          rec.state = "succeeded";
-        } catch (err) {
-          rec.state = "failed";
-          rec.error = err instanceof Error ? err.message : String(err);
-        }
+      writeJson(this.opts.persistPath, [...this.records.values()]);
+    } catch {
+      /* best-effort; never break a run on a persistence failure */
+    }
+  }
+
+  /** Reload the registry on startup; a fresh process cannot resume in-memory runs. */
+  private load(): void {
+    if (!this.opts.persistPath || !pathExists(this.opts.persistPath)) return;
+    const saved = readJsonSafe<JobRecord[]>(this.opts.persistPath);
+    if (!saved) return;
+    for (const rec of saved) {
+      if (rec.state === "running" || rec.state === "queued") rec.state = "interrupted";
+      this.records.set(rec.id, rec);
+    }
+  }
+
+  /** Schedule queued jobs up to the concurrency limit (non-blocking). */
+  private drain(): void {
+    while (this.active < this.maxConcurrent && this.queue.length > 0) {
+      const id = this.queue.shift() as string;
+      const rec = this.records.get(id);
+      if (!rec) continue;
+      if (this.cancelled.has(id)) {
+        rec.state = "cancelled";
+        continue;
       }
+      this.active += 1;
+      void this.runJob(id, rec);
+    }
+  }
+
+  private async runJob(id: string, rec: JobRecord): Promise<void> {
+    const controller = new AbortController();
+    this.controllers.set(id, controller);
+    rec.state = "running";
+    rec.startedAt = nowIso();
+    this.persist();
+    try {
+      rec.result = await this.opts.runner(rec.params, {
+        signal: controller.signal,
+        onRunStart: (info) => {
+          rec.runId = info.runId;
+          rec.runDir = info.runDir;
+        },
+      });
+      rec.state = controller.signal.aborted ? "cancelled" : "succeeded";
+    } catch (err) {
+      rec.state = controller.signal.aborted ? "cancelled" : "failed";
+      rec.error = err instanceof Error ? err.message : String(err);
     } finally {
-      this.working = false;
+      rec.finishedAt = nowIso();
+      this.controllers.delete(id);
+      this.active -= 1;
+      this.persist();
+      this.drain();
     }
   }
 }
