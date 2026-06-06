@@ -29,4 +29,17 @@ import Testing
         #expect(decoded["mode"]?.stringValue == "best_of_n")
         #expect(decoded["n"]?.doubleValue == 2)
     }
+
+    @Test func controlApiDiscoveryLoadsEndpointAndToken() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let token = dir.appendingPathComponent("token")
+        try "secret-token\n".write(to: token, atomically: true, encoding: .utf8)
+        let doc = dir.appendingPathComponent("control-api.json")
+        try #"{"host":"127.0.0.1","port":12345,"tokenPath":"\#(token.path)"}"#.write(to: doc, atomically: true, encoding: .utf8)
+
+        let discovery = try ControlApiDiscovery.load(from: doc)
+        #expect(discovery.baseURL.absoluteString == "http://127.0.0.1:12345")
+        #expect(try discovery.readToken() == "secret-token")
+    }
 }

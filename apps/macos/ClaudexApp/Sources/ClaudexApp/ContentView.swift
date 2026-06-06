@@ -68,6 +68,7 @@ struct SidebarView: View {
 
 struct DashboardView: View {
     let run: RunRef?
+    @State private var connectionState = "checking"
 
     var body: some View {
         ScrollView {
@@ -80,6 +81,7 @@ struct DashboardView: View {
         }
         .navigationTitle(run?.title ?? "Mission Control")
         .background(Theme.surfaceBase)
+        .task { await refreshConnection() }
     }
 
     private var header: some View {
@@ -95,6 +97,7 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            ConnectionBadge(state: connectionState)
             BudgetMeterView(spend: 0.0374, cap: 0.50)
         }
     }
@@ -107,6 +110,16 @@ struct DashboardView: View {
                     CandidateChip(candidate: candidate)
                 }
             }
+        }
+    }
+
+    private func refreshConnection() async {
+        do {
+            let discovery = try ControlApiDiscovery.load()
+            let client = try discovery.makeClient()
+            connectionState = try await client.health() ? "connected" : "unavailable"
+        } catch {
+            connectionState = "offline"
         }
     }
 }
@@ -177,6 +190,23 @@ struct BudgetMeterView: View {
                 .frame(width: 120)
                 .tint(Theme.accent)
         }
+    }
+}
+
+struct ConnectionBadge: View {
+    let state: String
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: state == "connected" ? "dot.radiowaves.left.and.right" : "bolt.slash")
+            Text(state)
+        }
+        .font(.caption)
+        .foregroundStyle(Theme.status(state == "connected" ? "success" : "blocked"))
+        .padding(.horizontal, Theme.Spacing.sm)
+        .padding(.vertical, Theme.Spacing.xs)
+        .claudexGlass(Capsule())
+        .accessibilityLabel("Daemon connection \(state)")
     }
 }
 
