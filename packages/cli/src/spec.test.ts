@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
   persistSpec,
+  readAnswers,
 } from "./spec.js";
 
 const PLAN = `# SpecPack (plan run-1)
@@ -63,5 +64,23 @@ describe("spec command helpers", () => {
     const draft = draftFromPlanAndAnswers("fix auth", PLAN, qs, { answers: [] });
     expect(draft.clarifications).toHaveLength(2);
     expect(draft.clarifications?.every((c) => c.status === "open")).toBe(true);
+  });
+
+  it("answers files preserve planDir/planRunId so freeze reuses the original plan", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudex-spec-answers-"));
+    const path = join(dir, "answers.json");
+    const body = {
+      prompt: "x",
+      planRunId: "run-original",
+      planDir: "/tmp/plan-original",
+      questions: [{ id: "q1", tier: 0, prompt: "?", kind: "text", options: [], allow_text: true }],
+      answers: [{ question_id: "q1", option_ids: [], text: "answer" }],
+    };
+    // JSON written exactly like claudex spec's questions.json draft.
+    writeFileSync(path, JSON.stringify(body), "utf8");
+    const parsed = readAnswers(path);
+    expect(parsed.planRunId).toBe("run-original");
+    expect(parsed.planDir).toBe("/tmp/plan-original");
+    expect(parsed.answers[0]?.question_id).toBe("q1");
   });
 });
