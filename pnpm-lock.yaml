@@ -91,6 +91,9 @@ importers:
       '@claudex/config':
         specifier: workspace:*
         version: link:../config
+      '@claudex/control-api':
+        specifier: workspace:*
+        version: link:../control-api
       '@claudex/core':
         specifier: workspace:*
         version: link:../core

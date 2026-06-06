@@ -50,10 +50,13 @@ export class DaemonClient {
     return this.call<{ id: string; state: string }>("claudex.enqueue", params);
   }
   status(id: string) {
-    return this.call<{ id: string; state: string; result?: unknown; error?: string }>("claudex.status", { id });
+    return this.call<{ id: string; state: string; runId?: string; taskId?: string; runDir?: string; result?: unknown; error?: string }>(
+      "claudex.status",
+      { id },
+    );
   }
   list() {
-    return this.call("claudex.list");
+    return this.call<{ id: string; state: string; runId?: string; taskId?: string; runDir?: string; error?: string }[]>("claudex.list");
   }
   cancel(id: string) {
     return this.call("claudex.cancel", { id });

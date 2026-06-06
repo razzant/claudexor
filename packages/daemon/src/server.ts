@@ -36,6 +36,7 @@ export interface JobRecord {
   createdAt: string;
   /** Surfaced as soon as the run starts so a client can tail .claudex/runs/<runId>/events.jsonl. */
   runId?: string;
+  taskId?: string;
   runDir?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -194,6 +195,7 @@ export class DaemonServer {
         error: r.error,
         createdAt: r.createdAt,
         runId: r.runId,
+        taskId: r.taskId,
         runDir: r.runDir,
         startedAt: r.startedAt,
         finishedAt: r.finishedAt,
@@ -258,6 +260,7 @@ export class DaemonServer {
         signal: controller.signal,
         onRunStart: (info) => {
           rec.runId = info.runId;
+          rec.taskId = info.taskId;
           rec.runDir = info.runDir;
           // Persist the pointer immediately so a mid-run crash still reloads with
           // runId/runDir to locate .claudex/runs/<runId> (the recovery path).

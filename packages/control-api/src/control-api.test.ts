@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { EventBus } from "./event-bus.js";
 import { type ControlRunner, ControlApiServer } from "./server.js";
+import { DaemonControlApiServer, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -240,5 +244,114 @@ describe("ControlApiServer", () => {
       }
       expect(state).toBe("cancelled");
     });
+  });
+});
+
+describe("DaemonControlApiServer", () => {
+  const token = "daemon-token-123";
+
+  function fakeDaemon(): { daemon: DaemonFacadeClient; record: DaemonRunRecord; cancelled: string[] } {
+    const runDir = mkdtempSync(join(tmpdir(), "claudex-control-run-"));
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      [
+        JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", type: "run.created", payload: {} }),
+        JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", type: "run.completed", payload: { status: "success" } }),
+        "",
+      ].join("\n"),
+    );
+    const record: DaemonRunRecord = { id: "job-d1", state: "succeeded", runId: "run-d1", taskId: "task-d1", runDir };
+    const cancelled: string[] = [];
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: record.id, state: "queued" };
+      },
+      async status(id: string) {
+        if (id !== record.id) throw new Error("missing");
+        return record;
+      },
+      async list() {
+        return [record];
+      },
+      async cancel(id: string) {
+        cancelled.push(id);
+        return { ok: true };
+      },
+    };
+    return { daemon, record, cancelled };
+  }
+
+  async function withDaemonServer(
+    daemon: DaemonFacadeClient,
+    fn: (base: string) => Promise<void>,
+  ): Promise<void> {
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5 });
+    const { host, port } = await server.start();
+    try {
+      await fn(`http://${host}:${port}`);
+    } finally {
+      await server.stop();
+    }
+  }
+
+  it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
+    const { daemon, cancelled } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      expect(start.status).toBe(200);
+      const started = (await start.json()) as { jobId: string; runId: string; taskId: string; runDir: string };
+      expect(started.jobId).toBe("job-d1");
+      expect(started.runId).toBe("run-d1");
+      expect(started.taskId).toBe("task-d1");
+
+      const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        runs: { jobId: string; runId: string; state: string }[];
+      };
+      expect(list.runs[0]?.runId).toBe("run-d1");
+      expect(list.runs[0]?.state).toBe("succeeded");
+
+      const sse = await fetch(`${base}/runs/run-d1/events`, { headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "1" } });
+      expect(sse.status).toBe(200);
+      const text = await sse.text();
+      expect(text).not.toContain("run.created");
+      expect(text).toContain("run.completed");
+      expect(text).toContain("event: end");
+
+      const cancel = await fetch(`${base}/runs/run-d1/cancel`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+      expect(cancel.status).toBe(200);
+      expect(cancelled).toEqual(["job-d1"]);
+    });
+  });
+
+  it("returns 202 for a queued job that has not surfaced runId yet", async () => {
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-queued", state: "queued" };
+      },
+      async status() {
+        return { id: "job-queued", state: "queued" };
+      },
+      async list() {
+        return [{ id: "job-queued", state: "queued" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 1, runStartTimeoutMs: 5 });
+    const { host, port } = await server.start();
+    try {
+      const res = await fetch(`http://${host}:${port}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(res.status).toBe(202);
+      const body = (await res.json()) as { jobId: string; state: string };
+      expect(body).toEqual({ jobId: "job-queued", state: "queued" });
+    } finally {
+      await server.stop();
+    }
   });
 });

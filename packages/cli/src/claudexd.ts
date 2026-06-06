@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DaemonServer, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudex/daemon";
+import { DaemonClient, DaemonServer, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudex/daemon";
+import { DaemonControlApiServer } from "@claudex/control-api";
 import { Orchestrator } from "@claudex/orchestrator";
 import { buildRegistry } from "./registry.js";
 
@@ -35,7 +36,27 @@ async function main(): Promise<void> {
 
   await server.start();
   appendFileSync(logPath(), `[${new Date().toISOString()}] claudexd listening on ${socketPath}\n`);
+  const control =
+    process.env.CLAUDEX_NO_CONTROL_API === "1"
+      ? null
+      : new DaemonControlApiServer({
+          token,
+          daemon: new DaemonClient(socketPath, token),
+          port: Number(process.env.CLAUDEX_CONTROL_PORT ?? 0),
+        });
+  if (control) {
+    const controlAddr = await control.start();
+    writeFileSync(
+      join(daemonDir(), "control-api.json"),
+      JSON.stringify({ ...controlAddr, tokenPath: join(daemonDir(), "token") }, null, 2) + "\n",
+      { mode: 0o600 },
+    );
+    appendFileSync(logPath(), `[${new Date().toISOString()}] claudex control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`);
+  } else {
+    appendFileSync(logPath(), `[${new Date().toISOString()}] claudex control-api disabled by CLAUDEX_NO_CONTROL_API=1\n`);
+  }
   await server.waitForShutdown();
+  await control?.stop();
   appendFileSync(logPath(), `[${new Date().toISOString()}] claudexd shut down\n`);
   process.exit(0);
 }
