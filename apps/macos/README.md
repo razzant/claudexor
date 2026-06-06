@@ -17,24 +17,33 @@ see it — the CLI-first toolchain stays unaffected.
     `events()` (SSE with `Last-Event-ID` resume), `health`.
 - `ClaudexApp/` — the SwiftUI app (added in the Xcode-buildable phase; see below).
 
-## Toolchain requirement (important)
+## Toolchain
 
-Building the macOS app requires **Xcode 26** (macOS 26 SDK + the matching Swift
-toolchain) on an Apple Silicon Mac. Liquid Glass APIs (`glassEffect`,
-`GlassEffectContainer`, `NavigationSplitView` + `.inspector`, …) need the macOS 26 SDK.
+The macOS 26 SDK (which ships Liquid Glass APIs: `glassEffect`, `GlassEffectContainer`,
+`NavigationSplitView` + `.inspector`, …) must be paired with a matching Swift toolchain
+(6.3+). Two working setups:
 
-> Note: a Command Line Tools–only environment whose Swift compiler predates the macOS
-> 26 SDK cannot build this (the compiler rejects the newer SDK's stdlib, and SwiftPM's
-> llbuild may be mismatched). Install full Xcode 26 and select it with
-> `sudo xcode-select -s /Applications/Xcode.app`.
+1. **Full Xcode 26** (needed to produce a notarized `.app` bundle for distribution):
+   `sudo xcode-select -s /Applications/Xcode.app`.
+2. **Swiftly + swift.org toolchain (no sudo, no Xcode — used for dev/CI here):**
+   ```bash
+   curl -O https://download.swift.org/swiftly/darwin/swiftly.pkg
+   installer -pkg swiftly.pkg -target CurrentUserHomeDirectory
+   ~/.swiftly/bin/swiftly init --skip-install
+   ~/.swiftly/bin/swiftly install 6.3.1   # matches the macOS 26.4 SDK
+   ```
+   Then `export PATH="$HOME/.swiftly/bin:$PATH"`. This builds + tests the SwiftPM
+   targets (library and the SwiftUI app as a dev executable). A Command Line Tools–only
+   environment whose `swiftc` predates the SDK will NOT work (the compiler rejects the
+   newer SDK's stdlib) — use one of the two setups above.
 
 ## Build
 
 ```bash
-# Library (once a matching toolchain is active):
+export PATH="$HOME/.swiftly/bin:$PATH"   # if using the Swiftly setup
 cd apps/macos/ClaudexKit && swift build && swift test
 
-# App: open the generated Xcode project (XcodeGen project.yml) in Xcode 26.
+# App (dev executable via SwiftPM); for a distributable bundle, build in Xcode 26.
 ```
 
 ## Design
@@ -45,6 +54,6 @@ colors, SF Pro/SF Mono, compact density, WCAG-AA contrast.
 
 ## Status
 
-`ClaudexKit` sources are written but **not yet compiled in this environment** (no
-matching Swift toolchain here). They must be built/validated on a machine with
-Xcode 26 before they are trusted. The SwiftUI app screens are added in that phase.
+`ClaudexKit` is built and tested (Swift 6.3.1 via Swiftly; `swift build` + `swift test`
+green, swift-testing). The SwiftUI app screens build on top of it next; a notarized
+distributable `.app` is produced in Xcode 26.
