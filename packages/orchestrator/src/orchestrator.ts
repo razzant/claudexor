@@ -63,7 +63,7 @@ export interface RunInput {
   tests?: string[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
-  /** Access profile (daily mode); e.g. `full` for autonomous terminal tasks. */
+  /** Access profile; e.g. `full` for autonomous terminal tasks (daily and in-place convergence). */
   access?: AccessProfile;
   /** Optional model hint forwarded to the harness (daily mode). */
   model?: string;
@@ -78,6 +78,12 @@ export interface RunInput {
   onRunStart?: (info: { runId: string; taskId: string; runDir: string }) => void;
   /** Cancellation: aborts the run and cancels in-flight harness work. */
   signal?: AbortSignal;
+  /**
+   * Run the convergence loop against the live `repoRoot` directly (no git worktree).
+   * For stateful benchmark containers (e.g. Terminal-Bench `/app`) where the runtime
+   * state — not a patch — is the deliverable. Only honored by convergence modes.
+   */
+  inPlace?: boolean;
 }
 
 export interface OrchestratorResult {
@@ -266,6 +272,7 @@ export class Orchestrator {
     paths: ReturnType<ArtifactStore["runPaths"]>,
     wsm: WorkspaceManager,
     ledger: BudgetLedger,
+    access: AccessProfile = "workspace_write",
     onHarnessEvent?: (event: HarnessEvent) => void,
     signal?: AbortSignal,
   ): Promise<CandidateRun> {
@@ -274,7 +281,7 @@ export class Orchestrator {
       intent: "implement",
       prompt,
       cwd: envelope.worktree_path,
-      access: "workspace_write",
+      access,
       env: wsm.envFor(envelope),
     });
 
@@ -405,7 +412,7 @@ export class Orchestrator {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
         envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
-          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, input.onHarnessEvent, input.signal,
+          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal,
         );
         ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
@@ -456,7 +463,7 @@ export class Orchestrator {
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
-            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, input.onHarnessEvent, input.signal,
+            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal,
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
           const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
@@ -588,7 +595,14 @@ export class Orchestrator {
     const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.id));
 
     try {
-      envelope = await wsm.create({ taskId, attemptId: "converge", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+      envelope = await wsm.create({
+        taskId,
+        attemptId: "converge",
+        baseRef: contract.repo.base_ref,
+        dirtyPolicy: "snapshot",
+        inPlace: input.inPlace ?? false,
+        accessProfile: input.access,
+      });
       for (;;) {
         if (input.signal?.aborted) break;
         attempt += 1;
@@ -606,7 +620,7 @@ export class Orchestrator {
 
         let run: CandidateRun;
         try {
-          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.onHarnessEvent, input.signal);
+          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.access ?? "workspace_write", input.onHarnessEvent, input.signal);
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         } catch (err) {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.

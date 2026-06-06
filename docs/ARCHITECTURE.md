@@ -118,7 +118,9 @@ winners, manage budgets, or decide policy.
 - `packages/mcp-server`: MCP stdio server exposing Claudex tools.
 - `packages/acp-server`: ACP stdio session agent.
 - `packages/benchmark`: SWE-bench Verified prediction runner plus benchmark
-  scaffolds.
+  scaffolds. Operator-facing, end-to-end benchmark harnesses live at the repo root
+  under `benchmarks/` (Terminal-Bench 2.1 via Harbor with in-place convergence +
+  cross-family review; SWE-bench Verified/Lite via the official evaluator).
 
 ---
 

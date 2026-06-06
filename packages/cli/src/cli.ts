@@ -68,8 +68,10 @@ Options:
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
-  --access <profile>       Daily access: readonly|workspace_write|full|inherit_native
+  --access <profile>       Access profile: readonly|workspace_write|full|inherit_native
   --model <id>             Model hint forwarded to the harness (daily)
+  --in-place               Convergence runs against the live cwd (no git worktree);
+                           for stateful benchmark containers (e.g. Terminal-Bench /app)
   --json                   Machine-readable JSON output
 `;
 
@@ -160,6 +162,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       maxUsd: maxUsd ?? null,
       access: accessProfile(args),
       model: flagStr(args, "model"),
+      inPlace: flagBool(args, "in-place"),
     });
     if (json) {
       printJson(res);
@@ -316,8 +319,8 @@ async function main(): Promise<number> {
     case "bench": {
       const sub = args._[1];
       if (sub === "list") {
-        print("swe-bench-verified [implemented]");
-        print("terminal-bench-2.1 [scaffold]");
+        print("swe-bench-verified [implemented]  (end-to-end: benchmarks/swe-bench/)");
+        print("terminal-bench-2.1 [harbor]       (benchmarks/terminal_bench/ — Harbor suite)");
         print("osworld [scaffold]");
         print("programbench [scaffold]");
         return 0;

@@ -38,6 +38,10 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Python (benchmark scripts / Harbor agent)
+__pycache__/
+*.pyc
+
 # Logs / misc
 *.log
 *.tgz

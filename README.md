@@ -190,6 +190,20 @@ Without `--workdir`, the command writes skeleton predictions and prints setup
 instructions. External evaluator tooling and prepared per-instance repos are
 still required for full evaluation.
 
+### Reproducible benchmark suites
+
+End-to-end, operator-friendly harnesses live under [`benchmarks/`](benchmarks/):
+
+- [`benchmarks/terminal_bench/`](benchmarks/terminal_bench/) — Terminal-Bench 2.1
+  via the official Harbor harness. Claudex runs in-place convergence with
+  cross-family review inside one container, so the benchmark measures Claudex's
+  orchestration lift (not just a single model). Includes a 3-arm pilot
+  (`claude-code` vs `codex` vs Claudex) and a results summarizer.
+- [`benchmarks/swe-bench/`](benchmarks/swe-bench/) — SWE-bench Verified/Lite (plus
+  notes for Full/Pro/Live/Multimodal/Multilingual): export tasks, prepare repos,
+  generate predictions with `claudex bench run`, and score with the official
+  `swebench.harness.run_evaluation`.
+
 ## Artifact Layout
 
 Every run creates a directory under `.claudex/runs/<run_id>/`:
