@@ -25,6 +25,13 @@ AGENTS.md
 # Local toolchain
 .toolchain/
 
+# Swift / macOS app build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+
 # OS / editor
 .DS_Store
 Thumbs.db
