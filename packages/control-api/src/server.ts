@@ -45,8 +45,10 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 /** Host/Origin must be loopback — defends against DNS-rebinding from a browser. */
 function hostIsLoopback(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
-  const host = hostHeader.split(":")[0]?.trim().toLowerCase() ?? "";
-  return LOOPBACK_HOSTS.has(host) || LOOPBACK_HOSTS.has(hostHeader.toLowerCase());
+  const h = hostHeader.trim();
+  // Bracketed IPv6 ("[::1]" or "[::1]:port") vs host:port.
+  const host = h.startsWith("[") ? h.slice(1, h.indexOf("]")) : (h.split(":")[0] ?? "");
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
 }
 
 function originIsLoopback(origin: string | undefined): boolean {
@@ -155,13 +157,17 @@ export class ControlApiServer {
     let size = 0;
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > 10 * 1024 * 1024) throw new Error("request body too large");
+      if (size > 10 * 1024 * 1024) throw Object.assign(new Error("request body too large"), { status: 413 });
       chunks.push(chunk as Buffer);
     }
     if (chunks.length === 0) return {};
     const raw = Buffer.concat(chunks).toString("utf8").trim();
     if (!raw) return {};
-    return JSON.parse(raw);
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw Object.assign(new Error("invalid JSON body"), { status: 400 });
+    }
   }
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -177,15 +183,21 @@ export class ControlApiServer {
     const method = req.method ?? "GET";
 
     if (method === "GET" && path === "/healthz") {
-      // Health is unauthenticated but still loopback-guarded.
+      // Health is unauthenticated but still loopback-guarded; no run details leaked.
       if (!hostIsLoopback(req.headers.host)) return this.json(res, 403, { error: "forbidden" });
-      return this.json(res, 200, { ok: true, runs: this.runs.size });
+      return this.json(res, 200, { ok: true });
     }
 
     if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
 
     if (method === "POST" && path === "/runs") {
-      const params = await this.readBody(req);
+      let params: unknown;
+      try {
+        params = await this.readBody(req);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
       return this.startRun(params, res);
     }
 
@@ -234,6 +246,9 @@ export class ControlApiServer {
         await this.opts.runner(params, {
           signal: controller.signal,
           onRunStart: (info) => {
+            // Single-assignment: the first runId is authoritative. A second call
+            // must not split events/completion away from the id the client received.
+            if (ref.current) return;
             ref.current = info;
             respondOnce(info);
           },
@@ -250,10 +265,11 @@ export class ControlApiServer {
           this.bus.complete(ref.current.runId);
           this.scheduleEvict(ref.current.runId);
         }
-        // Guarantee a response even if the runner never called onRunStart.
+        // A runner that resolves without ever calling onRunStart cannot give the
+        // client a streamable runId — fail loudly instead of returning a dead id.
         if (!responded) {
           responded = true;
-          this.json(res, 200, ref.current ?? { runId: provisionalId, taskId: "", runDir: "" });
+          this.json(res, 500, { error: "run did not start: runner never called onRunStart" });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

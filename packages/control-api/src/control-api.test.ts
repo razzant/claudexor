@@ -72,14 +72,66 @@ describe("ControlApiServer", () => {
     }
   }
 
+  const okRunner: ControlRunner = async (_params, ctx) => {
+    ctx.onRunStart({ runId: "run-auth", taskId: "t", runDir: "/tmp/run-auth" });
+    return { ok: true };
+  };
+
   it("rejects requests without a valid bearer token", async () => {
-    await withServer(async () => ({}), async (base) => {
+    await withServer(okRunner, async (base) => {
       const res = await fetch(`${base}/runs`, { method: "POST" });
       expect(res.status).toBe(401);
       const ok = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
       expect(ok.status).toBe(200);
     });
   });
+
+  it("fails loudly (500) when the runner never calls onRunStart — no dead runId", async () => {
+    await withServer(async () => ({}), async (base) => {
+      const res = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  it("keeps the first runId authoritative when onRunStart is called twice", async () => {
+    const runner: ControlRunner = async (_params, ctx) => {
+      ctx.onRunStart({ runId: "run-first", taskId: "t", runDir: "/tmp/first" });
+      ctx.onRunStart({ runId: "run-second", taskId: "t", runDir: "/tmp/second" });
+      ctx.onEvent({ type: "E" });
+      return {};
+    };
+    await withServer(runner, async (base) => {
+      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      const info = (await start.json()) as { runId: string };
+      expect(info.runId).toBe("run-first");
+      const sse = await fetch(`${base}/runs/run-first/events`, { headers: { authorization: `Bearer ${token}` } });
+      expect(await sse.text()).toContain("event: end");
+      // the second id was never registered as a run
+      const r2 = await fetch(`${base}/runs/run-second/events`, { headers: { authorization: `Bearer ${token}` } });
+      expect(r2.status).toBe(404);
+    });
+  });
+
+  it("stop() resolves even with an open SSE stream and a runner that ignores abort", async () => {
+    const server = new ControlApiServer({
+      token,
+      runner: async (_params, ctx) => {
+        ctx.onRunStart({ runId: "run-stuck", taskId: "t", runDir: "/tmp/run-stuck" });
+        await new Promise<void>(() => {}); // never resolves, ignores abort
+      },
+    });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+    const info = (await start.json()) as { runId: string };
+    const ac = new AbortController();
+    const sse = fetch(`${base}/runs/${info.runId}/events`, { headers: { authorization: `Bearer ${token}` }, signal: ac.signal }).catch(() => {});
+    await sleep(50);
+    await server.stop(); // must resolve despite the stuck runner + open SSE
+    ac.abort();
+    await sse;
+    expect(true).toBe(true);
+  }, 10000);
 
   it("starts a run, returns runId early, and streams events over SSE to completion", async () => {
     const runner: ControlRunner = async (_params, ctx) => {
