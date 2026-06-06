@@ -41,10 +41,40 @@ The macOS 26 SDK (which ships Liquid Glass APIs: `glassEffect`, `GlassEffectCont
 
 ```bash
 export PATH="$HOME/.swiftly/bin:$PATH"   # if using the Swiftly setup
-cd apps/macos/ClaudexKit && swift build && swift test
+cd apps/macos/ClaudexKit && swift build && swift test     # client library + tests
 
-# App (dev executable via SwiftPM); for a distributable bundle, build in Xcode 26.
+cd apps/macos/ClaudexApp && swift run ClaudexApp          # run the app (dev)
 ```
+
+Dev/QA env switches (no effect unless set): `CLAUDEX_DEBUG_ROUTE` (jump to a screen:
+`tasks|task|interview|review|budget|harnesses|benchmarks|settings|composer`),
+`CLAUDEX_DEBUG_SIZE="WxH"` (deterministic window size), `CLAUDEX_DEBUG_APPEARANCE`
+(`light|dark`).
+
+## Packaging & distribution (Developer ID + notarization, no App Sandbox)
+
+A real `.app`/DMG is assembled from the release binary by `scripts/build-app.sh` using the
+files in `packaging/` (`Info.plist`, `Claudex.entitlements`, `com.claudex.claudexd.plist`).
+We ship **outside** the App Store with Developer ID + hardened runtime + notarization and do
+**not** enable the App Sandbox — the engine-service spawns native harnesses and touches
+arbitrary repos, which the sandbox can't express (see `docs/DECISIONS.md`).
+
+```bash
+# Unsigned local bundle (Gatekeeper-blocked on other machines):
+apps/macos/scripts/build-app.sh            # → apps/macos/dist/Claudex.app
+
+# Signed + notarized + DMG (needs YOUR Apple Developer ID — cannot be done for you):
+xcrun notarytool store-credentials "claudex-notary" \
+  --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="claudex-notary" MAKE_DMG=1 \
+apps/macos/scripts/build-app.sh            # → signed, stapled .app + Claudex-<v>.dmg
+```
+
+The engine-service can be kept alive across logins via the `com.claudex.claudexd` LaunchAgent
+template (install to `~/Library/LaunchAgents/`, or register it from the app bundle with
+`SMAppService.agent(plistName:)`). The app does not require it — it connects to `claudexd`
+whenever it is running.
 
 ## Design
 
@@ -52,8 +82,24 @@ The visual + interaction system is the SSOT in [`../../docs/DESIGN_SYSTEM.md`](.
 graphite-dark default, glass on the navigation layer only, per-harness candidate
 colors, SF Pro/SF Mono, compact density, WCAG-AA contrast.
 
-## Status
+## Status (honest)
 
-`ClaudexKit` is built and tested (Swift 6.3.1 via Swiftly; `swift build` + `swift test`
-green, swift-testing). The SwiftUI app screens build on top of it next; a notarized
-distributable `.app` is produced in Xcode 26.
+`ClaudexKit` builds + tests green (Swift 6.3.1 via Swiftly, swift-testing). `ClaudexApp`
+is a **macOS prototype** of a Liquid Glass mission-control: composer-led Home, Tasks inbox,
+Task detail (Plan/Activity/Candidates/Diff/Review), Spec Interview, Review queue, Budget,
+Harnesses, Benchmarks, Settings — adaptive `NavigationSplitView` (sidebar/content/inspector)
+that reflows cleanly from the 3-pane minimum upward, with a disciplined palette (steel-blue
+brand + graphite; **official harness logos + colors** only on harness UI; semantic status).
+
+Live bridge (real, partial):
+
+- Connects to the loopback control-api: health, run list, **start** (with composer policy —
+  budget cap, access profile, gate commands — forwarded through `daemon.enqueue` to the
+  orchestrator), **cancel**, and the **SSE stream** (parsed from the daemon's canonical
+  `events.jsonl` types: `run.*`, `harness.*`, `gate.*`, `review.*`, `budget.*` → live
+  status, phase, activity, spend, and findings).
+- **Sample data is OFF by default** behind Settings → "Show sample data". Surfaces the
+  engine doesn't expose yet (harness doctor, budget, benchmarks, the GUI spec interview)
+  show honest empty states when sample data is off; they are previews, not live.
+
+`scripts/build-app.sh` produces a `.app`/DMG; notarization needs a Developer ID.

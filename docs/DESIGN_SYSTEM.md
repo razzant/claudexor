@@ -65,22 +65,35 @@ Text:
 
 Brand + accent:
 
-- `brand/accent` — single Claudex identity accent (a warm, slightly desaturated clay —
-  a nod to "Claude × Codex"). Used sparingly for primary actions and selection.
+- `brand/accent` — single Claudex identity accent (a cool, slightly desaturated
+  **steel-blue** — neutral chrome so the harness identity hues pop). Used for primary
+  actions, **selection/list tint** (the app tints controls with the brand, never the system
+  blue), section-header icons, and inline links (`link` == `brand/accent`).
+- `brand/glowHi`, `brand/glowLo` — cool tonal companions (sky / indigo) used **only** in the
+  brand aurora backdrop (never on controls; not semantic).
 - Accent/tint conveys **meaning**, never decoration (Apple's Tahoe guidance).
 
 Harness-family palette (functional color-coding of candidates/findings/routes):
 
-- `harness/codex`, `harness/claude`, `harness/cursor`, `harness/opencode`, `harness/raw-api`,
-  `harness/fake` — each a distinct, AA-legible hue used for candidate chips, race lanes,
-  route-proof, and per-harness budget. These are the ONLY place we use multiple strong hues.
+- `harness/codex` (teal), `harness/claude` (warm orange), `harness/cursor` (violet),
+  `harness/opencode` (lime), `harness/raw-api` (magenta), `harness/fake` (neutral) — each a
+  distinct, AA-legible hue tuned to differ from each other AND from the status palette.
+  Used for candidate chips, race lanes, route-proof, per-harness budget, and harness dots.
+  These are the ONLY place we use multiple strong hues.
 
 Status semantics (shared across badges, pipeline, lists):
 
-- `status/running` (active blue/teal), `status/success` (green), `status/blocked` (amber),
-  `status/failed` (red), `status/cancelled` (neutral/gray), `status/interrupted` (muted amber),
-  `status/queued` (tertiary).
+- `status/running` (azure), `status/success` (green), `status/needs-review` (periwinkle),
+  `status/blocked` (amber), `status/failed` (red), `status/cancelled` (neutral/gray),
+  `status/interrupted` (muted amber), `status/queued` (tertiary).
 - Always pair color with a glyph + label (never color alone — accessibility).
+
+**Color discipline (the one rule that keeps it from looking "mixed").** Strong hues are
+*budgeted*: harness hues appear only in harness UI, status hues only on state, and
+everything that is "the app itself" (chrome, selection, the aurora, links, icons) uses the
+single brand steel-blue + neutral graphite. The aurora backdrop is brand-only — it must never
+pull in harness or status hues, or the whole window reads as a rainbow. Severity maps onto
+the status scale (blocker→failed, major→blocked, minor→running, nit→neutral), not new hues.
 
 ### 2.3 Typography
 
@@ -92,11 +105,16 @@ Status semantics (shared across badges, pipeline, lists):
 
 ### 2.4 Spacing, shape, elevation
 
-- Spacing scale (pt): `2, 4, 8, 12, 16, 24, 32, 48`. Default gutter 16; compact 12.
-- Corner radii follow **concentricity** (`ConcentricRectangle` / `containerConcentric`)
-  so nested controls share corner centers with their container.
-- Card radius ~12–16; controls inherit system metrics — do not hardcode control heights.
-- Elevation is expressed by Liquid Glass + material layering, not heavy drop shadows.
+- Spacing scale (pt): `2, 4, 8, 12, 16, 24, 32, 48` (`Theme.Spacing.xxs…xxxl`). Default gutter
+  16; compact 12. Screen gutter is `xxl` (32). Use tokens — never off-scale literals
+  (`1,3,5,6` etc.).
+- One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
+  `card 12`, `hero 22` (floating composer). Card radius ~12–16; controls inherit system
+  metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
+  a tracked v0.2 refinement.)
+- Elevation: glass + material layering for chrome; a solid content card may carry **one**
+  soft separation shadow (`black 18%, radius 10, y 4`, centralized in `cardSurface`) for
+  dark-mode contrast against the glow. No heavy or stacked shadows; one recipe only.
 
 ### 2.5 Density
 
@@ -187,6 +205,63 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Doctor / Harnesses.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
+
+### 5.1 Component contracts (SSOT for the smallest details)
+
+These are exact, non-negotiable recipes. Screens MUST compose these shared views rather than
+re-implement them, so every screen is pixel-consistent. (Swift: `Components.swift`,
+`DesignTokens.swift`.)
+
+- **Screen header / H1.** Every primary screen shows ONE title via the shared `ScreenHeader`
+  (`.title2.weight(.bold)` + optional `.callout` secondary subtitle) — either through
+  `ScreenScaffold` (scrolling content), `ListScreen` (title + filter bar + collection), or
+  `TaskDetail`'s header. No screen may start straight into content with no title (Home is the
+  one deliberate exception: its floating composer *is* the hero). All screen H1s use the same
+  recipe — never re-implement the title inline.
+- **Screen scaffold.** Standard screens use `ScreenScaffold(title:subtitle:)`. List screens
+  (Tasks, Review) use `ListScreen(title:) { filters } content: { … }`. Gutter: horizontal
+  `Spacing.xxl` (32), vertical `Spacing.xl` (24). Content column is centered and capped at a
+  width token: `Layout.contentMaxWidth` (1040) for dashboards/lists, `Layout.readableMaxWidth`
+  (860) for forms/reading (interview, settings). Background is `glowBackdrop()`. Do **not**
+  hardcode per-screen widths or margins.
+- **Segmented tabs.** In-content tab/segment rows use the shared `SegmentedTabs` (one font,
+  `Radius.control` indicator via `matchedGeometryEffect`, optional per-tab count badge,
+  `.isSelected` trait, Reduce-Motion-aware). Do not hand-roll a tab bar (TaskDetail wraps
+  `SegmentedTabs` in a horizontal `ScrollView` so a long tab set never pins a wide minimum).
+- **Filter bar + chip.** Every filter row is `FilterBar { FilterChip(...) }`. `FilterChip` is
+  the only filter pill: label `.callout` (`.semibold` when active, `.regular` otherwise),
+  optional leading SF Symbol `.imageScale(.small)`, optional trailing count `.caption2`
+  semibold secondary; padding horizontal `Spacing.md` / vertical `Spacing.sm`; selected fill
+  via `selectedChip(active:tint:)`. `tint` defaults to `accent`; pass a status/severity color
+  ONLY when the chip *is* that status/severity. `FilterBar` owns the gutter (horizontal
+  `Spacing.xxl`, vertical `Spacing.lg`). Never hand-roll a chip with a different font/padding.
+- **Toolbar + search.** There is exactly ONE window toolbar, defined in `RootView`
+  (`ToolbarItemGroup(.primaryAction)`): refresh · appearance · inspector · new-task. Search is
+  declared ONCE via `.searchable` on the `NavigationSplitView` (WWDC25 "Build a SwiftUI app
+  with the new design") so the affordance is identical on every screen; bind it to
+  `AppModel.searchQuery` and have list screens filter by it; the query is **cleared on every
+  route change** so one screen's search never leaks into the next. Screens MUST NOT add their
+  own `.searchable` or toolbar items (that reflows the glass toolbar and breaks consistency).
+  Prefer `ToolbarSpacer` for grouping; monochrome SF Symbols; don't mix text+icon in one group.
+- **Sidebar selection.** `List(selection:)` binds `SidebarRoute` (a `Hashable` enum with a
+  distinct case per selectable concept). Every row gets a UNIQUE `.tag(SidebarRoute.…)`; the
+  detail is a `switch` over the route. NEVER alias two concepts to one tag (e.g. a spec row
+  must use `.spec(id)`, not the first run's `.task(id)`) — shared tags make one click select
+  multiple rows.
+- **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
+  content uses `TaskRowView`/`FindingCard`. Inter-row dividers inset `.leading 56` (icon
+  column). Rows live inside a `Panel(padding: 0)`.
+- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 12, `cardStroke`, one soft
+  shadow) on a solid `surfaceRaised`. `Panel`, `FindingCard` (`clip: true` for its leading
+  severity bar), and `CandidateCard` (`strokeColor`/`lineWidth` for the winner emphasis) all
+  call it; do not duplicate ad-hoc background+stroke+shadow stacks.
+
+**Known gaps (tracked for v0.2, intentionally not in v0.1 to avoid churn):** colors are a
+programmatic `Color(dark:light:)` projection rather than an asset catalog, and there is **no
+Increased-Contrast variant** yet (`§2.2`/`§6` aspiration); there is no density environment
+value (`§2.5`) — density is currently fixed "compact"; concentric radii (`ConcentricRectangle`,
+`§2.4`) are not adopted; a few tiny count/label pills still carry per-call padding pending a
+shared `CountBadge`. These are honest deltas between this SSOT and the code, not silent drift.
 
 ---
 

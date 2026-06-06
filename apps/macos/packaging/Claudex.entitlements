@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for a Developer ID + Hardened Runtime build (NOT App Sandbox).
+
+  Rationale (see docs/DECISIONS.md): Claudex is a local developer control plane. The app
+  itself is a thin loopback HTTP/SSE client, but the toolchain it fronts (claudexd) spawns
+  native coding harnesses and reads/writes arbitrary repos — capabilities the App Sandbox
+  cannot express. We therefore distribute outside the App Store with Developer ID +
+  notarization + hardened runtime, and we do NOT enable `com.apple.security.app-sandbox`.
+
+  Hardened runtime allows outbound network (loopback to claudexd) without an entitlement.
+  Keep this list MINIMAL — add an entitlement only with a concrete, documented need.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Intentionally no com.apple.security.app-sandbox key: this is a Developer ID,
+         non-sandboxed build. -->
+</dict>
+</plist>

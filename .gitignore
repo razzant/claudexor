@@ -56,3 +56,6 @@ __pycache__/
 # Local benchmark smoke outputs
 benchmarks/swe-bench/logs/
 benchmarks/swe-bench/gold.*.json
+
+# macOS app distribution output
+apps/macos/dist/

@@ -15,19 +15,30 @@ public struct BusEnvelope: Sendable, Equatable {
     }
 }
 
-/// Command to start a run (POST /runs). Mirrors the orchestrator RunInput subset
-/// a client supplies; the server fills the rest.
+/// Command to start a run (POST /runs). Mirrors the orchestrator RunInput subset a client
+/// supplies; the server fills the rest. Policy fields (maxUsd/access/tests/repoRoot) flow
+/// through `daemon.enqueue` to `orchestrator.run` so the composer's controls are actually
+/// applied (not just displayed).
 public struct StartRunRequest: Codable, Sendable {
     public var prompt: String
     public var mode: String?
     public var harnesses: [String]?
     public var n: Int?
+    public var maxUsd: Double?
+    public var access: String?
+    public var tests: [String]?
+    public var repoRoot: String?
 
-    public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil) {
+    public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
+                maxUsd: Double? = nil, access: String? = nil, tests: [String]? = nil, repoRoot: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
         self.n = n
+        self.maxUsd = maxUsd
+        self.access = access
+        self.tests = tests
+        self.repoRoot = repoRoot
     }
 }
 
