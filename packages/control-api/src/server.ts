@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { newId } from "@claudex/util";
 import { EventBus } from "./event-bus.js";
@@ -131,8 +132,16 @@ export class ControlApiServer {
     }
     const auth = req.headers.authorization ?? "";
     const m = /^Bearer\s+(.+)$/i.exec(auth);
-    const token = m?.[1]?.trim();
-    return token === this.opts.token;
+    return this.tokenMatches(m?.[1]?.trim());
+  }
+
+  /** Constant-time bearer-token comparison (avoid leaking the token via timing). */
+  private tokenMatches(provided: string | undefined): boolean {
+    if (!provided) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(this.opts.token);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {
