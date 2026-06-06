@@ -1,5 +1,5 @@
 import type { ModeKind, SpecPack, TaskContract } from "@claudex/schema";
-import { TaskContract as TaskContractSchema } from "@claudex/schema";
+import { SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudex/schema";
 import { newId, nowIso } from "@claudex/util";
 
 export interface SpecToContractOptions {
@@ -23,6 +23,9 @@ export class SpecNotReadyError extends Error {
  * start from an ambiguous spec.
  */
 export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptions): TaskContract {
+  // Re-validate against the schema so even a hand-built/disk-loaded spec must satisfy
+  // the frozen/clarification invariants before it can become a runnable contract.
+  SpecPackSchema.parse(spec);
   if (!spec.frozen) throw new SpecNotReadyError("SpecPack is not frozen");
   const open = spec.open_questions.filter((q) => q.status === "open");
   if (open.length > 0) {
@@ -70,6 +73,9 @@ export function diffSpecPacks(a: SpecPack, b: SpecPack): SpecFieldChange[] {
   diffList("non_goals", a.non_goals, b.non_goals);
   diffList("forbidden_approaches", a.forbidden_approaches, b.forbidden_approaches);
   diffList("decided_tradeoffs", a.decided_tradeoffs, b.decided_tradeoffs);
+  diffList("constraints.allowed_paths", a.constraints.allowed_paths, b.constraints.allowed_paths);
+  diffList("constraints.forbidden_paths", a.constraints.forbidden_paths, b.constraints.forbidden_paths);
+  diffList("constraints.protected_paths", a.constraints.protected_paths, b.constraints.protected_paths);
   diffList(
     "success_criteria",
     a.success_criteria.map((c) => c.behavior),

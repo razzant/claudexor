@@ -42,6 +42,8 @@ export interface InterviewEngineOptions {
   intent: string;
   generator: QuestionGenerator;
   assembler: SpecAssembler;
+  /** Stable spec id reused across freezes (spec-anchored history). Default: generated once. */
+  specId?: string;
   /** Safety cap on tiers so a misbehaving generator cannot loop forever. Default 12. */
   maxTiers?: number;
 }
@@ -51,6 +53,14 @@ export class UnresolvedClarificationsError extends Error {
   constructor(public readonly open: ClarificationItem[]) {
     super(`cannot freeze SpecPack: ${open.length} open clarification(s) — resolve them first (no silent guessing)`);
     this.name = "UnresolvedClarificationsError";
+  }
+}
+
+/** Thrown when the interview hits the tier cap without the generator converging. */
+export class InterviewNotConvergedError extends Error {
+  constructor(public readonly tiers: number) {
+    super(`interview did not converge within ${tiers} tier(s) — refusing to assemble an incomplete spec (no silent guessing)`);
+    this.name = "InterviewNotConvergedError";
   }
 }
 
@@ -66,8 +76,16 @@ export class InterviewEngine {
   private readonly answers: InterviewAnswer[] = [];
   private readonly clarifications: ClarificationItem[] = [];
   private draft: SpecDraft = {};
+  /** Stable id for the whole spec lifecycle so successive freezes stack as revisions. */
+  private readonly specId: string;
+  /** Monotonic revision counter; each freeze() increments it. */
+  private revision = 0;
+  /** True once the generator signals convergence (returns []). */
+  private converged = false;
 
-  constructor(private readonly opts: InterviewEngineOptions) {}
+  constructor(private readonly opts: InterviewEngineOptions) {
+    this.specId = opts.specId ?? newId("spec");
+  }
 
   state(): InterviewState {
     return {
@@ -83,10 +101,19 @@ export class InterviewEngine {
   async nextTier(): Promise<InterviewQuestion[]> {
     const next = await this.opts.generator(this.state());
     if (next.length > 0) {
-      this.questions.push(...next);
+      // Stamp the current tier depth defensively (don't trust the generator to set it).
+      const stamped = next.map((q) => ({ ...q, tier: this.tier }));
+      this.questions.push(...stamped);
       this.tier += 1;
+      return stamped;
     }
+    this.converged = true;
     return next;
+  }
+
+  /** Whether the generator has signaled convergence (returned [] at least once). */
+  isConverged(): boolean {
+    return this.converged;
   }
 
   /** Record answers (idempotent per question id — the latest answer wins). */
@@ -122,17 +149,19 @@ export class InterviewEngine {
   }
 
   /**
-   * Freeze into a validated SpecPack at the given version. Fails loudly if any
-   * clarification is still open (no silent guessing — a core invariant).
+   * Freeze into a validated SpecPack. Reuses the stable spec id and auto-increments
+   * the revision so successive freezes stack as spec-anchored history. Fails loudly
+   * if any clarification is still open (no silent guessing — a core invariant).
    */
-  freeze(version = 1): SpecPack {
+  freeze(): SpecPack {
     const open = this.openClarifications();
     if (open.length > 0) throw new UnresolvedClarificationsError(open);
+    this.revision += 1;
     return SpecPackSchema.parse({
       schema_version: 1,
-      id: newId("spec"),
+      id: this.specId,
       created_at: nowIso(),
-      version,
+      version: this.revision,
       frozen: true,
       intent: { raw: this.opts.intent, normalized: this.draft.summary },
       summary: this.draft.summary ?? "",
@@ -148,7 +177,11 @@ export class InterviewEngine {
     });
   }
 
-  /** Convenience: run tiers to convergence (generator returns []), then assemble. */
+  /**
+   * Convenience: run tiers until the generator converges (returns []), then assemble.
+   * If the tier cap is hit WITHOUT convergence, fail loudly rather than assemble an
+   * incomplete spec — capped exhaustion is not convergence (no silent guessing).
+   */
   async runToConvergence(answerFor: (qs: InterviewQuestion[]) => InterviewAnswer[]): Promise<void> {
     const maxTiers = this.opts.maxTiers ?? 12;
     for (let i = 0; i < maxTiers; i++) {
@@ -156,6 +189,7 @@ export class InterviewEngine {
       if (qs.length === 0) break;
       this.answer(answerFor(qs));
     }
+    if (!this.converged) throw new InterviewNotConvergedError(maxTiers);
     await this.assemble();
   }
 }

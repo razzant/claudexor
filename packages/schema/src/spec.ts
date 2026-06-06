@@ -68,7 +68,7 @@ export const SpecTask = z.object({
 });
 export type SpecTask = z.infer<typeof SpecTask>;
 
-export const SpecPack = z.object({
+const SpecPackBase = z.object({
   schema_version: SchemaVersion,
   id: Id,
   created_at: IsoTimestamp,
@@ -94,5 +94,30 @@ export const SpecPack = z.object({
       answers: z.array(InterviewAnswer).default([]),
     })
     .default({ questions: [], answers: [] }),
+});
+
+/**
+ * Schema-level invariants (SSOT, enforced on every parse — even when loaded from
+ * disk, not just via the engine): a frozen spec cannot carry open clarifications,
+ * and a "resolved" clarification must record a non-empty resolution. This makes a
+ * frozen-but-ambiguous SpecPack unrepresentable — no silent guessing.
+ */
+export const SpecPack = SpecPackBase.superRefine((data, ctx) => {
+  if (data.frozen && data.open_questions.some((q) => q.status === "open")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["open_questions"],
+      message: "a frozen SpecPack cannot have open clarifications",
+    });
+  }
+  data.open_questions.forEach((q, i) => {
+    if (q.status === "resolved" && (q.resolution === null || q.resolution.trim() === "")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["open_questions", i, "resolution"],
+        message: "a resolved clarification must have a non-empty resolution",
+      });
+    }
+  });
 });
 export type SpecPack = z.infer<typeof SpecPack>;
