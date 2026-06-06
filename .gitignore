@@ -52,3 +52,7 @@ __pycache__/
 # Logs / misc
 *.log
 *.tgz
+
+# Local benchmark smoke outputs
+benchmarks/swe-bench/logs/
+benchmarks/swe-bench/gold.*.json
