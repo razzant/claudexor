@@ -63,10 +63,11 @@ final class AppModel {
     var demoMode = false
 
     var liveTasks: [TaskRun] = []
+    var liveHarnesses: [HarnessInfo] = []
     let demoTasks: [TaskRun] = DemoData.tasks
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
-    var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : [] }
+    var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : liveHarnesses }
     var budget: BudgetState { demoMode ? DemoData.budget : .empty }
     var benchmarks: [BenchmarkRun] { demoMode ? DemoData.benchmarks : [] }
     var interviewQuestions: [InterviewQuestion] { demoMode ? DemoData.interviewQuestions : [] }
@@ -166,6 +167,7 @@ final class AppModel {
             if try await client.health() {
                 health = .connected
                 await refreshRuns()
+                await refreshHarnesses()
                 return true
             }
         } catch {
@@ -187,20 +189,36 @@ final class AppModel {
         }
     }
 
+    func refreshHarnesses() async {
+        guard let client else { return }
+        do {
+            liveHarnesses = try await client.listHarnesses().compactMap { status in
+                guard let family = HarnessFamily(rawValue: status.id) else { return nil }
+                let health = HarnessHealth(rawValue: status.status) ?? .unavailable
+                return HarnessInfo(family: family, health: health, version: "live", auth: status.reasons?.joined(separator: ", ") ?? "native / key fallback", intents: [])
+            }
+        } catch {
+            // Keep last-known harness rows.
+        }
+    }
+
     private static func liveTask(from s: RunSummary) -> TaskRun {
-        TaskRun(
+        let prompt = s.prompt ?? ""
+        let title = prompt.isEmpty ? prettyTitle(s.runId) : String(prompt.prefix(64))
+        let families = (s.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
+        return TaskRun(
             id: s.runId,
-            title: prettyTitle(s.runId),
-            prompt: "",
-            mode: .race,
+            title: title,
+            prompt: prompt,
+            mode: RunMode(apiValue: s.mode),
             status: RunStatus(api: s.state),
             project: "live",
             specTitle: nil,
-            harnesses: [],
-            n: 1,
+            harnesses: families,
+            n: s.n ?? max(1, families.count),
             createdAt: .now, updatedAt: .now,
             activePhase: .review,
-            spendUsd: 0, capUsd: 0,
+            spendUsd: 0, capUsd: s.maxUsd ?? 0,
             routeProof: .unverified,
             attentionNote: nil,
             plan: [], activity: [], candidates: [], findings: [], diff: [],
@@ -214,7 +232,8 @@ final class AppModel {
 
     // MARK: Commands
 
-    func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], n: Int, capUsd: Double,
+    func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
+                  portfolio: String, model: String?, n: Int, capUsd: Double,
                   access: String = "workspace_write", tests: [String] = []) async {
         composerPresented = false
         let optimistic = TaskRun(
@@ -241,8 +260,13 @@ final class AppModel {
 
         guard let client else { return }
         do {
+            let orderedHarnesses = harnesses.map(\.rawValue)
             let req = StartRunRequest(prompt: prompt, mode: mode.apiValue,
-                                      harnesses: harnesses.map(\.rawValue), n: n,
+                                      harnesses: orderedHarnesses,
+                                      primaryHarness: primary?.rawValue,
+                                      portfolio: portfolio,
+                                      model: model?.isEmpty == false ? model : nil,
+                                      n: n,
                                       maxUsd: capUsd, access: access,
                                       tests: tests.isEmpty ? nil : tests)
             let info = try await client.startRun(req)
@@ -276,6 +300,42 @@ final class AppModel {
             }
         } catch {
             // leave the row's status untouched if the server did not confirm the cancel
+        }
+    }
+
+    func loadRunDetail(_ id: String) async {
+        guard let client, let idx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
+        do {
+            let detail = try await client.runDetail(runId: id)
+            var task = liveTasks[idx]
+            task.mode = RunMode(apiValue: detail.summary.mode)
+            task.prompt = detail.summary.prompt ?? task.prompt
+            if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }
+            task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
+            task.capUsd = detail.summary.maxUsd ?? task.capUsd
+            if let final = detail.finalSummary, !final.isEmpty,
+               !task.activity.contains(where: { $0.title == "Final summary" }) {
+                task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
+            }
+            if !detail.artifacts.isEmpty, task.plan.isEmpty {
+                task.plan = detail.artifacts
+                    .filter { $0.kind == "file" }
+                    .prefix(8)
+                    .map { PlanItem($0.path, .done, note: $0.bytes.map { "\($0) bytes" }) }
+            }
+            liveTasks[idx] = task
+        } catch {
+            // Detail is opportunistic; live stream remains authoritative for progress.
+        }
+    }
+
+    func storeSecret(name: String, value: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.setSecret(name: name, value: value)
+            return true
+        } catch {
+            return false
         }
     }
 

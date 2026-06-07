@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashJson, newId, redactSecrets, sha256, stableStringify } from "./index.js";
+import { containsSecretLikeToken, hashJson, newId, redactSecrets, sha256, stableStringify } from "./index.js";
 
 describe("util", () => {
   it("hashes JSON stably regardless of key order", () => {
@@ -22,5 +22,7 @@ describe("util", () => {
     const redacted = redactSecrets("token ghp_" + "a".repeat(36) + " end");
     expect(redacted).toContain("[redacted]");
     expect(redacted).not.toContain("ghp_aaaa");
+    expect(containsSecretLikeToken("token ghp_" + "a".repeat(36))).toBe(true);
+    expect(containsSecretLikeToken("ordinary prompt")).toBe(false);
   });
 });

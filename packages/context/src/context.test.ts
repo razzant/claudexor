@@ -50,11 +50,11 @@ describe("ContextPack", () => {
     const repo = tmp();
     writeFileSync(join(repo, "x.ts"), "export const x = 1;\n");
     const contract = TaskContract.parse({
-      schema_version: 1,
+      schema_version: 2,
       task_id: "t",
       created_at: "2026-01-01T00:00:00Z",
       repo: { root: repo, base_ref: "HEAD" },
-      mode: { kind: "daily" },
+      mode: { kind: "agent" },
       user_intent: { raw: "x" },
     });
     const pack = await buildContextPack(repo, contract, { tokenLimit: 100_000 });
@@ -69,11 +69,11 @@ describe("ContextPack", () => {
     writeFileSync(join(repo, "docs", "ARCHITECTURE.md"), "# arch\n");
     writeFileSync(join(repo, "AGENTS.md"), "# local only\n");
     const contract = TaskContract.parse({
-      schema_version: 1,
+      schema_version: 2,
       task_id: "t",
       created_at: "2026-01-01T00:00:00Z",
       repo: { root: repo, base_ref: "HEAD" },
-      mode: { kind: "daily" },
+      mode: { kind: "agent" },
       user_intent: { raw: "x" },
     });
     const pack = await buildContextPack(repo, contract, { tokenLimit: 100_000 });

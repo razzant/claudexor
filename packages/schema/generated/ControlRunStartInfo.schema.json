@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/ControlRunStartInfo",
+  "definitions": {
+    "ControlRunStartInfo": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "runDir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "runDir"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

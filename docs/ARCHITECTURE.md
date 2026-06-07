@@ -1,348 +1,198 @@
-# Claudex v0.1.0 - Architecture Reference
+# Claudex v0.2.0 Architecture Reference
 
-This document is the operational map of the current Claudex codebase: package
-boundaries, data flow, artifact layout, and the invariants that future work
-should preserve. It is not a changelog and not a replacement for
-[`SPEC.md`](SPEC.md). The spec describes the intended system; this file describes
-how the current v0.1 implementation is organized and where to make changes.
+This document is the current codebase map: package boundaries, run flow,
+artifact layout, and invariants. It describes what is implemented now, not a
+future wish list.
 
----
+## 1. System Shape
 
-## 1. What Claudex Is
-
-Claudex is a local-first control plane over external coding harnesses: Codex
-CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters. A harness
-is not a role. Roles are expressed as intents such as `plan`, `implement`,
-`repair`, `review`, `compare`, `synthesize`, `audit`, and `benchmark`.
-
-The design goal is interchangeable harnesses behind one typed contract:
+Claudex is a local-first control plane over external coding harnesses:
+Codex CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters.
+A harness is not a role. Roles are intents (`explain`, `plan`, `implement`,
+`repair`, `review`, `compare`, `synthesize`, `audit`, `benchmark`).
 
 ```text
-surface -> orchestrator/core -> gateway -> harness adapter -> native tool/API
+surface -> schema/control DTO -> orchestrator/core -> gateway -> harness adapter -> native tool/API
         <- typed events/artifacts/reviews/budget/WorkProduct <-
 ```
 
-If only one harness is configured, Claudex should collapse to that harness plus
-structured artifacts and policy. If multiple harnesses are configured, Claudex
-can run tournaments, cross-review candidates, synthesize fixes, and arbitrate
-with evidence.
+Surfaces stay thin. Business logic belongs in core/orchestrator/control-plane
+packages, never in macOS or CLI-specific state.
 
----
+## 2. Canonical Modes
 
-## 2. High-Level Flow
+`ModeKind` lives in `packages/schema` and is the single source of truth:
 
-```mermaid
-flowchart TD
-  user[User or host tool] --> surfaces[CLI / Daemon / MCP / ACP / Plugin]
-  surfaces --> orchestrator[Orchestrator or ExecutionEngine]
-  orchestrator --> schema[TaskContract and schemas]
-  orchestrator --> context[ContextPack / evidence packet]
-  orchestrator --> budget[BudgetLedger / router]
-  orchestrator --> workspace[WorkspaceEnvelope]
-  workspace --> gateway[HarnessGateway]
-  gateway --> adapters[Harness adapters]
-  adapters --> native[Codex / Claude / Cursor / OpenCode / API]
-  adapters --> events[HarnessEvent stream]
-  events --> gates[Deterministic gates]
-  gates --> review[Cross-family review + revalidation]
-  review --> synthesis[Synthesis as candidate]
-  synthesis --> arbitration[Arbitration / DecisionRecord]
-  arbitration --> workproduct[WorkProduct + patch/report]
-```
+- `ask` - one selected read-only `explain` route; writes `final/answer.md`.
+- `agent` - default `claudex run`; one primary-biased direct-edit route.
+- `best_of_n` - isolated candidate envelopes, review, synthesis, arbitration.
+- `max_attempts` - convergence loop with explicit attempt cap.
+- `until_clean` - convergence loop with no fixed cap; stops on clean review/gates,
+  budget/quota exhaustion, cancellation, or no-progress stall.
+- `plan` - read-only multi-harness planning; writes `final/plan.md`.
+- `create` - create-from-scratch path, currently sharing the race pipeline.
+- `readonly_audit` - one selected read-only `audit` route; writes `final/report.md`.
+- `benchmark` - benchmark-oriented best-of-N path.
 
-Daily mode uses the minimal `ExecutionEngine` path. Race, convergence, planning,
-and audit modes use `Orchestrator`.
-
----
+Old mode ids (`daily`, `until_convergence`, `readonly_swarm`) are not aliases.
 
 ## 3. Package Map
 
-### Contracts and primitives
+- `packages/schema`: Zod schemas, TypeScript types, generated JSON Schema,
+  control DTOs, mode ids, config shapes.
+- `packages/core`: adapter interface, process helpers, typed errors, minimal
+  single-harness `ExecutionEngine` used by `agent`.
+- `packages/orchestrator`: Ask, Agent, Best-of-N, convergence, Plan, Create,
+  Read-only Audit, and Benchmark orchestration.
+- `packages/gateway`: harness discovery, capability gating, default available
+  harness resolution.
+- `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs,
+  diff capture, cleanup.
+- `packages/review`: deterministic gates, review, revalidation, convergence
+  predicate, readiness ledger.
+- `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
+  ranking, synthesis decision/prompting, spend/quota routing.
+- `packages/secrets`: OS Keychain/file-backed secret store and secret resolution.
+- `packages/delivery`: patch check/apply/commit/branch/PR delivery.
+- `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
+- `packages/daemon`: durable local Unix-socket queue and job registry.
+- `packages/cli`, `packages/mcp-server`, `packages/acp-server`: thin surfaces.
+- `apps/macos`: native app; displays/edits what the engine exposes.
 
-- `packages/schema`: Zod schemas and TypeScript types. This is the SSOT for
-  contracts such as `TaskContract`, `HarnessManifest`, `HarnessRunSpec`,
-  `HarnessEvent`, `WorkspaceEnvelope`, `WorkProduct`, findings, budgets, and
-  decisions. JSON Schema generation lives here.
-- `packages/util`: IDs, timestamps, hashing, safe file reads/writes, redaction.
-- `packages/config`: layered config loading and repo-local config init.
+Adapters translate native I/O into `HarnessEvent`s. They do not select winners,
+manage budgets, decide review policy, or orchestrate.
 
-### Core execution
+## 4. Routing
 
-- `packages/core`: adapter interface, typed errors, process spawning helpers,
-  conformance doctor helpers, and the minimal single-harness `ExecutionEngine`.
-- `packages/orchestrator`: high-level modes (`best_of_n`, `max_attempts`,
-  `until_convergence`, `plan`, `readonly_swarm`, `benchmark/create` race path).
-- `packages/workspace`: git worktree envelopes, dirty-tree policy, scoped
-  harness config dirs, port allocation, diff capture, cleanup.
-- `packages/gateway`: harness discovery, capability-to-intent gating, status,
-  default available-harness resolution.
+Routing is `Pool + Primary + Portfolio`:
 
-### Harness boundary
+- selected harness ids are the eligible pool;
+- `primaryHarness` is a bias/ordering hint, not a privileged semantic role;
+- `portfolio` is recorded in `TaskContract.budget.portfolio`, default
+  `subscription-first`.
 
-- `packages/harness-codex`: Codex CLI adapter. Runs `codex exec --json`,
-  translates JSON stream events, and seeds API-key auth into isolated
-  `CODEX_HOME` when needed.
-- `packages/harness-claude`: Claude Code adapter. Runs `claude -p` with
-  `stream-json` output and translates events.
-- `packages/harness-cursor`, `packages/harness-opencode`: local CLI adapters
-  for additional harnesses.
-- `packages/harness-raw-api`: raw API-backed review/planning harness.
-- `packages/harness-fake`: deterministic harness suite for tests.
-- `packages/adapter-protocol`: JSON-RPC over stdio protocol for external
-  adapters in any language.
+Single-route modes (`ask`, `agent`, `readonly_audit`) choose one route from the
+eligible pool, primary first. Best-of-N expands the eligible pool over N
+candidates. Convergence rotates compatible harnesses when a stall signature
+persists.
 
-Adapters translate native streams into typed Claudex events. They do not choose
-winners, manage budgets, or decide policy.
+## 5. Auth And Secrets
 
-### Review, policy, and selection
+Native harness auth is preferred. API-key fallback uses `packages/secrets`:
+Keychain where available, otherwise a `0600` file under the user config dir.
 
-- `packages/review`: deterministic gates, patch-apply checks, cross-family
-  route proof, finding parsing/deduplication, finding revalidation, convergence
-  predicate, readiness ledger, review engine.
-- `packages/arbitration`: evidence-first ranking and `DecisionRecord`.
-- `packages/synthesis`: decides whether synthesis is worthwhile and builds a
-  synthesis prompt/plan.
-- `packages/policy`: risk classification and path/command policy helpers.
-- `packages/budget`: leases, spend ledger, quota/rate-limit observations,
-  portfolio routing.
-- `packages/secrets`: keychain/file-backed secret store and secret resolution.
+Run params are validated before daemon enqueue. Inline `env`, `secrets`,
+`api_key`, `token`, `password`, or similar fields are rejected, so daemon
+`jobs.json` never becomes a secret store. Secret-setting endpoints bypass job
+persistence and write only to the secret store.
 
-### Storage and surfaces
+Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
+cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
+`patch.diff`.
 
-- `packages/event-log`: append-only JSONL event log.
-- `packages/artifact-store`: `.claudex/runs/<run_id>` directory management.
-- `packages/delivery`: patch checking and apply/commit/branch/PR delivery.
-- `packages/cli`: user CLI, command dispatch, adapter registry, plugin install,
-  release name checks.
-- `packages/daemon`: optional local Unix-socket JSON-RPC daemon.
-- `packages/mcp-server`: MCP stdio server exposing Claudex tools.
-- `packages/acp-server`: ACP stdio session agent.
-- `packages/benchmark`: SWE-bench Verified prediction runner plus benchmark
-  scaffolds. Operator-facing, end-to-end benchmark harnesses live at the repo root
-  under `benchmarks/` (Terminal-Bench 2.1 via Harbor with in-place convergence +
-  cross-family review; SWE-bench Verified/Lite via the official evaluator).
+## 6. Main Execution Paths
 
----
+### Ask
 
-## 4. Main Execution Paths
+Creates a run directory, writes a `TaskContract`, runs one adapter with
+`intent: explain`, `access: readonly`, writes `final/answer.md`,
+`final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
 
-### Daily
+### Agent
 
-`claudex run "..."` calls the minimal `ExecutionEngine`. It creates a run
-artifact directory, builds a task contract, discovers one harness, streams
-events, records a summary and `work_product.yaml`, and returns synchronously.
-Daily mode mutates the target repo directly through the native harness working
-directory.
+`claudex run` defaults to `agent`. It uses the minimal `ExecutionEngine`,
+selects one primary-biased compatible harness, writes a contract and summary,
+and lets the harness operate on the requested workspace access profile.
 
-### Race / best-of-n
+### Best-of-N / Create / Benchmark
 
-`claudex race "..." --n N` creates one envelope per candidate. Each candidate:
+Each candidate gets its own `WorkspaceEnvelope`. The orchestrator reserves
+budget, runs the harness, captures diff from git, runs deterministic gates,
+reviews/revalidates findings, optionally synthesizes a new checked candidate,
+and arbitrates.
 
-1. reserves budget before spawning work;
-2. runs an adapter in a worktree envelope;
-3. captures the patch via `git add -A` + `git diff --cached`;
-4. runs configured deterministic gates;
-5. goes through cross-family review when reviewers are available;
-6. has findings revalidated;
-7. enters arbitration.
+### Max Attempts / Until Clean
 
-If synthesis is useful, the synthesizer runs as a new candidate and is checked
-like any other candidate. The winner emits `final/patch.diff`,
-`final/work_product.yaml`, and `final/summary.md`.
-
-### Convergence
-
-`claudex run --mode until-convergence "..."` and
-`claudex run --mode max-attempts --attempts N "..."` carry one envelope forward
-across repair attempts. The next prompt includes prior accepted findings. The
-loop stops on convergence, budget/quota exhaustion, no-progress stall, or the
-explicit max-attempt cap in `max_attempts`.
-
-There is no fixed attempt cap in `until_convergence`.
+One envelope is carried forward across repair attempts. `max_attempts` stops at
+the explicit cap. `until_clean` has no fixed iteration cap and stops on
+convergence, cancellation, budget/quota exhaustion, or no-progress stall after
+eligible harness rotation.
 
 ### Plan
 
-`claudex plan "..."` runs available candidate adapters in read-only mode,
-collects planning text, optionally cross-reviews the plan set, extracts
-ambiguities, and writes a `final/plan.md` SpecPack.
+Runs eligible planners read-only, stores per-harness plans, cross-reviews when
+reviewers are available, and writes `final/plan.md`. The spec interview is
+Plan/draft-owned, not a permanent top-level app sidebar concept.
 
-### Audit / map
+### Read-only Audit
 
-`claudex audit` and `claudex map` currently run a single read-only audit report.
-The fuller multi-agent read-only swarm remains a v0.2 follow-up.
+Runs one selected compatible harness read-only with `intent: audit` and writes
+`final/report.md`.
 
----
+## 7. Control API
 
-## 5. WorkspaceEnvelope
+The daemon is the durable scheduler. The HTTP control API is a live viewport and
+artifact/delivery facade:
 
-Race and convergence use Claudex-owned envelopes rather than relying on native
-harness worktree modes. The current layout is:
+- `POST /runs`
+- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
+- `GET /harnesses`
+- `GET|POST /settings`
+- `GET|POST|DELETE /secrets`
+- `POST /spec/questions`, `POST /spec/freeze`
 
-```text
-<repo>/.claudex/workspaces/<task_id>/<attempt_id>/
-  tree/                 # git worktree; only repo changes here enter patches
-  home/                 # scoped HOME, outside the worktree
-    .codex/
-    .claude/
-    .cursor/
-    .config/opencode/
-  env/
-  logs/
-  artifacts/
-```
+Every endpoint is loopback + bearer-token guarded. Apply endpoints read
+`final/patch.diff`; read-only modes without a patch return a real error instead
+of local fake apply state.
 
-Important invariant: `WorkspaceManager.create()` is the only producer of
-`worktree_path`, and it always points at the `tree/` subdirectory. `dispose()`
-removes the unique envelope base, including any seeded credentials.
+## 8. Artifact Layout
 
-Why scoped dirs are outside the worktree:
-
-- harnesses write auth state, cache files, sqlite logs, session transcripts, and
-  downloaded plugins into their home/config dirs;
-- `diffStaged()` intentionally runs `git add -A` before `git diff --cached` so
-  untracked repo files are captured;
-- if scoped home lives inside the worktree, secrets and caches can enter
-  `patch.diff`;
-- keeping scoped dirs as siblings of `tree/` makes the diff surface structural,
-  not convention-based.
-
----
-
-## 6. Auth And Secrets
-
-Claudex mirrors harness auth rather than brokering subscriptions centrally.
-
-- `local_session`: use the native CLI's own login state and credential store.
-- `api_key`: use environment variables, helper commands, or Claudex-managed
-  secret storage, scoped to an envelope where possible.
-
-Current real-harness behavior:
-
-- Codex 0.137 needs an `auth.json` in `CODEX_HOME` when that home is empty.
-  `packages/harness-codex` writes a 0600 api-key `auth.json` into scoped
-  `CODEX_HOME` when a Codex/OpenAI key is available and no auth file exists.
-  Daily mode does not set `CODEX_HOME`, so this is a no-op there.
-- Claude Code accepts `ANTHROPIC_API_KEY` directly with scoped
-  `CLAUDE_CONFIG_DIR`.
-
-Secrets must not be printed, logged, committed, or included in artifacts. The
-workspace layout is part of that guarantee.
-
----
-
-## 7. Artifacts
-
-Canonical run output lives under `.claudex/runs/<run_id>/`:
+Canonical output lives under `.claudex/runs/<run_id>/`:
 
 ```text
-.claudex/runs/<run_id>/
-  events.jsonl
-  context/
-    task.yaml
-    context_pack.yaml?
-  attempts/
-    a01/
-      attempt.yaml
-      patch.diff
-  reviews/
-    a01.yaml
-  arbitration/
-    decision.yaml
-    pairwise.yaml
-    synthesis.yaml
-  final/
-    patch.diff
-    work_product.yaml
-    summary.md
-    plan.md?
-  review-evidence/
-    USER_INTENT.md
-    DIFF.patch
-    TESTS.txt
+events.jsonl
+context/task.yaml
+context/context_pack.yaml?
+attempts/aNN/attempt.yaml
+attempts/aNN/patch.diff
+reviews/*.yaml
+arbitration/decision.yaml
+arbitration/pairwise.yaml
+arbitration/synthesis.yaml
+final/patch.diff?
+final/work_product.yaml
+final/summary.md
+final/answer.md?
+final/report.md?
+final/plan.md?
 ```
 
-The files are the SSOT. Human-readable summaries are projections.
+Files are the source of truth. UI and terminal output are projections.
 
----
+## 9. macOS App
 
-## 8. Review And Arbitration
+The macOS app is a native control surface over the control API:
 
-Review is evidence-first:
+- default composer mode is `Ask`;
+- composer exposes mode, eligible pool, primary harness, portfolio, model hint,
+  budget, access profile, and deterministic gates;
+- Settings is a real macOS `Settings` scene (`Cmd+,`) with grouped preferences;
+- sidebar Operations contains live Budget, Harness Doctor, and Benchmarks;
+- Review Queue is table-first;
+- Settings uses flat grouped sections and avoids floating black cutout shadows;
+- onboarding is native-first auth plus optional API-key fallback.
 
-- reviewers receive the diff and evidence packet;
-- route proof records requested vs observed provider/model evidence when
-  available;
-- findings without evidence cannot block;
-- findings are revalidated before arbitration;
-- stale reviews are invalid after the diff changes.
+The app must not invent local accept/rebut/apply state. Delivery and artifact
+actions come from server endpoints.
 
-Arbitration prioritizes:
+## 10. Change Rules
 
-1. required gates and harness errors;
-2. acceptance coverage;
-3. accepted blockers and fix-first findings;
-4. final clean review;
-5. simplicity, maintainability, risk;
-6. cost and latency as secondary factors.
-
-LLM judgment is allowed only as a grounded tiebreak over evidence, not as a
-replacement for gates or artifacts.
-
----
-
-## 9. Surfaces
-
-All surfaces should remain thin:
-
-- CLI: parse flags, build registry, call orchestrator/core, print JSON or text.
-- Daemon: queue local jobs over a Unix socket and call the same runner.
-- MCP: expose `claudex_run`, `claudex_race`, `claudex_plan`,
-  `claudex_create`, and `claudex_status`.
-- ACP: expose session creation and prompt handling over stdio JSON-RPC.
-- Plugins: install thin host shims that delegate to the CLI.
-
-If a surface starts making policy or winner decisions, move that logic into a
-control-plane package.
-
----
-
-## 10. Current v0.1 Limits
-
-These are known limitations, not hidden claims:
-
-- Deterministic gates are not yet populated from config/CLI. `TaskContract`
-  supports `tests.commands`, and the review package can run gates, but the CLI
-  does not yet build those commands into contracts. Until this is wired,
-  `gatesPassed([])` is vacuously true and convergence is mostly review-driven.
-- `readonly_swarm` is a single read-only audit report, not a full swarm with
-  architecture map, subsystem briefs, risk register, and test plan.
-- Plan mode writes open questions into the SpecPack but does not yet run a live
-  interactive interview before freezing a plan.
-- Final fresh-envelope verification of the chosen WorkProduct is not fully
-  wired for every mode.
-- Cursor and OpenCode adapters are implemented but not dogfooded on this
-  machine because the CLIs were not installed.
-- Benchmark evaluation requires prepared instance repositories and external
-  evaluator tooling; the runner and prediction format are implemented.
-
-The highest-value next step is config-to-gates: turn repo config and CLI flags
-into concrete build/test/lint/typecheck commands in `TaskContract.tests.commands`.
-
----
-
-## 11. Where To Change Things
-
-- Add or change a schema: start in `packages/schema`, regenerate JSON Schema,
-  then update consumers.
-- Add a harness: implement `HarnessAdapter`, parser tests, doctor behavior,
-  registry entry, and conformance expectations.
-- Change worktree isolation: start in `packages/workspace`; preserve the
-  "scoped dirs outside tree" invariant.
-- Change winner selection: start in `packages/arbitration` and review tests.
-- Change cross-family review: start in `packages/review`.
-- Change command UX: update `packages/cli`, then README examples.
-- Change artifacts: update `artifact-store`, schema/workproduct types, and
-  docs together.
-
-Keep `README.md`, this file, and `docs/SPEC.md` aligned when structural behavior
-changes.
+- Change data shapes in `packages/schema` first, regenerate JSON Schema, then
+  update consumers.
+- Change routing/orchestration in `packages/orchestrator` or `packages/core`.
+- Change adapter parsing in `packages/harness-*`.
+- Change delivery in `packages/delivery`.
+- Change macOS UI only after the control DTO/API shape exists.
+- Keep `README.md`, `docs/SPEC.md`, and this file aligned when behavior changes.

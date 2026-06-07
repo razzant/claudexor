@@ -18,14 +18,14 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 - **Artifact SSOT**: files-first canonical; optional rebuildable SQLite index.
 - **Sandbox depth**: worktree + env/HOME/harness-config-dir isolation + port allocation; containers optional/scaffolded.
 - **Arbitration**: evidence-weighted first; LLM-judge consilium only as grounded tiebreak/synthesis decider.
-- **Daily delivery default**: `native_live` (max native parity).
+- **Agent delivery default**: native direct-edit parity; `ask` is the default read-only composer mode.
 
 ## Batch 3 — Review, convergence & evidence
 - **Review substrate**: adopt + generalize the `.adversarial-review/` files-on-disk evidence packet for ALL review.
 - **Quorum**: ALWAYS cross-family ≥2 distinct providers (max rigor).
 - **Revalidation**: mandatory FindingRevalidator, LLM-first per finding; no evidence → cannot BLOCK.
 - **Convergence**: full predicate (tests pass + no accepted BLOCK/FIX_FIRST + rebuttals not overturned + final cross-family clean review + final diff stable after review).
-- **Route proof**: always record (verified/unverified/same-model-fallback); ENFORCE verified multi-model in benchmark/high-risk, warn in daily.
+- **Route proof**: always record (verified/unverified/same-model-fallback); ENFORCE verified multi-model in benchmark/high-risk, warn in agent.
 - **Scope Atlas**: port Ouroboros's path-accounting + OMISSIONS manifest (no silent truncation).
 - **Anti-thrash**: readiness-debt + round history + stall detection (change strategy, don't stop); adversarial-review round cap then ask.
 
@@ -34,12 +34,12 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 - **Access default**: `workspace_write`; `full` requires explicit `--access full` or persisted project trust.
 - **Secrets** (per user question): mirror Codex/Claude — OS keychain where available, else `0600` file ("auto"); env + helper-command for CI; scoped per-envelope config dirs. Cross-platform (macOS + Linux). No SaaS broker.
 - **Risk classifier**: typed policy over diff metadata + optional LLM-first judgment, evidence-grounded; no keyword-regex governance.
-- **Child network**: daily/native inherit; benchmark/envelope restrict + record.
+- **Child network**: agent/native inherit; benchmark/envelope restrict + record.
 - **Apply UX**: full (all / per-file / per-hunk / dry-run / branch / commit / PR / new-repo).
 - **Trust layering**: versioned repo config can NEVER self-grant sensitive powers (full access, bypass, network, secrets, disable review/audit, raise budget, install plugins, trust MCP).
 
 ## Batch 5 — Modes, WorkProduct & embed API
-- **Modes**: all 8 in v1.
+- **Modes**: canonical v0.2 ids are `ask`, `agent`, `best_of_n`, `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, `benchmark`.
 - **Plan mode**: multi-harness independent planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack (clarify=required).
 - **Create-from-scratch**: first-class, WorkProduct kind `new_repo` (git bundle + tree manifest + archive), build/test gates, materialize policy.
 - **WorkProduct kinds**: all (patch, new_repo, branch, commit, pr, report, artifact_bundle, benchmark_submission).

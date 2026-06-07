@@ -253,6 +253,12 @@ describe("DaemonControlApiServer", () => {
   function fakeDaemon(): { daemon: DaemonFacadeClient; record: DaemonRunRecord; cancelled: string[] } {
     const runDir = mkdtempSync(join(tmpdir(), "claudex-control-run-"));
     mkdirSync(runDir, { recursive: true });
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    mkdirSync(join(runDir, "arbitration"), { recursive: true });
+    writeFileSync(join(runDir, "final", "summary.md"), "# Summary\n\nDone.\n");
+    writeFileSync(join(runDir, "final", "patch.diff"), "diff --git a/x b/x\n");
+    writeFileSync(join(runDir, "final", "work_product.yaml"), "id: wp-test\nkind: patch\nsource_task_id: task-d1\n");
+    writeFileSync(join(runDir, "arbitration", "decision.yaml"), "winner: a01\nstatus: success\nconfidence: 0.9\n");
     writeFileSync(
       join(runDir, "events.jsonl"),
       [
@@ -261,7 +267,14 @@ describe("DaemonControlApiServer", () => {
         "",
       ].join("\n"),
     );
-    const record: DaemonRunRecord = { id: "job-d1", state: "succeeded", runId: "run-d1", taskId: "task-d1", runDir };
+    const record: DaemonRunRecord = {
+      id: "job-d1",
+      state: "succeeded",
+      runId: "run-d1",
+      taskId: "task-d1",
+      runDir,
+      params: { prompt: "hello", mode: "agent", harnesses: ["codex"], portfolio: "subscription-first" },
+    };
     const cancelled: string[] = [];
     const daemon: DaemonFacadeClient = {
       async enqueue() {
@@ -353,5 +366,103 @@ describe("DaemonControlApiServer", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  it("rejects old mode ids and inline env/secrets before daemon enqueue", async () => {
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job", state: "queued" };
+      },
+      async status() {
+        return { id: "job", state: "queued" };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const oldMode = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "x", mode: "daily" }),
+      });
+      expect(oldMode.status).toBe(400);
+
+      const inlineEnv = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "x", mode: "agent", env: { OPENAI_API_KEY: "sk-nope" } }),
+      });
+      expect(inlineEnv.status).toBe(400);
+      expect(enqueued).toBe(0);
+    });
+  });
+
+  it("serves run detail and artifact index from the run directory", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as {
+        summary: { mode?: string; prompt?: string };
+        finalSummary?: string;
+        decision?: { winner?: string };
+        workProduct?: { id?: string };
+        artifacts: { path: string }[];
+      };
+      expect(body.summary.mode).toBe("agent");
+      expect(body.summary.prompt).toBe("hello");
+      expect(body.finalSummary).toContain("Done");
+      expect(body.decision?.winner).toBe("a01");
+      expect(body.workProduct?.id).toBe("wp-test");
+      expect(body.artifacts.some((a) => a.path === "final/summary.md")).toBe(true);
+
+      const artifacts = await fetch(`${base}/runs/run-d1/artifacts`, { headers: { authorization: `Bearer ${token}` } });
+      expect(artifacts.status).toBe(200);
+      expect(await artifacts.text()).toContain("final/patch.diff");
+
+      const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, { headers: { authorization: `Bearer ${token}` } });
+      expect(summary.status).toBe(200);
+      expect(await summary.text()).toContain("Summary");
+    });
+  });
+
+  it("rejects invalid persisted summary modes instead of hiding them", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = { prompt: "legacy", mode: "daily" };
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
+      expect(detail.status).toBe(500);
+      expect(await detail.text()).toContain("daily");
+    });
+  });
+
+  it("redacts prompts in summaries and refuses secret-like patch artifacts", async () => {
+    const { daemon, record } = fakeDaemon();
+    const secret = "sk-" + "a".repeat(24);
+    record.params = { prompt: `use ${secret}`, mode: "agent", portfolio: "subscription-first" };
+    writeFileSync(join(record.runDir as string, "final", "patch.diff"), `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`);
+    await withDaemonServer(daemon, async (base) => {
+      const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        runs: { prompt?: string }[];
+      };
+      expect(list.runs[0]?.prompt).toContain("[redacted]");
+      expect(list.runs[0]?.prompt).not.toContain(secret);
+
+      const patch = await fetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, { headers: { authorization: `Bearer ${token}` } });
+      expect(patch.status).toBe(409);
+
+      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(apply.status).toBe(409);
+    });
   });
 });

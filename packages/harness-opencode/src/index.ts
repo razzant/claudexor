@@ -42,7 +42,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.1.0",
+        adapter_version: "0.2.0",
         provider_family: "opencode",
         capabilities: {
           plan: true,
@@ -70,7 +70,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           usage_signal: "observed",
         },
         auth_modes: ["local_session", "api_key"],
-        access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
+        access_profiles_supported: ["workspace_write", "full", "inherit_native"],
         models: { discovery: "available" },
       });
     },
@@ -89,7 +89,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         harness_id: "opencode",
         status: "ok",
         checks: [{ id: "installed", status: "pass", detail: version }],
-        enabled_intents: ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "synthesize", "explain", "audit"],
+          enabled_intents: ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize"],
       });
     },
 

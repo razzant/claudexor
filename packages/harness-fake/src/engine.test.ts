@@ -27,7 +27,7 @@ describe("ExecutionEngine + fake harness", () => {
     expect(res.costUsd).toBeCloseTo(0.01);
   });
 
-  it("forwards access profile and model hint to the harness (daily)", async () => {
+  it("forwards access profile and model hint to the harness (agent)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudex-test-"));
     let seen: HarnessRunSpec | undefined;
     const capture: HarnessAdapter = {

@@ -19,4 +19,4 @@ review:
   default_attempts: 3
   strictness: block
 budget:
-  portfolio: daily-rich
+  portfolio: subscription-first

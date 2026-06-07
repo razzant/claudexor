@@ -6,7 +6,7 @@
       "properties": {
         "schema_version": {
           "type": "number",
-          "const": 1
+          "const": 2
         },
         "task_id": {
           "type": "string",
@@ -52,13 +52,14 @@
             "kind": {
               "type": "string",
               "enum": [
-                "daily",
+                "ask",
+                "agent",
+                "best_of_n",
+                "max_attempts",
+                "until_clean",
                 "plan",
                 "create",
-                "best_of_n",
-                "until_convergence",
-                "max_attempts",
-                "readonly_swarm",
+                "readonly_audit",
                 "benchmark"
               ]
             }
@@ -280,7 +281,7 @@
           "properties": {
             "portfolio": {
               "type": "string",
-              "default": "daily-rich"
+              "default": "subscription-first"
             },
             "max_usd": {
               "type": [

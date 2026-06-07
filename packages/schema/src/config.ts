@@ -3,6 +3,15 @@ import { AccessProfile } from "./primitives.js";
 import { DeliveryPolicy } from "./workproduct.js";
 import { Portfolio } from "./budget.js";
 
+export const RoutingPolicy = z.enum(["auto", "primary", "portfolio"]);
+export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
+
+export const SecretRef = z.object({
+  ref: z.string().min(1),
+  env: z.string().optional(),
+});
+export type SecretRef = z.infer<typeof SecretRef>;
+
 /**
  * Project config — safe, versioned settings. This shape may NOT carry sensitive
  * settings (full access, secrets, budget-above-cap, plugin auto-install, etc.);
@@ -39,7 +48,7 @@ export const ProjectConfig = z.object({
       strictness: z.enum(["advisory", "block"]).default("block"),
     })
     .default({}),
-  budget: z.object({ portfolio: Portfolio.default("daily-rich") }).default({ portfolio: "daily-rich" }),
+  budget: z.object({ portfolio: Portfolio.default("subscription-first") }).default({ portfolio: "subscription-first" }),
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
 
@@ -58,14 +67,42 @@ export type TrustConfig = z.infer<typeof TrustConfig>;
 /** Global user config (~/.claudex/config.yaml). */
 export const GlobalConfig = z.object({
   version: z.literal(1).default(1),
-  default_portfolio: Portfolio.default("daily-rich"),
+  default_portfolio: Portfolio.default("subscription-first"),
+  routing: z
+    .object({
+      default_policy: RoutingPolicy.default("auto"),
+      primary_harness: z.string().nullable().default(null),
+      eligible_harnesses: z.array(z.string()).default([]),
+      default_model: z.string().nullable().default(null),
+      env_inheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
+    })
+    .default({}),
   budget: z
     .object({
       max_usd_per_run: z.number().nonnegative().nullable().default(null),
       max_usd_per_day: z.number().nonnegative().nullable().default(null),
     })
     .default({}),
-  harnesses: z.record(z.string(), z.object({ enabled: z.boolean().default(true) })).default({}),
+  harnesses: z
+    .record(
+      z.string(),
+      z.object({
+        enabled: z.boolean().default(true),
+        default_model: z.string().nullable().default(null),
+        auth_ref: SecretRef.nullable().default(null),
+      }),
+    )
+    .default({}),
+  secrets: z
+    .record(
+      z.string(),
+      z.object({
+        description: z.string().optional(),
+        harnesses: z.array(z.string()).default([]),
+        env: z.string().optional(),
+      }),
+    )
+    .default({}),
 });
 export type GlobalConfig = z.infer<typeof GlobalConfig>;
 

@@ -1,6 +1,6 @@
 {
   "name": "@claudex/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claudex CLI (claudex). Thin surface over the ExecutionEngine.",
   "type": "module",
   "main": "./dist/cli.js",
@@ -34,6 +34,7 @@
     "@claudex/harness-opencode": "workspace:*",
     "@claudex/harness-raw-api": "workspace:*",
     "@claudex/schema": "workspace:*",
+    "@claudex/secrets": "workspace:*",
     "@claudex/util": "workspace:*"
   }
 }

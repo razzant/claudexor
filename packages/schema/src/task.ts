@@ -65,7 +65,7 @@ export const TaskContract = z.object({
   }),
   budget: z
     .object({
-      portfolio: z.string().default("daily-rich"),
+      portfolio: z.string().default("subscription-first"),
       max_usd: z.number().nullable().default(null),
       max_attempts: z.number().int().nullable().default(null),
     })

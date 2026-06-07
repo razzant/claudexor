@@ -41,7 +41,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
         version: defaultModel,
-        adapter_version: "0.1.0",
+        adapter_version: "0.2.0",
         provider_family: providerFamily,
         capabilities: {
           plan: true,

@@ -8,7 +8,7 @@ import {
   ResolvedConfig as ResolvedConfigSchema,
   TrustConfig,
 } from "@claudex/schema";
-import { pathExists, readTextSafe, sha256, writeText } from "@claudex/util";
+import { ensureDir, pathExists, readTextSafe, sha256, writeText } from "@claudex/util";
 
 export function globalConfigDir(): string {
   return join(homedir(), ".claudex");
@@ -53,6 +53,20 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const trust = TrustConfig.parse(trustRaw ?? {});
 
   return ResolvedConfigSchema.parse({ project, trust, global, sources });
+}
+
+export function globalConfigPath(): string {
+  return join(globalConfigDir(), "config.yaml");
+}
+
+/** Update ~/.claudex/config.yaml with validated global settings. Sensitive values are not accepted here. */
+export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): { path: string; config: GlobalConfig } {
+  const path = globalConfigPath();
+  const current = GlobalConfig.parse(readYaml(path) ?? {});
+  const next = GlobalConfig.parse(mutator(current));
+  ensureDir(globalConfigDir());
+  writeText(path, yamlStringify(next));
+  return { path, config: next };
 }
 
 export interface InitResult {

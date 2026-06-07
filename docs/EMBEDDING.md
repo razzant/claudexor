@@ -10,6 +10,7 @@ Every command supports `--json` and prints a stable, schema-backed object.
 
 ```bash
 claudex run "fix the failing auth test" --json
+claudex ask "explain the auth flow" --json
 claudex race "implement feature X" --n 4 --json
 claudex plan "design a migration" --json
 claudex inspect <run_id> --json
@@ -53,9 +54,9 @@ def call(method, params=None):
 claudex mcp serve   # stdio JSON-RPC MCP server
 ```
 
-Tools: `claudex_run`, `claudex_race`, `claudex_plan`, `claudex_create`,
-`claudex_status`. Any MCP client (Claude Code, Cursor, Ouroboros' MCP client)
-can call them.
+Tools: `claudex_ask`, `claudex_run`, `claudex_race`, `claudex_plan`,
+`claudex_create`, `claudex_status`. Any MCP client (Claude Code, Cursor,
+Ouroboros' MCP client) can call them.
 
 ## ACP server
 

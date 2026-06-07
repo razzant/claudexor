@@ -109,59 +109,85 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
 // MARK: - Run modes
 
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case daily, race, untilConvergence, maxAttempts, plan, create, audit, benchmark
+    case ask, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, benchmark, unknown
     var id: String { rawValue }
+    static var allCases: [RunMode] {
+        [.ask, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .benchmark]
+    }
 
     /// The wire value the control-api / orchestrator expects.
     var apiValue: String {
         switch self {
-        case .daily: return "daily"
-        case .race: return "best_of_n"
-        case .untilConvergence: return "until_convergence"
+        case .ask: return "ask"
+        case .agent: return "agent"
+        case .bestOfN: return "best_of_n"
         case .maxAttempts: return "max_attempts"
+        case .untilClean: return "until_clean"
         case .plan: return "plan"
         case .create: return "create"
-        case .audit: return "audit"
+        case .readOnlyAudit: return "readonly_audit"
         case .benchmark: return "benchmark"
+        case .unknown: return "unknown"
+        }
+    }
+    init(apiValue: String?) {
+        switch apiValue {
+        case "ask": self = .ask
+        case "agent": self = .agent
+        case "best_of_n": self = .bestOfN
+        case "max_attempts": self = .maxAttempts
+        case "until_clean": self = .untilClean
+        case "plan": self = .plan
+        case "create": self = .create
+        case "readonly_audit": self = .readOnlyAudit
+        case "benchmark": self = .benchmark
+        default: self = .unknown
         }
     }
     var label: String {
         switch self {
-        case .daily: return "Daily"
-        case .race: return "Race"
-        case .untilConvergence: return "Until convergence"
-        case .maxAttempts: return "Max attempts"
+        case .ask: return "Ask"
+        case .agent: return "Agent"
+        case .bestOfN: return "Best-of-N"
+        case .maxAttempts: return "Max Attempts"
+        case .untilClean: return "Until Clean"
         case .plan: return "Plan"
         case .create: return "Create"
-        case .audit: return "Audit"
+        case .readOnlyAudit: return "Read-only Audit"
         case .benchmark: return "Benchmark"
+        case .unknown: return "Unknown Mode"
         }
     }
     var glyph: String {
         switch self {
-        case .daily: return "bolt.fill"
-        case .race: return "flag.checkered.2.crossed"
-        case .untilConvergence: return "arrow.triangle.2.circlepath"
+        case .ask: return "questionmark.bubble"
+        case .agent: return "bolt.fill"
+        case .bestOfN: return "flag.checkered.2.crossed"
         case .maxAttempts: return "repeat"
+        case .untilClean: return "arrow.triangle.2.circlepath"
         case .plan: return "list.bullet.clipboard"
         case .create: return "plus.square.on.square"
-        case .audit: return "magnifyingglass"
+        case .readOnlyAudit: return "magnifyingglass"
         case .benchmark: return "chart.bar.xaxis"
+        case .unknown: return "exclamationmark.triangle"
         }
     }
     var blurb: String {
         switch self {
-        case .daily: return "Single harness, edits the repo directly."
-        case .race: return "N candidates in isolated envelopes, cross-reviewed, best wins."
-        case .untilConvergence: return "One envelope repaired until reviewers converge."
+        case .ask: return "Read-only answer. No edit, run, or apply controls."
+        case .agent: return "Single primary-biased route. Direct edit path."
+        case .bestOfN: return "N candidates in isolated envelopes, cross-reviewed, best wins."
         case .maxAttempts: return "Repair loop with a hard attempt cap and gates."
+        case .untilClean: return "One envelope repaired until gates/review are clean."
         case .plan: return "Multi-harness planning → adversarial plan review → SpecPack."
         case .create: return "Scaffold a brand-new repo or component."
-        case .audit: return "Read-only audit / map of a codebase."
+        case .readOnlyAudit: return "Read-only audit / map of a codebase."
         case .benchmark: return "Run a benchmark suite (SWE-bench, Terminal-Bench)."
+        case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }
     }
-    var isMultiCandidate: Bool { self == .race || self == .maxAttempts || self == .untilConvergence }
+    var isMultiCandidate: Bool { self == .bestOfN }
+    var isReadOnly: Bool { self == .ask || self == .plan || self == .readOnlyAudit }
 }
 
 // MARK: - Phase pipeline

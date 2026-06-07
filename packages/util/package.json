@@ -1,6 +1,6 @@
 {
   "name": "@claudex/util",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Low-level utilities (ids, hashing, fs, redaction) with no Claudex deps.",
   "type": "module",
   "main": "./dist/index.js",

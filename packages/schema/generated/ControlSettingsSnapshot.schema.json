@@ -1,0 +1,101 @@
+{
+  "$ref": "#/definitions/ControlSettingsSnapshot",
+  "definitions": {
+    "ControlSettingsSnapshot": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "defaultPortfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "benchmark",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ],
+          "default": "subscription-first"
+        },
+        "routing": {
+          "type": "object",
+          "properties": {
+            "defaultPolicy": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "primary",
+                "portfolio"
+              ],
+              "default": "auto"
+            },
+            "primaryHarness": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "eligibleHarnesses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "defaultModel": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "envInheritance": {
+              "type": "string",
+              "enum": [
+                "mirror_native",
+                "clean",
+                "profile_only"
+              ],
+              "default": "mirror_native"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "maxUsdPerRun": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            },
+            "maxUsdPerDay": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

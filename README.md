@@ -5,160 +5,89 @@ CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
 behind one typed interface.
 
 The core rule is simple: a harness is not a role. Roles are intents such as
-`plan`, `implement`, `repair`, `review`, `compare`, `synthesize`, `audit`, and
-`benchmark`. Any harness that declares the capability can be assigned the intent.
+`explain`, `plan`, `implement`, `repair`, `review`, `compare`, `synthesize`,
+`audit`, and `benchmark`. Any harness that declares the capability can be
+assigned the intent.
 
-Current status: **v0.1.0 engineering preview**. The repo has the breadth-first
-control-plane skeleton, real Codex/Claude dogfood, typed artifacts, and CI. Some
-important v0.2 pieces are still explicit gaps, especially config-driven
-deterministic gates.
+Current status: **v0.2.0 engineering preview**. This is a breaking preview:
+old mode ids are intentionally not supported.
 
-## What It Does
+## Modes
 
-Claudex adds a reproducible layer around native coding tools:
+Canonical mode ids:
 
-- single-harness runs when only one tool is configured;
-- best-of-n races in isolated git worktrees;
-- cross-family review when multiple providers are available;
-- convergence loops that feed accepted findings back into repair attempts;
-- structured artifacts under `.claudex/runs/<run_id>/`;
-- budget/quota accounting and observed rate-limit handling;
-- CLI, daemon, MCP, ACP, and plugin surfaces over the same control plane;
-- benchmark runner scaffolding, including SWE-bench Verified prediction output.
+- `ask` - read-only answer/explanation route. Default in the macOS composer.
+- `agent` - default `claudex run` route; one primary-biased harness, direct edit.
+- `best_of_n` - N isolated candidates, review, synthesis when useful, arbitration.
+- `max_attempts` - repair loop with a hard attempt cap.
+- `until_clean` - repair loop until gates/review converge, budget/quota exhausts, or it stalls.
+- `plan` - read-only multi-harness planning and draft SpecPack grounding.
+- `create` - create-from-scratch path.
+- `readonly_audit` - read-only audit/map report.
+- `benchmark` - benchmark-oriented best-of-N path.
 
-It does not replace the native tools. It controls how they are selected, isolated,
-reviewed, and delivered.
-
-## Install From Source
-
-```bash
-git clone https://github.com/joi-lab/claudex.git
-cd claudex
-pnpm install --frozen-lockfile
-pnpm build
-pnpm test
-```
-
-Local macOS note: if Homebrew's `node` is killed by the OS code-signing monitor,
-use an official notarized Node distribution on `PATH`.
-
-Run the local CLI:
-
-```bash
-node packages/cli/dist/cli.js help
-node packages/cli/dist/cli.js doctor
-```
-
-`doctor` checks which harnesses are installed and authenticated. A healthy
-Codex/Claude setup looks like this:
-
-```text
-[ok] codex codex-cli 0.137.0
-[ok] claude 2.1.165 (Claude Code)
-```
-
-Cursor and OpenCode may be unavailable until their CLIs are installed. That is a
-degraded but valid state.
+Unknown modes fail loudly. `daily`, `until_convergence`, `readonly_swarm`, and
+`audit` as mode ids are not aliases.
 
 ## Basic Usage
 
-For examples below, define a short alias while developing from source:
-
 ```bash
-alias claudex='node /path/to/claudex/packages/cli/dist/cli.js'
-```
-
-### Single Harness
-
-Force one harness:
-
-```bash
+claudex ask "2+2?"
 claudex run "fix the failing auth refresh test" --harness codex
-claudex run "summarize the migration risk" --harness claude --json
+claudex race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
+claudex run "repair the parser test" --mode max-attempts --attempts 3
+claudex run "fix the bug and keep repairing until clean" --mode until-clean
+claudex plan "design a config-to-gates implementation"
+claudex audit "map artifact writers and secret risk"
 ```
 
-If only one harness is configured, Claudex should collapse to that native tool
-plus structured run artifacts.
-
-### Best-of-N Race
-
-Run Codex and Claude in separate envelopes, review the candidate diffs, and
-arbitrate a winner:
-
-```bash
-claudex race "fix add() in src/math.js and keep the patch minimal" \
-  --harness codex,claude \
-  --n 2 \
-  --json
-```
-
-Inspect the result:
+Inspect and apply:
 
 ```bash
 claudex inspect <run_id>
 claudex apply <run_id> --dry-run
+claudex apply <run_id> --mode apply
 ```
 
-`apply --dry-run` checks whether `final/patch.diff` applies cleanly without
-mutating the repo.
+`apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
+not mutate the repo.
 
-### Convergence
+## Routing, Auth, And Secrets
 
-Run a repair loop until the convergence predicate is met, budget/quota is
-exhausted, or the task stalls:
+Routing is `Pool + Primary + Portfolio`:
+
+- selected harnesses are the eligible pool;
+- `--primary-harness <id>` biases single-route modes and the first candidate;
+- `--portfolio <id>` records the routing/budget portfolio, default
+  `subscription-first`.
+
+Claudex mirrors native harness auth first. API keys are a fallback and live in
+the OS Keychain where available, otherwise a `0600` file. Run params, daemon
+`jobs.json`, artifacts, summaries, patches, and PR text store only refs/metadata,
+not raw secret values.
 
 ```bash
-claudex run "fix the bug and address accepted review findings" \
-  --mode until-convergence \
-  --harness codex,claude
+claudex auth status
+claudex auth login codex
+claudex secrets set openai --from-env OPENAI_API_KEY
+claudex secrets list
+claudex settings show
+claudex settings set default_portfolio subscription-first
 ```
 
-Use a bounded loop when you want an explicit cap:
+## Daemon And Control API
 
-```bash
-claudex run "try to repair the failing parser test" \
-  --mode max-attempts \
-  --attempts 3 \
-  --harness claude
-```
+The optional daemon owns durable local job queueing over a Unix socket. The
+loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 
-Hyphenated mode names are accepted (`until-convergence`, `max-attempts`).
-Unknown modes fail loudly instead of falling back to `daily`.
+- `POST /runs`
+- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
+- `GET /harnesses`, `GET|POST /settings`, `GET|POST|DELETE /secrets`
+- `POST /spec/questions`, `POST /spec/freeze`
 
-### Planning
-
-Produce a read-only SpecPack:
-
-```bash
-claudex plan "design a config-to-gates implementation" --harness codex,claude
-```
-
-Plan mode collects plans from configured harnesses and writes `final/plan.md`.
-The live interactive interview layer is still a v0.2 follow-up.
-
-## MCP, ACP, And Daemon
-
-MCP stdio server:
-
-```bash
-claudex mcp serve
-```
-
-Available MCP tools in v0.1:
-
-- `claudex_run`
-- `claudex_race`
-- `claudex_plan`
-- `claudex_create`
-- `claudex_status`
-
-ACP stdio server:
-
-```bash
-claudex acp serve
-```
-
-Optional local daemon:
+Start it:
 
 ```bash
 claudex daemon start
@@ -167,46 +96,9 @@ claudex daemon logs
 claudex daemon stop
 ```
 
-The daemon is local-only and uses the same runner as the CLI.
-
-## Benchmark Runner
-
-List available benchmark surfaces:
-
-```bash
-claudex bench list
-```
-
-Generate SWE-bench prediction output from prepared task rows:
-
-```bash
-claudex bench run swe-bench \
-  --tasks tasks.jsonl \
-  --predictions predictions.json \
-  --workdir /path/to/prepared/instance/repos
-```
-
-Without `--workdir`, the command writes skeleton predictions and prints setup
-instructions. External evaluator tooling and prepared per-instance repos are
-still required for full evaluation.
-
-### Reproducible benchmark suites
-
-End-to-end, operator-friendly harnesses live under [`benchmarks/`](benchmarks/):
-
-- [`benchmarks/terminal_bench/`](benchmarks/terminal_bench/) — Terminal-Bench 2.1
-  via the official Harbor harness. Claudex runs in-place convergence with
-  cross-family review inside one container, so the benchmark measures Claudex's
-  orchestration lift (not just a single model). Includes a 3-arm pilot
-  (`claude-code` vs `codex` vs Claudex) and a results summarizer.
-- [`benchmarks/swe-bench/`](benchmarks/swe-bench/) — SWE-bench Verified/Lite (plus
-  notes for Full/Pro/Live/Multimodal/Multilingual): export tasks, prepare repos,
-  generate predictions with `claudex bench run`, and score with the official
-  `swebench.harness.run_evaluation`.
-
 ## Artifact Layout
 
-Every run creates a directory under `.claudex/runs/<run_id>/`:
+Every run creates files under `.claudex/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -218,38 +110,28 @@ arbitration/decision.yaml
 final/patch.diff
 final/work_product.yaml
 final/summary.md
+final/answer.md?
+final/report.md?
+final/plan.md?
 ```
 
-Files are the source of truth. Terminal output is only a projection.
+Files are the source of truth. Terminal output and UI rows are projections.
 
 ## Architecture
-
-The current package map and data flow are documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 Important boundaries:
 
 - `packages/schema` owns contracts and generated JSON Schema.
 - `packages/harness-*` adapters translate native tool I/O into typed events.
 - `packages/workspace` owns worktree envelopes and scoped harness homes.
-- `packages/orchestrator` owns race, convergence, plan, and audit modes.
+- `packages/orchestrator` owns Ask, Agent, Best-of-N, Max Attempts, Until Clean,
+  Plan, Create, Read-only Audit, and Benchmark modes.
 - `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
   validation logic.
-- CLI, daemon, MCP, ACP, and plugins are thin surfaces.
+- CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.
 
-## Current Limitations
-
-These are known v0.1 limits, not hidden guarantees:
-
-- Deterministic gates are not yet populated from config or CLI. `TaskContract`
-  supports `tests.commands`, but the CLI does not build them yet, so
-  `gatesPassed([])` is currently vacuously true. Wiring config-to-gates is the
-  highest-value v0.2 task.
-- `readonly_swarm` is currently a single read-only audit report.
-- Plan mode writes open questions but does not yet run an interactive interview.
-- Fresh-envelope final verification is not fully wired for every mode.
-- Cursor and OpenCode adapters exist but need live dogfood on machines where
-  their CLIs are installed.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/SPEC.md`](docs/SPEC.md),
+and [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md).
 
 ## Development
 
@@ -260,21 +142,19 @@ pnpm typecheck
 pnpm test
 pnpm schema:gen
 git diff --exit-code packages/schema/generated
+pnpm build
 ```
 
-There is no root `pnpm lint` script in v0.1.
+`pnpm release:verify` runs the same locked chain before package publishing.
 
-## Documentation
+There is no root `pnpm lint` script.
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): current codebase map and
-  invariants.
-- [`docs/SPEC.md`](docs/SPEC.md): canonical technical specification.
-- [`docs/DECISIONS.md`](docs/DECISIONS.md): design decisions from planning.
-- [`docs/PLAN.md`](docs/PLAN.md): original breadth-first build plan.
-- [`docs/REVIEW.md`](docs/REVIEW.md): adversarial review history and dogfood
-  findings.
-- [`docs/EMBEDDING.md`](docs/EMBEDDING.md): embedding/Ouroboros integration
-  contract.
+macOS:
+
+```bash
+cd apps/macos/ClaudexKit && swift test
+cd ../ClaudexApp && swift build
+```
 
 ## License
 

@@ -71,6 +71,49 @@ public final class GatewayClient: Sendable {
         return (try Self.decoder.decode(RunListResponse.self, from: data)).runs
     }
 
+    public func runDetail(runId: String) async throws -> RunDetail {
+        let req = request("runs/\(runId)", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(RunDetail.self, from: data)
+    }
+
+    public func listHarnesses() async throws -> [HarnessStatus] {
+        let req = request("harnesses", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return (try Self.decoder.decode(HarnessListResponse.self, from: data)).harnesses
+    }
+
+    public func applyCheck(runId: String) async throws -> ApplyCheckResult {
+        var req = request("runs/\(runId)/apply/check", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ApplyCheckResult.self, from: data)
+    }
+
+    public func setSecret(name: String, value: String) async throws {
+        var req = request("secrets", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(SecretSetRequest(name: name, value: value))
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+    }
+
     /// Live SSE event stream for a run, resuming after `lastEventId` if given. The
     /// stream finishes when the server sends the terminal `end` event or closes.
     public func events(runId: String, lastEventId: Int? = nil) -> AsyncThrowingStream<BusEnvelope, Error> {

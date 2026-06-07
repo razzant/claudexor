@@ -1,0 +1,31 @@
+{
+  "$ref": "#/definitions/ControlApplyRequest",
+  "definitions": {
+    "ControlApplyRequest": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "artifact_only",
+            "apply",
+            "branch",
+            "commit",
+            "pr"
+          ],
+          "default": "apply"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

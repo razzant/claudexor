@@ -18,8 +18,9 @@ import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
 import { AcpServer } from "@claudex/acp-server";
-import { initProjectConfig } from "@claudex/config";
-import { type ModeKind, SpecPack as SpecPackSchema } from "@claudex/schema";
+import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudex/config";
+import { SecretStore } from "@claudex/secrets";
+import { ModeKind as ModeKindSchema, Portfolio, type ModeKind, SpecPack as SpecPackSchema } from "@claudex/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
 import { type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
@@ -40,26 +41,32 @@ function orchestratorRunner() {
     return orch.run({
       repoRoot: process.cwd(),
       prompt: String(p?.prompt ?? ""),
-      mode: p?.mode,
+      mode: p?.mode ?? "agent",
       harnesses: p?.harness ? [String(p.harness)] : undefined,
+      primaryHarness: p?.primaryHarness ? String(p.primaryHarness) : undefined,
+      model: p?.model ? String(p.model) : undefined,
       n: typeof p?.n === "number" ? p.n : undefined,
     });
   };
 }
 
-const HELP = `claudex — harness-agnostic AI coding control plane (v0.1.0)
+const HELP = `claudex — harness-agnostic AI coding control plane (v0.2.0)
 
 Usage:
   claudex init                          Scaffold repo-local config (.claudex/config.yaml)
   claudex doctor [--harness <id>] [--all]   Detect + conformance-test harnesses
-  claudex run "<prompt>" [opts]         Run a task (default mode: daily)
-  claudex race "<prompt>" [--n N]       Best-of-n tournament with cross-family review
+  claudex ask "<question>" [opts]       Read-only answer/explanation route
+  claudex run "<prompt>" [opts]         Run a task (default mode: agent)
+  claudex race "<prompt>" [--n N]       Best-of-N tournament with cross-family review
   claudex plan "<prompt>"               Read-only planning report
   claudex spec "<prompt>" [--answers file]  Multi-harness plan grounding -> quiz -> frozen SpecPack
   claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
   claudex audit | map                   Read-only repo audit / map
   claudex inspect <run_id>              Inspect a run's decision + artifacts
   claudex apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
+  claudex settings show|set             Show/update user defaults
+  claudex auth status|login             Inspect native harness auth
+  claudex secrets list|set|delete       Manage stored API-key refs (Keychain/0600 file)
   claudex release check-name <name>     Naming gate (npm/pypi/crates/github)
   claudex daemon start|status|stop|logs Optional local daemon (claudexd)
   claudex mcp serve                     Expose Claudex as an MCP server (stdio)
@@ -71,14 +78,16 @@ Usage:
 
 Options:
   --harness <id[,id...]>   Force harness(es)
-  --mode <mode>            daily | plan | create | best_of_n | until_convergence | max_attempts | readonly_swarm | benchmark
-  --n <N>                  Candidates for best-of-n
+  --mode <mode>            ask | agent | best_of_n | max_attempts | until_clean | plan | create | readonly_audit | benchmark
+  --n <N>                  Candidates for Best-of-N
   --attempts <N>           Max attempts (max_attempts mode)
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --access <profile>       Access profile: readonly|workspace_write|full|inherit_native
-  --model <id>             Model hint forwarded to the harness (daily)
+  --model <id>             Model hint forwarded to the selected harness route
+  --primary-harness <id>   Bias single-route modes and first candidate choice
+  --portfolio <id>         Budget/routing portfolio (default: subscription-first)
   --in-place               Convergence runs against the live cwd (no git worktree);
                            for stateful benchmark containers (e.g. Terminal-Bench /app)
   --answers <file>         Answers JSON for claudex spec (batch mode)
@@ -88,19 +97,23 @@ Options:
 `;
 
 const MODES = new Set<ModeKind>([
-  "daily",
+  "ask",
+  "agent",
+  "best_of_n",
+  "max_attempts",
+  "until_clean",
   "plan",
   "create",
-  "best_of_n",
-  "until_convergence",
-  "max_attempts",
-  "readonly_swarm",
+  "readonly_audit",
   "benchmark",
 ]);
 
-/** Accept the hyphenated mode spellings used in docs (until-convergence, max-attempts). */
+/** Accept hyphenated spellings for canonical ids (until-clean, max-attempts). */
 function normalizeMode(s: string): ModeKind {
-  return s.trim().replace(/-/g, "_") as ModeKind;
+  const normalized = s.trim().replace(/-/g, "_");
+  const parsed = ModeKindSchema.safeParse(normalized);
+  if (!parsed.success) return normalized as ModeKind;
+  return parsed.data;
 }
 
 function harnessList(args: ParsedArgs): string[] | undefined {
@@ -175,14 +188,21 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
         ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
       ].join("\n")
     : rawPrompt;
-  if (!prompt && mode !== "readonly_swarm") {
+  if (!prompt && mode !== "readonly_audit") {
     process.stderr.write('claudex: missing prompt\n');
     return 2;
   }
   const maxUsdRaw = floatFlag(args, "max-usd");
   const maxUsd = maxUsdRaw !== undefined && maxUsdRaw >= 0 ? maxUsdRaw : undefined;
+  const portfolioRaw = flagStr(args, "portfolio");
+  const portfolio = portfolioRaw !== undefined ? Portfolio.safeParse(portfolioRaw) : null;
+  if (portfolioRaw !== undefined && !portfolio?.success) {
+    process.stderr.write(`claudex: unknown --portfolio '${portfolioRaw}'\n`);
+    return 2;
+  }
   const orch = new Orchestrator({
     registry: buildRegistry(),
+    portfolio: portfolio?.success ? portfolio.data : undefined,
     maxUsd: maxUsd ?? null,
     reviewerModels: reviewerModels(args),
   });
@@ -192,6 +212,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       prompt: prompt || "audit this repository",
       mode,
       harnesses: harnessList(args),
+      primaryHarness: flagStr(args, "primary-harness"),
+      portfolio: portfolio?.success ? portfolio.data : undefined,
       n: intFlag(args, "n"),
       attempts: intFlag(args, "attempts") ?? null,
       tests: testCommands(args) ?? spec?.tests.map((t) => t.command),
@@ -354,6 +376,149 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   }
 }
 
+async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const sub = args._[1] ?? "show";
+  if (sub === "show") {
+    const cfg = loadConfig(process.cwd());
+    if (json) printJson(cfg);
+    else {
+      print(`sources: ${cfg.sources.length ? cfg.sources.join(", ") : "(defaults)"}`);
+      print(`default_portfolio: ${cfg.global.default_portfolio}`);
+      print(`routing.default_policy: ${cfg.global.routing.default_policy}`);
+      print(`routing.primary_harness: ${cfg.global.routing.primary_harness ?? "(none)"}`);
+      print(`routing.default_model: ${cfg.global.routing.default_model ?? "(none)"}`);
+      print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
+      print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
+    }
+    return 0;
+  }
+  if (sub === "set") {
+    const key = args._[2];
+    const value = args._[3];
+    if (!key || value === undefined) {
+      print("usage: claudex settings set default_portfolio|primary_harness|default_model|env_inheritance|routing_policy <value>");
+      return 2;
+    }
+    try {
+      const res = updateGlobalConfig((cfg) => {
+        if (key === "default_portfolio") {
+          const p = Portfolio.parse(value);
+          return { ...cfg, default_portfolio: p };
+        }
+        if (key === "primary_harness") {
+          return { ...cfg, routing: { ...cfg.routing, primary_harness: value === "none" ? null : value } };
+        }
+        if (key === "default_model") {
+          return { ...cfg, routing: { ...cfg.routing, default_model: value === "none" ? null : value } };
+        }
+        if (key === "env_inheritance") {
+          if (!["mirror_native", "clean", "profile_only"].includes(value)) throw new Error("env_inheritance must be mirror_native|clean|profile_only");
+          return { ...cfg, routing: { ...cfg.routing, env_inheritance: value as never } };
+        }
+        if (key === "routing_policy") {
+          if (!["auto", "primary", "portfolio"].includes(value)) throw new Error("routing_policy must be auto|primary|portfolio");
+          return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
+        }
+        throw new Error(`unknown setting: ${key}`);
+      });
+      if (json) printJson(res);
+      else print(`updated ${key} in ${res.path}`);
+      return 0;
+    } catch (err) {
+      process.stderr.write(`claudex settings: ${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+  }
+  print("usage: claudex settings show|set");
+  return 2;
+}
+
+async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const sub = args._[1] ?? "status";
+  const harness = args._[2];
+  if (sub === "status") {
+    const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
+    const statuses = await gateway.statusAll({ cwd: process.cwd() });
+    const filtered = harness ? statuses.filter((s) => s.id === harness) : statuses;
+    if (json) {
+      printJson({ harnesses: filtered });
+      return 0;
+    }
+    for (const s of filtered) {
+      const modes = s.manifest?.auth_modes?.join(", ") || "unknown";
+      print(`${statusGlyph(s.status)} ${s.id} auth=${modes}`);
+      if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
+    }
+    return 0;
+  }
+  if (sub === "login") {
+    if (!harness) {
+      print("usage: claudex auth login <codex|claude|cursor|opencode>");
+      return 2;
+    }
+    const hints: Record<string, string> = {
+      codex: "Run the native Codex login flow, or store an API key ref with: claudex secrets set openai --from-env OPENAI_API_KEY",
+      claude: "Run the native Claude Code login flow, or store an API key ref with: claudex secrets set anthropic --from-env ANTHROPIC_API_KEY",
+      cursor: "Sign in through Cursor, then let Claudex mirror the native session.",
+      opencode: "Run the native OpenCode auth flow, or store the provider key as a secret ref.",
+    };
+    print(hints[harness] ?? `Run the native ${harness} auth flow, then retry: claudex auth status ${harness}`);
+    return 0;
+  }
+  print("usage: claudex auth status|login");
+  return 2;
+}
+
+async function stdinText(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const sub = args._[1] ?? "list";
+  const store = new SecretStore();
+  if (sub === "list") {
+    const secrets = store.list();
+    if (json) printJson({ backend: store.resolvedBackend(), secrets });
+    else {
+      if (secrets.length === 0) print(`no stored secrets (${store.resolvedBackend()})`);
+      for (const s of secrets) print(`${s.name} [${s.backend}]`);
+    }
+    return 0;
+  }
+  if (sub === "set") {
+    const name = args._[2];
+    if (!name) {
+      print("usage: claudex secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin");
+      return 2;
+    }
+    const envVar = flagStr(args, "from-env");
+    const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
+    if (!value) {
+      print("secret value required via --from-env or stdin; values are not accepted as positional args");
+      return 2;
+    }
+    store.set(name, value);
+    if (json) printJson({ name, backend: store.resolvedBackend(), stored: true });
+    else print(`stored ${name} in ${store.resolvedBackend()}`);
+    return 0;
+  }
+  if (sub === "delete" || sub === "rm") {
+    const name = args._[2];
+    if (!name) {
+      print("usage: claudex secrets delete <name>");
+      return 2;
+    }
+    store.delete(name);
+    if (json) printJson({ name, deleted: true });
+    else print(`deleted ${name}`);
+    return 0;
+  }
+  print("usage: claudex secrets list|set|delete");
+  return 2;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const json = flagBool(args, "json");
@@ -394,15 +559,21 @@ async function main(): Promise<number> {
           process.stderr.write(`claudex: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
           return 2;
         }
-        if (mode === "daily" && flagStr(args, "spec")) {
+        if ((mode === "agent" || mode === "ask") && flagStr(args, "spec")) {
           process.stderr.write("claudex: --spec requires a gated mode; use 'claudex race --spec <file>' or 'claudex run --mode max-attempts --spec <file>'\n");
           return 2;
         }
         return orchestrate(args, mode, json);
       }
-      if (flagStr(args, "spec")) return orchestrate(args, "max_attempts", json);
-      return orchestrate(args, "daily", json);
+      if (flagStr(args, "spec")) {
+        process.stderr.write("claudex: --spec requires an explicit gated mode; use 'claudex race --spec <file>' or 'claudex run --mode max-attempts --spec <file>'\n");
+        return 2;
+      }
+      return orchestrate(args, "agent", json);
     }
+
+    case "ask":
+      return orchestrate(args, "ask", json);
 
     case "race":
       return orchestrate(args, "best_of_n", json);
@@ -418,10 +589,19 @@ async function main(): Promise<number> {
 
     case "audit":
     case "map":
-      return orchestrate(args, "readonly_swarm", json);
+      return orchestrate(args, "readonly_audit", json);
 
     case "daemon":
       return daemonCommand(args, json);
+
+    case "settings":
+      return settingsCommand(args, json);
+
+    case "auth":
+      return authCommand(args, json);
+
+    case "secrets":
+      return secretsCommand(args, json);
 
     case "mcp": {
       if (args._[1] === "serve") {

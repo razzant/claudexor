@@ -1,6 +1,6 @@
 {
   "name": "claudex-monorepo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -18,11 +18,13 @@
     "format:check": "prettier --check .",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build && changeset publish"
+    "release:verify": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && pnpm build",
+    "release": "pnpm release:verify && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.10",
     "@types/node": "^22.10.2",
+    "esbuild": "^0.27.0",
     "prettier": "^3.4.2",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",

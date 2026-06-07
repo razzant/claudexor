@@ -52,7 +52,7 @@ describe("InterviewEngine", () => {
     expect(spec.interview.questions).toHaveLength(1);
     expect(spec.interview.answers).toHaveLength(1);
 
-    const contract = specPackToTaskContract(spec, { repoRoot: "/tmp/repo", mode: "until_convergence" });
+    const contract = specPackToTaskContract(spec, { repoRoot: "/tmp/repo", mode: "until_clean" });
     expect(contract.user_intent.raw).toBe("add storage");
     expect(contract.success_criteria[0]?.text).toContain("THE SYSTEM SHALL");
     expect(contract.tests.commands[0]?.command).toBe("pnpm test");
@@ -98,7 +98,7 @@ describe("InterviewEngine", () => {
 
   it("schema rejects a frozen-but-ambiguous spec and a resolved-without-resolution item", () => {
     const base = {
-      schema_version: 1,
+      schema_version: 2,
       id: "spec-x",
       created_at: new Date().toISOString(),
       version: 1,

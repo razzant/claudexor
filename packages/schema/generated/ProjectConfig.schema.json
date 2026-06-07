@@ -154,12 +154,12 @@
                 "conserve-claude",
                 "conserve-codex"
               ],
-              "default": "daily-rich"
+              "default": "subscription-first"
             }
           },
           "additionalProperties": false,
           "default": {
-            "portfolio": "daily-rich"
+            "portfolio": "subscription-first"
           }
         }
       },

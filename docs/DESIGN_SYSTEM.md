@@ -109,12 +109,13 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   16; compact 12. Screen gutter is `xxl` (32). Use tokens — never off-scale literals
   (`1,3,5,6` etc.).
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
-  `card 12`, `hero 22` (floating composer). Card radius ~12–16; controls inherit system
+  `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
   a tracked v0.2 refinement.)
 - Elevation: glass + material layering for chrome; a solid content card may carry **one**
-  soft separation shadow (`black 18%, radius 10, y 4`, centralized in `cardSurface`) for
-  dark-mode contrast against the glow. No heavy or stacked shadows; one recipe only.
+  soft separation shadow (`black 8%, radius 6, y 2`, centralized in `cardSurface`) for
+  dark-mode contrast against the glow. Settings groups are flat and use no shadow. No heavy,
+  stacked, or black cutout shadows.
 
 ### 2.5 Density
 
@@ -190,21 +191,33 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
     blocked / needs-permission / done).
 - **Spec interview (quiz cards).** Hierarchical, AI-generated question cards: single/multi
   choice + free text, tier progress, `NEEDS_CLARIFICATION` chips, deep-link citations into
-  code. Freeze → versioned, diffable SpecPack. The hero differentiator.
-- **Run composer.** Mode (daily/race/until-convergence/max-attempts/plan/create/audit/
-  benchmark), harness multiselect (family-colored), n, budget cap, access profile, gates/tests,
-  reviewer models.
+  code. It is Plan/draft-owned, not a permanent top-level sidebar item.
+- **Run composer.** Mode (`Ask`, `Agent`, `Best-of-N`, `Max Attempts`, `Until Clean`,
+  `Plan`, `Create`, `Read-only Audit`, `Benchmark`), harness multiselect as eligible pool
+  (family-colored), Primary harness, Portfolio, model hint, N, budget cap, access profile,
+  gates/tests. Default mode is `Ask`.
 - **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
-- **Cross-family review "debates".** `ReviewFinding` cards: severity + category + evidence
-  (file:line, diff hunks, commands, logs), reviewer + route-proof status, accept/rebut.
+- **Cross-family review.** Table-first Review Queue: severity, finding, task, reviewer,
+  evidence, and state columns. Cards can still appear in task detail, but local accept/rebut
+  toggles are forbidden unless backed by a server endpoint.
 - **Convergence.** Round timeline; accepted findings fed back; convergence predicate state.
-- **Diff + Apply + Review queue.** Git-scoped diff (uncommitted / vs base), per-file & per-hunk
-  accept/revert, comment-to-steer, open-in-real-editor at line, apply/commit/branch/PR,
-  configurable `apply_policy`; a cross-project, risk-sorted review queue.
+- **Diff + Apply + Review queue.** Git-scoped diff from server artifacts. Apply/check actions
+  use `POST /runs/:id/apply/check` and `POST /runs/:id/apply`. Do not present per-file or
+  per-hunk apply controls until the backend exposes selected scope.
 - **Budget cockpit.** Spend, circuit breaker, portfolio weights, pre-exhaustion warnings.
-- **Doctor / Harnesses.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
+- **Harness Doctor.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
+- **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
+  Appearance, Projects, Agent & Routing, Harness Doctor & Auth, Secrets, Budget, Review, Delivery,
+  Advanced & About. Settings groups are flat, solid, and shadowless.
+- **Help and tooltips.** Every compact/risky control gets layered help: `.help(...)` for hover
+  and an info popover when explanation affects cost, access, auth, or routing. Future controls
+  must document their consequence at the control, not only in docs.
+- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth,
+  then offer API-key fallback that writes only to the local secret store. The wizard may store
+  secret refs, mark setup complete, or skip, but it must not invent app-only auth state. Offline
+  or unimplemented surfaces show honest empty states; sample data is opt-in from Settings.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 
@@ -251,17 +264,15 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
 - **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
   content uses `TaskRowView`/`FindingCard`. Inter-row dividers inset `.leading 56` (icon
   column). Rows live inside a `Panel(padding: 0)`.
-- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 12, `cardStroke`, one soft
+- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8, `cardStroke`, one soft
   shadow) on a solid `surfaceRaised`. `Panel`, `FindingCard` (`clip: true` for its leading
   severity bar), and `CandidateCard` (`strokeColor`/`lineWidth` for the winner emphasis) all
   call it; do not duplicate ad-hoc background+stroke+shadow stacks.
 
-**Known gaps (tracked for v0.2, intentionally not in v0.1 to avoid churn):** colors are a
-programmatic `Color(dark:light:)` projection rather than an asset catalog, and there is **no
-Increased-Contrast variant** yet (`§2.2`/`§6` aspiration); there is no density environment
-value (`§2.5`) — density is currently fixed "compact"; concentric radii (`ConcentricRectangle`,
-`§2.4`) are not adopted; a few tiny count/label pills still carry per-call padding pending a
-shared `CountBadge`. These are honest deltas between this SSOT and the code, not silent drift.
+**Known gaps:** colors are a programmatic `Color(dark:light:)` projection rather than an asset
+catalog, and there is no Increased-Contrast variant yet (`§2.2`/`§6` aspiration); density is
+currently fixed compact; concentric radii (`ConcentricRectangle`, `§2.4`) are not adopted; a few
+tiny count/label pills still carry per-call padding pending a shared `CountBadge`.
 
 ---
 

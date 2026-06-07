@@ -69,18 +69,18 @@ struct BudgetScreen: View {
     }
 }
 
-// MARK: - Harnesses / Doctor
+// MARK: - Harness Doctor
 
 struct HarnessesScreen: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         if model.harnesses.isEmpty {
-            EmptyStateView(title: "Harness status not wired yet",
-                           message: "Live harness discovery (claudex doctor) isn't exposed over the control-api yet. Enable Sample data in Settings to preview this screen.",
+            EmptyStateView(title: "No harness status yet",
+                           message: "Start or reconnect the local engine to load Harness Doctor results.",
                            systemImage: "cpu")
                 .glowBackdrop()
         } else {
-            ScreenScaffold(title: "Harnesses", subtitle: "No privileged harness. Roles are intents; a degraded adapter is gated out of roles it can't play.") {
+            ScreenScaffold(title: "Harness Doctor", subtitle: "No privileged harness. Roles are intents; a degraded adapter is gated out of roles it can't play.") {
                 ForEach(model.harnesses) { HarnessRow(info: $0) }
             }
         }
@@ -184,59 +184,127 @@ struct BenchmarksScreen: View {
 
 struct SettingsScreen: View {
     @Environment(AppModel.self) private var model
+    @State private var openAIKey = ""
+    @State private var anthropicKey = ""
+    @State private var secretStatus: String?
+
     var body: some View {
         @Bindable var model = model
-        ScreenScaffold(title: "Settings", maxWidth: Theme.Layout.readableMaxWidth) {
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Appearance", systemImage: "paintpalette")
-                    Picker("Theme", selection: $model.appearance) {
-                        ForEach(AppearanceMode.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Signature default is graphite Dark. Light and System are fully supported.").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Data", systemImage: "rectangle.on.rectangle")
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                ScreenHeader(title: "Settings", subtitle: "Preferences, defaults, auth, secrets, and delivery policy.")
+                settingsGroup("General", "gearshape") {
                     Toggle(isOn: $model.demoMode) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Show sample data").font(.callout)
-                            Text("Populate screens with illustrative runs/specs/harnesses. Off by default so live state is never mixed with mock content.")
+                            Text("Preview empty surfaces without mixing mock rows into live state unless this is on.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                     .toggleStyle(.switch).tint(Theme.accent)
-                }
-            }
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Engine connection", systemImage: "bolt.horizontal.circle")
-                    KeyValueRow(key: "Status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.succeeded) : .secondary)
-                    KeyValueRow(key: "Control API", value: model.endpoint.isEmpty ? "—" : "http://\(model.endpoint)", mono: true)
-                    KeyValueRow(key: "Discovery", value: "~/.claudex/daemon/control-api.json", mono: true)
+                    KeyValueRow(key: "Engine status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.succeeded) : .secondary)
                     Button { Task { await model.connect() } } label: { Label("Reconnect", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
                 }
-            }
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Trust & secrets", systemImage: "lock.shield")
-                    Text("Claudex mirrors each harness's own auth. Secrets live in the OS Keychain or 0600 files, scoped per envelope — never printed, logged, or shown here.")
+                settingsGroup("Appearance", "paintpalette") {
+                    Picker("Theme", selection: $model.appearance) {
+                        ForEach(AppearanceMode.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Liquid Glass stays on navigation/chrome; dense content uses opaque surfaces for contrast.")
                         .font(.caption).foregroundStyle(.secondary)
-                    KeyValueRow(key: "Token", value: "•••••••• (loopback bearer)", mono: true)
-                    KeyValueRow(key: "Access default", value: "workspace_write")
-                    KeyValueRow(key: "Repo config", value: "cannot self-grant sensitive powers")
                 }
-            }
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    SectionLabel("About", systemImage: "info.circle")
+                settingsGroup("Projects", "folder") {
+                    KeyValueRow(key: "Project config", value: ".claudex/config.yaml", mono: true)
+                    KeyValueRow(key: "Public docs", value: "README.md, docs/ARCHITECTURE.md, docs/SPEC.md", mono: true)
+                    KeyValueRow(key: "Local operator notes", value: "AGENTS.md is local-only")
+                }
+                settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
+                    KeyValueRow(key: "Default mode", value: "Ask")
+                    KeyValueRow(key: "Agent mode", value: "Single primary-biased direct edit route")
+                    KeyValueRow(key: "Default portfolio", value: "subscription-first")
+                    KeyValueRow(key: "Eligible pool", value: "Selected harness chips")
+                    KeyValueRow(key: "Primary", value: "Bias, not a hardcoded role")
+                }
+                settingsGroup("Harness Doctor & Auth", "cpu") {
+                    Text("Claudex mirrors native harness auth first, with API-key fallback through stored secret refs.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    KeyValueRow(key: "Control API", value: model.endpoint.isEmpty ? "—" : "http://\(model.endpoint)", mono: true)
+                    KeyValueRow(key: "Doctor", value: "Operations -> Harness Doctor")
+                }
+                settingsGroup("Secrets", "key") {
+                    Text("Secret values live in Keychain or a 0600 store. Run params and artifacts store refs/metadata only.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    secretEntry(title: "OpenAI API key", name: "openai", text: $openAIKey)
+                    secretEntry(title: "Anthropic API key", name: "anthropic", text: $anthropicKey)
+                    if let secretStatus {
+                        Text(secretStatus).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    KeyValueRow(key: "Loopback bearer", value: "Stored in the local daemon profile")
+                    KeyValueRow(key: "Env inheritance", value: "mirror-native")
+                }
+                settingsGroup("Budget", "dollarsign.circle") {
+                    KeyValueRow(key: "Per-run cap", value: "Composer slider / CLI --max-usd")
+                    KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
+                }
+                settingsGroup("Review", "person.2.badge.gearshape") {
+                    KeyValueRow(key: "Queue", value: "Table-first Review Queue")
+                    KeyValueRow(key: "Apply decisions", value: "Server apply/check endpoints only")
+                }
+                settingsGroup("Delivery", "shippingbox") {
+                    KeyValueRow(key: "Inspect", value: "GET /runs/:id + artifacts")
+                    KeyValueRow(key: "Apply", value: "Dry-run check before mutation")
+                }
+                settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudex for macOS")
-                    KeyValueRow(key: "Design", value: "Liquid Glass · macOS 26 Tahoe")
+                    KeyValueRow(key: "Version", value: "v0.2.0")
                     KeyValueRow(key: "Engine", value: "@claudex/control-api (loopback HTTP+SSE)")
                 }
             }
+            .padding(Theme.Spacing.xl)
+            .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.surfaceBase)
+    }
+
+    private func settingsGroup<Content: View>(_ title: String, _ systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel(title, systemImage: systemImage)
+            content()
+        }
+        .padding(Theme.Spacing.lg)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).stroke(Theme.separator, lineWidth: 1))
+    }
+
+    private func secretEntry(title: String, name: String, text: Binding<String>) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Text(title)
+                .frame(width: 126, alignment: .leading)
+                .font(.callout)
+            SecureField(title, text: text)
+                .textFieldStyle(.roundedBorder)
+                .help("Stored as secret ref: \(name). The value is never written into run params or artifacts.")
+            Button {
+                let value = text.wrappedValue
+                Task {
+                    let ok = await model.storeSecret(name: name, value: value)
+                    await MainActor.run {
+                        if ok {
+                            text.wrappedValue = ""
+                            secretStatus = "Stored secret ref: \(name)"
+                        } else {
+                            secretStatus = "Could not store \(name); reconnect the local engine and try again."
+                        }
+                    }
+                }
+            } label: {
+                Label("Store \(title.replacingOccurrences(of: " API key", with: ""))", systemImage: "key.fill")
+            }
+            .buttonStyle(.bordered)
+            .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Send this value to the local secret store.")
         }
     }
 }

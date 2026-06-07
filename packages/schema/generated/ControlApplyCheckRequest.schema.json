@@ -1,0 +1,14 @@
+{
+  "$ref": "#/definitions/ControlApplyCheckRequest",
+  "definitions": {
+    "ControlApplyCheckRequest": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

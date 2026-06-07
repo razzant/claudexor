@@ -7,7 +7,7 @@ export interface ReadinessDebt {
 /**
  * Tracks "commit-readiness debts" and round history to detect thrashing. When a
  * failure signature repeats, the loop should change strategy (in
- * until-convergence) or stop and ask (in adversarial-review), rather than
+ * until_clean) or stop and ask (in adversarial-review), rather than
  * re-running the same failing approach.
  */
 export class ReadinessLedger {

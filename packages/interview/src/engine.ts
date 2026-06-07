@@ -4,8 +4,8 @@ import type {
   InterviewQuestion,
   SpecPack,
 } from "@claudex/schema";
-import { SpecPack as SpecPackSchema } from "@claudex/schema";
-import { newId, nowIso } from "@claudex/util";
+import { SCHEMA_VERSION, SpecPack as SpecPackSchema } from "@claudex/schema";
+import { newId, nowIso, redactSecrets } from "@claudex/util";
 
 /** Snapshot of interview state handed to the (harness-driven) generator/assembler. */
 export interface InterviewState {
@@ -158,22 +158,22 @@ export class InterviewEngine {
     if (open.length > 0) throw new UnresolvedClarificationsError(open);
     this.revision += 1;
     return SpecPackSchema.parse({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       id: this.specId,
       created_at: nowIso(),
       version: this.revision,
       frozen: true,
-      intent: { raw: this.opts.intent, normalized: this.draft.summary },
-      summary: this.draft.summary ?? "",
-      success_criteria: this.draft.success_criteria ?? [],
-      non_goals: this.draft.non_goals ?? [],
-      forbidden_approaches: this.draft.forbidden_approaches ?? [],
-      decided_tradeoffs: this.draft.decided_tradeoffs ?? [],
-      constraints: this.draft.constraints ?? {},
-      tests: this.draft.tests ?? [],
-      tasks: this.draft.tasks ?? [],
-      open_questions: this.clarifications,
-      interview: { questions: this.questions, answers: this.answers },
+      intent: { raw: redactSecrets(this.opts.intent), normalized: redactSecrets(this.draft.summary ?? "") },
+      summary: redactSecrets(this.draft.summary ?? ""),
+      success_criteria: sanitize(this.draft.success_criteria ?? []),
+      non_goals: (this.draft.non_goals ?? []).map(redactSecrets),
+      forbidden_approaches: (this.draft.forbidden_approaches ?? []).map(redactSecrets),
+      decided_tradeoffs: (this.draft.decided_tradeoffs ?? []).map(redactSecrets),
+      constraints: sanitize(this.draft.constraints ?? {}),
+      tests: sanitize(this.draft.tests ?? []),
+      tasks: sanitize(this.draft.tasks ?? []),
+      open_questions: sanitize(this.clarifications),
+      interview: { questions: sanitize(this.questions), answers: sanitize(this.answers) },
     });
   }
 
@@ -192,4 +192,15 @@ export class InterviewEngine {
     if (!this.converged) throw new InterviewNotConvergedError(maxTiers);
     await this.assemble();
   }
+}
+
+function sanitize<T>(value: T): T {
+  if (typeof value === "string") return redactSecrets(value) as T;
+  if (Array.isArray(value)) return value.map((item) => sanitize(item)) as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) out[key] = sanitize(child);
+    return out as T;
+  }
+  return value;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@claudex/gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "HarnessGateway: discovery, conformance role-gating, and harness selection.",
   "type": "module",
   "main": "./dist/index.js",

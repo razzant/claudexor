@@ -50,13 +50,38 @@ export class DaemonClient {
     return this.call<{ id: string; state: string }>("claudex.enqueue", params);
   }
   status(id: string) {
-    return this.call<{ id: string; state: string; runId?: string; taskId?: string; runDir?: string; result?: unknown; error?: string }>(
+    return this.call<{
+      id: string;
+      state: string;
+      params?: unknown;
+      runId?: string;
+      taskId?: string;
+      runDir?: string;
+      result?: unknown;
+      error?: string;
+      createdAt?: string;
+      startedAt?: string;
+      finishedAt?: string;
+    }>(
       "claudex.status",
       { id },
     );
   }
   list() {
-    return this.call<{ id: string; state: string; runId?: string; taskId?: string; runDir?: string; error?: string }[]>("claudex.list");
+    return this.call<
+      {
+        id: string;
+        state: string;
+        params?: unknown;
+        runId?: string;
+        taskId?: string;
+        runDir?: string;
+        error?: string;
+        createdAt?: string;
+        startedAt?: string;
+        finishedAt?: string;
+      }[]
+    >("claudex.list");
   }
   cancel(id: string) {
     return this.call("claudex.cancel", { id });

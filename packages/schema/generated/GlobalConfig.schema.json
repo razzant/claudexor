@@ -23,7 +23,53 @@
             "conserve-claude",
             "conserve-codex"
           ],
-          "default": "daily-rich"
+          "default": "subscription-first"
+        },
+        "routing": {
+          "type": "object",
+          "properties": {
+            "default_policy": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "primary",
+                "portfolio"
+              ],
+              "default": "auto"
+            },
+            "primary_harness": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "eligible_harnesses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "default_model": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "env_inheritance": {
+              "type": "string",
+              "enum": [
+                "mirror_native",
+                "clean",
+                "profile_only"
+              ],
+              "default": "mirror_native"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
         },
         "budget": {
           "type": "object",
@@ -64,6 +110,60 @@
               "enabled": {
                 "type": "boolean",
                 "default": true
+              },
+              "default_model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "auth_ref": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ref": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "env": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "ref"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
+        },
+        "secrets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "harnesses": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "env": {
+                "type": "string"
               }
             },
             "additionalProperties": false

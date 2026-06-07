@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** Current schema version for top-level artifacts. Bump on breaking ABI changes. */
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2 as const;
 
 export const SchemaVersion = z.literal(SCHEMA_VERSION);
 
@@ -43,13 +43,14 @@ export const ProviderFamily = z.enum([
 export type ProviderFamily = z.infer<typeof ProviderFamily>;
 
 export const ModeKind = z.enum([
-  "daily",
+  "ask",
+  "agent",
+  "best_of_n",
+  "max_attempts",
+  "until_clean",
   "plan",
   "create",
-  "best_of_n",
-  "until_convergence",
-  "max_attempts",
-  "readonly_swarm",
+  "readonly_audit",
   "benchmark",
 ]);
 export type ModeKind = z.infer<typeof ModeKind>;

@@ -7,7 +7,7 @@ import SwiftUI
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
     @State private var prompt = ""
-    @State private var mode: RunMode = .race
+    @State private var mode: RunMode = .ask
     @State private var harnesses: Set<HarnessFamily> = [.codex, .claude]
     @FocusState private var promptFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -55,7 +55,7 @@ struct HomeScreen: View {
                     .foregroundStyle(Theme.accent)
                     .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                     .padding(.top, Theme.Spacing.xxs)
-                TextField("Describe a task for Claudex to plan, build, or fix…", text: $prompt, axis: .vertical)
+                TextField("Ask a question or describe a task for Claudex...", text: $prompt, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .lineLimit(1...4)
@@ -87,6 +87,7 @@ struct HomeScreen: View {
                         if harnesses.contains(family) { harnesses.remove(family) } else { harnesses.insert(family) }
                     } label: { HarnessChip(family: family, selected: harnesses.contains(family)) }
                     .buttonStyle(.plain)
+                    .help("\(family.label) eligible pool")
                 }
             }
         }
@@ -116,7 +117,11 @@ struct HomeScreen: View {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !harnesses.isEmpty else { return }
         let n = mode.isMultiCandidate ? max(2, harnesses.count) : 1
-        Task { await model.startRun(prompt: text, mode: mode, harnesses: Array(harnesses), n: n, capUsd: 0.50) }
+        let selected = HarnessFamily.allCases.filter { $0 != .fake && harnesses.contains($0) }
+        Task { await model.startRun(prompt: text, mode: mode, harnesses: selected,
+                                    primary: selected.first, portfolio: "subscription-first",
+                                    model: nil, n: n, capUsd: 0.50,
+                                    access: mode.isReadOnly ? "readonly" : "workspace_write") }
         prompt = ""
     }
 

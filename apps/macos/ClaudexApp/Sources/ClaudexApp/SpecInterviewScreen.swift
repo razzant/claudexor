@@ -75,8 +75,9 @@ struct SpecInterviewScreen: View {
                 HStack {
                     Button { withAnimation { index = 0 } } label: { Label("Edit answers", systemImage: "pencil") }.buttonStyle(.bordered)
                     Spacer()
-                    Button { model.composerPresented = true } label: { Label("Freeze → SpecPack v1", systemImage: "snowflake") }
-                        .buttonStyle(.borderedProminent).tint(Theme.accent).disabled(hasClarifications)
+                    Button { } label: { Label("Freeze SpecPack v1", systemImage: "snowflake") }
+                        .buttonStyle(.borderedProminent).tint(Theme.accent).disabled(true)
+                        .help("Freeze is available from a Plan-owned draft once the control-api returns draft identity.")
                 }
             }
         }

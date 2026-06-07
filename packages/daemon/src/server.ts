@@ -2,7 +2,7 @@ import { type Server, type Socket, createServer } from "node:net";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { newId, nowIso, pathExists, readJsonSafe } from "@claudex/util";
+import { newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudex/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -140,6 +140,7 @@ export class DaemonServer {
           jobs: this.records.size,
         };
       case "claudex.enqueue": {
+        assertNoInlineSecrets(params);
         const id = newId("job");
         this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
         this.queue.push(id);
@@ -150,10 +151,10 @@ export class DaemonServer {
       case "claudex.status": {
         const rec = this.records.get(String(params?.id));
         if (!rec) throw new Error(`no such job: ${params?.id}`);
-        return rec;
+        return publicJobRecord(rec);
       }
       case "claudex.list":
-        return [...this.records.values()];
+        return [...this.records.values()].map(publicJobRecord);
       case "claudex.cancel": {
         const jid = String(params?.id);
         this.cancelled.add(jid);
@@ -188,18 +189,7 @@ export class DaemonServer {
     const path = this.opts.persistPath;
     if (!path) return;
     try {
-      const view = [...this.records.values()].map((r) => ({
-        id: r.id,
-        state: r.state,
-        params: r.params,
-        error: r.error,
-        createdAt: r.createdAt,
-        runId: r.runId,
-        taskId: r.taskId,
-        runDir: r.runDir,
-        startedAt: r.startedAt,
-        finishedAt: r.finishedAt,
-      }));
+      const view = [...this.records.values()].map(persistedJobRecord);
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.tmp`;
       writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n");
@@ -280,4 +270,51 @@ export class DaemonServer {
       this.drain();
     }
   }
+}
+
+function assertNoInlineSecrets(value: unknown, path = "$"): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoInlineSecrets(v, `${path}[${i}]`));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
+      throw new Error(`inline secrets/env are not accepted in daemon job params (${path}.${key})`);
+    }
+    assertNoInlineSecrets(child, `${path}.${key}`);
+  }
+}
+
+function publicJobRecord(rec: JobRecord): JobRecord {
+  return {
+    ...rec,
+    params: redactParams(rec.params),
+  };
+}
+
+function persistedJobRecord(rec: JobRecord): Omit<JobRecord, "result"> {
+  return {
+    id: rec.id,
+    state: rec.state,
+    params: redactParams(rec.params),
+    error: rec.error,
+    createdAt: rec.createdAt,
+    runId: rec.runId,
+    taskId: rec.taskId,
+    runDir: rec.runDir,
+    startedAt: rec.startedAt,
+    finishedAt: rec.finishedAt,
+  };
+}
+
+function redactParams(value: unknown): unknown {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactParams);
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = key === "prompt" && typeof child === "string" ? redactSecrets(child) : redactParams(child);
+  }
+  return out;
 }

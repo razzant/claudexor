@@ -11,15 +11,43 @@ struct ReviewScreen: View {
             if findings.isEmpty {
                 EmptyStateView(title: "Inbox zero", message: "No open findings across your projects. Cross-family reviewers post blockers and suggestions here.", systemImage: "checkmark.seal")
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        ForEach(findings) { FindingCard(finding: $0, showTask: true) }
+                Table(findings) {
+                    TableColumn("Severity") { finding in
+                        Label(finding.severity.label, systemImage: finding.severity.glyph)
+                            .foregroundStyle(finding.severity.color)
                     }
-                    .padding(Theme.Spacing.xxl)
-                    .frame(maxWidth: Theme.Layout.contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                    TableColumn("Finding") { finding in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(finding.title).font(.callout.weight(.medium)).lineLimit(1)
+                            Text(finding.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                    TableColumn("Task") { finding in
+                        Text(finding.taskTitle.isEmpty ? "—" : finding.taskTitle).lineLimit(1)
+                    }
+                    TableColumn("Reviewer") { finding in
+                        HStack(spacing: Theme.Spacing.xs) {
+                            HarnessDot(family: finding.reviewer, size: 7)
+                            Text(finding.reviewer.label)
+                        }
+                    }
+                    TableColumn("Evidence") { finding in
+                        if let file = finding.evidenceFile {
+                            Text("\(file)\(finding.evidenceLine.map { ":\($0)" } ?? "")")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.link)
+                                .lineLimit(1)
+                        } else {
+                            Text("No evidence").foregroundStyle(.secondary)
+                        }
+                    }
+                    TableColumn("State") { finding in
+                        Text(finding.accepted == true ? "Accepted" : finding.accepted == false ? "Rebutted" : "Proposed")
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .scrollContentBackground(.hidden)
+                .tableStyle(.inset(alternatesRowBackgrounds: true))
+                .padding(Theme.Spacing.xxl)
             }
         }
     }
@@ -58,7 +86,6 @@ struct ReviewScreen: View {
 struct FindingCard: View {
     let finding: Finding
     var showTask = false
-    @State private var decision: Bool?
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -91,27 +118,12 @@ struct FindingCard: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    acceptControls
+                    Text(finding.accepted == true ? "Accepted" : finding.accepted == false ? "Rebutted" : "Proposed")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
             }
             .padding(Theme.Spacing.md)
         }
         .cardSurface(clip: true)   // clip rounds the leading severity bar
-        .onAppear { decision = finding.accepted }
-    }
-
-    private var acceptControls: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Button { withAnimation { decision = true } } label: {
-                Label("Accept", systemImage: "checkmark").font(.caption2)
-            }
-            .buttonStyle(.bordered)
-            .tint(decision == true ? Theme.status(.succeeded) : .secondary)
-            Button { withAnimation { decision = false } } label: {
-                Label("Rebut", systemImage: "arrow.uturn.left").font(.caption2)
-            }
-            .buttonStyle(.bordered)
-            .tint(decision == false ? Theme.status(.failed) : .secondary)
-        }
     }
 }

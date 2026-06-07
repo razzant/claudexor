@@ -14,7 +14,7 @@ import type {
   TaskContract,
   WorkspaceEnvelope,
 } from "@claudex/schema";
-import { HarnessRunSpec, TaskContract as TaskContractSchema, isBlocking } from "@claudex/schema";
+import { HarnessRunSpec, ModeKind as ModeKindSchema, SCHEMA_VERSION, TaskContract as TaskContractSchema, isBlocking } from "@claudex/schema";
 import { loadConfig } from "@claudex/config";
 import type { AdapterRegistry, HarnessAdapter } from "@claudex/core";
 import { ExecutionEngine, HarnessUnavailableError } from "@claudex/core";
@@ -37,7 +37,7 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
 import { BudgetLedger, observationFromEvent } from "@claudex/budget";
-import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
+import { containsSecretLikeToken, hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
@@ -57,6 +57,8 @@ export interface RunInput {
   prompt: string;
   mode?: ModeKind;
   harnesses?: string[];
+  primaryHarness?: string;
+  portfolio?: Portfolio;
   n?: number;
   baseRef?: string;
   attempts?: number | null;
@@ -65,9 +67,9 @@ export interface RunInput {
   tests?: string[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
-  /** Access profile; e.g. `full` for autonomous terminal tasks (daily and in-place convergence). */
+  /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
   access?: AccessProfile;
-  /** Optional model hint forwarded to the harness (daily mode). */
+  /** Optional model hint forwarded to the selected harness route. */
   model?: string;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
@@ -123,34 +125,40 @@ export class Orchestrator {
   }
 
   async run(input: RunInput): Promise<OrchestratorResult> {
-    const mode: ModeKind = input.mode ?? "daily";
+    const resolved = this.resolveRunInput(input);
+    const parsedMode = ModeKindSchema.safeParse(resolved.mode ?? "agent");
+    if (!parsedMode.success) {
+      throw new Error(`unknown mode: ${String(resolved.mode)}`);
+    }
+    const mode: ModeKind = parsedMode.data;
     switch (mode) {
+      case "ask":
+        return this.runAsk(resolved);
+      case "agent":
+        return this.runAgent(resolved);
       case "best_of_n":
       case "create":
       case "benchmark":
-        return this.runRace(input, mode);
-      case "until_convergence":
-        return this.runConvergence(input, mode, null);
+        return this.runRace(resolved, mode);
+      case "until_clean":
+        return this.runConvergence(resolved, mode, null);
       case "max_attempts":
-        return this.runConvergence(input, mode, input.attempts ?? 3);
+        return this.runConvergence(resolved, mode, resolved.attempts ?? 3);
       case "plan":
-        return this.runPlan(input);
-      case "readonly_swarm":
-        return this.runAudit(input);
-      case "daily":
-      default:
-        return this.runDaily(input);
+        return this.runPlan(resolved);
+      case "readonly_audit":
+        return this.runAudit(resolved);
     }
   }
 
-  private async runDaily(input: RunInput): Promise<OrchestratorResult> {
-    const harnessId = input.harnesses?.[0] ?? (await this.gateway.resolve()).id;
+  private async runAgent(input: RunInput): Promise<OrchestratorResult> {
+    const adapter = (await this.resolveCandidateAdapters({ ...input, n: 1 }, "implement"))[0] as HarnessAdapter;
     const engine = new ExecutionEngine(this.deps.registry);
     const res = await engine.run({
       repoRoot: input.repoRoot,
       prompt: input.prompt,
-      harnessId,
-      mode: "daily",
+      harnessId: adapter.id,
+      mode: "agent",
       access: input.access,
       model: input.model,
       runId: input.runId,
@@ -163,7 +171,7 @@ export class Orchestrator {
     return {
       runId: res.runId,
       taskId: res.taskId,
-      mode: "daily",
+      mode: "agent",
       status: res.status,
       winner: res.status === "success" ? "a01" : null,
       runDir: res.runDir,
@@ -198,7 +206,7 @@ export class Orchestrator {
   private candidateIntent(mode: ModeKind): Intent {
     switch (mode) {
       case "create": return "create_from_scratch";
-      default: return "implement"; // best_of_n / max_attempts / until_convergence / benchmark
+      default: return "implement"; // best_of_n / max_attempts / until_clean / benchmark
     }
   }
 
@@ -220,8 +228,28 @@ export class Orchestrator {
    * raw-API reviewer with `implement: false` is dropped from an implement race), and
    * expand to n. Fails loudly if nothing can perform the intent.
    */
+  private resolveRunInput(input: RunInput): RunInput {
+    const cfg = this.config(input.repoRoot);
+    const configuredPool = cfg?.global.routing.eligible_harnesses;
+    const harnesses = input.harnesses ?? (configuredPool && configuredPool.length > 0 ? configuredPool : undefined);
+    const primaryHarness = input.primaryHarness ?? cfg?.global.routing.primary_harness ?? undefined;
+    if (primaryHarness && harnesses && harnesses.length > 0 && !harnesses.includes(primaryHarness)) {
+      throw new Error(`primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`);
+    }
+    return {
+      ...input,
+      harnesses,
+      primaryHarness,
+      model: input.model ?? cfg?.global.routing.default_model ?? undefined,
+      portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.project.budget?.portfolio ?? cfg?.global.default_portfolio ?? "subscription-first",
+    };
+  }
+
   private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<HarnessAdapter[]> {
     let ids = input.harnesses;
+    if (input.primaryHarness) {
+      ids = [input.primaryHarness, ...(ids ?? []).filter((id) => id !== input.primaryHarness)];
+    }
     if (!ids || ids.length === 0) {
       ids = await this.gateway.availableReal();
       if (ids.length === 0) {
@@ -242,8 +270,11 @@ export class Orchestrator {
         dropped.push(`${id} (unavailable)`);
         continue;
       }
-      if (this.supportsIntent(caps, intent)) pool.push(adapter);
-      else dropped.push(`${id} (cannot ${intent})`);
+      const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
+      const manifest = await adapter.discover().catch(() => null);
+      const readOnlySupported = !readOnlyIntent || manifest?.access_profiles_supported.includes("readonly");
+      if (this.supportsIntent(caps, intent) && readOnlySupported) pool.push(adapter);
+      else dropped.push(`${id} (${readOnlySupported ? `cannot ${intent}` : "cannot enforce readonly"})`);
     }
     if (pool.length === 0) {
       throw new HarnessUnavailableError(
@@ -261,9 +292,17 @@ export class Orchestrator {
     return new Set(reviewers.map((r) => r.providerFamily)).size >= 2;
   }
 
+  private config(repoRoot: string): ReturnType<typeof loadConfig> | null {
+    try {
+      return loadConfig(repoRoot);
+    } catch {
+      return null;
+    }
+  }
+
   private projectConfig(repoRoot: string): ProjectConfig | null {
     try {
-      return loadConfig(repoRoot).project;
+      return this.config(repoRoot)?.project ?? null;
     } catch {
       return null;
     }
@@ -279,15 +318,15 @@ export class Orchestrator {
       .filter(Boolean)
       .map((command, i) => ({ id: `gate-${i + 1}`, command, required: true }));
     return TaskContractSchema.parse({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       task_id: taskId,
       created_at: nowIso(),
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
-      user_intent: { raw: input.prompt },
+      user_intent: { raw: redactSecrets(input.prompt) },
       tests: { commands },
       budget: {
-        portfolio: this.deps.portfolio ?? cfg?.budget?.portfolio ?? "daily-rich",
+        portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
         max_usd: input.maxUsd ?? this.deps.maxUsd ?? null,
       },
     });
@@ -325,6 +364,7 @@ export class Orchestrator {
     access: AccessProfile = "workspace_write",
     onHarnessEvent?: (event: HarnessEvent) => void,
     signal?: AbortSignal,
+    modelHint?: string,
     intent: Intent = "implement",
   ): Promise<CandidateRun> {
     const spec = HarnessRunSpec.parse({
@@ -333,6 +373,7 @@ export class Orchestrator {
       prompt,
       cwd: envelope.worktree_path,
       access,
+      model_hint: modelHint ?? null,
       env: wsm.envFor(envelope),
     });
 
@@ -370,6 +411,7 @@ export class Orchestrator {
     });
 
     const attemptDir = join(paths.attemptsDir, attemptId);
+    assertNoSecretLikeTokens("candidate patch diff", diff);
     store.writeText(join(attemptDir, "patch.diff"), diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
       attempt_id: attemptId,
@@ -434,7 +476,7 @@ export class Orchestrator {
 
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, {
-      userIntent: input.prompt,
+      userIntent: redactSecrets(input.prompt),
       diff: "(per-candidate diffs are supplied to reviewers individually)\n",
       tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
     });
@@ -463,7 +505,7 @@ export class Orchestrator {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
         envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
-          adapter, envelope, attemptId, label, contract, contract.user_intent.raw, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, this.candidateIntent(mode),
+          adapter, envelope, attemptId, label, contract, input.prompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, input.model, this.candidateIntent(mode),
         );
         ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
@@ -514,7 +556,7 @@ export class Orchestrator {
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
-            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal,
+            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, input.model, "synthesize",
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
           const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
@@ -540,6 +582,7 @@ export class Orchestrator {
 
     const winnerRun = runs.find((r) => r.attemptId === result.decision.winner) ?? runs[0];
     if (winnerRun) {
+      assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
@@ -622,7 +665,7 @@ export class Orchestrator {
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
 
     const reviewDir = join(paths.root, "review-evidence");
-    writeEvidencePacket(reviewDir, { userIntent: input.prompt, diff: "(per-attempt)\n" });
+    writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(per-attempt)\n" });
     const reviewers = await this.resolveReviewers();
     const reviewVerified = this.routeVerified(reviewers);
 
@@ -639,10 +682,10 @@ export class Orchestrator {
     let lastRun: CandidateRun | null = null;
     let triedSinceProgress = new Set<string>();
     let lastSig = "";
-    // until_convergence has NO fixed attempt cap; it stops on convergence, budget hard tier,
+    // until_clean has NO fixed attempt cap; it stops on convergence, budget hard tier,
     // observed quota cooldown across all harnesses, or genuine no-progress (a stall on the same
     // failure signature after every available harness has tried it).
-    const stallThreshold = mode === "until_convergence" ? 4 : 2;
+    const stallThreshold = mode === "until_clean" ? 4 : 2;
     const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.id));
 
     try {
@@ -666,12 +709,12 @@ export class Orchestrator {
 
         const prompt =
           attempt === 1
-            ? contract.user_intent.raw
-            : `${contract.user_intent.raw}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}`;
+            ? input.prompt
+            : `${input.prompt}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}`;
 
         let run: CandidateRun;
         try {
-          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.access ?? "workspace_write", input.onHarnessEvent, input.signal);
+          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.access ?? "workspace_write", input.onHarnessEvent, input.signal, input.model, "repair");
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         } catch (err) {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
@@ -744,6 +787,7 @@ export class Orchestrator {
 
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
     if (lastRun) {
+      assertNoSecretLikeTokens("final patch diff", lastRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), lastRun.diff);
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
@@ -783,11 +827,18 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "audit");
+    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
     const plans: { id: string; text: string }[] = [];
     for (const adapter of adapters) {
       if (input.signal?.aborted) break;
-      const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "plan", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
+      const spec = HarnessRunSpec.parse({
+        session_id: newId("ses"),
+        intent: "plan",
+        prompt: input.prompt,
+        cwd: input.repoRoot,
+        access: "readonly",
+        model_hint: input.model ?? null,
+      });
       const parts: string[] = [];
       const onAbort = () => {
         void adapter.cancel?.(spec.session_id)?.catch(() => {});
@@ -825,7 +876,7 @@ export class Orchestrator {
     let ambiguities: ReviewFinding[] = [];
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
-      writeEvidencePacket(reviewDir, { userIntent: input.prompt, diff: "(plan review — no code diff)\n" });
+      writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(plan review — no code diff)\n" });
       const res = await reviewCandidate({
         candidateLabel: "Plan",
         diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
@@ -840,7 +891,7 @@ export class Orchestrator {
     const specPack = [
       `# SpecPack (plan ${runId})`,
       "",
-      `## Intent\n${input.prompt}`,
+      `## Intent\n${redactSecrets(input.prompt)}`,
       "",
       `## Plans (${plans.length} harness${plans.length === 1 ? "" : "es"})`,
       ...plans.map((p) => `\n### ${p.id}\n${redactSecrets(p.text)}`),
@@ -863,21 +914,54 @@ export class Orchestrator {
     };
   }
 
-  /** readonly_swarm: single read-only audit/map report. */
+  /** ask: one selected harness answers read-only questions; no patch/apply controls. */
+  private async runAsk(input: RunInput): Promise<OrchestratorResult> {
+    return this.runReadOnlyReport(input, {
+      mode: "ask",
+      intent: "explain",
+      title: "Answer",
+      artifactName: "answer.md",
+      defaultPrompt: "Answer the user's question.",
+    });
+  }
+
+  /** readonly_audit: single read-only audit/map report. */
   private async runAudit(input: RunInput): Promise<OrchestratorResult> {
+    return this.runReadOnlyReport(input, {
+      mode: "readonly_audit",
+      intent: "audit",
+      title: "Audit report",
+      artifactName: "report.md",
+      defaultPrompt: "audit this repository",
+    });
+  }
+
+  private async runReadOnlyReport(
+    input: RunInput,
+    opts: { mode: "ask" | "readonly_audit"; intent: "explain" | "audit"; title: string; artifactName: string; defaultPrompt: string },
+  ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-    log.emit("run.created", { mode: "readonly_swarm", prompt: redactSecrets(input.prompt) });
+    const prompt = input.prompt || opts.defaultPrompt;
+    log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
 
-    const adapter = input.harnesses?.[0]
-      ? (this.deps.registry.get(input.harnesses[0]) ?? (await this.gateway.resolve()))
-      : await this.gateway.resolve();
+    const contract = this.buildContract({ ...input, prompt }, taskId, opts.mode);
+    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const spec = HarnessRunSpec.parse({ session_id: newId("ses"), intent: "audit", prompt: input.prompt, cwd: input.repoRoot, access: "readonly" });
+    const adapter = (await this.resolveCandidateAdapters({ ...input, prompt, n: 1 }, opts.intent))[0] as HarnessAdapter;
+    const spec = HarnessRunSpec.parse({
+      session_id: newId("ses"),
+      intent: opts.intent,
+      prompt,
+      cwd: input.repoRoot,
+      access: "readonly",
+      model_hint: input.model ?? null,
+    });
     const parts: string[] = [];
     const onAbort = () => {
       void adapter.cancel?.(spec.session_id)?.catch(() => {});
@@ -896,24 +980,40 @@ export class Orchestrator {
       input.signal?.removeEventListener("abort", onAbort);
     }
     if (input.signal?.aborted) {
-      return this.cancelledResult(log, runId, taskId, "readonly_swarm", paths.root, [
+      return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
         { attemptId: "a01", harnessId: adapter.id, status: "cancelled" },
       ]);
     }
     const report = parts.join("\n").trim() || "(no output)";
-    store.writeText(join(paths.finalDir, "report.md"), `# Audit report\n\n${redactSecrets(report)}\n`);
+    store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${redactSecrets(report)}\n`);
+    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harness: ${adapter.id}\n- Status: success\n\n${redactSecrets(report)}\n`);
+    store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+      id: newId("wp"),
+      kind: "report",
+      source_task_id: taskId,
+      producer_attempt_id: "a01",
+      files: { [opts.artifactName]: join(paths.finalDir, opts.artifactName) },
+      meta: { harness_id: adapter.id, mode: opts.mode, intent: opts.intent, read_only: true },
+    });
+    log.emit("work_product.emitted", { kind: "report", winner: "a01" });
     log.emit("run.completed", { status: "success" });
 
     return {
       runId,
       taskId,
-      mode: "readonly_swarm",
+      mode: opts.mode,
       status: "success",
       winner: null,
       runDir: paths.root,
-      summary: report.slice(0, 400),
+      summary: redactSecrets(report).slice(0, 400),
       candidates: [{ attemptId: "a01", harnessId: adapter.id, status: "success" }],
     };
+  }
+}
+
+function assertNoSecretLikeTokens(label: string, text: string): void {
+  if (containsSecretLikeToken(text)) {
+    throw new Error(`${label} contains secret-like token; refusing to persist artifact`);
   }
 }
 

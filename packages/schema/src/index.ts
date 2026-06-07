@@ -19,3 +19,4 @@ export * from "./gate.js";
 export * from "./events.js";
 export * from "./config.js";
 export * from "./workspace.js";
+export * from "./control.js";

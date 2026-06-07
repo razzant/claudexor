@@ -10,16 +10,16 @@ import {
 describe("TaskContract", () => {
   it("applies defaults from minimal input", () => {
     const tc = TaskContract.parse({
-      schema_version: 1,
       task_id: "t-1",
       created_at: "2026-06-05T00:00:00Z",
       repo: { root: "/repo", base_ref: "main" },
-      mode: { kind: "daily" },
+      schema_version: 2,
+      mode: { kind: "agent" },
       user_intent: { raw: "do the thing" },
     });
     expect(tc.delivery.mutation_mode).toBe("envelope_live");
     expect(tc.access.profile).toBe("workspace_write");
-    expect(tc.budget.portfolio).toBe("daily-rich");
+    expect(tc.budget.portfolio).toBe("subscription-first");
     expect(tc.convergence.require_tests_pass).toBe(true);
     expect(tc.context_policy.no_silent_truncation).toBe(true);
   });

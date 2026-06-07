@@ -29,7 +29,6 @@ struct DiffView: View {
 private struct FileDiff: View {
     let file: DiffFile
     @State private var expanded = true
-    @State private var accepted = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -56,8 +55,10 @@ private struct FileDiff: View {
             Spacer()
             Text("+\(file.added)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.succeeded))
             Text("−\(file.removed)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.failed))
-            Toggle("", isOn: $accepted).toggleStyle(.switch).controlSize(.mini).labelsHidden()
-                .help("Include this file when applying")
+            Image(systemName: "lock.doc")
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+                .help("Apply uses the server patch artifact. Per-file apply is not exposed yet.")
         }
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.sm)

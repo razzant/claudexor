@@ -79,7 +79,7 @@ enum Theme {
         static let xxxl: CGFloat = 48
     }
 
-    static let cardRadius: CGFloat = 12
+    static let cardRadius: CGFloat = 8
     static let heroRadius: CGFloat = 22
 
     // MARK: Content measure (one set of widths so every screen aligns its column).
@@ -95,7 +95,7 @@ enum Theme {
 
     enum Radius {
         static let control: CGFloat = 8     // chips, segmented selection, small code wells
-        static let card: CGFloat = 12       // content cards (== cardRadius)
+        static let card: CGFloat = 8        // content cards (== cardRadius)
         static let hero: CGFloat = 22       // floating composer / hero glass (== heroRadius)
     }
 
@@ -142,11 +142,11 @@ extension View {
             self.background(Theme.surfaceRaised, in: shape)
                 .clipShape(shape)
                 .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
+                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
         } else {
             self.background(Theme.surfaceRaised, in: shape)
                 .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
+                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
         }
     }
 

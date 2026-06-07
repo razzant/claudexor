@@ -8,7 +8,7 @@ import {
   diffSpecPacks,
 } from "@claudex/interview";
 import { type InterviewAnswer, type InterviewQuestion, type SpecPack, SpecPack as SpecPackSchema } from "@claudex/schema";
-import { ensureDir, hashJson, readJsonSafe, writeJson, writeText } from "@claudex/util";
+import { ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudex/util";
 
 export interface SpecAnswersFile {
   answers: InterviewAnswer[];
@@ -151,7 +151,7 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
     ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
     "",
     "## Source plan grounding",
-    plan.trim(),
+    redactSecrets(plan).trim(),
     "",
     "> This file is a generated projection for native harnesses. The canonical SSOT",
     `> is .claudex/specs/${spec.id}/spec.json (hash above). Regenerate rather than editing this projection.`,

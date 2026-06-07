@@ -114,6 +114,10 @@ export function redactSecrets(text: string): string {
   return out;
 }
 
+export function containsSecretLikeToken(text: string): boolean {
+  return redactSecrets(text) !== text;
+}
+
 /**
  * Invoke an optional observer callback without letting its errors affect the
  * caller. Observers (GUI/service event sinks, run-start hooks) are untrusted:

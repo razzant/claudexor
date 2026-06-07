@@ -2,7 +2,8 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @State private var inspectorPresented = true
+    @State private var inspectorPresented = false
+    @AppStorage("claudex.onboardingComplete") private var onboardingComplete = false
 
     var body: some View {
         @Bindable var model = model
@@ -30,6 +31,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $model.composerPresented) {
             ComposerView().environment(model)
+        }
+        .sheet(isPresented: Binding(get: { !onboardingComplete }, set: { shown in if !shown { onboardingComplete = true } })) {
+            OnboardingView(completed: $onboardingComplete).environment(model)
         }
     }
 
@@ -66,7 +70,7 @@ struct RootView: View {
         case .interview: return "Spec Interview"
         case .review: return "Review Queue"
         case .budget: return "Budget"
-        case .harnesses: return "Harnesses"
+        case .harnesses: return "Harness Doctor"
         case .benchmarks: return "Benchmarks"
         case .settings: return "Settings"
         }
@@ -123,7 +127,6 @@ struct SidebarView: View {
                 row("Tasks", "checklist", .tasks, badge: model.tasks.count)
                 row("Review Queue", "person.2.badge.gearshape", .review,
                     badge: model.allFindings.count)
-                row("Spec Interview", "bubble.left.and.text.bubble.right", .interview)
             }
 
             ForEach(model.projects) { project in
@@ -139,9 +142,8 @@ struct SidebarView: View {
 
             Section("Operations") {
                 row("Budget", "gauge.with.dots.needle.67percent", .budget)
-                row("Harnesses", "cpu", .harnesses)
+                row("Harness Doctor", "cpu", .harnesses)
                 row("Benchmarks", "chart.bar.xaxis", .benchmarks)
-                row("Settings", "gearshape", .settings)
             }
         }
         .navigationTitle("Claudex")

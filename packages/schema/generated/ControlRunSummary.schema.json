@@ -1,0 +1,112 @@
+{
+  "$ref": "#/definitions/ControlRunSummary",
+  "definitions": {
+    "ControlRunSummary": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "runDir": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "agent",
+            "best_of_n",
+            "max_attempts",
+            "until_clean",
+            "plan",
+            "create",
+            "readonly_audit",
+            "benchmark"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "primaryHarness": {
+          "type": "string"
+        },
+        "portfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "benchmark",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "maxUsd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "access": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ]
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "finishedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jobId",
+        "runId",
+        "state"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

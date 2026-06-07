@@ -1,5 +1,10 @@
 # Claudex v1.0 — Build Plan
 
+> Historical scope note: this plan originally described an eight-mode v1.0
+> taxonomy. Current v0.2.0 canonical mode ids are `ask`, `agent`, `best_of_n`,
+> `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, and
+> `benchmark`. Old ids from this historical plan are not compatibility aliases.
+
 Harness-agnostic, local-first, evidence-driven development control plane. Orchestrates Codex / Claude Code / Cursor CLI / OpenCode (and future harnesses) as interchangeable *harnesses* — no privileged harness, no hardcoded roles. Collapses cleanly to a single native harness when only one is configured.
 
 > Codename **Claudex** (binary/package name kept abstract; run a naming gate before any public release — "claudex"/"codex" proximity + collisions). TypeScript/Node, breadth-first full v1.0, with a reproducible SWE-bench Verified runner, embeddable so Ouroboros can replace its `claude_code.py`.
@@ -10,16 +15,16 @@ Harness-agnostic, local-first, evidence-driven development control plane. Orches
 
 - **Name/brand**: Claudex. **Repo**: private `github.com/joi-lab/claudex`. **License**: MIT.
 - **Runtime**: TypeScript/Node core; language-agnostic boundary (CLI `--json` + JSON-RPC-over-stdio + MCP) so Python (Ouroboros) consumes it.
-- **Scope**: breadth-first full v1.0 (all 8 modes). **Priority**: top-tier coding quality across harnesses.
+- **Scope**: breadth-first full v1.0 control-plane surface. **Priority**: top-tier coding quality across harnesses.
 - **Ouroboros**: design the embeddable substrate API now; Ouroboros is the first integration testbed.
 - **Tooling**: pnpm + Turborepo + Changesets; Zod schemas → generated JSON Schema; Vitest; ESM; Node LTS; npm-first distribution.
 - **SSOT**: files-first canonical (`.claudex/` JSONL events + YAML/JSON artifacts), optional rebuildable SQLite index.
 - **Isolation**: git worktree + per-attempt env/HOME/harness-config-dir + port allocation; containers optional/scaffolded.
 - **Arbitration**: evidence-weighted first, LLM-judge consilium only as grounded tiebreak/synthesis-decider.
-- **Daily delivery default**: `native_live`; envelope/artifact modes for race/benchmark.
+- **Agent delivery default**: native direct-edit parity; envelope/artifact modes for best_of_n/benchmark.
 - **Review**: reuse + generalize the `.adversarial-review/` evidence-packet substrate for ALL review; **always cross-family ≥2 distinct providers**; mandatory LLM-first FindingRevalidator (no evidence → cannot BLOCK); full convergence predicate; RouteProof always recorded + enforced in benchmark/high-risk; port Ouroboros Scope Atlas + omission accounting (no silent truncation); readiness-debt anti-thrash + round cap.
 - **Access default**: `workspace_write`; thin policy layer leaning on native harness permissions + secret redaction; typed+LLM risk classifier; full apply UX; versioned repo config can NEVER self-grant sensitive powers.
-- **Modes**: all 8. Plan mode: multi-harness planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack. Create: first-class `new_repo`. WorkProduct: all kinds. CLI: full surface, every command `--json`.
+- **Modes**: historical v1.0 set, now updated in v0.2.0 to 9 canonical modes. Plan mode: multi-harness planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack. Create: first-class `new_repo`. WorkProduct: all kinds. CLI: full surface, every command `--json`.
 - **Coding standards**: strict TS + typed errors (no swallow); looser LOC limits.
 
 ## 2. Defaulted decisions (skipped Batch 6 + Batch 7)

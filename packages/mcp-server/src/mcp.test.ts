@@ -33,6 +33,6 @@ describe("McpServer", () => {
     expect(responses.find((r) => r.id === 1)?.result?.protocolVersion).toBeTruthy();
     expect(responses.find((r) => r.id === 2)?.result?.tools?.length).toBeGreaterThan(0);
     const call = responses.find((r) => r.id === 3);
-    expect(call?.result?.content?.[0]?.text).toContain("daily");
+    expect(call?.result?.content?.[0]?.text).toContain("agent");
   });
 });

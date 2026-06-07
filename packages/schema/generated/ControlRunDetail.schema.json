@@ -1,0 +1,320 @@
+{
+  "$ref": "#/definitions/ControlRunDetail",
+  "definitions": {
+    "ControlRunDetail": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "runDir": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "ask",
+                "agent",
+                "best_of_n",
+                "max_attempts",
+                "until_clean",
+                "plan",
+                "create",
+                "readonly_audit",
+                "benchmark"
+              ]
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "harnesses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "primaryHarness": {
+              "type": "string"
+            },
+            "portfolio": {
+              "type": "string",
+              "enum": [
+                "daily-rich",
+                "balanced",
+                "cheapest",
+                "strongest",
+                "burn",
+                "benchmark",
+                "subscription-first",
+                "api-overflow",
+                "conserve-claude",
+                "conserve-codex"
+              ]
+            },
+            "model": {
+              "type": "string"
+            },
+            "n": {
+              "type": "integer"
+            },
+            "maxUsd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "access": {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "external_sandbox_full",
+                "inherit_native"
+              ]
+            },
+            "tests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string"
+            },
+            "finishedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "jobId",
+            "runId",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "file",
+                  "directory"
+                ]
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "path",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "finalSummary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "winner": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_converged",
+                    "failed",
+                    "exhausted",
+                    "cancelled"
+                  ]
+                },
+                "why_winner": {
+                  "type": "string",
+                  "default": ""
+                },
+                "why_not_others": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "default": {}
+                },
+                "accepted_risks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "final_checks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "budget_summary": {
+                  "type": "object",
+                  "properties": {
+                    "spend_usd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "estimated": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {
+                    "spend_usd": null,
+                    "estimated": false
+                  }
+                },
+                "apply_recommendation": {
+                  "type": "string",
+                  "enum": [
+                    "apply",
+                    "inspect",
+                    "continue",
+                    "split_task",
+                    "human_review"
+                  ],
+                  "default": "inspect"
+                }
+              },
+              "required": [
+                "winner",
+                "status"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workProduct": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "patch",
+                    "new_repo",
+                    "branch",
+                    "commit",
+                    "pr",
+                    "report",
+                    "artifact_bundle",
+                    "benchmark_submission"
+                  ]
+                },
+                "source_task_id": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                },
+                "producer_attempt_id": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                },
+                "manifest_path": {
+                  "type": "string"
+                },
+                "evidence_dir": {
+                  "type": "string"
+                },
+                "decision_record_path": {
+                  "type": "string"
+                },
+                "files": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "default": {}
+                },
+                "meta": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "default": {}
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "source_task_id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

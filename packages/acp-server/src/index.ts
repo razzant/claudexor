@@ -58,7 +58,7 @@ export class AcpServer {
       case "initialize":
         this.reply(id, {
           protocolVersion: ACP_PROTOCOL_VERSION,
-          agentInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.1.0" },
+          agentInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.2.0" },
           agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
         });
         return;
@@ -72,7 +72,7 @@ export class AcpServer {
         const sessionId = params?.sessionId as string | undefined;
         const text = extractPromptText(params?.prompt);
         try {
-          const result = await this.opts.runner({ prompt: text, mode: params?.mode ?? "daily" });
+          const result = await this.opts.runner({ prompt: text, mode: params?.mode ?? "agent" });
           if (sessionId) {
             this.notify("session/update", {
               sessionId,

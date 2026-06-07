@@ -1,7 +1,24 @@
 import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { join } from "node:path";
+import { extname, join, normalize, relative, resolve, sep } from "node:path";
+import { checkPatch, deliver } from "@claudex/delivery";
+import {
+  AccessProfile,
+  ControlApplyCheckRequest,
+  ControlApplyRequest,
+  ControlRunStartRequest,
+  ControlRunStartInfo,
+  type ControlArtifactInfo,
+  ControlRunDetail,
+  ControlRunSummary,
+  DecisionRecord,
+  ModeKind,
+  Portfolio,
+  WorkProduct,
+} from "@claudex/schema";
+import { containsSecretLikeToken, redactSecrets } from "@claudex/util";
+import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
   id: string;
@@ -10,6 +27,10 @@ export interface DaemonRunRecord {
   taskId?: string;
   runDir?: string;
   error?: string;
+  params?: unknown;
+  createdAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface DaemonFacadeClient {
@@ -26,6 +47,17 @@ export interface DaemonControlApiOptions {
   port?: number;
   pollMs?: number;
   runStartTimeoutMs?: number;
+  services?: {
+    harnesses?: () => Promise<unknown>;
+    settings?: () => Promise<unknown>;
+    updateSettings?: (patch: unknown) => Promise<unknown>;
+    auth?: () => Promise<unknown>;
+    listSecrets?: () => Promise<unknown>;
+    setSecret?: (input: unknown) => Promise<unknown>;
+    deleteSecret?: (name: string) => Promise<unknown>;
+    specQuestions?: (input: unknown) => Promise<unknown>;
+    specFreeze?: (input: unknown) => Promise<unknown>;
+  };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -142,9 +174,11 @@ export class DaemonControlApiServer {
     if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
 
     if (method === "POST" && path === "/runs") {
-      let params: unknown;
+      let params: ControlRunStartRequest;
       try {
-        params = await this.readBody(req);
+        const body = await this.readBody(req);
+        assertNoInlineSecrets(body);
+        params = ControlRunStartRequest.parse(body);
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
@@ -152,7 +186,7 @@ export class DaemonControlApiServer {
       const job = await this.opts.daemon.enqueue(params);
       const rec = await this.waitForRunStart(job.id);
       if (rec.runId && rec.runDir) {
-        return this.json(res, 200, { jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir });
+        return this.json(res, 200, ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }));
       }
       // Long-queued jobs remain canonical in the daemon. Don't fail the request
       // while leaving an orphaned queued job behind; return the job id for polling.
@@ -163,9 +197,91 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
       return this.json(res, 200, {
-        runs: runs.map((r) => ({ jobId: r.id, runId: r.runId ?? r.id, state: r.state, runDir: r.runDir, error: r.error })),
+        runs: runs.map((r) => summarizeRun(r)),
       });
     }
+
+    const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
+    if (method === "GET" && runDetailMatch) {
+      const rec = await this.findRun(decodeURIComponent(runDetailMatch[1] as string));
+      if (!rec) return this.json(res, 404, { error: "no such run" });
+      return this.json(res, 200, detailFor(rec));
+    }
+
+    const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
+    if (method === "GET" && artifactsRootMatch) {
+      const rec = await this.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      return this.json(res, 200, { runId: rec.runId ?? rec.id, artifacts: listArtifacts(rec.runDir) });
+    }
+
+    const artifactFetchMatch = /^\/runs\/([^/]+)\/artifacts\/(.+)$/.exec(path);
+    if (method === "GET" && artifactFetchMatch) {
+      const rec = await this.findRun(decodeURIComponent(artifactFetchMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      const target = safeArtifactPath(rec.runDir, decodeURIComponent(artifactFetchMatch[2] as string));
+      if (!target || !existsSync(target) || statSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      const data = readFileSync(target);
+      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
+        return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
+      }
+      res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
+      res.end(data);
+      return;
+    }
+
+    const applyCheckMatch = /^\/runs\/([^/]+)\/apply\/check$/.exec(path);
+    if (method === "POST" && applyCheckMatch) {
+      const rec = await this.findRun(decodeURIComponent(applyCheckMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      let body: ControlApplyCheckRequest;
+      try {
+        body = ControlApplyCheckRequest.parse(await this.readBody(req));
+      } catch (err) {
+        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      const patch = readPatch(rec);
+      if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
+      if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply check" });
+      const repoRoot = body.repoRoot ?? runRepoRoot(rec);
+      if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply check" });
+      return this.json(res, 200, await checkPatch(repoRoot, patch));
+    }
+
+    const applyMatch = /^\/runs\/([^/]+)\/apply$/.exec(path);
+    if (method === "POST" && applyMatch) {
+      const rec = await this.findRun(decodeURIComponent(applyMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      let body: ControlApplyRequest;
+      try {
+        body = ControlApplyRequest.parse(await this.readBody(req));
+      } catch (err) {
+        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      const patch = readPatch(rec);
+      if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
+      if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
+      const repoRoot = body.repoRoot ?? runRepoRoot(rec);
+      if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply" });
+      return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
+    }
+
+    if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses");
+    if (method === "GET" && path === "/settings") return this.service(res, "settings");
+    if (method === "POST" && path === "/settings") {
+      const body = await this.readBody(req);
+      return this.service(res, "updateSettings", body);
+    }
+    if (method === "GET" && path === "/auth") return this.service(res, "auth");
+    if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets");
+    if (method === "POST" && path === "/secrets") {
+      const body = await this.readBody(req);
+      return this.service(res, "setSecret", body);
+    }
+    const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
+    if (method === "DELETE" && secretDeleteMatch) return this.service(res, "deleteSecret", decodeURIComponent(secretDeleteMatch[1] as string));
+    if (method === "POST" && path === "/spec/questions") return this.service(res, "specQuestions", await this.readBody(req));
+    if (method === "POST" && path === "/spec/freeze") return this.service(res, "specFreeze", await this.readBody(req));
 
     const cancelMatch = /^\/runs\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancelMatch) {
@@ -183,6 +299,16 @@ export class DaemonControlApiServer {
     }
 
     return this.json(res, 404, { error: "not found" });
+  }
+
+  private async service(res: ServerResponse, name: keyof NonNullable<DaemonControlApiOptions["services"]>, arg?: unknown): Promise<void> {
+    const fn = this.opts.services?.[name] as ((arg?: unknown) => Promise<unknown>) | undefined;
+    if (!fn) return this.json(res, 501, { error: `${name} service is not configured` });
+    try {
+      return this.json(res, 200, await fn(arg));
+    } catch (err) {
+      return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   private async waitForRunStart(jobId: string): Promise<DaemonRunRecord> {
@@ -286,4 +412,133 @@ function readNewLines(path: string, offset: number, carry: string): { lines: str
   } finally {
     closeSync(fd);
   }
+}
+
+function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
+  return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
+}
+
+function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
+  const p = paramsRecord(rec);
+  const parsedMode = typeof p["mode"] === "string" ? ModeKind.parse(p["mode"]) : undefined;
+  const parsedPortfolio = typeof p["portfolio"] === "string" ? Portfolio.parse(p["portfolio"]) : undefined;
+  const parsedAccess = typeof p["access"] === "string" ? AccessProfile.parse(p["access"]) : undefined;
+  return ControlRunSummary.parse({
+    jobId: rec.id,
+    runId: rec.runId ?? rec.id,
+    taskId: rec.taskId,
+    state: rec.state,
+    runDir: rec.runDir,
+    error: rec.error,
+    mode: parsedMode,
+    prompt: typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined,
+    harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
+    primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
+    portfolio: parsedPortfolio,
+    model: typeof p["model"] === "string" ? p["model"] : undefined,
+    n: typeof p["n"] === "number" ? p["n"] : undefined,
+    maxUsd: typeof p["maxUsd"] === "number" || p["maxUsd"] === null ? (p["maxUsd"] as number | null) : undefined,
+    access: parsedAccess,
+    tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
+    createdAt: rec.createdAt,
+    startedAt: rec.startedAt,
+    finishedAt: rec.finishedAt,
+  });
+}
+
+function detailFor(rec: DaemonRunRecord): ControlRunDetail {
+  const runDir = rec.runDir;
+  return ControlRunDetail.parse({
+    summary: summarizeRun(rec),
+    artifacts: runDir ? listArtifacts(runDir) : [],
+    finalSummary: readTextMaybe(runDir ? join(runDir, "final", "summary.md") : ""),
+    decision: readStructured(runDir ? join(runDir, "arbitration", "decision.yaml") : "", DecisionRecord),
+    workProduct: readStructured(runDir ? join(runDir, "final", "work_product.yaml") : "", WorkProduct),
+  });
+}
+
+function readTextMaybe(path: string): string | null {
+  if (!path || !existsSync(path) || statSync(path).isDirectory()) return null;
+  return readFileSync(path, "utf8");
+}
+
+function readStructured<T>(path: string, schema: { parse(value: unknown): T }): T | null {
+  const text = readTextMaybe(path);
+  if (text === null) return null;
+  if (extname(path) === ".json") {
+    return schema.parse(JSON.parse(text));
+  }
+  if (extname(path) === ".yaml" || extname(path) === ".yml") {
+    return schema.parse(parseYaml(text));
+  }
+  throw new Error(`unsupported structured artifact extension: ${path}`);
+}
+
+function listArtifacts(root: string): ControlArtifactInfo[] {
+  if (!existsSync(root)) return [];
+  const out: ControlArtifactInfo[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const abs = join(dir, name);
+      const st = statSync(abs);
+      const rel = relative(root, abs).split(sep).join("/");
+      out.push({ path: rel, kind: st.isDirectory() ? "directory" : "file", bytes: st.isDirectory() ? undefined : st.size });
+      if (st.isDirectory()) walk(abs);
+    }
+  };
+  walk(root);
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function safeArtifactPath(root: string, requested: string): string | null {
+  const clean = normalize(requested).replace(/^(\.\.(\/|\\|$))+/, "");
+  const abs = resolve(root, clean);
+  const base = resolve(root);
+  return abs === base || abs.startsWith(base + sep) ? abs : null;
+}
+
+function readPatch(rec: DaemonRunRecord): string | null {
+  return readTextMaybe(rec.runDir ? join(rec.runDir, "final", "patch.diff") : "");
+}
+
+function runRepoRoot(rec: DaemonRunRecord): string | null {
+  const p = paramsRecord(rec);
+  return typeof p["repoRoot"] === "string" ? p["repoRoot"] : null;
+}
+
+function contentType(path: string): string {
+  switch (extname(path)) {
+    case ".json": return "application/json; charset=utf-8";
+    case ".md":
+    case ".txt":
+    case ".diff":
+    case ".patch":
+    case ".yaml":
+    case ".yml": return "text/plain; charset=utf-8";
+    default: return "application/octet-stream";
+  }
+}
+
+function isPatchArtifact(path: string): boolean {
+  const ext = extname(path);
+  return ext === ".diff" || ext === ".patch";
+}
+
+function assertNoInlineSecrets(value: unknown, path = "$"): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoInlineSecrets(v, `${path}[${i}]`));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
+      throw Object.assign(new Error(`inline secrets/env are not accepted in run params (${path}.${key}); store values via /secrets or claudex secrets and pass refs/profiles`), { status: 400 });
+    }
+    assertNoInlineSecrets(child, `${path}.${key}`);
+  }
+}
+
+function redactPrompt(prompt: string): string {
+  const redacted = redactSecrets(prompt);
+  return redacted.length > 240 ? `${redacted.slice(0, 240)}...` : redacted;
 }

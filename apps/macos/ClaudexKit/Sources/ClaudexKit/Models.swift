@@ -23,17 +23,25 @@ public struct StartRunRequest: Codable, Sendable {
     public var prompt: String
     public var mode: String?
     public var harnesses: [String]?
+    public var primaryHarness: String?
+    public var portfolio: String?
+    public var model: String?
     public var n: Int?
     public var maxUsd: Double?
     public var access: String?
     public var tests: [String]?
     public var repoRoot: String?
 
-    public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
-                maxUsd: Double? = nil, access: String? = nil, tests: [String]? = nil, repoRoot: String? = nil) {
+    public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil,
+                primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
+                n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
+                tests: [String]? = nil, repoRoot: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
+        self.primaryHarness = primaryHarness
+        self.portfolio = portfolio
+        self.model = model
         self.n = n
         self.maxUsd = maxUsd
         self.access = access
@@ -50,14 +58,70 @@ public struct RunStartInfo: Codable, Sendable, Equatable {
 }
 
 public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
+    public let jobId: String?
     public let runId: String
+    public let taskId: String?
     public let state: String
     public let runDir: String?
+    public let error: String?
+    public let mode: String?
+    public let prompt: String?
+    public let harnesses: [String]?
+    public let primaryHarness: String?
+    public let portfolio: String?
+    public let model: String?
+    public let n: Int?
+    public let maxUsd: Double?
+    public let access: String?
+    public let tests: [String]?
+    public let createdAt: String?
+    public let startedAt: String?
+    public let finishedAt: String?
     public var id: String { runId }
 }
 
 public struct RunListResponse: Codable, Sendable {
     public let runs: [RunSummary]
+}
+
+public struct ArtifactInfo: Codable, Sendable, Identifiable, Equatable {
+    public let path: String
+    public let kind: String
+    public let bytes: Int?
+    public var id: String { path }
+}
+
+public struct RunDetail: Codable, Sendable, Equatable {
+    public let summary: RunSummary
+    public let artifacts: [ArtifactInfo]
+    public let finalSummary: String?
+    public let decision: JSONValue?
+    public let workProduct: JSONValue?
+}
+
+public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let status: String
+    public let reasons: [String]?
+}
+
+public struct HarnessListResponse: Codable, Sendable {
+    public let harnesses: [HarnessStatus]
+}
+
+public struct ApplyCheckResult: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public let code: Int?
+    public let stderr: String
+}
+
+public struct SecretSetRequest: Codable, Sendable, Equatable {
+    public let name: String
+    public let value: String
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
 }
 
 public enum GatewayError: Error, Sendable, Equatable {

@@ -1,4 +1,8 @@
-# Adversarial multi-model review — v0.1.0
+# Adversarial multi-model review
+
+> Current implementation note (v0.2.0): this file preserves historical review
+> rounds. The active mode ids are `ask`, `agent`, `best_of_n`, `max_attempts`,
+> `until_clean`, `plan`, `create`, `readonly_audit`, and `benchmark`.
 
 Three independent critics on distinct providers (verified multi-model) reviewed the build,
 in a loop, until no agreed blocker remained. Models: **GPT-5.5-extra-high** (OpenAI),

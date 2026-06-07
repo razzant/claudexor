@@ -27,16 +27,17 @@ Primary runtime: TypeScript / Node (ESM). Ships a reproducible SWE-bench Verifie
 - **Fail loudly** — typed errors; adapters degrade explicitly; reviews fail closed on missing mandatory context; stale reviews are invalidated.
 - **Local-first / privacy-first** — local artifacts + daemon; user-owned credentials; no telemetry by default; no SaaS broker.
 
-## 3. Primary modes (all in v1)
+## 3. Primary modes (canonical ids)
 
-- `daily` — `claudex run "…"`: fast, scale-to-complexity; default delivery `native_live`.
-- `plan` — `claudex plan "…"`: multi-harness planning → adversarial plan review → ambiguity extraction → user interview (clarify=required) → freeze `SpecPack` → `plan_id`. No mutation.
+- `ask` — read-only explanation/answer route; default composer mode; no patch/apply controls.
+- `agent` — `claudex run "…"`: one primary-biased route; direct edit path.
+- `best_of_n` — `claudex race "…" --n 4`: N envelopes → gates → cross-review → revalidation → pairwise → synthesis (auto) → arbitration → DecisionRecord.
+- `max_attempts` — `claudex run --mode max-attempts --attempts 3 "…"`: convergence loop, capped; honest `not_converged` with best WorkProduct + open findings.
+- `until_clean` — `claudex run --mode until-clean "…"`: no fixed iteration cap; stops on clean convergence, cancel, budget/quota exhaustion, policy hard-stop, or no-progress stall after eligible route rotation.
+- `plan` — `claudex plan "…"`: multi-harness planning → adversarial plan review → ambiguity extraction → Plan-owned draft interview → freeze `SpecPack`. No mutation.
 - `create` — `claudex create "…" --target ./x`: from-scratch generation; WorkProduct kind `new_repo`.
-- `race` / best-of-n — `claudex race "…" --n 4`: N envelopes → gates → cross-review → revalidation → pairwise → synthesis (auto) → arbitration → DecisionRecord.
-- `until-convergence` — `claudex run --mode until-convergence "…"`: **no iteration cap**; stops on convergence / cancel / budget-or-quota exhaustion / impossible task / policy hard-stop. On stall: change strategy, do not stop.
-- `max-attempts` — `claudex run --mode max-attempts --attempts 3 "…"`: convergence loop, capped; honest `not_converged` with best WorkProduct + open findings.
-- `audit` / `map` — read-only swarm: architecture map, subsystem briefs, risk register, test plan, recommended decomposition. No writes.
-- `benchmark` — `claudex bench run swe-bench --portfolio burn`: reproducible, high-budget, best-of-n + synthesis + cross-family clean review + full traces + route proof.
+- `readonly_audit` — `claudex audit "…"` / `claudex map`: read-only audit/map report. No writes.
+- `benchmark` — `claudex bench run swe-bench --portfolio benchmark`: reproducible, high-budget best-of-N + synthesis + cross-family clean review + full traces + route proof.
 
 ## 4. WorkProduct model
 
@@ -48,7 +49,7 @@ Delivery is a structured policy, not a boolean:
 - `apply_scope`: `all` | `selected_files` | `selected_hunks` | `interactive`.
 - `materialize_policy`: `ask` | `auto_if_green` | `always`.
 
-Defaults: daily = `native_live` + `apply native`; race/until-convergence = `envelope_live` + `ask`; benchmark = `artifact_only` + `never`.
+Defaults: ask/readonly_audit/plan = `artifact_only` + `never`; agent = native direct edit with artifacts; best_of_n/max_attempts/until_clean = `envelope_live` + `ask`; benchmark = `artifact_only` + `never`.
 
 `claudex apply <run_id> [--file f | --hunks | --dry-run | --branch | --commit | --pr]`.
 
@@ -96,7 +97,7 @@ WorkspaceEnvelope:
 ```
 
 - Claudex **owns** envelopes (does not rely on native `--worktree`: Claude's has a trust-gate + no `-p` auto-clean; sprawl/port/db collisions are real). Per-attempt scoped `HOME`/`CODEX_HOME`/`CLAUDE_CONFIG_DIR`/cursor/opencode config dirs + allocated ports.
-- Dirty policy: `refuse | include | stash | copy | snapshot`. Defaults: daily ask-if-dirty; benchmark refuse; native_live allow; best-of-n require clean base or explicit snapshot.
+- Dirty policy: `refuse | include | stash | copy | snapshot`. Defaults: agent asks/uses native behavior; benchmark refuses; envelope modes require clean base or explicit snapshot.
 - Pre-warmed pool + prune to avoid disk sprawl. **Final clean-verify** of the chosen WorkProduct in a fresh envelope (except explicit `native_live`).
 
 ## 8. Context system
@@ -122,8 +123,8 @@ See the **Harness Reference (Appendix A)** for exact 2026 flags/auth/quota signa
 - `BudgetLease` is a **pre-call reservation** (auth/capture), not post-hoc accounting. Loop detection by prompt fingerprint; recursion/depth caps; 3-tier circuit breaker: soft-warn → harness/model downgrade → hard-kill. Dollar-based with child sub-budgets that roll up to a parent.
 - Routing utility ≈ `quality × availability × quota_headroom × diversity_bonus × repo_skill / (cost × latency × risk)`.
 - Budget signal quality: `exact` (API spend/headers) | `native` (CLI status) | `observed` (rate-limit errors/cooldowns/used-%) | `manual` | `unknown`. Subscription balancing is honest **observed/native best-effort**.
-- Portfolios: `daily-rich, balanced, cheapest, strongest, burn, benchmark, subscription-first, api-overflow, conserve-claude, conserve-codex`.
-- Quota exhaustion → mark observation, set cooldown, re-route; if no compatible harness remains → `exhausted` with reason. **One configured harness is always enough to run.** `until-convergence` ignores caps (burn until budget/quota exhausted).
+- Portfolios: `subscription-first` (default), `daily-rich`, `balanced`, `cheapest`, `strongest`, `burn`, `benchmark`, `api-overflow`, `conserve-claude`, `conserve-codex`.
+- Quota exhaustion → mark observation, set cooldown, re-route; if no compatible harness remains → `exhausted` with reason. **One configured harness is always enough to run.** `until_clean` ignores fixed attempt caps and stops on convergence, budget/quota exhaustion, or no-progress stall.
 
 ## 11. Auth & secrets
 

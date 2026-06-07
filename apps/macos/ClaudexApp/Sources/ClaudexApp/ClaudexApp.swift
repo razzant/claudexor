@@ -21,7 +21,13 @@ struct ClaudexApp: App {
                 Button("New Task…") { model.composerPresented = true }
                     .keyboardShortcut("n", modifiers: .command)
             }
-            CommandGroup(replacing: .help) {}
+        }
+
+        Settings {
+            SettingsScreen()
+                .environment(model)
+                .preferredColorScheme(model.appearance.colorScheme)
+                .frame(width: 760, height: 680)
         }
     }
 }
@@ -38,7 +44,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let img = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = img
         }
-        Notifier.requestAuthIfPossible()
         applyDebugSizeIfRequested()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }

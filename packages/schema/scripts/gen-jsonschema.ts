@@ -2,13 +2,20 @@
  * Generates JSON Schema files from the Zod SSOT into packages/schema/generated/.
  * Run via `pnpm schema:gen`. CI verifies the output is committed and up to date.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   BudgetLease,
   BudgetObservation,
+  ControlApplyCheckRequest,
+  ControlApplyRequest,
+  ControlRunDetail,
+  ControlRunStartInfo,
+  ControlRunStartRequest,
+  ControlRunSummary,
+  ControlSettingsSnapshot,
   ConformanceReport,
   ContextPack,
   DecisionRecord,
@@ -16,6 +23,7 @@ import {
   GlobalConfig,
   HarnessEvent,
   HarnessManifest,
+  HarnessStatusDto,
   ProjectConfig,
   ReviewFinding,
   RouteProof,
@@ -25,11 +33,15 @@ import {
   TrustConfig,
   WorkProduct,
   WorkspaceEnvelope,
+  SecretMetadata,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "generated");
 mkdirSync(outDir, { recursive: true });
+for (const name of readdirSync(outDir)) {
+  if (name.endsWith(".schema.json")) rmSync(join(outDir, name));
+}
 
 const schemas = {
   TaskContract,
@@ -50,6 +62,15 @@ const schemas = {
   GlobalConfig,
   TrustConfig,
   WorkspaceEnvelope,
+  ControlRunStartRequest,
+  ControlRunStartInfo,
+  ControlRunSummary,
+  ControlRunDetail,
+  ControlApplyCheckRequest,
+  ControlApplyRequest,
+  HarnessStatusDto,
+  ControlSettingsSnapshot,
+  SecretMetadata,
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {

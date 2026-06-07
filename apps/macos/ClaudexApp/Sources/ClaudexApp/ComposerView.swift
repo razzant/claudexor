@@ -7,8 +7,11 @@ struct ComposerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var prompt = ""
-    @State private var mode: RunMode = .race
+    @State private var mode: RunMode = .ask
     @State private var selectedHarnesses: Set<HarnessFamily> = [.codex, .claude]
+    @State private var primaryHarness: HarnessFamily = .codex
+    @State private var portfolio = "subscription-first"
+    @State private var modelHint = ""
     @State private var n = 2
     @State private var capUsd: Double = 0.50
     @State private var access: AccessProfile = .workspaceWrite
@@ -44,6 +47,12 @@ struct ComposerView: View {
     private var gateCommands: [String] {
         gateText.split(whereSeparator: { $0 == "\n" }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
+    private var orderedSelectedHarnesses: [HarnessFamily] {
+        HarnessFamily.allCases.filter { $0 != .fake && selectedHarnesses.contains($0) }
+    }
+    private var effectivePrimary: HarnessFamily? {
+        orderedSelectedHarnesses.contains(primaryHarness) ? primaryHarness : orderedSelectedHarnesses.first
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,6 +63,7 @@ struct ComposerView: View {
                     promptSection
                     modeSection
                     harnessSection
+                    routingSection
                     if mode.isMultiCandidate { candidateSection }
                     budgetSection
                     accessSection
@@ -64,7 +74,7 @@ struct ComposerView: View {
             Divider().overlay(Theme.separator)
             footer
         }
-        .frame(width: 660, height: 740)
+        .frame(width: 660, height: 700)
         .glowBackdrop()
     }
 
@@ -86,7 +96,7 @@ struct ComposerView: View {
             SectionLabel("Task", systemImage: "text.alignleft")
             ZStack(alignment: .topLeading) {
                 if prompt.isEmpty {
-                    Text("Describe what you want done — e.g. \"Fix the failing budget lease test and add a regression.\"")
+                    Text("Ask a question or describe a task — e.g. \"2+2?\" or \"Fix the failing budget lease test.\"")
                         .foregroundStyle(.tertiary).padding(Theme.Spacing.md)
                 }
                 TextEditor(text: $prompt)
@@ -123,6 +133,7 @@ struct ComposerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help("\(m.label): \(m.blurb)")
     }
 
     private var harnessSection: some View {
@@ -131,11 +142,47 @@ struct ComposerView: View {
             FlowLayout(spacing: Theme.Spacing.sm) {
                 ForEach(HarnessFamily.allCases.filter { $0 != .fake }) { family in
                     Button {
-                        if selectedHarnesses.contains(family) { selectedHarnesses.remove(family) } else { selectedHarnesses.insert(family) }
+                        if selectedHarnesses.contains(family) {
+                            selectedHarnesses.remove(family)
+                            if primaryHarness == family, let next = orderedSelectedHarnesses.first { primaryHarness = next }
+                        } else {
+                            selectedHarnesses.insert(family)
+                            if orderedSelectedHarnesses.count == 1 { primaryHarness = family }
+                        }
                     } label: { HarnessChip(family: family, selected: selectedHarnesses.contains(family)) }
                     .buttonStyle(.plain)
+                    .help("\(family.label) is in the eligible pool when selected.")
                 }
             }
+        }
+    }
+
+    private var routingSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            SectionLabel("Routing", systemImage: "point.3.connected.trianglepath.dotted")
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Picker("Primary", selection: $primaryHarness) {
+                    ForEach(orderedSelectedHarnesses) { family in
+                        Label(family.label, systemImage: family.glyph).tag(family)
+                    }
+                }
+                .help("Primary biases Ask/Agent and the first route. Selected harness chips remain the eligible pool.")
+
+                Picker("Portfolio", selection: $portfolio) {
+                    Text("Subscription-first").tag("subscription-first")
+                    Text("Balanced").tag("balanced")
+                    Text("Cheapest").tag("cheapest")
+                    Text("Strongest").tag("strongest")
+                    Text("API overflow").tag("api-overflow")
+                    Text("Benchmark").tag("benchmark")
+                }
+                .help("Portfolio is a routing/budget policy, not a mode.")
+
+                TextField("Model hint (optional)", text: $modelHint)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Optional per-run model hint forwarded to compatible harnesses.")
+            }
+            .padding(Theme.Spacing.md).cardSurface()
         }
     }
 
@@ -170,6 +217,7 @@ struct ComposerView: View {
                     FilterChip(label: p.label, systemImage: p.glyph, isActive: p == access) {
                         withAnimation(.snappy) { access = p }
                     }
+                    .help(p == .elevated ? "Elevated maps to full access and should be used only when the harness must operate outside the workspace." : "\(p.label) access profile")
                 }
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
@@ -200,8 +248,13 @@ struct ComposerView: View {
             Spacer()
             Button("Cancel") { dismiss() }.buttonStyle(.bordered)
             Button {
-                Task { await model.startRun(prompt: prompt, mode: mode, harnesses: Array(selectedHarnesses), n: n,
-                                            capUsd: capUsd, access: access.wire, tests: gateCommands) }
+                let selected = orderedSelectedHarnesses
+                Task { await model.startRun(prompt: prompt, mode: mode, harnesses: selected,
+                                            primary: effectivePrimary, portfolio: portfolio,
+                                            model: modelHint.trimmingCharacters(in: .whitespacesAndNewlines),
+                                            n: n, capUsd: capUsd,
+                                            access: mode.isReadOnly ? "readonly" : access.wire,
+                                            tests: gateCommands) }
             } label: {
                 Label("Launch", systemImage: "paperplane.fill")
             }

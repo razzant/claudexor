@@ -149,6 +149,7 @@ describe("daemon", () => {
     const persistPath = join(dir, "jobs.json");
     const token = "tkn-redact";
     const SECRET_SUMMARY = "RAW-MODEL-OUTPUT-do-not-persist";
+    const SECRET_PROMPT = "please use sk-" + "a".repeat(24);
     const server = new DaemonServer({
       socketPath,
       token,
@@ -161,7 +162,7 @@ describe("daemon", () => {
     await server.start();
     try {
       const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ x: 1 });
+      const job = await client.enqueue({ x: 1, prompt: SECRET_PROMPT });
       let st = await client.status(job.id);
       for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
         await sleep(10);
@@ -173,6 +174,8 @@ describe("daemon", () => {
       // but the durable file must NOT contain the raw result, and must keep the runId pointer
       const onDisk = readFileSync(persistPath, "utf8");
       expect(onDisk).not.toContain(SECRET_SUMMARY);
+      expect(onDisk).not.toContain(SECRET_PROMPT);
+      expect(onDisk).toContain("[redacted]");
       expect(onDisk).toContain("run-redact-1");
     } finally {
       await server.stop();

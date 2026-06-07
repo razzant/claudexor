@@ -7,7 +7,7 @@ import type {
   RunStatus,
   WorkProduct as WorkProductType,
 } from "@claudex/schema";
-import { HarnessRunSpec, TaskContract, WorkProduct } from "@claudex/schema";
+import { HarnessRunSpec, SCHEMA_VERSION, TaskContract, WorkProduct } from "@claudex/schema";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { EventLog } from "@claudex/event-log";
 import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
@@ -76,7 +76,7 @@ export class ExecutionEngine {
   async run(input: RunInput): Promise<RunResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    const mode: ModeKind = input.mode ?? "daily";
+    const mode: ModeKind = input.mode ?? "agent";
 
     const store = new ArtifactStore(input.repoRoot);
     const paths = store.createRun(runId);
@@ -85,15 +85,15 @@ export class ExecutionEngine {
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
 
     const contract = TaskContract.parse({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       task_id: taskId,
       created_at: nowIso(),
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD" },
       mode: { kind: mode },
-      user_intent: { raw: input.prompt },
+      user_intent: { raw: redactSecrets(input.prompt) },
     });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
-    store.writeText(join(paths.contextDir, "TASK.md"), `# Task\n\n${input.prompt}\n`);
+    store.writeText(join(paths.contextDir, "TASK.md"), `# Task\n\n${redactSecrets(input.prompt)}\n`);
     const contractHash = hashJson(contract);
     store.writeText(join(paths.contextDir, "SPEC_HASH"), contractHash + "\n");
     log.emit("task.contract.created", { task_contract_hash: contractHash });
@@ -192,7 +192,7 @@ export class ExecutionEngine {
       taskId,
       status,
       harnessId: adapter.id,
-      summary,
+      summary: redactSecrets(summary),
       runDir: paths.root,
       workProductPath,
       costUsd,

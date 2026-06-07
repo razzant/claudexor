@@ -1,0 +1,116 @@
+{
+  "$ref": "#/definitions/ControlRunStartRequest",
+  "definitions": {
+    "ControlRunStartRequest": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "default": ""
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "agent",
+            "best_of_n",
+            "max_attempts",
+            "until_clean",
+            "plan",
+            "create",
+            "readonly_audit",
+            "benchmark"
+          ],
+          "default": "agent"
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "primaryHarness": {
+          "type": "string"
+        },
+        "portfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "benchmark",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "reviewerModels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "n": {
+          "type": "integer",
+          "exclusiveMinimum": true,
+          "minimum": 0
+        },
+        "attempts": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxUsd": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "access": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ]
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repoRoot": {
+          "type": "string"
+        },
+        "inPlace": {
+          "type": "boolean"
+        },
+        "envProfile": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

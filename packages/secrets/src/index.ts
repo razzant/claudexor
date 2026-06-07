@@ -88,6 +88,23 @@ export class SecretStore {
     this.fileDelete(name);
   }
 
+  list(): { name: string; backend: "keychain" | "file"; present: true }[] {
+    const backend = this.resolvedBackend();
+    if (backend === "file") {
+      return Object.keys(this.fileStore())
+        .sort()
+        .map((name) => ({ name, backend: "file" as const, present: true as const }));
+    }
+    const names = new Set<string>();
+    for (const name of this.keychainNames()) names.add(name);
+    for (const name of Object.keys(this.fileStore())) names.add(name);
+    return [...names].sort().map((name) => ({
+      name,
+      backend: this.getKeychain(name) !== null ? ("keychain" as const) : ("file" as const),
+      present: true as const,
+    }));
+  }
+
   private fileStore(): Record<string, string> {
     try {
       return JSON.parse(readFileSync(fileStorePath(), "utf8")) as Record<string, string>;
@@ -121,6 +138,35 @@ export class SecretStore {
     const store = this.fileStore();
     delete store[name];
     this.writeFileStore(store);
+  }
+
+  private getKeychain(name: string): string | null {
+    try {
+      const out = execFileSync(
+        "security",
+        ["find-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
+        { encoding: "utf8" },
+      );
+      const v = out.trim();
+      return v || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private keychainNames(): string[] {
+    if (platform() !== "darwin") return [];
+    try {
+      const out = execFileSync("security", ["dump-keychain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const re = new RegExp(`"svce"<blob>="${SERVICE}:([^"]+)"`, "g");
+      const names: string[] = [];
+      for (let m = re.exec(out); m !== null; m = re.exec(out)) {
+        if (m[1]) names.push(m[1]);
+      }
+      return names;
+    } catch {
+      return [];
+    }
   }
 }
 

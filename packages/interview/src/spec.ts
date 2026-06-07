@@ -1,6 +1,6 @@
 import type { ModeKind, SpecPack, TaskContract } from "@claudex/schema";
-import { SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudex/schema";
-import { newId, nowIso } from "@claudex/util";
+import { SCHEMA_VERSION, SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudex/schema";
+import { newId, nowIso, redactSecrets } from "@claudex/util";
 
 export interface SpecToContractOptions {
   repoRoot: string;
@@ -32,12 +32,12 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
     throw new SpecNotReadyError(`SpecPack has ${open.length} open clarification(s); resolve before running`);
   }
   return TaskContractSchema.parse({
-    schema_version: 1,
+    schema_version: SCHEMA_VERSION,
     task_id: newId("task"),
     created_at: nowIso(),
     repo: { root: opts.repoRoot, base_ref: opts.baseRef ?? "HEAD", dirty_policy: "snapshot" },
-    mode: { kind: opts.mode ?? "until_convergence" },
-    user_intent: { raw: spec.intent.raw, normalized: spec.summary || spec.intent.normalized },
+    mode: { kind: opts.mode ?? "until_clean" },
+    user_intent: { raw: redactSecrets(spec.intent.raw), normalized: redactSecrets(spec.summary || spec.intent.normalized || spec.intent.raw) },
     success_criteria: spec.success_criteria.map((c) => ({ id: c.id, text: c.behavior, required: c.required })),
     non_goals: spec.non_goals,
     forbidden_approaches: spec.forbidden_approaches,

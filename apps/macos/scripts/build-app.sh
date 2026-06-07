@@ -29,7 +29,7 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudex.app"
 
-VERSION="${CLAUDEX_VERSION:-0.1.0}"
+VERSION="${CLAUDEX_VERSION:-0.2.0}"
 BUILD="${CLAUDEX_BUILD:-$(date +%Y%m%d%H%M)}"
 
 echo "==> Building release binary (Swift)"
@@ -64,19 +64,22 @@ if [ "${CLAUDEX_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   ENGINE_JS="$APP/Contents/Resources/claudexd.bundle.cjs"
   echo "==> Bundling claudexd (esbuild single-file)"
   if [ ! -f "$REPO_ROOT/packages/cli/dist/claudexd.js" ]; then
-    echo "    building TS first (pnpm -w build)"; ( cd "$REPO_ROOT" && pnpm -w build >/dev/null 2>&1 ) || true
+    echo "    building TS first (pnpm -w build)"
+    ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
   fi
-  if ( cd "$REPO_ROOT" && pnpm dlx esbuild packages/cli/dist/claudexd.js --bundle --platform=node --format=cjs --target=node22 --outfile="$ENGINE_JS" >/dev/null 2>&1 ); then
+  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexd.js --bundle --platform=node --format=cjs --target=node22 --outfile="$ENGINE_JS" >/dev/null 2>&1 ); then
     echo "    claudexd.bundle.cjs $(wc -c < "$ENGINE_JS" | tr -d ' ') bytes"
   else
-    echo "    WARN: esbuild bundle failed — run 'pnpm -w build' then retry"
+    echo "ERROR: esbuild bundle failed; cannot build self-contained app" >&2
+    exit 1
   fi
   NODE_BIN="${CLAUDEX_NODE_BIN:-$HOME/.claudex/node/bin/node}"
   if [ -x "$NODE_BIN" ]; then
     cp "$NODE_BIN" "$APP/Contents/Resources/node"; chmod +x "$APP/Contents/Resources/node"
     echo "    bundled node ($(du -h "$APP/Contents/Resources/node" | cut -f1 | tr -d ' '))"
   else
-    echo "    WARN: notarized node not found at $NODE_BIN; set CLAUDEX_NODE_BIN to bundle it"
+    echo "ERROR: notarized node not found at $NODE_BIN; set CLAUDEX_NODE_BIN or CLAUDEX_NO_ENGINE_BUNDLE=1" >&2
+    exit 1
   fi
 fi
 
@@ -103,6 +106,10 @@ else
 fi
 
 if [ "${MAKE_DMG:-0}" = "1" ]; then
+  if [ -z "${SIGN_IDENTITY:-}" ] || [ -z "${NOTARY_PROFILE:-}" ]; then
+    echo "ERROR: MAKE_DMG=1 requires SIGN_IDENTITY and NOTARY_PROFILE; unsigned local builds stop at .app" >&2
+    exit 1
+  fi
   echo "==> Building DMG"
   DMG="$DIST/Claudex-$VERSION.dmg"
   STAGE="$DIST/dmg-stage"
@@ -111,7 +118,7 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -volname "Claudex" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
   rm -rf "$STAGE"
-  [ -n "${SIGN_IDENTITY:-}" ] && codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG" || true
+  codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
   echo "    DMG: $DMG"
 fi
 

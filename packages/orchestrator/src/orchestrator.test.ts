@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -111,11 +111,11 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
-  it("until-convergence terminates on no-progress (bounded, not infinite)", async () => {
+  it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_convergence", harnesses: ["fake-fail-tests"] });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_clean", harnesses: ["fake-fail-tests"] });
     expect(["not_converged", "exhausted"]).toContain(res.status);
   }, 20000);
 
@@ -150,6 +150,70 @@ describe("Orchestrator", () => {
     expect(primary.length).toBe(2);
     expect(primary.every((c) => c.harnessId === "fake-success")).toBe(true);
     expect(res.candidates.every((c) => c.harnessId !== "raw-ish")).toBe(true);
+  });
+
+  it("applies configured eligible pool, primary harness, model, and portfolio defaults", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudex"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudex", "config.yaml"),
+      [
+        "version: 1",
+        "budget:",
+        "  portfolio: balanced",
+        "",
+      ].join("\n"),
+    );
+    const seen: { id: string; model: string | null }[] = [];
+    const adapterA = realLikeAdapter("codex", "openai");
+    const adapterB: HarnessAdapter = {
+      ...realLikeAdapter("claude", "anthropic"),
+      async *run(spec) {
+        seen.push({ id: "claude", model: spec.model_hint });
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["codex", adapterA], ["claude", adapterB]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["codex", "claude"], primaryHarness: "claude", model: "model-x", n: 1 });
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(res.candidates[0]?.harnessId).toBe("claude");
+    expect(seen[0]?.model).toBe("model-x");
+    expect(taskYaml).toContain("portfolio: balanced");
+  });
+
+  it("rejects a primary harness outside the selected eligible pool", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", realLikeAdapter("codex", "openai")],
+      ["claude", realLikeAdapter("claude", "anthropic")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["codex"], primaryHarness: "claude" })).rejects.toThrow(
+      /primary harness 'claude'/,
+    );
+  });
+
+  it("does not persist secret-like tokens from generated patch diffs", async () => {
+    const repo = await initRepo();
+    const secret = "sk-" + "a".repeat(24);
+    const adapter: HarnessAdapter = {
+      id: "leaky",
+      async discover() {
+        return HarnessManifest.parse({ id: "leaky", display_name: "leaky", kind: "local_cli", provider_family: "openai", capabilities: { implement: true } });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "leaky", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        writeFileSync(join(spec.cwd, ".env"), `OPENAI_API_KEY=${secret}\n`);
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([["leaky", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["leaky"], n: 1 });
+    expect(readFileSync(join(res.runDir, "final", "patch.diff"), "utf8")).not.toContain(secret);
+    expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
   });
 
   it("fails loudly when no available harness can perform the intent", async () => {
@@ -227,7 +291,7 @@ describe("Orchestrator", () => {
     expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
 
-  it("surfaces runId early and streams events via in-proc hooks (daily)", async () => {
+  it("surfaces runId early and streams events via in-proc hooks (agent)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry });
@@ -237,7 +301,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "x",
-      mode: "daily",
+      mode: "agent",
       harnesses: ["fake-success"],
       onRunStart: (i) => {
         startedRunId = i.runId;
@@ -251,7 +315,7 @@ describe("Orchestrator", () => {
     expect(harnessEvents).toContain("message");
   });
 
-  it("honors a pre-aborted signal (daily -> cancelled, no harness work forwarded)", async () => {
+  it("honors a pre-aborted signal (agent -> cancelled, no harness work forwarded)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry });
@@ -261,7 +325,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "x",
-      mode: "daily",
+      mode: "agent",
       harnesses: ["fake-success"],
       signal: ac.signal,
       onHarnessEvent: (e) => harnessEvents.push(e.type),
@@ -270,14 +334,14 @@ describe("Orchestrator", () => {
     expect(harnessEvents.length).toBe(0);
   });
 
-  it("isolates a throwing onHarnessEvent observer (daily stays success)", async () => {
+  it("isolates a throwing onHarnessEvent observer (agent stays success)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "x",
-      mode: "daily",
+      mode: "agent",
       harnesses: ["fake-success"],
       onHarnessEvent: () => {
         throw new Error("observer boom");
