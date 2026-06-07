@@ -16,6 +16,7 @@ export interface CandidateEvidence {
   heldOutPassed?: number;
   heldOutTotal?: number;
   finalReviewClean: boolean;
+  reviewVerified?: boolean;
   /** Smaller = simpler (e.g. diff line count). */
   diffSize?: number;
   costUsd?: number;

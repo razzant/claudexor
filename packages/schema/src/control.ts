@@ -32,11 +32,30 @@ export const ControlRunStartInfo = z.object({
 });
 export type ControlRunStartInfo = z.infer<typeof ControlRunStartInfo>;
 
+export const ControlRunState = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "exhausted",
+  "not_converged",
+]);
+export type ControlRunState = z.infer<typeof ControlRunState>;
+
+export const ControlQueuedRunInfo = z.object({
+  jobId: z.string(),
+  state: ControlRunState,
+  error: z.string().optional(),
+});
+export type ControlQueuedRunInfo = z.infer<typeof ControlQueuedRunInfo>;
+
 export const ControlRunSummary = z.object({
   jobId: z.string(),
   runId: z.string(),
   taskId: z.string().optional(),
-  state: z.string(),
+  state: ControlRunState,
   runDir: z.string().optional(),
   error: z.string().optional(),
   mode: ModeKind.optional(),
@@ -94,6 +113,11 @@ export const HarnessStatusDto = z.object({
 });
 export type HarnessStatusDto = z.infer<typeof HarnessStatusDto>;
 
+export const ControlHarnessListResponse = z.object({
+  harnesses: z.array(HarnessStatusDto).default([]),
+});
+export type ControlHarnessListResponse = z.infer<typeof ControlHarnessListResponse>;
+
 export const ControlSettingsSnapshot = z.object({
   sources: z.array(z.string()).default([]),
   defaultPortfolio: Portfolio.default("subscription-first"),
@@ -115,6 +139,29 @@ export const ControlSettingsSnapshot = z.object({
 });
 export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 
+export const ControlSettingsUpdateRequest = z
+  .object({
+    defaultPortfolio: Portfolio.optional(),
+    routingPolicy: z.enum(["auto", "primary", "portfolio"]).optional(),
+    primaryHarness: z.string().nullable().optional(),
+    defaultModel: z.string().nullable().optional(),
+    eligibleHarnesses: z.array(z.string()).optional(),
+    envInheritance: z.enum(["mirror_native", "clean", "profile_only"]).optional(),
+    maxUsdPerRun: z.number().nonnegative().optional(),
+    maxUsdPerDay: z.number().nonnegative().optional(),
+    clearMaxUsdPerRun: z.boolean().optional(),
+    clearMaxUsdPerDay: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerRun"], message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive" });
+    }
+    if (value.maxUsdPerDay !== undefined && value.clearMaxUsdPerDay === true) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerDay"], message: "maxUsdPerDay and clearMaxUsdPerDay are mutually exclusive" });
+    }
+  });
+export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;
+
 export const SecretMetadata = z.object({
   name: z.string(),
   backend: z.enum(["keychain", "file"]),
@@ -124,3 +171,9 @@ export const SecretMetadata = z.object({
   description: z.string().optional(),
 });
 export type SecretMetadata = z.infer<typeof SecretMetadata>;
+
+export const ControlSecretListResponse = z.object({
+  backend: z.enum(["keychain", "file"]),
+  secrets: z.array(SecretMetadata).default([]),
+});
+export type ControlSecretListResponse = z.infer<typeof ControlSecretListResponse>;

@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { EventBus } from "./event-bus.js";
 import { type ControlRunner, ControlApiServer } from "./server.js";
 import { DaemonControlApiServer, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256 } from "@claudex/util";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -255,9 +256,12 @@ describe("DaemonControlApiServer", () => {
     mkdirSync(runDir, { recursive: true });
     mkdirSync(join(runDir, "final"), { recursive: true });
     mkdirSync(join(runDir, "arbitration"), { recursive: true });
+    mkdirSync(join(runDir, "context"), { recursive: true });
     writeFileSync(join(runDir, "final", "summary.md"), "# Summary\n\nDone.\n");
-    writeFileSync(join(runDir, "final", "patch.diff"), "diff --git a/x b/x\n");
-    writeFileSync(join(runDir, "final", "work_product.yaml"), "id: wp-test\nkind: patch\nsource_task_id: task-d1\n");
+    const patch = "diff --git a/x b/x\n";
+    writeFileSync(join(runDir, "final", "patch.diff"), patch);
+    writeFileSync(join(runDir, "final", "work_product.yaml"), `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`);
+    writeFileSync(join(runDir, "context", "task.yaml"), `task_id: task-d1\nrepo:\n  root: ${JSON.stringify(runDir)}\n  base_ref: HEAD\n`);
     writeFileSync(join(runDir, "arbitration", "decision.yaml"), "winner: a01\nstatus: success\nconfidence: 0.9\n");
     writeFileSync(
       join(runDir, "events.jsonl"),
@@ -298,8 +302,9 @@ describe("DaemonControlApiServer", () => {
   async function withDaemonServer(
     daemon: DaemonFacadeClient,
     fn: (base: string) => Promise<void>,
+    runStartTimeoutMs?: number,
   ): Promise<void> {
-    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5 });
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5, runStartTimeoutMs });
     const { host, port } = await server.start();
     try {
       await fn(`http://${host}:${port}`);
@@ -335,6 +340,18 @@ describe("DaemonControlApiServer", () => {
       expect(cancel.status).toBe(200);
       expect(cancelled).toEqual(["job-d1"]);
     });
+  });
+
+  it("returns queued job metadata when a daemon job has not produced run artifacts yet", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "queued";
+    delete record.runId;
+    delete record.runDir;
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      expect(start.status).toBe(202);
+      expect(await start.text()).toContain("job-d1");
+    }, 20);
   });
 
   it("returns 202 for a queued job that has not surfaced runId yet", async () => {
@@ -432,6 +449,65 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("refuses symlink artifact escapes", async () => {
+    const { daemon, record } = fakeDaemon();
+    const outside = join(tmpdir(), `claudex-outside-${Date.now()}.txt`);
+    writeFileSync(outside, "outside secret\n");
+    symlinkSync(outside, join(record.runDir as string, "final", "escape.txt"));
+    await withDaemonServer(daemon, async (base) => {
+      const listed = await fetch(`${base}/runs/run-d1/artifacts`, { headers: { authorization: `Bearer ${token}` } });
+      expect(await listed.text()).not.toContain("escape.txt");
+
+      const fetched = await fetch(`${base}/runs/run-d1/artifacts/final/escape.txt`, { headers: { authorization: `Bearer ${token}` } });
+      expect(fetched.status).toBe(404);
+    });
+  });
+
+  it("refuses fixed apply artifacts through intermediate symlink directories", async () => {
+    const { daemon, record } = fakeDaemon();
+    const outside = mkdtempSync(join(tmpdir(), "claudex-outside-final-"));
+    writeFileSync(join(outside, "patch.diff"), "diff --git a/evil b/evil\n");
+    rmSync(join(record.runDir as string, "final"), { recursive: true, force: true });
+    symlinkSync(outside, join(record.runDir as string, "final"), "dir");
+    await withDaemonServer(daemon, async (base) => {
+      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(apply.status).toBe(404);
+      expect(await apply.text()).toContain("no patch artifact");
+    });
+  });
+
+  it("refuses apply when patch hash differs from work product metadata", async () => {
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(join(record.runDir as string, "final", "patch.diff"), "diff --git a/x b/x\n+changed\n");
+    await withDaemonServer(daemon, async (base) => {
+      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(apply.status).toBe(409);
+      expect(await apply.text()).toContain("hash does not match");
+    });
+  });
+
+  it("refuses apply for non-successful runs even when a patch exists", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "not_converged";
+    await withDaemonServer(daemon, async (base) => {
+      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(apply.status).toBe(409);
+      expect(await apply.text()).toContain("not_converged");
+    });
+  });
+
   it("rejects invalid persisted summary modes instead of hiding them", async () => {
     const { daemon, record } = fakeDaemon();
     record.params = { prompt: "legacy", mode: "daily" };
@@ -464,5 +540,81 @@ describe("DaemonControlApiServer", () => {
       });
       expect(apply.status).toBe(409);
     });
+  });
+
+  it("redacts secret-like text artifacts before serving them", async () => {
+    const { daemon, record } = fakeDaemon();
+    const secret = "sk-" + "b".repeat(24);
+    writeFileSync(join(record.runDir as string, "final", "summary.md"), `# Summary\n\nToken ${secret}\n`);
+    await withDaemonServer(daemon, async (base) => {
+      const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, { headers: { authorization: `Bearer ${token}` } });
+      expect(summary.status).toBe(200);
+      const text = await summary.text();
+      expect(text).toContain("[redacted]");
+      expect(text).not.toContain(secret);
+    });
+  });
+
+  it("refuses apply with malformed decision artifacts instead of throwing a 500", async () => {
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(join(record.runDir as string, "arbitration", "decision.yaml"), "winner: [\n");
+    await withDaemonServer(daemon, async (base) => {
+      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(apply.status).toBe(409);
+      expect(await apply.text()).toContain("decision record is required");
+    });
+  });
+
+  it("validates settings patches and managed secret names", async () => {
+    const { daemon } = fakeDaemon();
+    const server = new DaemonControlApiServer({
+      token,
+      daemon,
+      services: {
+        settings: async () => ({
+          sources: [],
+          defaultPortfolio: "subscription-first",
+          routing: { defaultPolicy: "auto", primaryHarness: null, eligibleHarnesses: [], defaultModel: null, envInheritance: "mirror_native" },
+          budget: { maxUsdPerRun: null, maxUsdPerDay: null },
+        }),
+        updateSettings: async (patch) => ({ patch }),
+        listSecrets: async () => ({ backend: "file", secrets: [] }),
+        setSecret: async () => ({ ok: true }),
+        deleteSecret: async () => ({ ok: true }),
+      },
+    });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    try {
+      const badSettings = await fetch(`${base}/settings`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ routingPolicy: "surprise" }),
+      });
+      expect(badSettings.status).toBe(400);
+
+      const okSettings = await fetch(`${base}/settings`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ clearMaxUsdPerRun: true }),
+      });
+      expect(okSettings.status).toBe(200);
+
+      const badSecret = await fetch(`${base}/secrets`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: "github", value: "x" }),
+      });
+      expect(badSecret.status).toBe(400);
+
+      const okSecretList = await fetch(`${base}/secrets`, { headers: { authorization: `Bearer ${token}` } });
+      expect(okSecretList.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
   });
 });

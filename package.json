@@ -1,6 +1,6 @@
 {
   "name": "claudex-monorepo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -18,8 +18,12 @@
     "format:check": "prettier --check .",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release:verify": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && pnpm build",
-    "release": "pnpm release:verify && changeset publish"
+    "release:verify:node": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && pnpm build",
+    "release:verify:swift": "(cd apps/macos/ClaudexKit && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test) && (cd apps/macos/ClaudexApp && PATH=\"$HOME/.swiftly/bin:$PATH\" swift build)",
+    "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudex/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
+    "release:verify": "pnpm release:verify:node && pnpm release:verify:swift && pnpm release:verify:app",
+    "release:npm": "pnpm release:verify && changeset publish",
+    "release": "pnpm release:verify"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.10",

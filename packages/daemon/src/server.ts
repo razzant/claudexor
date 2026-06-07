@@ -1,5 +1,5 @@
 import { type Server, type Socket, createServer } from "node:net";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudex/util";
@@ -25,7 +25,15 @@ export interface DaemonOptions {
   maxHistory?: number;
 }
 
-export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+export type JobState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "exhausted"
+  | "not_converged";
 
 export interface JobRecord {
   id: string;
@@ -124,7 +132,7 @@ export class DaemonServer {
     try {
       this.send(sock, { id, result: await this.dispatch(method, params) });
     } catch (err) {
-      this.send(sock, { id, error: { message: err instanceof Error ? err.message : String(err) } });
+      this.send(sock, { id, error: { message: redactSecrets(err instanceof Error ? err.message : String(err)) } });
     }
   }
 
@@ -192,8 +200,10 @@ export class DaemonServer {
       const view = [...this.records.values()].map(persistedJobRecord);
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.tmp`;
-      writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n");
+      writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n", { mode: 0o600 });
+      chmodSync(tmp, 0o600);
       renameSync(tmp, path);
+      chmodSync(path, 0o600);
     } catch {
       /* best-effort; never break a run on a persistence failure */
     }
@@ -257,10 +267,13 @@ export class DaemonServer {
           this.persist();
         },
       });
-      rec.state = controller.signal.aborted ? "cancelled" : "succeeded";
+      rec.state = jobStateFromResult(rec.result, controller.signal.aborted);
+      if (rec.state !== "succeeded" && rec.state !== "cancelled") {
+        rec.error = resultSummary(rec.result) ?? `run ended with status ${rec.state}`;
+      }
     } catch (err) {
       rec.state = controller.signal.aborted ? "cancelled" : "failed";
-      rec.error = err instanceof Error ? err.message : String(err);
+      rec.error = redactSecrets(err instanceof Error ? err.message : String(err));
     } finally {
       rec.finishedAt = nowIso();
       this.controllers.delete(id);
@@ -270,6 +283,37 @@ export class DaemonServer {
       this.drain();
     }
   }
+}
+
+function jobStateFromResult(result: unknown, aborted: boolean): JobState {
+  if (aborted) return "cancelled";
+  const status = resultStatus(result);
+  switch (status) {
+    case "success":
+      return "succeeded";
+    case "cancelled":
+      return "cancelled";
+    case "exhausted":
+      return "exhausted";
+    case "not_converged":
+      return "not_converged";
+    case "failed":
+      return "failed";
+    default:
+      return status === null ? "succeeded" : "failed";
+  }
+}
+
+function resultStatus(result: unknown): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const status = (result as Record<string, unknown>)["status"];
+  return typeof status === "string" ? status : null;
+}
+
+function resultSummary(result: unknown): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const summary = (result as Record<string, unknown>)["summary"];
+  return typeof summary === "string" ? redactSecrets(summary) : null;
 }
 
 function assertNoInlineSecrets(value: unknown, path = "$"): void {
@@ -289,6 +333,7 @@ function assertNoInlineSecrets(value: unknown, path = "$"): void {
 function publicJobRecord(rec: JobRecord): JobRecord {
   return {
     ...rec,
+    error: rec.error ? redactSecrets(rec.error) : undefined,
     params: redactParams(rec.params),
   };
 }
@@ -298,7 +343,7 @@ function persistedJobRecord(rec: JobRecord): Omit<JobRecord, "result"> {
     id: rec.id,
     state: rec.state,
     params: redactParams(rec.params),
-    error: rec.error,
+    error: rec.error ? redactSecrets(rec.error) : undefined,
     createdAt: rec.createdAt,
     runId: rec.runId,
     taskId: rec.taskId,

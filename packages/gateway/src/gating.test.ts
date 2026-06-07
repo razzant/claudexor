@@ -64,9 +64,10 @@ describe("allowedIntents", () => {
     expect(allowedIntents(manifest(), null)).toEqual([]);
   });
 
-  it("degraded drops critical intents unless explicitly enabled", () => {
+  it("degraded grants only explicitly enabled intents", () => {
     const intents = allowedIntents(manifest(), report("degraded", { enabled_intents: ["implement"] }));
     expect(intents).toContain("implement");
+    expect(intents).not.toContain("explain");
     expect(intents).not.toContain("review");
     expect(intents).not.toContain("arbitrate");
   });
@@ -74,5 +75,9 @@ describe("allowedIntents", () => {
   it("degraded keeps a critical intent that is explicitly re-enabled", () => {
     const intents = allowedIntents(manifest(), report("degraded", { enabled_intents: ["review"] }));
     expect(intents).toContain("review");
+  });
+
+  it("degraded with no enabled intents grants nothing", () => {
+    expect(allowedIntents(manifest(), report("degraded"))).toEqual([]);
   });
 });

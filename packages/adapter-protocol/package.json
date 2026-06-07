@@ -1,6 +1,6 @@
 {
   "name": "@claudex/adapter-protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "JSON-RPC-over-stdio protocol so external adapters (any language) can implement HarnessAdapter.",
   "type": "module",
   "main": "./dist/index.js",

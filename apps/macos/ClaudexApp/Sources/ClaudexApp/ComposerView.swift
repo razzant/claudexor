@@ -50,8 +50,16 @@ struct ComposerView: View {
     private var orderedSelectedHarnesses: [HarnessFamily] {
         HarnessFamily.allCases.filter { $0 != .fake && selectedHarnesses.contains($0) }
     }
+    private var availableSelectedHarnesses: [HarnessFamily] {
+        model.availableHarnesses(for: mode, selected: selectedHarnesses)
+    }
     private var effectivePrimary: HarnessFamily? {
-        orderedSelectedHarnesses.contains(primaryHarness) ? primaryHarness : orderedSelectedHarnesses.first
+        availableSelectedHarnesses.contains(primaryHarness) ? primaryHarness : availableSelectedHarnesses.first
+    }
+    private var canLaunch: Bool {
+        model.health == .connected &&
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !availableSelectedHarnesses.isEmpty
     }
 
     var body: some View {
@@ -141,17 +149,23 @@ struct ComposerView: View {
             SectionLabel("Harnesses", systemImage: "cpu")
             FlowLayout(spacing: Theme.Spacing.sm) {
                 ForEach(HarnessFamily.allCases.filter { $0 != .fake }) { family in
+                    let availability = model.availability(for: family, mode: mode)
                     Button {
+                        guard availability.available else {
+                            dismiss()
+                            model.route = .harnesses
+                            return
+                        }
                         if selectedHarnesses.contains(family) {
                             selectedHarnesses.remove(family)
-                            if primaryHarness == family, let next = orderedSelectedHarnesses.first { primaryHarness = next }
+                            if primaryHarness == family, let next = availableSelectedHarnesses.first { primaryHarness = next }
                         } else {
                             selectedHarnesses.insert(family)
-                            if orderedSelectedHarnesses.count == 1 { primaryHarness = family }
+                            if availableSelectedHarnesses.count == 1 { primaryHarness = family }
                         }
-                    } label: { HarnessChip(family: family, selected: selectedHarnesses.contains(family)) }
+                    } label: { HarnessChip(family: family, selected: selectedHarnesses.contains(family), available: availability.available) }
                     .buttonStyle(.plain)
-                    .help("\(family.label) is in the eligible pool when selected.")
+                    .help(availability.available ? "\(family.label) is in the eligible pool for \(availability.intent) when selected." : "\(availability.reason). Click to open Harness Doctor.")
                 }
             }
         }
@@ -162,7 +176,7 @@ struct ComposerView: View {
             SectionLabel("Routing", systemImage: "point.3.connected.trianglepath.dotted")
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 Picker("Primary", selection: $primaryHarness) {
-                    ForEach(orderedSelectedHarnesses) { family in
+                    ForEach(availableSelectedHarnesses) { family in
                         Label(family.label, systemImage: family.glyph).tag(family)
                     }
                 }
@@ -196,6 +210,7 @@ struct ComposerView: View {
                     Text("per envelope").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .help("How many candidate runs to request for multi-candidate modes. Single-route modes still use one route.")
             .padding(Theme.Spacing.md).cardSurface()
         }
     }
@@ -205,6 +220,7 @@ struct ComposerView: View {
             SectionLabel("Budget cap", systemImage: "dollarsign.circle",
                          accessory: AnyView(Text(String(format: "$%.2f", capUsd)).font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.accent)))
             Slider(value: $capUsd, in: 0.10...5.0, step: 0.10).tint(Theme.accent)
+                .help("Per-run spend cap sent to the engine for this launch.")
                 .padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.sm).cardSurface()
         }
     }
@@ -235,6 +251,7 @@ struct ComposerView: View {
                 Text("Required deterministic gates run before review. Leave empty to use the repo's configured gates.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
+            .help("One shell command per line. These gates are recorded in the TaskContract and checked before review.")
             .padding(Theme.Spacing.md).cardSurface()
         }
     }
@@ -242,13 +259,16 @@ struct ComposerView: View {
     private var footer: some View {
         HStack(spacing: Theme.Spacing.md) {
             if model.health != .connected {
-                Label("Engine offline — run will queue when connected", systemImage: "bolt.slash")
+                Label("Engine offline — reconnect before launching", systemImage: "bolt.slash")
+                    .font(.caption).foregroundStyle(Theme.status(.blocked))
+            } else if availableSelectedHarnesses.isEmpty {
+                Label("No selected harness can handle \(mode.requiredIntent)", systemImage: "slash.circle")
                     .font(.caption).foregroundStyle(Theme.status(.blocked))
             }
             Spacer()
             Button("Cancel") { dismiss() }.buttonStyle(.bordered)
             Button {
-                let selected = orderedSelectedHarnesses
+                let selected = availableSelectedHarnesses
                 Task { await model.startRun(prompt: prompt, mode: mode, harnesses: selected,
                                             primary: effectivePrimary, portfolio: portfolio,
                                             model: modelHint.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -259,7 +279,8 @@ struct ComposerView: View {
                 Label("Launch", systemImage: "paperplane.fill")
             }
             .buttonStyle(.borderedProminent).tint(Theme.accent)
-            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedHarnesses.isEmpty)
+            .disabled(!canLaunch)
+            .help(canLaunch ? "Launch \(mode.label)" : "Enter a prompt, reconnect the engine, and select an available harness.")
         }
         .padding(Theme.Spacing.lg)
     }

@@ -2,10 +2,9 @@
 import PackageDescription
 
 // The SwiftUI mission-control app. Built as a SwiftPM executable for dev/CI here
-// (`swift run ClaudexApp`); a notarized .app bundle is produced in Xcode 26 for
-// distribution. Targets macOS 26 (Tahoe) so the Liquid Glass APIs — `glassEffect`,
-// `GlassEffectContainer`, glass button styles, `.backgroundExtensionEffect()` — are
-// first-class rather than availability-gated.
+// (`swift run ClaudexApp`); `apps/macos/scripts/build-app.sh` assembles unsigned
+// beta artifacts, and can sign/notarize when credentials are available. Targets
+// macOS 26 (Tahoe) so Liquid Glass APIs are first-class rather than availability-gated.
 let package = Package(
     name: "ClaudexApp",
     platforms: [.macOS(.v26)],

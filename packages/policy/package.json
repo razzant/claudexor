@@ -1,6 +1,6 @@
 {
   "name": "@claudex/policy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed risk classifier + thin policy (path guard, require-human, deny lists). No keyword-regex governance.",
   "type": "module",
   "main": "./dist/index.js",

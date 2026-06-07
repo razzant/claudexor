@@ -39,7 +39,7 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 - **Trust layering**: versioned repo config can NEVER self-grant sensitive powers (full access, bypass, network, secrets, disable review/audit, raise budget, install plugins, trust MCP).
 
 ## Batch 5 — Modes, WorkProduct & embed API
-- **Modes**: canonical v0.2 ids are `ask`, `agent`, `best_of_n`, `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, `benchmark`.
+- **Modes**: canonical v0.3 beta ids are `ask`, `agent`, `best_of_n`, `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, `benchmark`.
 - **Plan mode**: multi-harness independent planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack (clarify=required).
 - **Create-from-scratch**: first-class, WorkProduct kind `new_repo` (git bundle + tree manifest + archive), build/test gates, materialize policy.
 - **WorkProduct kinds**: all (patch, new_repo, branch, commit, pr, report, artifact_bundle, benchmark_submission).

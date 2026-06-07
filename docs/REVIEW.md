@@ -1,6 +1,6 @@
 # Adversarial multi-model review
 
-> Current implementation note (v0.2.0): this file preserves historical review
+> Current implementation note (v0.3.0 beta): this file preserves historical review
 > rounds. The active mode ids are `ask`, `agent`, `best_of_n`, `max_attempts`,
 > `until_clean`, `plan`, `create`, `readonly_audit`, and `benchmark`.
 
@@ -42,7 +42,7 @@ single-harness `readonly_swarm`, final fresh-envelope re-verify, synthesizer = a
 
 ## Outcome
 All three critics: **SAFE TO COMMIT**. No remaining hard blocker the author agrees with.
-The declined items are tracked as v0.2 follow-ups.
+The declined items are tracked as beta follow-ups.
 
 ## Round 4 — real-harness dogfood (verified multi-model)
 After installing real Codex (`codex-cli 0.137.0`) and Claude (`claude 2.1.165`) and dogfooding on a
@@ -58,7 +58,7 @@ Dogfood-confirmed blockers fixed:
 Result: a real Codex-vs-Claude `race` converges to **success** with a clean, single-file `patch.diff`
 that `apply --dry-run` accepts; `max_attempts` convergence + `plan` + daily + MCP/ACP/daemon all smoke clean.
 All three critics: **SAFE TO COMMIT**, no hard blockers (verified against code, not just the changelog).
-Disclosed v0.2 follow-up (not a regression of this diff): nothing populates `contract.tests.commands`,
+Disclosed beta follow-up (not a regression of this diff): nothing populates `contract.tests.commands`,
 so deterministic gates are vacuous from the CLI — convergence is review-driven until config→gates is wired.
 
 ## Round 5 — post-pilot framework fixes (verified multi-model)

@@ -17,7 +17,17 @@
               "type": "string"
             },
             "state": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "interrupted",
+                "exhausted",
+                "not_converged"
+              ]
             },
             "runDir": {
               "type": "string"

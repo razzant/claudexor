@@ -1,0 +1,34 @@
+{
+  "$ref": "#/definitions/ControlQueuedRunInfo",
+  "definitions": {
+    "ControlQueuedRunInfo": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "exhausted",
+            "not_converged"
+          ]
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jobId",
+        "state"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -49,8 +49,13 @@ final class AppModel {
     var health: Health = .connecting
     var endpoint: String = ""
     var route: SidebarRoute = .overview
-    var appearance: AppearanceMode = .dark
+    var appearance: AppearanceMode = .dark {
+        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudex.appearance") }
+    }
     var composerPresented = false
+    var projectRoot: String = "" {
+        didSet { UserDefaults.standard.set(projectRoot, forKey: "claudex.projectRoot") }
+    }
 
     /// App-wide search query. Declared once on the NavigationSplitView (per WWDC25 "Build a
     /// SwiftUI app with the new design") so the toolbar search affordance is identical on every
@@ -60,10 +65,16 @@ final class AppModel {
     /// Sample data is OFF by default and lives behind an explicit toggle, so live state is
     /// never silently mixed with mock content. When off, surfaces the engine doesn't expose
     /// yet show honest empty states instead of demo content.
-    var demoMode = false
+    var demoMode = false {
+        didSet { UserDefaults.standard.set(demoMode, forKey: "claudex.demoMode") }
+    }
 
     var liveTasks: [TaskRun] = []
     var liveHarnesses: [HarnessInfo] = []
+    var settingsSnapshot: SettingsSnapshot?
+    var secretBackend = "unknown"
+    var storedSecrets: [SecretInfo] = []
+    var settingsStatus: String?
     let demoTasks: [TaskRun] = DemoData.tasks
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
@@ -86,6 +97,11 @@ final class AppModel {
     private var streamTask: Task<Void, Never>?
 
     init() {
+        if let raw = UserDefaults.standard.string(forKey: "claudex.appearance"),
+           let saved = AppearanceMode(rawValue: raw) {
+            appearance = saved
+        }
+        demoMode = UserDefaults.standard.bool(forKey: "claudex.demoMode")
         // Dev/QA only: force an appearance for deterministic screenshots.
         switch ProcessInfo.processInfo.environment["CLAUDEX_DEBUG_APPEARANCE"] {
         case "light": appearance = .light
@@ -108,6 +124,7 @@ final class AppModel {
         case "composer": composerPresented = true
         default: break
         }
+        projectRoot = UserDefaults.standard.string(forKey: "claudex.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEX_PROJECT_ROOT"] ?? ""
     }
 
     var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
@@ -144,6 +161,38 @@ final class AppModel {
 
     func task(_ id: String) -> TaskRun? { tasks.first { $0.id == id } }
 
+    func harnessInfo(for family: HarnessFamily) -> HarnessInfo? {
+        harnesses.first { $0.family == family }
+    }
+
+    func availability(for family: HarnessFamily, mode: RunMode) -> HarnessAvailability {
+        let intent = mode.requiredIntent
+        guard let info = harnessInfo(for: family) else {
+            return HarnessAvailability(family: family, available: false,
+                                       reason: "Harness Doctor has not loaded \(family.label). Reconnect the engine, then recheck.",
+                                       intent: intent, info: nil)
+        }
+        guard info.health != .unavailable else {
+            return HarnessAvailability(family: family, available: false,
+                                       reason: info.reasons.first ?? info.auth,
+                                       intent: intent, info: info)
+        }
+        guard info.intents.contains(intent) else {
+            let reason = info.reasons.first ?? "\(family.label) is not enabled for \(intent). Fix auth/install status in Harness Doctor."
+            return HarnessAvailability(family: family, available: false,
+                                       reason: reason, intent: intent, info: info)
+        }
+        return HarnessAvailability(family: family, available: true,
+                                   reason: "\(family.label) can handle \(intent).",
+                                   intent: intent, info: info)
+    }
+
+    func availableHarnesses(for mode: RunMode, selected: Set<HarnessFamily>) -> [HarnessFamily] {
+        HarnessFamily.allCases
+            .filter { $0 != .fake && $0 != .raw && selected.contains($0) }
+            .filter { availability(for: $0, mode: mode).available }
+    }
+
     // MARK: Connection
 
     func connect() async {
@@ -168,6 +217,8 @@ final class AppModel {
                 health = .connected
                 await refreshRuns()
                 await refreshHarnesses()
+                await refreshSettings()
+                await refreshSecrets()
                 return true
             }
         } catch {
@@ -195,10 +246,50 @@ final class AppModel {
             liveHarnesses = try await client.listHarnesses().compactMap { status in
                 guard let family = HarnessFamily(rawValue: status.id) else { return nil }
                 let health = HarnessHealth(rawValue: status.status) ?? .unavailable
-                return HarnessInfo(family: family, health: health, version: "live", auth: status.reasons?.joined(separator: ", ") ?? "native / key fallback", intents: [])
+                let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
+                let auth = status.reasons?.joined(separator: ", ") ?? (health == .ok ? "ready" : "native / key fallback")
+                return HarnessInfo(family: family, health: health, version: version, auth: auth,
+                                   intents: status.enabledIntents, reasons: status.reasons ?? [])
             }
         } catch {
             // Keep last-known harness rows.
+        }
+    }
+
+    func refreshSettings() async {
+        guard let client else { return }
+        do {
+            settingsSnapshot = try await client.settings()
+        } catch {
+            settingsStatus = "Could not load settings: \(error)"
+        }
+    }
+
+    func refreshSecrets() async {
+        guard let client else { return }
+        do {
+            let res = try await client.listSecrets()
+            secretBackend = res.backend
+            storedSecrets = res.secrets
+        } catch {
+            secretBackend = "unknown"
+        }
+    }
+
+    func saveSettings(_ patch: SettingsUpdateRequest) async -> Bool {
+        guard let client else {
+            settingsStatus = "Engine offline: reconnect before saving settings."
+            return false
+        }
+        do {
+            let res = try await client.updateSettings(patch)
+            settingsStatus = "Saved engine defaults to \(res.path)."
+            await refreshSettings()
+            await refreshHarnesses()
+            return true
+        } catch {
+            settingsStatus = "Could not save settings: \(error)"
+            return false
         }
     }
 
@@ -258,7 +349,15 @@ final class AppModel {
         liveTasks.insert(optimistic, at: 0)
         route = .task(optimistic.id)
 
-        guard let client else { return }
+        guard let client else {
+            if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
+                liveTasks[idx].status = .failed
+                liveTasks[idx].engineError = "Engine offline: reconnect the local engine before launching a run."
+                liveTasks[idx].diagnosticText = liveTasks[idx].engineError
+                liveTasks[idx].activity.append(ActivityEvent(.system, "Engine offline: reconnect the local engine before launching a run."))
+            }
+            return
+        }
         do {
             let orderedHarnesses = harnesses.map(\.rawValue)
             let req = StartRunRequest(prompt: prompt, mode: mode.apiValue,
@@ -268,23 +367,46 @@ final class AppModel {
                                       model: model?.isEmpty == false ? model : nil,
                                       n: n,
                                       maxUsd: capUsd, access: access,
-                                      tests: tests.isEmpty ? nil : tests)
-            let info = try await client.startRun(req)
-            // swap the optimistic row for one keyed by the real run id
-            if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
-                let prev = liveTasks[idx]
-                liveTasks[idx] = TaskRun(
-                    id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
-                    status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
-                    n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .context,
-                    spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
-                    plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
-                route = .task(info.runId)
-                stream(runId: info.runId)
+                                      tests: tests.isEmpty ? nil : tests,
+                                      repoRoot: projectRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : projectRoot)
+            let result = try await client.startRun(req)
+            switch result {
+            case .started(let info):
+                // swap the optimistic row for one keyed by the real run id
+                if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
+                    let prev = liveTasks[idx]
+                    liveTasks[idx] = TaskRun(
+                        id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
+                        status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
+                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .context,
+                        spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
+                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
+                    route = .task(info.runId)
+                    stream(runId: info.runId)
+                }
+            case .queued(let info):
+                if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
+                    let prev = liveTasks[idx]
+                    var row = TaskRun(
+                        id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
+                        status: .queued, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
+                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .contract,
+                        spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
+                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
+                    row.activity.append(ActivityEvent(.system, "Queued in daemon · \(info.state)"))
+                    if let error = info.error {
+                        row.engineError = error
+                        row.diagnosticText = error
+                    }
+                    liveTasks[idx] = row
+                    route = .task(info.jobId)
+                }
             }
         } catch {
             if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
                 liveTasks[idx].status = .failed
+                liveTasks[idx].engineError = "Failed to start: \(error)"
+                liveTasks[idx].diagnosticText = liveTasks[idx].engineError
                 liveTasks[idx].activity.append(ActivityEvent(.system, "Failed to start: \(error)"))
             }
         }
@@ -308,15 +430,20 @@ final class AppModel {
         do {
             let detail = try await client.runDetail(runId: id)
             var task = liveTasks[idx]
+            task.status = RunStatus(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode)
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }
             task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
             task.capUsd = detail.summary.maxUsd ?? task.capUsd
+            task.engineError = detail.summary.error
+            task.artifactPaths = detail.artifacts.map(\.path)
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {
                 task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
             }
+            task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/report.md", "final/summary.md"])
+            task.diagnosticText = await diagnosticText(client: client, runId: id, detail: detail, error: task.engineError)
             if !detail.artifacts.isEmpty, task.plan.isEmpty {
                 task.plan = detail.artifacts
                     .filter { $0.kind == "file" }
@@ -325,7 +452,11 @@ final class AppModel {
             }
             liveTasks[idx] = task
         } catch {
-            // Detail is opportunistic; live stream remains authoritative for progress.
+            if let idx = liveTasks.firstIndex(where: { $0.id == id }) {
+                liveTasks[idx].engineError = "Could not load run detail: \(error)"
+                liveTasks[idx].diagnosticText = liveTasks[idx].engineError
+                liveTasks[idx].updatedAt = .now
+            }
         }
     }
 
@@ -333,10 +464,36 @@ final class AppModel {
         guard let client else { return false }
         do {
             try await client.setSecret(name: name, value: value)
+            await refreshSecrets()
+            await refreshHarnesses()
             return true
         } catch {
             return false
         }
+    }
+
+    private func firstArtifactText(client: GatewayClient, runId: String, paths: [String]) async -> String? {
+        for path in paths {
+            if let text = try? await client.artifactText(runId: runId, path: path), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func diagnosticText(client: GatewayClient, runId: String, detail: RunDetail, error: String?) async -> String {
+        var sections: [String] = []
+        if let error, !error.isEmpty { sections.append("# Engine Error\n\n\(error)") }
+        for path in ["context/context_error.md", "events.jsonl", "arbitration/decision.yaml", "final/work_product.yaml"] {
+            if let text = try? await client.artifactText(runId: runId, path: path), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                sections.append("## \(path)\n\n\(text)")
+            }
+        }
+        if sections.isEmpty {
+            let paths = detail.artifacts.map(\.path).joined(separator: "\n")
+            sections.append(paths.isEmpty ? "No diagnostics artifacts are available yet." : "Artifacts:\n\(paths)")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     // MARK: Live SSE stream
@@ -366,7 +523,8 @@ final class AppModel {
         if let summary = try? await client.listRuns().first(where: { $0.runId == runId }) {
             liveTasks[idx].status = RunStatus(api: summary.state)
         } else if liveTasks[idx].status.isActive {
-            liveTasks[idx].status = .succeeded
+            liveTasks[idx].status = .unknown
+            liveTasks[idx].activity.append(ActivityEvent(.system, "Lost engine stream before a terminal status. Reconnect to refresh this run."))
         }
         liveTasks[idx].updatedAt = .now
         Self.notifyTransition(from: before, to: liveTasks[idx].status, title: liveTasks[idx].title)
@@ -380,6 +538,9 @@ final class AppModel {
         case .failed: Notifier.post(title: "Run failed", body: title)
         case .needsReview: Notifier.post(title: "Needs your review", body: title)
         case .blocked: Notifier.post(title: "Run blocked — needs permission", body: title)
+        case .exhausted: Notifier.post(title: "Run exhausted", body: title)
+        case .notConverged: Notifier.post(title: "Run did not converge", body: title)
+        case .unknown: Notifier.post(title: "Run status unknown", body: title)
         default: break
         }
     }

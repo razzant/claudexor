@@ -7,20 +7,24 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 210, ideal: 244, max: 300)
-        } detail: {
-            ContentRouter()
-                .navigationTitle(routeTitle)
-                .inspector(isPresented: $inspectorPresented) {
-                    InspectorRouter()
-                        .inspectorColumnWidth(min: 250, ideal: 300, max: 380)
-                }
-                .toolbar { toolbarContent }
+        ZStack {
+            GlowBackground()
+                .ignoresSafeArea()
+            NavigationSplitView {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 210, ideal: 244, max: 300)
+            } detail: {
+                ContentRouter()
+                    .navigationTitle(routeTitle)
+                    .inspector(isPresented: $inspectorPresented) {
+                        InspectorRouter()
+                            .inspectorColumnWidth(min: 250, ideal: 300, max: 380)
+                    }
+                    .toolbar { toolbarContent }
+            }
+            .navigationSplitViewStyle(.balanced)
+            .tint(Theme.accent)   // brand owns selection/controls (not the system blue)
         }
-        .navigationSplitViewStyle(.balanced)
-        .tint(Theme.accent)   // brand owns selection/controls (not the system blue)
         // App-wide search declared once on the split view (WWDC25 "Build a SwiftUI app with the
         // new design") → the toolbar search affordance is identical on every screen instead of
         // reflowing per-screen.
@@ -58,6 +62,7 @@ struct RootView: View {
                 Label("New Task", systemImage: "plus")
             }
             .keyboardShortcut("n", modifiers: .command)
+            .help("Open the full composer")
         }
     }
 

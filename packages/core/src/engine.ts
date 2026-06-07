@@ -143,7 +143,7 @@ export class ExecutionEngine {
         if (ev.type === "usage" && ev.usage?.cost_usd) costUsd += ev.usage.cost_usd;
         if (ev.type === "error") {
           status = "failed";
-          errorText = ev.error ?? "unknown harness error";
+          errorText = redactSecrets(ev.error ?? "unknown harness error");
         }
       }
     } catch (err) {
@@ -151,7 +151,7 @@ export class ExecutionEngine {
         status = "cancelled";
       } else {
         status = "failed";
-        errorText = err instanceof Error ? err.message : String(err);
+        errorText = redactSecrets(err instanceof Error ? err.message : String(err));
       }
     } finally {
       input.signal?.removeEventListener("abort", onAbort);

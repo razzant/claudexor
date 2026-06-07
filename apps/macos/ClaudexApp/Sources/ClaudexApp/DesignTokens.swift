@@ -9,8 +9,9 @@ import SwiftUI
 /// 2. **Never glass-on-glass.** Content cards use solid surfaces.
 /// 3. **Never put custom backgrounds on split views / sidebars / toolbars** — that
 ///    overrides the system glass. Let the system provide it.
-/// 4. Make glass visibly refract by placing **colorful content** near it (a hero with
-///    `backgroundExtensionEffect()` so the sidebar refracts it).
+/// 4. Make glass feel alive by placing colorful content near native chrome, but do not
+///    stretch a custom full-window glow into rounded window chrome with
+///    `backgroundExtensionEffect()`; that produced hard side cutouts in dark/light mode.
 enum Theme {
 
     // MARK: Surfaces (graphite dark signature; light mirrors with inverted luminance).
@@ -61,6 +62,9 @@ enum Theme {
         case .failed: return Color(dark: (0.94, 0.44, 0.44), light: (0.80, 0.22, 0.22))
         case .cancelled: return Color.secondary
         case .interrupted: return Color(dark: (0.80, 0.66, 0.42), light: (0.60, 0.46, 0.20))
+        case .exhausted: return Color(dark: (0.97, 0.60, 0.30), light: (0.82, 0.38, 0.12))
+        case .notConverged: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
+        case .unknown: return Color.secondary
         case .queued: return Color.secondary.opacity(0.85)
         }
     }
@@ -183,12 +187,11 @@ extension View {
 
 // MARK: - Glow backdrop (app-wide ambient light the glass refracts)
 
-/// A calm, muted, always-moving "command center" backdrop: several soft blurred light
-/// sources drift over graphite. It lives behind the ENTIRE app (content, and — via
-/// `backgroundExtensionEffect` — under the glass sidebar/toolbar/inspector), so every
-/// glass surface refracts gentle color instead of reading as flat frost, and there are no
-/// hard black cutouts anywhere. Honors Reduce Motion (static) and Reduce Transparency
-/// (solid graphite). Brand-only hues (steel-blue / sky / indigo) — never harness/status.
+/// A calm, muted, always-moving "command center" backdrop. It is mounted once at
+/// the RootView level so the content area has one continuous glow instead of
+/// competing per-screen background-extension layers.
+/// Honors Reduce Motion (static) and Reduce Transparency (solid graphite).
+/// Brand-only hues (steel-blue / sky / indigo) — never harness/status.
 struct GlowBackground: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -200,7 +203,7 @@ struct GlowBackground: View {
         } else if reduceMotion {
             ZStack { Theme.surfaceBase; mesh(0) }
         } else {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { ctx in
                 ZStack { Theme.surfaceBase; mesh(ctx.date.timeIntervalSinceReferenceDate) }
             }
         }
@@ -235,13 +238,10 @@ struct GlowBackground: View {
 }
 
 extension View {
-    /// App-wide ambient glow behind a screen, bled under the glass chrome so the sidebar,
-    /// toolbar, and inspector all refract it (and no black wedge appears at their edges).
+    /// Deprecated screen-level glow hook. The actual ambient layer now lives once
+    /// in `RootView`; keeping this helper as identity avoids multiple
+    /// `backgroundExtensionEffect()` layers that caused hard side cutouts.
     func glowBackdrop() -> some View {
-        self.background {
-            GlowBackground()
-                .ignoresSafeArea()
-                .backgroundExtensionEffect()
-        }
+        self
     }
 }

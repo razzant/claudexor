@@ -52,9 +52,21 @@ public struct StartRunRequest: Codable, Sendable {
 
 /// Response from POST /runs once the run id is known (returned early by the server).
 public struct RunStartInfo: Codable, Sendable, Equatable {
+    public let jobId: String?
     public let runId: String
     public let taskId: String
     public let runDir: String
+}
+
+public struct QueuedRunInfo: Codable, Sendable, Equatable {
+    public let jobId: String
+    public let state: String
+    public let error: String?
+}
+
+public enum RunStartResult: Sendable, Equatable {
+    case started(RunStartInfo)
+    case queued(QueuedRunInfo)
 }
 
 public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
@@ -102,11 +114,112 @@ public struct RunDetail: Codable, Sendable, Equatable {
 public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let status: String
+    public let manifest: JSONValue?
+    public let enabledIntents: [String]
+    public let disabledIntents: [String]
     public let reasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, manifest, enabledIntents, disabledIntents, reasons
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        status = try c.decode(String.self, forKey: .status)
+        manifest = try c.decodeIfPresent(JSONValue.self, forKey: .manifest)
+        enabledIntents = try c.decodeIfPresent([String].self, forKey: .enabledIntents) ?? []
+        disabledIntents = try c.decodeIfPresent([String].self, forKey: .disabledIntents) ?? []
+        reasons = try c.decodeIfPresent([String].self, forKey: .reasons)
+    }
 }
 
 public struct HarnessListResponse: Codable, Sendable {
     public let harnesses: [HarnessStatus]
+}
+
+public struct SettingsSnapshot: Codable, Sendable, Equatable {
+    public let sources: [String]
+    public let defaultPortfolio: String
+    public let routing: RoutingSettings
+    public let budget: BudgetSettings
+}
+
+public struct RoutingSettings: Codable, Sendable, Equatable {
+    public let defaultPolicy: String
+    public let primaryHarness: String?
+    public let eligibleHarnesses: [String]
+    public let defaultModel: String?
+    public let envInheritance: String
+}
+
+public struct BudgetSettings: Codable, Sendable, Equatable {
+    public let maxUsdPerRun: Double?
+    public let maxUsdPerDay: Double?
+}
+
+public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
+    public var defaultPortfolio: String?
+    public var routingPolicy: String?
+    public var primaryHarness: String?
+    public var defaultModel: String?
+    public var eligibleHarnesses: [String]?
+    public var envInheritance: String?
+    public var maxUsdPerRun: Double?
+    public var maxUsdPerDay: Double?
+    public var clearMaxUsdPerRun: Bool
+    public var clearMaxUsdPerDay: Bool
+
+    public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
+                primaryHarness: String? = nil, defaultModel: String? = nil,
+                eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
+                maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
+                clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false) {
+        self.defaultPortfolio = defaultPortfolio
+        self.routingPolicy = routingPolicy
+        self.primaryHarness = primaryHarness
+        self.defaultModel = defaultModel
+        self.eligibleHarnesses = eligibleHarnesses
+        self.envInheritance = envInheritance
+        self.maxUsdPerRun = maxUsdPerRun
+        self.maxUsdPerDay = maxUsdPerDay
+        self.clearMaxUsdPerRun = clearMaxUsdPerRun
+        self.clearMaxUsdPerDay = clearMaxUsdPerDay
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(defaultPortfolio, forKey: .defaultPortfolio)
+        try c.encodeIfPresent(routingPolicy, forKey: .routingPolicy)
+        try c.encodeIfPresent(primaryHarness, forKey: .primaryHarness)
+        try c.encodeIfPresent(defaultModel, forKey: .defaultModel)
+        try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
+        try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
+        try c.encodeIfPresent(maxUsdPerRun, forKey: .maxUsdPerRun)
+        try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
+        if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
+        if clearMaxUsdPerDay { try c.encode(true, forKey: .clearMaxUsdPerDay) }
+    }
+}
+
+public struct SettingsUpdateResponse: Codable, Sendable, Equatable {
+    public let path: String
+}
+
+public struct SecretListResponse: Codable, Sendable, Equatable {
+    public let backend: String
+    public let secrets: [SecretInfo]
+}
+
+public struct SecretInfo: Codable, Sendable, Identifiable, Equatable {
+    public let name: String
+    public let backend: String
+    public let present: Bool
+    public var id: String { name }
 }
 
 public struct ApplyCheckResult: Codable, Sendable, Equatable {

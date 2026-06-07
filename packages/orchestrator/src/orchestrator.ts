@@ -2,7 +2,6 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   GateResult,
-  HarnessCapabilities,
   HarnessEvent,
   Intent,
   ModeKind,
@@ -37,7 +36,7 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
 import { BudgetLedger, observationFromEvent } from "@claudex/budget";
-import { containsSecretLikeToken, hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
+import { containsSecretLikeToken, hashJson, newId, nowIso, redactSecrets, safeInvoke, sha256 } from "@claudex/util";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
@@ -152,7 +151,33 @@ export class Orchestrator {
   }
 
   private async runAgent(input: RunInput): Promise<OrchestratorResult> {
-    const adapter = (await this.resolveCandidateAdapters({ ...input, n: 1 }, "implement"))[0] as HarnessAdapter;
+    const taskId = input.taskId ?? newId("task");
+    const runId = input.runId ?? newId("run");
+    let adapter: HarnessAdapter;
+    try {
+      adapter = (await this.resolveCandidateAdapters({ ...input, n: 1 }, "implement"))[0] as HarnessAdapter;
+    } catch (err) {
+      const store = new ArtifactStore(input.repoRoot);
+      const paths = store.createRun(runId);
+      const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+      const message = safeErrorMessage(err);
+      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
+      log.emit("run.created", { mode: "agent", prompt: redactSecrets(input.prompt) });
+      store.writeYaml(join(paths.contextDir, "task.yaml"), this.buildContract(input, taskId, "agent"));
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (agent)\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "routing", error: message });
+      return {
+        runId,
+        taskId,
+        mode: "agent",
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
+    }
     const engine = new ExecutionEngine(this.deps.registry);
     const res = await engine.run({
       repoRoot: input.repoRoot,
@@ -161,8 +186,8 @@ export class Orchestrator {
       mode: "agent",
       access: input.access,
       model: input.model,
-      runId: input.runId,
-      taskId: input.taskId,
+      runId,
+      taskId,
       onEvent: input.onEvent,
       onHarnessEvent: input.onHarnessEvent,
       onRunStart: input.onRunStart,
@@ -180,23 +205,24 @@ export class Orchestrator {
     };
   }
 
-  private async resolveReviewers(): Promise<ReviewerSpec[]> {
+  private async resolveReviewers(cwd: string): Promise<ReviewerSpec[]> {
     if (this.deps.reviewers) return this.deps.reviewers;
     const specs: ReviewerSpec[] = [];
     const seen = new Set<string>();
-    for (const adapter of this.deps.registry.values()) {
-      try {
-        const m = await adapter.discover();
-        if (m.kind === "fake" || seen.has(m.provider_family)) continue;
-        seen.add(m.provider_family);
-        specs.push({
-          adapter,
-          providerFamily: m.provider_family,
-          requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
-        });
-      } catch {
-        /* unavailable */
-      }
+    const statuses = await this.gateway.statusAll({ cwd });
+    for (const status of statuses) {
+      const m = status.manifest;
+      if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
+      if (!status.enabledIntents.includes("review")) continue;
+      if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
+      const adapter = this.deps.registry.get(status.id);
+      if (!adapter) continue;
+      seen.add(m.provider_family);
+      specs.push({
+        adapter,
+        providerFamily: m.provider_family,
+        requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
+      });
       if (specs.length >= 2) break;
     }
     return specs;
@@ -206,19 +232,8 @@ export class Orchestrator {
   private candidateIntent(mode: ModeKind): Intent {
     switch (mode) {
       case "create": return "create_from_scratch";
-      default: return "implement"; // best_of_n / max_attempts / until_clean / benchmark
-    }
-  }
-
-  /** Whether a harness's declared capabilities allow it to PRODUCE work for this intent. */
-  private supportsIntent(caps: HarnessCapabilities, intent: Intent): boolean {
-    switch (intent) {
-      case "create_from_scratch": return caps.create_from_scratch;
-      case "implement":
-      case "repair":
-      case "benchmark": return caps.implement;
-      case "synthesize": return caps.synthesize;
-      default: return true; // plan/audit/review/etc. are gated elsewhere
+      case "benchmark": return "benchmark";
+      default: return "implement"; // best_of_n / max_attempts / until_clean
     }
   }
 
@@ -231,7 +246,14 @@ export class Orchestrator {
   private resolveRunInput(input: RunInput): RunInput {
     const cfg = this.config(input.repoRoot);
     const configuredPool = cfg?.global.routing.eligible_harnesses;
-    const harnesses = input.harnesses ?? (configuredPool && configuredPool.length > 0 ? configuredPool : undefined);
+    const policy = cfg?.global.routing.default_policy;
+    const harnesses =
+      input.harnesses ??
+      (configuredPool && configuredPool.length > 0
+        ? configuredPool
+        : policy === "primary" && cfg?.global.routing.primary_harness
+          ? [cfg.global.routing.primary_harness]
+          : undefined);
     const primaryHarness = input.primaryHarness ?? cfg?.global.routing.primary_harness ?? undefined;
     if (primaryHarness && harnesses && harnesses.length > 0 && !harnesses.includes(primaryHarness)) {
       throw new Error(`primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`);
@@ -247,34 +269,34 @@ export class Orchestrator {
 
   private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<HarnessAdapter[]> {
     let ids = input.harnesses;
-    if (input.primaryHarness) {
-      ids = [input.primaryHarness, ...(ids ?? []).filter((id) => id !== input.primaryHarness)];
-    }
+    const statuses = await this.gateway.statusAll({ cwd: input.repoRoot });
+    const statusById = new Map(statuses.map((s) => [s.id, s]));
     if (!ids || ids.length === 0) {
-      ids = await this.gateway.availableReal();
+      ids = statuses
+        .filter((s) => s.manifest?.kind !== "fake" && s.enabledIntents.includes(intent))
+        .map((s) => s.id);
       if (ids.length === 0) {
         throw new HarnessUnavailableError(
           "no available harness for this mode; install codex/claude/cursor/opencode, or pass --harness",
         );
       }
     }
+    if (input.primaryHarness) {
+      ids = [input.primaryHarness, ...ids.filter((id) => id !== input.primaryHarness)];
+    }
     const pool: HarnessAdapter[] = [];
     const dropped: string[] = [];
     for (const id of ids) {
       const adapter = this.deps.registry.get(id);
       if (!adapter) { dropped.push(`${id} (not registered)`); continue; }
-      let caps: HarnessCapabilities | undefined;
-      try {
-        caps = (await adapter.discover()).capabilities;
-      } catch {
-        dropped.push(`${id} (unavailable)`);
-        continue;
-      }
+      const status = statusById.get(id);
+      const manifest = status?.manifest ?? null;
+      if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }
       const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
-      const manifest = await adapter.discover().catch(() => null);
       const readOnlySupported = !readOnlyIntent || manifest?.access_profiles_supported.includes("readonly");
-      if (this.supportsIntent(caps, intent) && readOnlySupported) pool.push(adapter);
-      else dropped.push(`${id} (${readOnlySupported ? `cannot ${intent}` : "cannot enforce readonly"})`);
+      const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
+      if (status.enabledIntents.includes(intent) && readOnlySupported) pool.push(adapter);
+      else dropped.push(`${id} (${readOnlySupported ? `cannot ${intent}${reason}` : "cannot enforce readonly"})`);
     }
     if (pool.length === 0) {
       throw new HarnessUnavailableError(
@@ -429,6 +451,7 @@ export class Orchestrator {
     contract: TaskContract,
     findings: ReviewFinding[],
     finalReviewClean: boolean,
+    reviewVerified = false,
   ): CandidateEvidence {
     const passed = gatesPassed(run.gates) && !run.errored;
     const acTotal = Math.max(1, contract.success_criteria.length);
@@ -451,6 +474,7 @@ export class Orchestrator {
       testsPassed: run.gates.filter((g) => g.status === "passed").length,
       testsTotal: run.gates.length,
       finalReviewClean,
+      reviewVerified,
       diffSize: run.diff.split("\n").length,
       costUsd: run.cost,
     };
@@ -471,8 +495,24 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const contextPack = await buildContextPack(input.repoRoot, contract).catch(() => null);
-    if (contextPack) store.writeYaml(join(paths.contextDir, "context_pack.yaml"), contextPack);
+    try {
+      const contextPack = await buildContextPack(input.repoRoot, contract);
+      store.writeYaml(join(paths.contextDir, "context_pack.yaml"), contextPack);
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "context", error: message });
+      return {
+        runId,
+        taskId,
+        mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: `context failed: ${message}`,
+        candidates: [],
+      };
+    }
 
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, {
@@ -481,8 +521,26 @@ export class Orchestrator {
       tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
     });
 
-    const adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode));
-    const reviewers = await this.resolveReviewers();
+    let adapters: HarnessAdapter[];
+    try {
+      adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode));
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "routing", error: message });
+      return {
+        runId,
+        taskId,
+        mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
+    }
+    const reviewers = await this.resolveReviewers(input.repoRoot);
     const reviewVerified = this.routeVerified(reviewers);
 
     const runs: CandidateRun[] = [];
@@ -493,7 +551,7 @@ export class Orchestrator {
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
       const label = `Candidate ${LABELS[i] ?? i + 1}`;
 
-      const lease = ledger.reserve({ taskId, attemptId, intent: "implement", harnessId: adapter.id });
+      const lease = ledger.reserve({ taskId, attemptId, intent: this.candidateIntent(mode), harnessId: adapter.id });
       if (!lease.granted) {
         log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId });
         budgetStopped = true;
@@ -512,7 +570,7 @@ export class Orchestrator {
         runs.push(run);
       } catch (err) {
         ledger.settle(lease.lease?.lease_id ?? "", 0);
-        log.emit("run.failed", { harness_id: adapter.id, attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
+        log.emit("run.failed", { harness_id: adapter.id, attempt_id: attemptId, error: safeErrorMessage(err) });
         runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true, costEstimated: false });
       } finally {
         if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
@@ -535,7 +593,28 @@ export class Orchestrator {
     }
 
     if (runs.length === 0) {
-      throw new HarnessUnavailableError("no candidates produced (budget exhausted before any run)");
+      const status: RunStatus = budgetStopped ? "exhausted" : "failed";
+      const why = budgetStopped ? "budget exhausted before any candidate run" : "no candidates produced";
+      store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
+        winner: null,
+        confidence: 0,
+        status,
+        why_winner: why,
+        apply_recommendation: "continue",
+        budget_summary: { spend_usd: ledger.spend(), estimated: false },
+      });
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: budget\n\n${why}\n`);
+      log.emit("run.failed", { status, phase: "budget", error: why });
+      return {
+        runId,
+        taskId,
+        mode,
+        status,
+        winner: null,
+        runDir: paths.root,
+        summary: why,
+        candidates: [],
+      };
     }
 
     log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
@@ -564,18 +643,19 @@ export class Orchestrator {
           runs.push(run);
         } catch (err) {
           ledger.settle(lease.lease?.lease_id ?? "", 0);
-          log.emit("run.failed", { attempt_id: "synth", error: err instanceof Error ? err.message : String(err) });
+          log.emit("run.failed", { attempt_id: "synth", error: safeErrorMessage(err) });
         } finally {
           if (envelope) await wsm.dispose(envelope);
         }
       }
     }
 
+    const actualReviewVerified = evidences.length > 0 && evidences.every((e) => e.reviewVerified);
     const result = arbitrate(evidences, {
       spendUsd: ledger.spend(),
       estimatedSpend: runs.some((r) => r.costEstimated),
     });
-    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), { ...result.decision, review_verified: reviewVerified });
+    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), { ...result.decision, review_verified: actualReviewVerified });
     store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     log.emit("arbitration.completed", { winner: result.decision.winner, status: result.decision.status });
@@ -583,15 +663,16 @@ export class Orchestrator {
     const winnerRun = runs.find((r) => r.attemptId === result.decision.winner) ?? runs[0];
     if (winnerRun) {
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
+      const patchSha256 = sha256(winnerRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: mode === "create" ? "new_repo" : "patch",
         source_task_id: taskId,
         producer_attempt_id: winnerRun.attemptId,
-        meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode, review_verified: reviewVerified, budget_stopped: budgetStopped },
+        meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode, review_verified: actualReviewVerified, budget_stopped: budgetStopped, patch_sha256: patchSha256 },
       });
-      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, result.decision, evidences, synth.reason, reviewVerified));
+      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, result.decision, evidences, synth.reason, actualReviewVerified));
     }
 
     log.emit("work_product.emitted", { winner: result.decision.winner });
@@ -611,7 +692,7 @@ export class Orchestrator {
         status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
       })),
       decisionPath,
-      reviewVerified,
+      reviewVerified: actualReviewVerified,
     };
   }
 
@@ -645,7 +726,7 @@ export class Orchestrator {
         route_proofs: result.routeProofs,
       });
       for (const f of revalidated) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
-      evidences.push(this.toEvidence(run, contract, revalidated, finalReviewClean));
+      evidences.push(this.toEvidence(run, contract, revalidated, finalReviewClean, reviewVerified && result.crossFamilyVerified));
     }
     return evidences;
   }
@@ -666,11 +747,29 @@ export class Orchestrator {
 
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(per-attempt)\n" });
-    const reviewers = await this.resolveReviewers();
+    const reviewers = await this.resolveReviewers(input.repoRoot);
     const reviewVerified = this.routeVerified(reviewers);
 
     // One envelope carried forward across attempts so the harness can repair its own work.
-    const adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined }, this.candidateIntent(mode));
+    let adapterPool: HarnessAdapter[];
+    try {
+      adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined }, this.candidateIntent(mode));
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "routing", error: message });
+      return {
+        runId,
+        taskId,
+        mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
+    }
     let adapterIdx = 0;
     let adapter = adapterPool[0] as HarnessAdapter;
     let envelope: WorkspaceEnvelope | undefined;
@@ -680,6 +779,7 @@ export class Orchestrator {
     let exhausted = false;
     let lastFindings: ReviewFinding[] = [];
     let lastRun: CandidateRun | null = null;
+    let actualReviewVerified = false;
     let triedSinceProgress = new Set<string>();
     let lastSig = "";
     // until_clean has NO fixed attempt cap; it stops on convergence, budget hard tier,
@@ -719,7 +819,7 @@ export class Orchestrator {
         } catch (err) {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
           ledger.settle(lease.lease?.lease_id ?? "", 0);
-          log.emit("run.failed", { attempt_id: attemptId, error: err instanceof Error ? err.message : String(err) });
+          log.emit("run.failed", { attempt_id: attemptId, error: safeErrorMessage(err) });
           run = { attemptId, harnessId: adapter.id, label: `Attempt ${attempt}`, diff: "", gates: [], cost: 0, errored: true, costEstimated: false };
         }
         lastRun = run;
@@ -728,6 +828,7 @@ export class Orchestrator {
           reviewers.length > 0
             ? await reviewCandidate({ candidateLabel: `Attempt ${attempt}`, diff: run.diff, evidenceDir: reviewDir, cwd: input.repoRoot, reviewers })
             : { findings: [], routeProofs: [], crossFamilyVerified: false, distinctProviders: [] };
+        actualReviewVerified = reviewVerified && reviewResult.crossFamilyVerified;
         const revalidated = await revalidateFindings(reviewResult.findings);
         lastFindings = revalidated;
         const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) && !run.errored : reviewResult.crossFamilyVerified && !revalidated.some((f) => isBlocking(f));
@@ -788,17 +889,18 @@ export class Orchestrator {
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
     if (lastRun) {
       assertNoSecretLikeTokens("final patch diff", lastRun.diff);
+      const patchSha256 = sha256(lastRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), lastRun.diff);
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: "patch",
         source_task_id: taskId,
         producer_attempt_id: lastRun.attemptId,
-        meta: { harness_id: lastRun.harnessId, mode, attempts: attempt, status, review_verified: reviewVerified },
+        meta: { harness_id: lastRun.harnessId, mode, attempts: attempt, status, review_verified: actualReviewVerified, patch_sha256: patchSha256 },
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${reviewVerified}\n`,
+        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n`,
       );
     }
 
@@ -813,7 +915,7 @@ export class Orchestrator {
       runDir: paths.root,
       summary: converged ? `converged in ${attempt} attempt(s)` : `${status} after ${attempt} attempt(s)`,
       candidates: lastRun ? [{ attemptId: lastRun.attemptId, harnessId: lastRun.harnessId, status }] : [],
-      reviewVerified,
+      reviewVerified: actualReviewVerified,
     };
   }
 
@@ -827,7 +929,25 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    const adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
+    let adapters: HarnessAdapter[];
+    try {
+      adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "routing", error: message });
+      return {
+        runId,
+        taskId,
+        mode: "plan",
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
+    }
     const plans: { id: string; text: string }[] = [];
     for (const adapter of adapters) {
       if (input.signal?.aborted) break;
@@ -872,7 +992,7 @@ export class Orchestrator {
       );
     }
 
-    const reviewers = await this.resolveReviewers();
+    const reviewers = await this.resolveReviewers(input.repoRoot);
     let ambiguities: ReviewFinding[] = [];
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
@@ -953,7 +1073,25 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const adapter = (await this.resolveCandidateAdapters({ ...input, prompt, n: 1 }, opts.intent))[0] as HarnessAdapter;
+    let adapter: HarnessAdapter;
+    try {
+      adapter = (await this.resolveCandidateAdapters({ ...input, prompt, n: 1 }, opts.intent))[0] as HarnessAdapter;
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "routing", error: message });
+      return {
+        runId,
+        taskId,
+        mode: opts.mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
+    }
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent: opts.intent,
@@ -970,12 +1108,15 @@ export class Orchestrator {
       if (input.signal.aborted) onAbort();
       else input.signal.addEventListener("abort", onAbort, { once: true });
     }
+    let harnessError: string | null = null;
     try {
       for await (const ev of adapter.run(spec)) {
         if (input.signal?.aborted) break;
         safeInvoke(input.onHarnessEvent, ev);
         if (ev.type === "message" && ev.text) parts.push(ev.text);
       }
+    } catch (err) {
+      harnessError = safeErrorMessage(err);
     } finally {
       input.signal?.removeEventListener("abort", onAbort);
     }
@@ -983,6 +1124,21 @@ export class Orchestrator {
       return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
         { attemptId: "a01", harnessId: adapter.id, status: "cancelled" },
       ]);
+    }
+    if (harnessError) {
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${harnessError}\n`);
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harness: ${adapter.id}\n- Status: failed\n\n${harnessError}\n`);
+      log.emit("run.failed", { status: "failed", harness_id: adapter.id, error: harnessError });
+      return {
+        runId,
+        taskId,
+        mode: opts.mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: harnessError,
+        candidates: [{ attemptId: "a01", harnessId: adapter.id, status: "failed" }],
+      };
     }
     const report = parts.join("\n").trim() || "(no output)";
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${redactSecrets(report)}\n`);
@@ -1015,6 +1171,10 @@ function assertNoSecretLikeTokens(label: string, text: string): void {
   if (containsSecretLikeToken(text)) {
     throw new Error(`${label} contains secret-like token; refusing to persist artifact`);
   }
+}
+
+function safeErrorMessage(err: unknown): string {
+  return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
 function formatFindings(findings: ReviewFinding[]): string {

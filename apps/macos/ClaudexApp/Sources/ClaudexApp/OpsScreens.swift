@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import ClaudexKit
 
 // MARK: - Budget cockpit
 
@@ -88,6 +90,7 @@ struct HarnessesScreen: View {
 }
 
 private struct HarnessRow: View {
+    @Environment(AppModel.self) private var model
     let info: HarnessInfo
     var body: some View {
         Panel {
@@ -111,6 +114,20 @@ private struct HarnessRow: View {
                     Image(systemName: "key").imageScale(.small).foregroundStyle(.secondary)
                     Text(info.auth).font(.caption).foregroundStyle(.secondary)
                 }
+                if info.health != .ok {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Button { copy(nativeSetupCommand(for: info.family)) } label: {
+                            Label("Copy setup", systemImage: "doc.on.doc")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Copy the native install/login command for \(info.family.label).")
+                        Button { Task { await model.refreshHarnesses() } } label: {
+                            Label("Recheck", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Refresh install/auth/capability status after setup.")
+                    }
+                }
                 if !info.intents.isEmpty {
                     FlowLayout(spacing: Theme.Spacing.xs) {
                         ForEach(info.intents, id: \.self) { intent in
@@ -121,6 +138,22 @@ private struct HarnessRow: View {
                     }
                 }
             }
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func nativeSetupCommand(for family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "codex login && claudex doctor --harness codex"
+        case .claude: return "claude /login && claudex doctor --harness claude"
+        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
+        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
+        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
+        case .fake: return "claudex doctor --all"
         }
     }
 }
@@ -184,9 +217,19 @@ struct BenchmarksScreen: View {
 
 struct SettingsScreen: View {
     @Environment(AppModel.self) private var model
+    @State private var projectRootDraft = ""
+    @State private var defaultPortfolio = "subscription-first"
+    @State private var routingPolicy = "auto"
+    @State private var primaryHarness = "__none"
+    @State private var defaultModel = ""
+    @State private var envInheritance = "mirror_native"
+    @State private var eligibleHarnesses: Set<HarnessFamily> = []
+    @State private var maxUsdPerRun = ""
+    @State private var maxUsdPerDay = ""
     @State private var openAIKey = ""
     @State private var anthropicKey = ""
     @State private var secretStatus: String?
+    @State private var copiedCommand: String?
 
     var body: some View {
         @Bindable var model = model
@@ -203,7 +246,10 @@ struct SettingsScreen: View {
                     }
                     .toggleStyle(.switch).tint(Theme.accent)
                     KeyValueRow(key: "Engine status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.succeeded) : .secondary)
-                    Button { Task { await model.connect() } } label: { Label("Reconnect", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+                    HStack {
+                        Button { Task { await model.connect() } } label: { Label("Reconnect", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+                        Button { Task { await refreshAll() } } label: { Label("Refresh metadata", systemImage: "arrow.triangle.2.circlepath") }.buttonStyle(.bordered)
+                    }
                 }
                 settingsGroup("Appearance", "paintpalette") {
                     Picker("Theme", selection: $model.appearance) {
@@ -213,59 +259,139 @@ struct SettingsScreen: View {
                     Text("Liquid Glass stays on navigation/chrome; dense content uses opaque surfaces for contrast.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                settingsGroup("Projects", "folder") {
+                settingsGroup("Current Project", "folder") {
+                    Text("Runs are sent to this repo root. Ask reads context from it only when the selected harness supports read-only explain.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: Theme.Spacing.sm) {
+                        TextField("Project root", text: $projectRootDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                            .help("Stored in macOS app preferences. Engine config remains in ~/.claudex/config.yaml and .claudex/config.yaml.")
+                        Button { chooseProjectRoot() } label: { Label("Choose", systemImage: "folder") }
+                            .buttonStyle(.bordered)
+                        Button {
+                            model.projectRoot = projectRootDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        } label: { Label("Use", systemImage: "checkmark") }
+                            .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    }
+                    KeyValueRow(key: "Effective project", value: model.projectRoot.isEmpty ? "Daemon working directory" : model.projectRoot, mono: true)
                     KeyValueRow(key: "Project config", value: ".claudex/config.yaml", mono: true)
-                    KeyValueRow(key: "Public docs", value: "README.md, docs/ARCHITECTURE.md, docs/SPEC.md", mono: true)
-                    KeyValueRow(key: "Local operator notes", value: "AGENTS.md is local-only")
                 }
                 settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
-                    KeyValueRow(key: "Default mode", value: "Ask")
-                    KeyValueRow(key: "Agent mode", value: "Single primary-biased direct edit route")
-                    KeyValueRow(key: "Default portfolio", value: "subscription-first")
-                    KeyValueRow(key: "Eligible pool", value: "Selected harness chips")
-                    KeyValueRow(key: "Primary", value: "Bias, not a hardcoded role")
+                    Picker("Default portfolio", selection: $defaultPortfolio) {
+                        Text("Subscription-first").tag("subscription-first")
+                        Text("Balanced").tag("balanced")
+                        Text("Cheapest").tag("cheapest")
+                        Text("Strongest").tag("strongest")
+                        Text("API overflow").tag("api-overflow")
+                        Text("Benchmark").tag("benchmark")
+                    }
+                    .help("Portfolio is a routing/budget policy, not a mode.")
+                    Picker("Routing policy", selection: $routingPolicy) {
+                        Text("Auto").tag("auto")
+                        Text("Primary").tag("primary")
+                        Text("Portfolio").tag("portfolio")
+                    }
+                    .help("Auto lets the route selector choose from the eligible pool. Primary biases a single harness.")
+                    Picker("Primary harness", selection: $primaryHarness) {
+                        Text("None").tag("__none")
+                        ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                            Label(family.label, systemImage: family.glyph).tag(family.rawValue)
+                        }
+                    }
+                    .help("Primary is a bias, not a hardcoded semantic role.")
+                    TextField("Default model hint", text: $defaultModel)
+                        .textFieldStyle(.roundedBorder)
+                        .help("Optional model hint forwarded to compatible harnesses. Leave empty for each harness default.")
+                    Picker("Env inheritance", selection: $envInheritance) {
+                        Text("Mirror native").tag("mirror_native")
+                        Text("Clean").tag("clean")
+                        Text("Profile only").tag("profile_only")
+                    }
+                    .help("mirror_native reuses native CLI auth/session context by default.")
+                    FlowLayout(spacing: Theme.Spacing.sm) {
+                        ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                            FilterChip(label: family.label, systemImage: family.glyph,
+                                       isActive: eligibleHarnesses.contains(family), tint: family.color) {
+                                if eligibleHarnesses.contains(family) { eligibleHarnesses.remove(family) }
+                                else { eligibleHarnesses.insert(family) }
+                            }
+                            .help("Default eligible pool. Empty means auto-discover available harnesses.")
+                        }
+                    }
+                    HStack {
+                        Button { Task { await saveEngineDefaults() } } label: { Label("Save engine defaults", systemImage: "square.and.arrow.down") }
+                            .buttonStyle(.borderedProminent).tint(Theme.accent)
+                        if let status = model.settingsStatus {
+                            Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
                 }
                 settingsGroup("Harness Doctor & Auth", "cpu") {
                     Text("Claudex mirrors native harness auth first, with API-key fallback through stored secret refs.")
                         .font(.caption).foregroundStyle(.secondary)
                     KeyValueRow(key: "Control API", value: model.endpoint.isEmpty ? "—" : "http://\(model.endpoint)", mono: true)
-                    KeyValueRow(key: "Doctor", value: "Operations -> Harness Doctor")
+                    ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                        nativeAuthRow(family)
+                    }
+                    if let copiedCommand {
+                        Text("Copied: \(copiedCommand)").font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                 }
                 settingsGroup("Secrets", "key") {
                     Text("Secret values live in Keychain or a 0600 store. Run params and artifacts store refs/metadata only.")
                         .font(.caption).foregroundStyle(.secondary)
+                    KeyValueRow(key: "Secret backend", value: model.secretBackend)
+                    if !model.storedSecrets.isEmpty {
+                        FlowLayout(spacing: Theme.Spacing.xs) {
+                            ForEach(model.storedSecrets) { secret in
+                                Text("\(secret.name) · \(secret.backend)")
+                                    .font(.caption2)
+                                    .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 2)
+                                    .background(Theme.surfaceRaisedHi, in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                     secretEntry(title: "OpenAI API key", name: "openai", text: $openAIKey)
                     secretEntry(title: "Anthropic API key", name: "anthropic", text: $anthropicKey)
                     if let secretStatus {
                         Text(secretStatus).font(.caption2).foregroundStyle(.secondary)
                     }
-                    KeyValueRow(key: "Loopback bearer", value: "Stored in the local daemon profile")
-                    KeyValueRow(key: "Env inheritance", value: "mirror-native")
                 }
                 settingsGroup("Budget", "dollarsign.circle") {
-                    KeyValueRow(key: "Per-run cap", value: "Composer slider / CLI --max-usd")
+                    HStack(spacing: Theme.Spacing.md) {
+                        TextField("Max USD per run", text: $maxUsdPerRun)
+                            .textFieldStyle(.roundedBorder)
+                            .help("Default cap for runs. Composer per-run cap can still override it.")
+                        TextField("Max USD per day", text: $maxUsdPerDay)
+                            .textFieldStyle(.roundedBorder)
+                            .help("User-level daily cap. Empty means no configured cap.")
+                    }
+                    Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "square.and.arrow.down") }
+                        .buttonStyle(.bordered)
                     KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
-                }
-                settingsGroup("Review", "person.2.badge.gearshape") {
-                    KeyValueRow(key: "Queue", value: "Table-first Review Queue")
-                    KeyValueRow(key: "Apply decisions", value: "Server apply/check endpoints only")
-                }
-                settingsGroup("Delivery", "shippingbox") {
-                    KeyValueRow(key: "Inspect", value: "GET /runs/:id + artifacts")
-                    KeyValueRow(key: "Apply", value: "Dry-run check before mutation")
                 }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudex for macOS")
-                    KeyValueRow(key: "Version", value: "v0.2.0")
+                    KeyValueRow(key: "Version", value: "v0.3.0 beta")
                     KeyValueRow(key: "Engine", value: "@claudex/control-api (loopback HTTP+SSE)")
+                    KeyValueRow(key: "Review protocol", value: "Table-first queue; apply/check server endpoints only")
+                    KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
+                    KeyValueRow(key: "Public architecture", value: "CLAUDEX_BIBLE.md + docs/ARCHITECTURE.md", mono: true)
                 }
             }
-            .padding(Theme.Spacing.xl)
+            .padding(.horizontal, Theme.Spacing.xl)
+            .padding(.top, Theme.Spacing.xxl)
+            .padding(.bottom, Theme.Spacing.xl)
             .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
         .background(Theme.surfaceBase)
+        .task { await refreshAll() }
+        .onAppear { syncFromModel() }
+        .onChange(of: model.settingsSnapshot) { _, _ in syncFromModel() }
     }
 
     private func settingsGroup<Content: View>(_ title: String, _ systemImage: String, @ViewBuilder content: () -> Content) -> some View {
@@ -306,5 +432,99 @@ struct SettingsScreen: View {
             .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help("Send this value to the local secret store.")
         }
+    }
+
+    private func nativeAuthRow(_ family: HarnessFamily) -> some View {
+        let info = model.harnessInfo(for: family)
+        let command = nativeLoginCommand(family)
+        return HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+            HarnessChip(family: family, selected: true, available: info?.health == .ok)
+            Text(info?.auth ?? "Harness Doctor has not loaded this harness.")
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer()
+            Button {
+                copy(command)
+            } label: {
+                Label("Copy setup", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.bordered)
+            .help("Copy the native setup command. Claudex does not broker SaaS OAuth; it reuses each CLI's native login.")
+        }
+    }
+
+    private func nativeLoginCommand(_ family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "codex login && claudex doctor --harness codex"
+        case .claude: return "claude /login && claudex doctor --harness claude"
+        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
+        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
+        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
+        case .fake: return "claudex doctor --all"
+        }
+    }
+
+    private func chooseProjectRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Project"
+        if panel.runModal() == .OK, let url = panel.url {
+            projectRootDraft = url.path
+            model.projectRoot = url.path
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedCommand = text
+    }
+
+    private func refreshAll() async {
+        await model.refreshSettings()
+        await model.refreshSecrets()
+        await model.refreshHarnesses()
+        syncFromModel()
+    }
+
+    private func syncFromModel() {
+        projectRootDraft = model.projectRoot
+        guard let s = model.settingsSnapshot else { return }
+        defaultPortfolio = s.defaultPortfolio
+        routingPolicy = s.routing.defaultPolicy
+        primaryHarness = s.routing.primaryHarness ?? "__none"
+        defaultModel = s.routing.defaultModel ?? ""
+        envInheritance = s.routing.envInheritance
+        eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
+        maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
+        maxUsdPerDay = s.budget.maxUsdPerDay.map { String(format: "%.2f", $0) } ?? ""
+    }
+
+    private func saveEngineDefaults() async {
+        let runCap = parseOptionalDouble(maxUsdPerRun)
+        let dayCap = parseOptionalDouble(maxUsdPerDay)
+        let clearRunCap = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let clearDayCap = maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let patch = SettingsUpdateRequest(
+            defaultPortfolio: defaultPortfolio,
+            routingPolicy: routingPolicy,
+            primaryHarness: primaryHarness,
+            defaultModel: defaultModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "__none" : defaultModel,
+            eligibleHarnesses: eligibleHarnesses.map(\.rawValue).sorted(),
+            envInheritance: envInheritance,
+            maxUsdPerRun: runCap,
+            maxUsdPerDay: dayCap,
+            clearMaxUsdPerRun: clearRunCap,
+            clearMaxUsdPerDay: clearDayCap
+        )
+        _ = await model.saveSettings(patch)
+    }
+
+    private func parseOptionalDouble(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        return Double(trimmed)
     }
 }

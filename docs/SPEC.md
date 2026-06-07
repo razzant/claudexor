@@ -1,6 +1,12 @@
-# Claudex v1.0 — Technical Specification (canonical)
+# Claudex v1.0 — Historical Technical Specification
 
-Status: living spec. Supersedes the original working draft; incorporates 2026 harness research, competitor-pitfall research, and the planning-quiz decisions ([DECISIONS.md](DECISIONS.md)).
+Status: historical broad spec. The active v0.3.0 beta scope and non-negotiable
+product invariants are [`PLAN_V0_3_0.md`](PLAN_V0_3_0.md) and
+[`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). This document remains useful for
+long-term design context, but it must not override current canonical mode ids,
+control-plane contracts, or UI/UX decisions.
+
+Supersedes the original working draft; incorporates 2026 harness research, competitor-pitfall research, and the planning-quiz decisions ([DECISIONS.md](DECISIONS.md)).
 
 Primary runtime: TypeScript / Node (ESM). Ships a reproducible SWE-bench Verified runner. Working name: Claudex (package/binary name abstract pending naming gate).
 

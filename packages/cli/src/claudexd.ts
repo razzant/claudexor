@@ -109,19 +109,46 @@ function controlServices() {
           ...cfg.routing,
           primary_harness:
             typeof p["primaryHarness"] === "string"
-              ? p["primaryHarness"]
+              ? p["primaryHarness"] === "none" || p["primaryHarness"] === "__none"
+                ? null
+                : p["primaryHarness"]
               : p["primaryHarness"] === null
                 ? null
                 : cfg.routing.primary_harness,
           default_model:
             typeof p["defaultModel"] === "string"
-              ? p["defaultModel"]
+              ? p["defaultModel"] === "none" || p["defaultModel"] === "__none"
+                ? null
+                : p["defaultModel"]
               : p["defaultModel"] === null
                 ? null
                 : cfg.routing.default_model,
+          default_policy:
+            typeof p["routingPolicy"] === "string"
+              ? (p["routingPolicy"] as never)
+              : cfg.routing.default_policy,
+          env_inheritance:
+            typeof p["envInheritance"] === "string"
+              ? (p["envInheritance"] as never)
+              : cfg.routing.env_inheritance,
           eligible_harnesses: Array.isArray(p["eligibleHarnesses"])
             ? p["eligibleHarnesses"].filter((x): x is string => typeof x === "string")
             : cfg.routing.eligible_harnesses,
+        },
+        budget: {
+          ...cfg.budget,
+          max_usd_per_run:
+            typeof p["maxUsdPerRun"] === "number"
+              ? p["maxUsdPerRun"]
+              : p["maxUsdPerRun"] === null || p["clearMaxUsdPerRun"] === true
+                ? null
+                : cfg.budget.max_usd_per_run,
+          max_usd_per_day:
+            typeof p["maxUsdPerDay"] === "number"
+              ? p["maxUsdPerDay"]
+              : p["maxUsdPerDay"] === null || p["clearMaxUsdPerDay"] === true
+                ? null
+                : cfg.budget.max_usd_per_day,
         },
       }));
     },

@@ -1,12 +1,15 @@
 import SwiftUI
+import AppKit
 
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @Binding var completed: Bool
     @State private var step = 0
+    @State private var projectRootDraft = ""
     @State private var openAIKey = ""
     @State private var anthropicKey = ""
     @State private var status = ""
+    @State private var copiedCommand: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -15,7 +18,8 @@ struct OnboardingView: View {
             Group {
                 switch step {
                 case 0: nativeAuth
-                case 1: apiKeys
+                case 1: projectRoot
+                case 2: apiKeys
                 default: defaults
                 }
             }
@@ -26,6 +30,11 @@ struct OnboardingView: View {
         }
         .frame(width: 620, height: 520)
         .background(Theme.surfaceBase)
+        .task {
+            projectRootDraft = model.projectRoot
+            await model.refreshHarnesses()
+            await model.refreshSecrets()
+        }
     }
 
     private var header: some View {
@@ -43,15 +52,51 @@ struct OnboardingView: View {
 
     private var nativeAuth: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Use native logins", systemImage: "person.crop.circle.badge.checkmark")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Theme.accent)
-            Text("Codex, Claude Code, Cursor, and OpenCode keep their own subscription/login state. Claudex mirrors those sessions by default and only uses stored keys as fallback.")
+            HStack {
+                Label("Native login setup", systemImage: "person.crop.circle.badge.checkmark")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                Spacer()
+                Button { Task { await model.refreshHarnesses() } } label: {
+                    Label("Recheck", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .help("Refresh harness install/auth status after running a native setup command.")
+            }
+            Text("Claudex does not broker SaaS OAuth. It reuses each CLI's native login/subscription session first, then API-key refs only as fallback.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                KeyValueRow(key: "Default mode", value: "Ask")
-                KeyValueRow(key: "Default portfolio", value: "subscription-first")
-                KeyValueRow(key: "Env inheritance", value: "mirror-native")
+                ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                    nativeAuthRow(family)
+                }
+                if let copiedCommand {
+                    Text("Copied: \(copiedCommand)")
+                        .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            .padding(Theme.Spacing.lg)
+            .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).stroke(Theme.separator, lineWidth: 1))
+        }
+    }
+
+    private var projectRoot: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Label("Current project", systemImage: "folder")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+            Text("Pick the repo Claudex should read and mutate. Ask starts read-only, but it still needs an explicit project context.")
+                .font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                HStack(spacing: Theme.Spacing.sm) {
+                    TextField("Project root", text: $projectRootDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    Button { chooseProjectRoot() } label: { Label("Choose", systemImage: "folder") }
+                        .buttonStyle(.bordered)
+                }
+                KeyValueRow(key: "Config", value: ".claudex/config.yaml", mono: true)
+                KeyValueRow(key: "Docs", value: "CLAUDEX_BIBLE.md, docs/ARCHITECTURE.md", mono: true)
             }
             .padding(Theme.Spacing.lg)
             .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
@@ -110,7 +155,7 @@ struct OnboardingView: View {
             Button {
                 Task { await advance() }
             } label: {
-                Label(step == 2 ? "Finish" : "Continue", systemImage: step == 2 ? "checkmark" : "chevron.right")
+                Label(step == 3 ? "Finish" : "Continue", systemImage: step == 3 ? "checkmark" : "chevron.right")
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.accent)
@@ -120,12 +165,62 @@ struct OnboardingView: View {
 
     private func advance() async {
         if step == 1 {
+            model.projectRoot = projectRootDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if step == 2 {
             var stored: [String] = []
             if !openAIKey.isEmpty, await model.storeSecret(name: "openai", value: openAIKey) { stored.append("OpenAI") }
             if !anthropicKey.isEmpty, await model.storeSecret(name: "anthropic", value: anthropicKey) { stored.append("Anthropic") }
             if !stored.isEmpty { status = "Stored: \(stored.joined(separator: ", "))" }
         }
-        if step >= 2 { completed = true }
+        if step >= 3 { completed = true }
         else { step += 1 }
+    }
+
+    private func nativeAuthRow(_ family: HarnessFamily) -> some View {
+        let info = model.harnessInfo(for: family)
+        let available = info?.health == .ok
+        return HStack(spacing: Theme.Spacing.sm) {
+            HarnessChip(family: family, selected: true, available: available)
+            Text(info?.auth ?? "Not checked yet.")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            Spacer()
+            Button {
+                copy(nativeLoginCommand(family))
+            } label: {
+                Label("Copy setup", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.bordered)
+            .help("Copy the native setup command. Run it in Terminal, then Recheck.")
+        }
+    }
+
+    private func nativeLoginCommand(_ family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "codex login && claudex doctor --harness codex"
+        case .claude: return "claude /login && claudex doctor --harness claude"
+        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
+        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
+        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
+        case .fake: return "claudex doctor --all"
+        }
+    }
+
+    private func chooseProjectRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Project"
+        if panel.runModal() == .OK, let url = panel.url {
+            projectRootDraft = url.path
+            model.projectRoot = url.path
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedCommand = text
     }
 }

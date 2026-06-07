@@ -1,7 +1,13 @@
 # Claudex v1.0 — Build Plan
 
+> Current execution note: the active v0.3.0 beta UI/UX + control-plane scope is
+> [`PLAN_V0_3_0.md`](PLAN_V0_3_0.md). Product invariants live in
+> [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). This file remains a historical
+> broad plan and must not override the current canonical mode ids or v0.3
+> decisions.
+
 > Historical scope note: this plan originally described an eight-mode v1.0
-> taxonomy. Current v0.2.0 canonical mode ids are `ask`, `agent`, `best_of_n`,
+> taxonomy. Current v0.3.0 canonical mode ids are `ask`, `agent`, `best_of_n`,
 > `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, and
 > `benchmark`. Old ids from this historical plan are not compatibility aliases.
 
@@ -24,7 +30,7 @@ Harness-agnostic, local-first, evidence-driven development control plane. Orches
 - **Agent delivery default**: native direct-edit parity; envelope/artifact modes for best_of_n/benchmark.
 - **Review**: reuse + generalize the `.adversarial-review/` evidence-packet substrate for ALL review; **always cross-family ≥2 distinct providers**; mandatory LLM-first FindingRevalidator (no evidence → cannot BLOCK); full convergence predicate; RouteProof always recorded + enforced in benchmark/high-risk; port Ouroboros Scope Atlas + omission accounting (no silent truncation); readiness-debt anti-thrash + round cap.
 - **Access default**: `workspace_write`; thin policy layer leaning on native harness permissions + secret redaction; typed+LLM risk classifier; full apply UX; versioned repo config can NEVER self-grant sensitive powers.
-- **Modes**: historical v1.0 set, now updated in v0.2.0 to 9 canonical modes. Plan mode: multi-harness planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack. Create: first-class `new_repo`. WorkProduct: all kinds. CLI: full surface, every command `--json`.
+- **Modes**: historical v1.0 set, now updated in v0.3.0 to 9 canonical modes. Plan mode: multi-harness planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack. Create: first-class `new_repo`. WorkProduct: all kinds. CLI: full surface, every command `--json`.
 - **Coding standards**: strict TS + typed errors (no swallow); looser LOC limits.
 
 ## 2. Defaulted decisions (skipped Batch 6 + Batch 7)
@@ -81,4 +87,4 @@ flowchart TD
 
 **Monorepo packages** (`packages/`): `schema`, `core`, `cli`, `daemon`, `config`, `artifact-store`, `event-log`, `policy`, `workspace`, `budget`, `gateway`, `adapter-protocol`, `context`, `review`, `arbitration`, `synthesis`, `benchmark`, `harness-codex`, `harness-claude`, `harness-cursor`, `harness-opencode`, `harness-raw-api`, `harness-fake`, `mcp-server`, `acp-server`, `plugin-*`.
 
-> The numbered build phases (Phase 0 – Phase 12) and acceptance criteria live in the project plan and in [docs/SPEC.md](SPEC.md). This document is committed as a snapshot of the approved plan; the canonical, evolving spec is `docs/SPEC.md`.
+> The numbered build phases (Phase 0 – Phase 12) and acceptance criteria live in the historical project plan and [docs/SPEC.md](SPEC.md). Active canonical scope for the beta is `CLAUDEX_BIBLE.md`, `docs/PLAN_V0_3_0.md`, and `docs/ARCHITECTURE.md`; `docs/SPEC.md` remains long-term context only.

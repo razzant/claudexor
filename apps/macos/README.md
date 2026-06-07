@@ -14,8 +14,9 @@ see it — the CLI-first toolchain stays unaffected.
   - `JSONValue.swift` — dynamic Codable JSON for loosely-typed event payloads.
   - `Models.swift` — minimal client DTOs (SSE `BusEnvelope`, `StartRunRequest`, …).
   - `GatewayClient.swift` — async URLSession client: `startRun`, `cancel`, `listRuns`,
-    `runDetail`, `listHarnesses`, `applyCheck`, `setSecret`, `events()` (SSE with
-    `Last-Event-ID` resume), `health`.
+    `runDetail`, artifact text fetch, `listHarnesses`, `settings`, `updateSettings`,
+    `listSecrets`, `applyCheck`, `setSecret`, `events()` (SSE with `Last-Event-ID`
+    resume), `health`.
 - `ClaudexApp/` — the SwiftUI app (added in the Xcode-buildable phase; see below).
 
 ## Toolchain
@@ -61,8 +62,11 @@ We ship **outside** the App Store with Developer ID + hardened runtime + notariz
 arbitrary repos, which the sandbox can't express (see `docs/DECISIONS.md`).
 
 ```bash
-# Unsigned local bundle (Gatekeeper-blocked on other machines):
-apps/macos/scripts/build-app.sh            # → apps/macos/dist/Claudex.app
+# Unsigned local bundle + ZIP (Gatekeeper-blocked on other machines):
+apps/macos/scripts/build-app.sh            # → Claudex.app + Claudex-<v>-unsigned.zip
+
+# Unsigned local bundle + ZIP + DMG:
+MAKE_DMG=1 apps/macos/scripts/build-app.sh # → also Claudex-<v>-unsigned.dmg
 
 # Signed + notarized + DMG (needs YOUR Apple Developer ID — cannot be done for you):
 xcrun notarytool store-credentials "claudex-notary" \
@@ -79,6 +83,7 @@ whenever it is running.
 
 ## Design
 
+The product constitution is [`../../CLAUDEX_BIBLE.md`](../../CLAUDEX_BIBLE.md).
 The visual + interaction system is the SSOT in [`../../docs/DESIGN_SYSTEM.md`](../../docs/DESIGN_SYSTEM.md):
 graphite-dark default, glass on the navigation layer only, per-harness candidate
 colors, SF Pro/SF Mono, compact density, WCAG-AA contrast.
@@ -87,7 +92,7 @@ colors, SF Pro/SF Mono, compact density, WCAG-AA contrast.
 
 `ClaudexKit` builds + tests green (Swift 6.3.1 via Swiftly, swift-testing). `ClaudexApp`
 is a **macOS prototype** of a Liquid Glass mission-control: composer-led Home (default Ask),
-Tasks inbox, Task detail (Plan/Activity/Candidates/Diff/Review), table-first Review queue,
+Tasks inbox, Task detail (Answer/Plan/Activity/Candidates/Diff/Review/Diagnostics), table-first Review queue,
 Budget, Harnesses, Benchmarks, native Settings, and onboarding — adaptive `NavigationSplitView` (sidebar/content/inspector)
 that reflows cleanly from the 3-pane minimum upward, with a disciplined palette (steel-blue
 brand + graphite; **official harness logos + colors** only on harness UI; semantic status).
@@ -95,13 +100,15 @@ brand + graphite; **official harness logos + colors** only on harness UI; semant
 Live bridge (real, partial):
 
 - Connects to the loopback control-api: health, run list/detail/artifacts, harness doctor,
+  settings, secrets metadata,
   **start** (with composer policy — eligible pool, Primary, portfolio, model hint, budget cap,
   access profile, gate commands — forwarded through `daemon.enqueue` to the orchestrator),
-  **cancel**, secret setting for onboarding, and the **SSE stream** (parsed from the daemon's canonical
+  **cancel**, secret setting for onboarding/settings, and the **SSE stream** (parsed from the daemon's canonical
   `events.jsonl` types: `run.*`, `harness.*`, `gate.*`, `review.*`, `budget.*` → live
   status, phase, activity, spend, and findings).
 - **Sample data is OFF by default** behind Settings → "Show sample data". Surfaces the
   engine doesn't expose yet (budget live ledger, benchmarks, the GUI spec interview)
   show honest empty states when sample data is off; they are previews, not live.
 
-`scripts/build-app.sh` produces a `.app`/DMG; notarization needs a Developer ID.
+`scripts/build-app.sh` produces an unsigned `.app` + ZIP by default; `MAKE_DMG=1`
+also creates an unsigned or signed DMG depending on signing credentials.

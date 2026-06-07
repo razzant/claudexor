@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `audit`, and `benchmark`. Any harness that declares the capability can be
 assigned the intent.
 
-Current status: **v0.2.0 engineering preview**. This is a breaking preview:
+Current status: **v0.3.0 beta**. This is a breaking preview:
 old mode ids are intentionally not supported.
 
 ## Modes
@@ -61,6 +61,10 @@ Routing is `Pool + Primary + Portfolio`:
 - `--portfolio <id>` records the routing/budget portfolio, default
   `subscription-first`.
 
+Harness chips in the macOS app are not decorative toggles: unavailable,
+unauthenticated, degraded, or intent-incompatible harnesses are shown with the
+reason and are gated out of launch.
+
 Claudex mirrors native harness auth first. API keys are a fallback and live in
 the OS Keychain where available, otherwise a `0600` file. Run params, daemon
 `jobs.json`, artifacts, summaries, patches, and PR text store only refs/metadata,
@@ -68,7 +72,7 @@ not raw secret values.
 
 ```bash
 claudex auth status
-claudex auth login codex
+claudex auth login codex   # prints the native setup command/hint; no SaaS broker
 claudex secrets set openai --from-env OPENAI_API_KEY
 claudex secrets list
 claudex settings show
@@ -84,7 +88,7 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `GET /harnesses`, `GET|POST /settings`, `GET|POST|DELETE /secrets`
+- `GET /harnesses`, `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
 Start it:
@@ -113,9 +117,13 @@ final/summary.md
 final/answer.md?
 final/report.md?
 final/plan.md?
+context/context_error.md?
 ```
 
 Files are the source of truth. Terminal output and UI rows are projections.
+The macOS run detail screen surfaces `Answer` and `Diagnostics` directly from
+these artifacts, so failed runs are inspectable instead of disappearing into
+logs.
 
 ## Architecture
 
@@ -130,8 +138,8 @@ Important boundaries:
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/SPEC.md`](docs/SPEC.md),
-and [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md).
+See [`CLAUDEX_BIBLE.md`](CLAUDEX_BIBLE.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
+[`docs/SPEC.md`](docs/SPEC.md), and [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md).
 
 ## Development
 
@@ -142,10 +150,10 @@ pnpm typecheck
 pnpm test
 pnpm schema:gen
 git diff --exit-code packages/schema/generated
-pnpm build
 ```
 
-`pnpm release:verify` runs the same locked chain before package publishing.
+`pnpm release:verify` runs Node/schema checks, Swift tests/build, and unsigned
+app ZIP/DMG packaging before tagging or publishing artifacts.
 
 There is no root `pnpm lint` script.
 

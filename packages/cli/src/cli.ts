@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudex/orchestrator";
@@ -13,14 +13,22 @@ import {
 } from "@claudex/benchmark";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { type DeliverMode, checkPatch, deliver } from "@claudex/delivery";
-import { ensureDir, hashJson, readTextSafe, writeJson } from "@claudex/util";
+import { containsSecretLikeToken, ensureDir, hashJson, readTextSafe, sha256, writeJson } from "@claudex/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
 import { AcpServer } from "@claudex/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudex/config";
 import { SecretStore } from "@claudex/secrets";
-import { ModeKind as ModeKindSchema, Portfolio, type ModeKind, SpecPack as SpecPackSchema } from "@claudex/schema";
+import {
+  DecisionRecord,
+  ModeKind as ModeKindSchema,
+  Portfolio,
+  type ModeKind,
+  SpecPack as SpecPackSchema,
+  TaskContract,
+  WorkProduct,
+} from "@claudex/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
 import { type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
@@ -50,7 +58,7 @@ function orchestratorRunner() {
   };
 }
 
-const HELP = `claudex — harness-agnostic AI coding control plane (v0.2.0)
+const HELP = `claudex — harness-agnostic AI coding control plane (v0.3.0)
 
 Usage:
   claudex init                          Scaffold repo-local config (.claudex/config.yaml)
@@ -386,9 +394,11 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`default_portfolio: ${cfg.global.default_portfolio}`);
       print(`routing.default_policy: ${cfg.global.routing.default_policy}`);
       print(`routing.primary_harness: ${cfg.global.routing.primary_harness ?? "(none)"}`);
+      print(`routing.eligible_harnesses: ${cfg.global.routing.eligible_harnesses.length ? cfg.global.routing.eligible_harnesses.join(", ") : "(auto)"}`);
       print(`routing.default_model: ${cfg.global.routing.default_model ?? "(none)"}`);
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
+      print(`budget.max_usd_per_day: ${cfg.global.budget.max_usd_per_day ?? "(none)"}`);
     }
     return 0;
   }
@@ -396,7 +406,7 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
     const key = args._[2];
     const value = args._[3];
     if (!key || value === undefined) {
-      print("usage: claudex settings set default_portfolio|primary_harness|default_model|env_inheritance|routing_policy <value>");
+      print("usage: claudex settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|budget_max_usd_per_day <value>");
       return 2;
     }
     try {
@@ -408,6 +418,10 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
         if (key === "primary_harness") {
           return { ...cfg, routing: { ...cfg.routing, primary_harness: value === "none" ? null : value } };
         }
+        if (key === "eligible_harnesses") {
+          const list = value === "none" ? [] : value.split(",").map((s) => s.trim()).filter(Boolean);
+          return { ...cfg, routing: { ...cfg.routing, eligible_harnesses: list } };
+        }
         if (key === "default_model") {
           return { ...cfg, routing: { ...cfg.routing, default_model: value === "none" ? null : value } };
         }
@@ -418,6 +432,17 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
         if (key === "routing_policy") {
           if (!["auto", "primary", "portfolio"].includes(value)) throw new Error("routing_policy must be auto|primary|portfolio");
           return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
+        }
+        if (key === "budget_max_usd_per_run" || key === "budget_max_usd_per_day") {
+          const parsed = value === "none" ? null : Number.parseFloat(value);
+          if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) throw new Error(`${key} must be a non-negative number or none`);
+          return {
+            ...cfg,
+            budget: {
+              ...cfg.budget,
+              [key === "budget_max_usd_per_run" ? "max_usd_per_run" : "max_usd_per_day"]: parsed,
+            },
+          };
         }
         throw new Error(`unknown setting: ${key}`);
       });
@@ -493,6 +518,10 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       print("usage: claudex secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin");
       return 2;
     }
+    if (!isManagedSecretName(name)) {
+      print("secret name must be openai, anthropic, cursor, opencode, or raw");
+      return 2;
+    }
     const envVar = flagStr(args, "from-env");
     const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
     if (!value) {
@@ -510,6 +539,10 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       print("usage: claudex secrets delete <name>");
       return 2;
     }
+    if (!isManagedSecretName(name)) {
+      print("secret name must be openai, anthropic, cursor, opencode, or raw");
+      return 2;
+    }
     store.delete(name);
     if (json) printJson({ name, deleted: true });
     else print(`deleted ${name}`);
@@ -517,6 +550,12 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   }
   print("usage: claudex secrets list|set|delete");
   return 2;
+}
+
+const MANAGED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);
+
+function isManagedSecretName(name: string): boolean {
+  return MANAGED_SECRET_NAMES.has(name);
 }
 
 async function main(): Promise<number> {
@@ -677,7 +716,7 @@ async function main(): Promise<number> {
             const r = await orch.run({
               repoRoot: join(workdir, t.instance_id),
               prompt: t.problem_statement,
-              mode: "best_of_n",
+              mode: "benchmark",
               n: intFlag(args, "n") ?? 1,
               maxUsd: benchMaxUsd ?? null,
             });
@@ -726,9 +765,55 @@ async function main(): Promise<number> {
         return 2;
       }
       const store = new ArtifactStore(process.cwd());
-      const patch = readTextSafe(join(store.runPaths(runId).finalDir, "patch.diff"));
+      const paths = store.runPaths(runId);
+      const patch = readTextSafe(join(paths.finalDir, "patch.diff"));
       if (!patch || patch.trim().length === 0) {
         print(`no patch found for run ${runId}`);
+        return 1;
+      }
+      if (containsSecretLikeToken(patch)) {
+        print("patch contains secret-like token; refusing apply");
+        return 1;
+      }
+      const decision = DecisionRecord.safeParse(store.readYaml(join(paths.arbitrationDir, "decision.yaml")));
+      if (!decision.success) {
+        print("decision record is required before apply");
+        return 1;
+      }
+      if (decision.data.status !== "success") {
+        print(`decision status is ${decision.data.status}; refusing apply`);
+        return 1;
+      }
+      const workProduct = WorkProduct.safeParse(store.readYaml(join(paths.finalDir, "work_product.yaml")));
+      if (!workProduct.success) {
+        print("work product is required before apply");
+        return 1;
+      }
+      if (workProduct.data.kind !== "patch") {
+        print(`work product kind ${workProduct.data.kind} is not applyable as a patch`);
+        return 1;
+      }
+      const recordedPatchHash = workProduct.data.meta["patch_sha256"];
+      if (typeof recordedPatchHash !== "string" || recordedPatchHash.length === 0) {
+        print("work product patch hash is required before apply");
+        return 1;
+      }
+      if (recordedPatchHash !== sha256(patch)) {
+        print("patch artifact hash does not match the reviewed work product");
+        return 1;
+      }
+      const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
+      if (!contract.success) {
+        print("task contract is required before apply");
+        return 1;
+      }
+      try {
+        if (realpathSync(contract.data.repo.root) !== realpathSync(process.cwd())) {
+          print("current repo does not match the run's original project; refusing apply");
+          return 1;
+        }
+      } catch {
+        print("run original project cannot be verified; refusing apply");
         return 1;
       }
       if (flagBool(args, "dry-run")) {

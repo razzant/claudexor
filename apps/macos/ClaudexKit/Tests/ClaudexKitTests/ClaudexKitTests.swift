@@ -30,6 +30,17 @@ import Testing
         #expect(decoded["n"]?.doubleValue == 2)
     }
 
+    @Test func settingsUpdateCanClearBudgetCaps() throws {
+        let req = SettingsUpdateRequest(defaultPortfolio: "subscription-first", clearMaxUsdPerRun: true, clearMaxUsdPerDay: true)
+        let data = try JSONEncoder().encode(req)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(obj?["defaultPortfolio"] as? String == "subscription-first")
+        #expect(obj?["maxUsdPerRun"] == nil)
+        #expect(obj?["maxUsdPerDay"] == nil)
+        #expect(obj?["clearMaxUsdPerRun"] as? Bool == true)
+        #expect(obj?["clearMaxUsdPerDay"] as? Bool == true)
+    }
+
     @Test func controlApiDiscoveryLoadsEndpointAndToken() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

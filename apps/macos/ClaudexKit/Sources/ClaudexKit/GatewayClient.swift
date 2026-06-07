@@ -35,18 +35,22 @@ public final class GatewayClient: Sendable {
         return obj?["ok"]?.boolValue ?? false
     }
 
-    /// Start a run; returns the run id/dir as soon as the server knows them.
-    public func startRun(_ body: StartRunRequest) async throws -> RunStartInfo {
+    /// Start a run; returns either a real run id/dir or a queued job id if the
+    /// daemon has not produced the run artifact directory before the HTTP timeout.
+    public func startRun(_ body: StartRunRequest) async throws -> RunStartResult {
         var req = request("runs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try Self.encoder.encode(body)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw GatewayError.transport("no response") }
-        guard http.statusCode == 200 else {
+        guard http.statusCode == 200 || http.statusCode == 202 else {
             throw GatewayError.http(status: http.statusCode, body: String(decoding: data, as: UTF8.self))
         }
         do {
-            return try Self.decoder.decode(RunStartInfo.self, from: data)
+            if http.statusCode == 202 {
+                return .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
+            }
+            return .started(try Self.decoder.decode(RunStartInfo.self, from: data))
         } catch {
             throw GatewayError.decoding("\(error)")
         }
@@ -81,6 +85,19 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(RunDetail.self, from: data)
     }
 
+    public func artifactText(runId: String, path: String) async throws -> String {
+        let escaped = path.split(separator: "/").map { part in
+            String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
+        }.joined(separator: "/")
+        let req = request("runs/\(runId)/artifacts/\(escaped)", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     public func listHarnesses() async throws -> [HarnessStatus] {
         let req = request("harnesses", method: "GET")
         let (data, resp) = try await session.data(for: req)
@@ -89,6 +106,38 @@ public final class GatewayClient: Sendable {
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return (try Self.decoder.decode(HarnessListResponse.self, from: data)).harnesses
+    }
+
+    public func settings() async throws -> SettingsSnapshot {
+        let req = request("settings", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SettingsSnapshot.self, from: data)
+    }
+
+    public func updateSettings(_ body: SettingsUpdateRequest) async throws -> SettingsUpdateResponse {
+        var req = request("settings", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SettingsUpdateResponse.self, from: data)
+    }
+
+    public func listSecrets() async throws -> SecretListResponse {
+        let req = request("secrets", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SecretListResponse.self, from: data)
     }
 
     public func applyCheck(runId: String) async throws -> ApplyCheckResult {

@@ -27,18 +27,23 @@ struct StatusPill: View {
 struct HarnessChip: View {
     let family: HarnessFamily
     var selected = true
+    var available = true
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
-            HarnessLogo(family: family, size: 13).opacity(selected ? 1 : 0.5)
+            HarnessLogo(family: family, size: 13).opacity(selected && available ? 1 : 0.45)
             Text(family.label)
+            if !available {
+                Image(systemName: "slash.circle").imageScale(.small)
+            }
         }
         .font(.caption.weight(.medium))
-        .foregroundStyle(selected ? family.color : .secondary)
+        .foregroundStyle(selected && available ? family.color : .secondary)
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, 5)
-        .background(family.color.opacity(selected ? 0.16 : 0.0), in: Capsule())
-        .overlay(Capsule().stroke(selected ? family.color.opacity(0.45) : Theme.separator, lineWidth: 1))
-        .accessibilityLabel("\(family.label) harness\(selected ? ", selected" : "")")
+        .background(family.color.opacity(selected && available ? 0.16 : 0.0), in: Capsule())
+        .overlay(Capsule().stroke(selected && available ? family.color.opacity(0.45) : Theme.separator, lineWidth: 1))
+        .opacity(available ? 1 : 0.62)
+        .accessibilityLabel("\(family.label) harness\(selected ? ", selected" : "")\(available ? "" : ", unavailable")")
     }
 }
 

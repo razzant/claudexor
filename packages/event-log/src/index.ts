@@ -1,6 +1,6 @@
 import type { RunEvent, RunEventType } from "@claudex/schema";
 import { RunEvent as RunEventSchema } from "@claudex/schema";
-import { appendLine, nowIso, readTextSafe } from "@claudex/util";
+import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudex/util";
 
 /**
  * Append-only JSONL event log for a single run. Terminal output and human
@@ -27,7 +27,7 @@ export class EventLog {
       run_id: this.runId,
       task_id: this.taskId,
       type,
-      payload,
+      payload: redactEventValue(payload),
     });
     appendLine(this.path, JSON.stringify(event));
     if (this.onEmit) {
@@ -57,4 +57,15 @@ export class EventLog {
     }
     return { events, malformed };
   }
+}
+
+function redactEventValue(value: unknown): unknown {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactEventValue);
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = redactEventValue(child);
+  }
+  return out;
 }

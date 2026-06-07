@@ -1,0 +1,74 @@
+{
+  "$ref": "#/definitions/ControlSettingsUpdateRequest",
+  "definitions": {
+    "ControlSettingsUpdateRequest": {
+      "type": "object",
+      "properties": {
+        "defaultPortfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "benchmark",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ]
+        },
+        "routingPolicy": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "primary",
+            "portfolio"
+          ]
+        },
+        "primaryHarness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defaultModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eligibleHarnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "envInheritance": {
+          "type": "string",
+          "enum": [
+            "mirror_native",
+            "clean",
+            "profile_only"
+          ]
+        },
+        "maxUsdPerRun": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxUsdPerDay": {
+          "type": "number",
+          "minimum": 0
+        },
+        "clearMaxUsdPerRun": {
+          "type": "boolean"
+        },
+        "clearMaxUsdPerDay": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

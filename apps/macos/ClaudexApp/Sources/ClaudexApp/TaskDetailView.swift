@@ -3,33 +3,53 @@ import SwiftUI
 struct TaskDetailView: View {
     @Environment(AppModel.self) private var model
     let taskId: String
-    @State private var tab: Tab = .plan
+    @State private var tab: Tab = .answer
     @State private var verbosity: Verbosity = .normal
+    @State private var userSelectedTab = false
 
     enum Tab: String, CaseIterable, Identifiable {
-        case plan, activity, candidates, diff, review
+        case answer, plan, activity, candidates, diff, review, diagnostics
         var id: String { rawValue }
         var label: String {
             switch self {
+            case .answer: return "Answer"
             case .plan: return "Plan"
             case .activity: return "Activity"
             case .candidates: return "Candidates"
             case .diff: return "Diff"
             case .review: return "Review"
+            case .diagnostics: return "Diagnostics"
             }
         }
         var glyph: String {
             switch self {
+            case .answer: return "text.bubble"
             case .plan: return "checklist"
             case .activity: return "waveform"
             case .candidates: return "flag.checkered.2.crossed"
             case .diff: return "plusminus.circle"
             case .review: return "person.2.badge.gearshape"
+            case .diagnostics: return "stethoscope"
             }
         }
     }
 
     private var task: TaskRun? { model.task(taskId) }
+
+    private func defaultTab(for task: TaskRun) -> Tab {
+        if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .exhausted {
+            return .diagnostics
+        }
+        if task.mode == .ask || task.answerText != nil {
+            return .answer
+        }
+        return .plan
+    }
+
+    private func autoSelectDefaultTab(for task: TaskRun) {
+        guard !userSelectedTab else { return }
+        tab = defaultTab(for: task)
+    }
 
     var body: some View {
         if let task {
@@ -46,6 +66,12 @@ struct TaskDetailView: View {
                 .scrollContentBackground(.hidden)
             }
             .glowBackdrop()
+            .onAppear {
+                tab = defaultTab(for: task)
+                userSelectedTab = false
+            }
+            .onChange(of: task.status) { _, _ in autoSelectDefaultTab(for: task) }
+            .onChange(of: task.engineError ?? "") { _, _ in autoSelectDefaultTab(for: task) }
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")
@@ -93,7 +119,10 @@ struct TaskDetailView: View {
         // horizontal ScrollView so a long tab set never forces a wide minimum window.
         ScrollView(.horizontal, showsIndicators: false) {
             SegmentedTabs(items: Tab.allCases.map { ($0, $0.label, $0.glyph) },
-                          selection: $tab,
+                          selection: Binding(get: { tab }, set: { newValue in
+                              userSelectedTab = true
+                              tab = newValue
+                          }),
                           badge: { badge(for: $0, task: task) })
                 .padding(.horizontal, Theme.Spacing.xxl)
                 .padding(.vertical, Theme.Spacing.sm)
@@ -102,10 +131,12 @@ struct TaskDetailView: View {
 
     private func badge(for t: Tab, task: TaskRun) -> Int? {
         switch t {
+        case .answer: return task.answerText == nil ? nil : 1
         case .plan: return task.plan.isEmpty ? nil : task.plan.count
         case .candidates: return task.candidates.isEmpty ? nil : task.candidates.count
         case .diff: return task.diff.isEmpty ? nil : task.diff.count
         case .review: return task.findings.isEmpty ? nil : task.findings.count
+        case .diagnostics: return task.engineError == nil && task.diagnosticText == nil ? nil : 1
         case .activity: return nil
         }
     }
@@ -115,6 +146,8 @@ struct TaskDetailView: View {
     @ViewBuilder
     private func content(_ task: TaskRun) -> some View {
         switch tab {
+        case .answer:
+            answerContent(task)
         case .plan:
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 SectionLabel("Plan", systemImage: "checklist",
@@ -132,6 +165,26 @@ struct TaskDetailView: View {
             DiffView(files: task.diff)
         case .review:
             reviewContent(task)
+        case .diagnostics:
+            diagnosticsContent(task)
+        }
+    }
+
+    private func answerContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel(task.mode == .ask ? "Answer" : "Final output", systemImage: "text.bubble")
+            Panel {
+                if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(answer)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("No answer artifact yet. Open Diagnostics for engine state, events, and artifact paths.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 
@@ -179,6 +232,39 @@ struct TaskDetailView: View {
                 Panel { Label("No findings — final review clean.", systemImage: "checkmark.seal.fill").foregroundStyle(Theme.status(.succeeded)) }
             } else {
                 ForEach(task.findings) { FindingCard(finding: $0) }
+            }
+        }
+    }
+
+    private func diagnosticsContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel("Diagnostics", systemImage: "stethoscope")
+            if let error = task.engineError, !error.isEmpty {
+                Panel(padding: Theme.Spacing.md) {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(Theme.status(.failed))
+                        .textSelection(.enabled)
+                }
+            }
+            Panel {
+                Text(task.diagnosticText ?? "Diagnostics are not loaded yet. Refresh this run or reconnect the engine.")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !task.artifactPaths.isEmpty {
+                Panel {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        SectionLabel("Artifacts", systemImage: "folder")
+                        ForEach(task.artifactPaths, id: \.self) { path in
+                            Text(path)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
             }
         }
     }

@@ -59,7 +59,7 @@ enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
 // MARK: - Run status
 
 enum RunStatus: String, CaseIterable, Identifiable, Hashable {
-    case queued, running, needsReview, blocked, succeeded, failed, cancelled, interrupted
+    case queued, running, needsReview, blocked, succeeded, failed, cancelled, interrupted, exhausted, notConverged, unknown
     var id: String { rawValue }
 
     /// Map the control-api / daemon state strings onto a UI status.
@@ -71,9 +71,11 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case "blocked", "needs-permission": self = .blocked
         case "succeeded", "success", "done", "completed", "ok": self = .succeeded
         case "failed", "error": self = .failed
+        case "exhausted": self = .exhausted
+        case "not_converged", "not-converged": self = .notConverged
         case "cancelled", "canceled": self = .cancelled
         case "interrupted": self = .interrupted
-        default: self = .running
+        default: self = .unknown
         }
     }
 
@@ -87,6 +89,9 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
         case .interrupted: return "Interrupted"
+        case .exhausted: return "Exhausted"
+        case .notConverged: return "Not converged"
+        case .unknown: return "Unknown"
         }
     }
     var glyph: String {
@@ -99,11 +104,14 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .failed: return "xmark.octagon.fill"
         case .cancelled: return "slash.circle"
         case .interrupted: return "pause.circle"
+        case .exhausted: return "gauge.with.dots.needle.100percent"
+        case .notConverged: return "arrow.triangle.2.circlepath.circle"
+        case .unknown: return "questionmark.diamond"
         }
     }
     var color: Color { Theme.status(self) }
     var isActive: Bool { self == .running || self == .queued }
-    var needsAttention: Bool { self == .needsReview || self == .blocked }
+    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .exhausted || self == .notConverged || self == .unknown }
 }
 
 // MARK: - Run modes
@@ -124,7 +132,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .maxAttempts: return "max_attempts"
         case .untilClean: return "until_clean"
         case .plan: return "plan"
-        case .create: return "create"
+        case .create: return "create_from_scratch"
         case .readOnlyAudit: return "readonly_audit"
         case .benchmark: return "benchmark"
         case .unknown: return "unknown"
@@ -188,6 +196,17 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     }
     var isMultiCandidate: Bool { self == .bestOfN }
     var isReadOnly: Bool { self == .ask || self == .plan || self == .readOnlyAudit }
+    var requiredIntent: String {
+        switch self {
+        case .ask: return "explain"
+        case .plan: return "plan"
+        case .readOnlyAudit: return "audit"
+        case .benchmark: return "benchmark"
+        case .create: return "create"
+        case .unknown: return "implement"
+        default: return "implement"
+        }
+    }
 }
 
 // MARK: - Phase pipeline
@@ -458,6 +477,10 @@ struct TaskRun: Identifiable, Hashable {
     var findings: [Finding]
     var diff: [DiffFile]
     var isLive: Bool = false
+    var answerText: String?
+    var diagnosticText: String?
+    var engineError: String?
+    var artifactPaths: [String] = []
 
     var planDone: Int { plan.filter { $0.state == .done }.count }
     var filesChanged: Int { diff.count }
@@ -505,7 +528,16 @@ struct HarnessInfo: Identifiable, Hashable {
     var version: String
     var auth: String
     var intents: [String]
+    var reasons: [String] = []
     var id: String { family.rawValue }
+}
+
+struct HarnessAvailability: Hashable {
+    var family: HarnessFamily
+    var available: Bool
+    var reason: String
+    var intent: String
+    var info: HarnessInfo?
 }
 
 // MARK: - Budget cockpit

@@ -49,10 +49,11 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         kind: "local_cli",
         provider_family: family,
         capabilities: { implement: true, review: true, structured_events: true },
+        access_profiles_supported: ["readonly", "workspace_write"],
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement", "review"] });
     },
     async *run(spec) {
       const ts = new Date().toISOString();
@@ -220,9 +221,21 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    await expect(
-      orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish"], n: 1 }),
-    ).rejects.toThrow(/perform 'implement'/);
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish"], n: 1 });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toMatch(/perform 'implement'/);
+    expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(/perform 'implement'/);
+  });
+
+  it("records an ask routing failure as inspectable artifacts instead of crashing the run", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["raw-ish"] });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toMatch(/perform 'explain'/);
+    expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
+    expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("Status: failed");
   });
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {

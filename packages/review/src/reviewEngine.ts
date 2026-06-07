@@ -1,9 +1,9 @@
 import type { HarnessAdapter } from "@claudex/core";
 import type { ProviderFamily, ReviewFinding, RouteProof } from "@claudex/schema";
-import { HarnessRunSpec } from "@claudex/schema";
+import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudex/schema";
 import { newId } from "@claudex/util";
-import { dedupeFindings, parseFindings, type ReviewerInfo } from "./findings.js";
-import { buildRouteProof, classifyDiversity, verifyCrossFamily } from "./route.js";
+import { dedupeFindings, extractJsonBlocks, parseFindings, type ReviewerInfo } from "./findings.js";
+import { buildRouteProof, classifyDiversity } from "./route.js";
 
 export interface ReviewerSpec {
   adapter: HarnessAdapter;
@@ -48,7 +48,6 @@ function reviewPrompt(label: string, evidenceDir: string, diff: string): string 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
   const all: ReviewFinding[] = [];
   const routeProofs: RouteProof[] = [];
-  const families: ProviderFamily[] = [];
 
   for (const reviewer of input.reviewers) {
     const spec = HarnessRunSpec.parse({
@@ -62,10 +61,15 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
 
     let text = "";
     let observedModel: string | undefined;
-    const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, spec);
-    for await (const ev of iter) {
-      if (ev.type === "message" && ev.text) text += ev.text + "\n";
-      if (ev.observed_model) observedModel = ev.observed_model;
+    let reviewerError: string | null = null;
+    try {
+      const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, spec);
+      for await (const ev of iter) {
+        if (ev.type === "message" && ev.text) text += ev.text + "\n";
+        if (ev.observed_model) observedModel = ev.observed_model;
+      }
+    } catch (err) {
+      reviewerError = err instanceof Error ? err.message : String(err);
     }
 
     const proof = buildRouteProof(
@@ -81,7 +85,6 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       },
     );
     routeProofs.push(proof);
-    families.push(reviewer.providerFamily);
 
     const info: ReviewerInfo = {
       harness_id: reviewer.adapter.id,
@@ -89,16 +92,49 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       observed_model: observedModel ?? null,
       route_proof_status: proof.status,
     };
+    if (reviewerError) {
+      all.push(insufficientEvidenceFinding(info, `Reviewer failed: ${reviewerError}`));
+      continue;
+    }
+    if (text.trim() === "" || extractJsonBlocks(text).length === 0) {
+      all.push(insufficientEvidenceFinding(info, "Reviewer produced no parseable JSON findings."));
+      continue;
+    }
     all.push(...parseFindings(text, info));
   }
 
-  const diversity = verifyCrossFamily(families);
+  const classifiedProofs = classifyDiversity(routeProofs);
+  const verifiedFamilies = [
+    ...new Set(
+      classifiedProofs
+        .filter((p) => p.status === "verified" && p.requested.provider_family !== "unknown")
+        .map((p) => p.requested.provider_family),
+    ),
+  ];
   return {
     findings: dedupeFindings(all),
-    routeProofs: classifyDiversity(routeProofs),
-    crossFamilyVerified: diversity.verified,
-    distinctProviders: diversity.distinct,
+    routeProofs: classifiedProofs,
+    crossFamilyVerified: verifiedFamilies.length >= 2,
+    distinctProviders: verifiedFamilies,
   };
+}
+
+function insufficientEvidenceFinding(reviewer: ReviewerInfo, claim: string): ReviewFinding {
+  return ReviewFindingSchema.parse({
+    id: newId("f"),
+    severity: "INSUFFICIENT_EVIDENCE",
+    category: "test_gap",
+    claim,
+    evidence: {},
+    proposed_fix: "Treat this review as inconclusive and rerun with a healthy reviewer.",
+    reviewer: {
+      harness_id: reviewer.harness_id,
+      requested_model: reviewer.requested_model ?? null,
+      observed_model: reviewer.observed_model ?? null,
+      route_proof_status: reviewer.route_proof_status ?? "unverified",
+    },
+    status: "insufficient_evidence",
+  });
 }
 
 export interface MatrixCandidate {

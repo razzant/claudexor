@@ -1,14 +1,15 @@
 import SwiftUI
 
 /// Home — composer-led, like Codex/Claude Code (no greeting; this is a dev tool). The
-/// colorful hero extends under the glass sidebar/toolbar via `backgroundExtensionEffect`
-/// so they visibly refract it; a single floating Liquid Glass composer sits on the hero
-/// (the signature glass moment). Everything below is solid content.
+/// Home — composer-led, like Codex/Claude Code (no greeting; this is a dev tool). The
+/// glow is a contained visual layer, and a single floating Liquid Glass composer is the
+/// signature glass moment. Everything below is solid content.
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
     @State private var prompt = ""
     @State private var mode: RunMode = .ask
     @State private var harnesses: Set<HarnessFamily> = [.codex, .claude]
+    @State private var modeHelpPresented = false
     @FocusState private var promptFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -73,21 +74,45 @@ struct HomeScreen: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .clipShape(Circle())
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || harnesses.isEmpty)
+                .disabled(!canLaunch)
                 .keyboardShortcut(.return, modifiers: .command)
-                .help("Launch (⌘↵)")
+                .help(launchHelp)
                 .accessibilityLabel("Launch task")
             }
             // FlowLayout wraps these controls so the composer never forces a wide
             // minimum on the detail column (the cause of the small-window clipping).
             FlowLayout(spacing: Theme.Spacing.sm) {
                 modeMenu
+                Button { modeHelpPresented.toggle() } label: {
+                    Image(systemName: "info.circle")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                .popover(isPresented: $modeHelpPresented, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        Label(mode.label, systemImage: mode.glyph)
+                            .font(.callout.weight(.semibold))
+                        Text(mode.blurb)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(Theme.Spacing.md)
+                    .frame(width: 260, alignment: .leading)
+                }
+                .help("\(mode.label): \(mode.blurb)")
                 ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                    let availability = model.availability(for: family, mode: mode)
                     Button {
+                        guard availability.available else {
+                            model.route = .harnesses
+                            return
+                        }
                         if harnesses.contains(family) { harnesses.remove(family) } else { harnesses.insert(family) }
-                    } label: { HarnessChip(family: family, selected: harnesses.contains(family)) }
+                    } label: { HarnessChip(family: family, selected: harnesses.contains(family), available: availability.available) }
                     .buttonStyle(.plain)
-                    .help("\(family.label) eligible pool")
+                    .help(availability.available ? "\(family.label) eligible pool for \(availability.intent)." : "\(availability.reason). Click to open Harness Doctor.")
                 }
             }
         }
@@ -95,10 +120,28 @@ struct HomeScreen: View {
         .chromeGlass(RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous))
     }
 
+    private var selectedAvailableHarnesses: [HarnessFamily] {
+        model.availableHarnesses(for: mode, selected: harnesses)
+    }
+
+    private var canLaunch: Bool {
+        model.health == .connected &&
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !selectedAvailableHarnesses.isEmpty
+    }
+
+    private var launchHelp: String {
+        if model.health != .connected { return "Reconnect the local engine before launching." }
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Enter a question or task first." }
+        if selectedAvailableHarnesses.isEmpty { return "Select at least one harness that is available for \(mode.requiredIntent)." }
+        return "Launch \(mode.label) with \(selectedAvailableHarnesses.map(\.label).joined(separator: ", ")) (⌘↵)"
+    }
+
     private var modeMenu: some View {
         Menu {
             ForEach(RunMode.allCases) { m in
                 Button { mode = m } label: { Label(m.label, systemImage: m.glyph) }
+                    .help("\(m.label): \(m.blurb)")
             }
         } label: {
             HStack(spacing: Theme.Spacing.xs) {
@@ -111,13 +154,14 @@ struct HomeScreen: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .help("\(mode.label): \(mode.blurb)")
     }
 
     private func launch() {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !harnesses.isEmpty else { return }
-        let n = mode.isMultiCandidate ? max(2, harnesses.count) : 1
-        let selected = HarnessFamily.allCases.filter { $0 != .fake && harnesses.contains($0) }
+        let selected = selectedAvailableHarnesses
+        guard !text.isEmpty, !selected.isEmpty else { return }
+        let n = mode.isMultiCandidate ? max(2, selected.count) : 1
         Task { await model.startRun(prompt: text, mode: mode, harnesses: selected,
                                     primary: selected.first, portfolio: "subscription-first",
                                     model: nil, n: n, capUsd: 0.50,

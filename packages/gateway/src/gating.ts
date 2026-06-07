@@ -38,10 +38,9 @@ export function allowedIntents(manifest: HarnessManifest, report: ConformanceRep
     }
     return base;
   }
-  // degraded: drop critical intents unless explicitly re-enabled by the report.
-  return base.filter((i) => {
-    if (report.disabled_intents.includes(i)) return false;
-    if (CRITICAL_INTENTS.includes(i)) return report.enabled_intents.includes(i);
-    return true;
-  });
+  // Degraded means the adapter is only trusted for the roles the doctor
+  // explicitly re-enabled. Capability declarations alone are not enough once
+  // conformance/auth is degraded.
+  if (report.enabled_intents.length === 0) return [];
+  return base.filter((i) => report.enabled_intents.includes(i) && !report.disabled_intents.includes(i));
 }

@@ -172,4 +172,59 @@ describe("reviewEngine", () => {
     expect(res.findings.length).toBe(2);
     expect(res.routeProofs.every((p) => p.status === "verified")).toBe(true);
   });
+
+  it("records malformed reviewer output as insufficient evidence", async () => {
+    const adapter: HarnessAdapter = {
+      id: "bad-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "bad-reviewer",
+          display_name: "bad",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "bad-reviewer", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "message", session_id: spec.session_id, ts, text: "not json", observed_model: "bad-model" };
+      },
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+    });
+    expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
+    expect(res.findings[0]?.status).toBe("insufficient_evidence");
+  });
+
+  it("does not verify cross-family review without observed route proofs", async () => {
+    const r1 = makeReviewer("rev-openai", "openai", []);
+    const r2 = makeReviewer("rev-anthropic", "anthropic", []);
+    const stripObserved = (r: ReviewerSpec): ReviewerSpec => ({
+      ...r,
+      adapter: {
+        ...r.adapter,
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        },
+      },
+    });
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [stripObserved(r1), stripObserved(r2)],
+    });
+    expect(res.crossFamilyVerified).toBe(false);
+    expect(res.routeProofs.every((p) => p.status === "unverified")).toBe(true);
+  });
 });

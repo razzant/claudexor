@@ -42,7 +42,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.2.0",
+        adapter_version: "0.3.0",
         provider_family: "opencode",
         capabilities: {
           plan: true,

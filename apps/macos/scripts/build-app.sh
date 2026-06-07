@@ -7,8 +7,11 @@
 # producing a shippable, notarized bundle. Signing/notarization are OPT-IN via env vars so
 # the script also works for an unsigned local .app:
 #
-#   # unsigned local bundle:
+#   # unsigned local bundle + ZIP:
 #   apps/macos/scripts/build-app.sh
+#
+#   # unsigned local bundle + ZIP + DMG:
+#   MAKE_DMG=1 apps/macos/scripts/build-app.sh
 #
 #   # signed + notarized + DMG (requires your Apple Developer ID):
 #   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
@@ -29,8 +32,15 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudex.app"
 
-VERSION="${CLAUDEX_VERSION:-0.2.0}"
+VERSION="${CLAUDEX_VERSION:-0.3.0}"
 BUILD="${CLAUDEX_BUILD:-$(date +%Y%m%d%H%M)}"
+
+# On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be
+# killed by the OS code-signing monitor during bundling. Prefer the official
+# Claudex runtime Node whenever it exists.
+if [ -d "$HOME/.claudex/node/bin" ]; then
+  export PATH="$HOME/.claudex/node/bin:$PATH"
+fi
 
 echo "==> Building release binary (Swift)"
 ( cd "$APP_PKG" && swift build -c release )
@@ -62,12 +72,10 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [ "${CLAUDEX_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   REPO_ROOT="$(cd "$MACOS_DIR/../.." && pwd)"
   ENGINE_JS="$APP/Contents/Resources/claudexd.bundle.cjs"
+  echo "==> Building engine workspace (pnpm -w build)"
+  ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
   echo "==> Bundling claudexd (esbuild single-file)"
-  if [ ! -f "$REPO_ROOT/packages/cli/dist/claudexd.js" ]; then
-    echo "    building TS first (pnpm -w build)"
-    ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
-  fi
-  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexd.js --bundle --platform=node --format=cjs --target=node22 --outfile="$ENGINE_JS" >/dev/null 2>&1 ); then
+  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexd.js --bundle --platform=node --format=cjs --target=node22 --outfile="$ENGINE_JS" >/dev/null ); then
     echo "    claudexd.bundle.cjs $(wc -c < "$ENGINE_JS" | tr -d ' ') bytes"
   else
     echo "ERROR: esbuild bundle failed; cannot build self-contained app" >&2
@@ -105,20 +113,36 @@ else
   echo "    Gatekeeper will block it on other machines until signed + notarized."
 fi
 
-if [ "${MAKE_DMG:-0}" = "1" ]; then
-  if [ -z "${SIGN_IDENTITY:-}" ] || [ -z "${NOTARY_PROFILE:-}" ]; then
-    echo "ERROR: MAKE_DMG=1 requires SIGN_IDENTITY and NOTARY_PROFILE; unsigned local builds stop at .app" >&2
-    exit 1
+if [ "${MAKE_ZIP:-1}" = "1" ]; then
+  ZIP_SUFFIX=""
+  if [ -z "${SIGN_IDENTITY:-}" ]; then
+    ZIP_SUFFIX="-unsigned"
   fi
+  ZIP="$DIST/Claudex-$VERSION$ZIP_SUFFIX.zip"
+  echo "==> Building ZIP"
+  rm -f "$ZIP"
+  /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+  echo "    ZIP: $ZIP"
+fi
+
+if [ "${MAKE_DMG:-0}" = "1" ]; then
   echo "==> Building DMG"
-  DMG="$DIST/Claudex-$VERSION.dmg"
+  DMG_SUFFIX=""
+  if [ -z "${SIGN_IDENTITY:-}" ]; then
+    DMG_SUFFIX="-unsigned"
+  fi
+  DMG="$DIST/Claudex-$VERSION$DMG_SUFFIX.dmg"
   STAGE="$DIST/dmg-stage"
   rm -rf "$STAGE" "$DMG"; mkdir -p "$STAGE"
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -volname "Claudex" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
   rm -rf "$STAGE"
-  codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+  if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+  else
+    echo "    (unsigned DMG; for beta/local distribution only)"
+  fi
   echo "    DMG: $DMG"
 fi
 

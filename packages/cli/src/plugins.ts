@@ -33,7 +33,7 @@ export function installPlugin(host: PluginHost): InstallResult {
       const dir = join(home, ".cursor", "plugins", "local", "claudex");
       writeText(
         join(dir, ".cursor-plugin", "plugin.json"),
-        JSON.stringify({ name: "claudex", version: "0.2.0", description: "Claudex control plane (thin shim)" }, null, 2) + "\n",
+        JSON.stringify({ name: "claudex", version: "0.3.0", description: "Claudex control plane (thin shim)" }, null, 2) + "\n",
       );
       writeText(join(dir, "commands", "claudex.md"), `---\nname: claudex\ndescription: Run Claudex\n---\n${SHIM}\n`);
       return { host, path: dir, note: "Run 'Developer: Reload Window' in Cursor to load it." };
@@ -42,7 +42,7 @@ export function installPlugin(host: PluginHost): InstallResult {
       const dir = join(home, ".claude", "plugins", "claudex");
       writeText(
         join(dir, ".claude-plugin", "plugin.json"),
-        JSON.stringify({ name: "claudex", version: "0.2.0", description: "Claudex control plane (thin shim)" }, null, 2) + "\n",
+        JSON.stringify({ name: "claudex", version: "0.3.0", description: "Claudex control plane (thin shim)" }, null, 2) + "\n",
       );
       writeText(join(dir, "commands", "claudex.md"), `---\ndescription: Run Claudex\n---\n${SHIM}\n`);
       return { host, path: dir, note: `Load with: claude --plugin-dir ${dir} (or add to a marketplace).` };

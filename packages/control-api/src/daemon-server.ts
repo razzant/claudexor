@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { extname, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver } from "@claudex/delivery";
@@ -7,17 +7,22 @@ import {
   AccessProfile,
   ControlApplyCheckRequest,
   ControlApplyRequest,
+  ControlHarnessListResponse,
+  ControlSecretListResponse,
   ControlRunStartRequest,
   ControlRunStartInfo,
+  ControlQueuedRunInfo,
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
+  ControlSettingsSnapshot,
+  ControlSettingsUpdateRequest,
   DecisionRecord,
   ModeKind,
   Portfolio,
   WorkProduct,
 } from "@claudex/schema";
-import { containsSecretLikeToken, redactSecrets } from "@claudex/util";
+import { containsSecretLikeToken, redactSecrets, sha256 } from "@claudex/util";
 import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -61,7 +66,7 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
@@ -178,7 +183,8 @@ export class DaemonControlApiServer {
       try {
         const body = await this.readBody(req);
         assertNoInlineSecrets(body);
-        params = ControlRunStartRequest.parse(body);
+        const parsed = ControlRunStartRequest.parse(body);
+        params = { ...parsed, repoRoot: parsed.repoRoot ?? process.cwd() };
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
@@ -191,7 +197,7 @@ export class DaemonControlApiServer {
       // Long-queued jobs remain canonical in the daemon. Don't fail the request
       // while leaving an orphaned queued job behind; return the job id for polling.
       const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-      return this.json(res, status, { jobId: rec.id, state: rec.state, error: rec.error });
+      return this.json(res, status, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
     }
 
     if (method === "GET" && path === "/runs") {
@@ -220,10 +226,13 @@ export class DaemonControlApiServer {
       const rec = await this.findRun(decodeURIComponent(artifactFetchMatch[1] as string));
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       const target = safeArtifactPath(rec.runDir, decodeURIComponent(artifactFetchMatch[2] as string));
-      if (!target || !existsSync(target) || statSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
-      const data = readFileSync(target);
+      if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      let data = readFileSync(target);
       if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
         return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
+      }
+      if (isTextArtifact(target)) {
+        data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
       }
       res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
       res.end(data);
@@ -243,8 +252,14 @@ export class DaemonControlApiServer {
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
       if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply check" });
+      const applyableError = validateApplyableRun(rec);
+      if (applyableError) return this.json(res, 409, { error: applyableError });
+      const patchBindingError = validatePatchBinding(rec, patch);
+      if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = body.repoRoot ?? runRepoRoot(rec);
       if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply check" });
+      const repoError = validateApplyRepo(rec, repoRoot);
+      if (repoError) return this.json(res, 409, { error: repoError });
       return this.json(res, 200, await checkPatch(repoRoot, patch));
     }
 
@@ -261,25 +276,41 @@ export class DaemonControlApiServer {
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
       if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
+      const applyableError = validateApplyableRun(rec);
+      if (applyableError) return this.json(res, 409, { error: applyableError });
+      const patchBindingError = validatePatchBinding(rec, patch);
+      if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = body.repoRoot ?? runRepoRoot(rec);
       if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply" });
+      const repoError = validateApplyRepo(rec, repoRoot);
+      if (repoError) return this.json(res, 409, { error: repoError });
       return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
     }
 
-    if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses");
-    if (method === "GET" && path === "/settings") return this.service(res, "settings");
+    if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
+    if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
-      const body = await this.readBody(req);
+      let body: ControlSettingsUpdateRequest;
+      try {
+        body = ControlSettingsUpdateRequest.parse(await this.readBody(req));
+      } catch (err) {
+        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+      }
       return this.service(res, "updateSettings", body);
     }
     if (method === "GET" && path === "/auth") return this.service(res, "auth");
-    if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets");
+    if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
     if (method === "POST" && path === "/secrets") {
       const body = await this.readBody(req);
+      if (!validSecretSetBody(body)) return this.json(res, 400, { error: "secret name must be openai, anthropic, cursor, opencode, or raw" });
       return this.service(res, "setSecret", body);
     }
     const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
-    if (method === "DELETE" && secretDeleteMatch) return this.service(res, "deleteSecret", decodeURIComponent(secretDeleteMatch[1] as string));
+    if (method === "DELETE" && secretDeleteMatch) {
+      const name = decodeURIComponent(secretDeleteMatch[1] as string);
+      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: "secret name must be openai, anthropic, cursor, opencode, or raw" });
+      return this.service(res, "deleteSecret", name);
+    }
     if (method === "POST" && path === "/spec/questions") return this.service(res, "specQuestions", await this.readBody(req));
     if (method === "POST" && path === "/spec/freeze") return this.service(res, "specFreeze", await this.readBody(req));
 
@@ -301,11 +332,17 @@ export class DaemonControlApiServer {
     return this.json(res, 404, { error: "not found" });
   }
 
-  private async service(res: ServerResponse, name: keyof NonNullable<DaemonControlApiOptions["services"]>, arg?: unknown): Promise<void> {
+  private async service(
+    res: ServerResponse,
+    name: keyof NonNullable<DaemonControlApiOptions["services"]>,
+    arg?: unknown,
+    schema?: { parse(value: unknown): unknown },
+  ): Promise<void> {
     const fn = this.opts.services?.[name] as ((arg?: unknown) => Promise<unknown>) | undefined;
     if (!fn) return this.json(res, 501, { error: `${name} service is not configured` });
     try {
-      return this.json(res, 200, await fn(arg));
+      const value = await fn(arg);
+      return this.json(res, 200, schema ? schema.parse(value) : value);
     } catch (err) {
       return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
@@ -447,63 +484,139 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
 }
 
 function detailFor(rec: DaemonRunRecord): ControlRunDetail {
-  const runDir = rec.runDir;
   return ControlRunDetail.parse({
     summary: summarizeRun(rec),
-    artifacts: runDir ? listArtifacts(runDir) : [],
-    finalSummary: readTextMaybe(runDir ? join(runDir, "final", "summary.md") : ""),
-    decision: readStructured(runDir ? join(runDir, "arbitration", "decision.yaml") : "", DecisionRecord),
-    workProduct: readStructured(runDir ? join(runDir, "final", "work_product.yaml") : "", WorkProduct),
+    artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
+    finalSummary: readTextArtifact(rec, "final/summary.md"),
+    decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
+    workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
   });
 }
 
-function readTextMaybe(path: string): string | null {
-  if (!path || !existsSync(path) || statSync(path).isDirectory()) return null;
+function readTextArtifact(rec: DaemonRunRecord, relPath: string, redact = true): string | null {
+  const text = readRawTextArtifact(rec, relPath);
+  return text === null ? null : redact ? redactSecrets(text) : text;
+}
+
+function readRawTextArtifact(rec: DaemonRunRecord, relPath: string): string | null {
+  if (!rec.runDir) return null;
+  const path = safeArtifactPath(rec.runDir, relPath);
+  if (!path) return null;
+  const st = lstatSync(path);
+  if (st.isSymbolicLink() || st.isDirectory()) return null;
   return readFileSync(path, "utf8");
 }
 
-function readStructured<T>(path: string, schema: { parse(value: unknown): T }): T | null {
-  const text = readTextMaybe(path);
+function readStructured<T>(text: string | null, ext: string, schema: { parse(value: unknown): T }): T | null {
   if (text === null) return null;
-  if (extname(path) === ".json") {
+  if (ext === ".json") {
     return schema.parse(JSON.parse(text));
   }
-  if (extname(path) === ".yaml" || extname(path) === ".yml") {
+  if (ext === ".yaml" || ext === ".yml") {
     return schema.parse(parseYaml(text));
   }
-  throw new Error(`unsupported structured artifact extension: ${path}`);
+  throw new Error(`unsupported structured artifact extension: ${ext}`);
 }
 
 function listArtifacts(root: string): ControlArtifactInfo[] {
-  if (!existsSync(root)) return [];
+  const safeRoot = safeArtifactRoot(root);
+  if (!safeRoot) return [];
   const out: ControlArtifactInfo[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       const abs = join(dir, name);
-      const st = statSync(abs);
-      const rel = relative(root, abs).split(sep).join("/");
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) continue;
+      const rel = relative(safeRoot, abs).split(sep).join("/");
       out.push({ path: rel, kind: st.isDirectory() ? "directory" : "file", bytes: st.isDirectory() ? undefined : st.size });
       if (st.isDirectory()) walk(abs);
     }
   };
-  walk(root);
+  walk(safeRoot);
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function safeArtifactPath(root: string, requested: string): string | null {
-  const clean = normalize(requested).replace(/^(\.\.(\/|\\|$))+/, "");
-  const abs = resolve(root, clean);
-  const base = resolve(root);
-  return abs === base || abs.startsWith(base + sep) ? abs : null;
+  if (requested.includes("\0")) return null;
+  const parts = requested.split(/[\\/]+/).filter(Boolean);
+  if (parts.includes("..")) return null;
+  const base = safeArtifactRoot(root);
+  if (!base) return null;
+  const clean = normalize(parts.join(sep));
+  const abs = resolve(base, clean);
+  if (!existsSync(abs)) return null;
+  const lst = lstatSync(abs);
+  if (lst.isSymbolicLink()) return null;
+  const real = realpathSync(abs);
+  return real === base || real.startsWith(base + sep) ? real : null;
+}
+
+function safeArtifactRoot(root: string): string | null {
+  if (!root || !existsSync(root)) return null;
+  const st = lstatSync(root);
+  if (st.isSymbolicLink() || !st.isDirectory()) return null;
+  return realpathSync(root);
 }
 
 function readPatch(rec: DaemonRunRecord): string | null {
-  return readTextMaybe(rec.runDir ? join(rec.runDir, "final", "patch.diff") : "");
+  return readRawTextArtifact(rec, "final/patch.diff");
 }
 
 function runRepoRoot(rec: DaemonRunRecord): string | null {
   const p = paramsRecord(rec);
-  return typeof p["repoRoot"] === "string" ? p["repoRoot"] : null;
+  if (typeof p["repoRoot"] === "string") return p["repoRoot"];
+  let task: unknown = null;
+  try {
+    task = readStructured(readRawTextArtifact(rec, "context/task.yaml"), ".yaml", { parse: (value: unknown) => value });
+  } catch {
+    task = null;
+  }
+  if (task && typeof task === "object" && !Array.isArray(task)) {
+    const repo = (task as Record<string, unknown>)["repo"];
+    if (repo && typeof repo === "object" && !Array.isArray(repo)) {
+      const root = (repo as Record<string, unknown>)["root"];
+      if (typeof root === "string") return root;
+    }
+  }
+  return null;
+}
+
+function validateApplyableRun(rec: DaemonRunRecord): string | null {
+  if (rec.state !== "succeeded") return `run is not applyable while state is ${rec.state}`;
+  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  if (!decision) return "decision record is required before apply";
+  if (decision.status !== "success") return `decision status is ${decision.status}; refusing apply`;
+  const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+  if (!workProduct) return "work product is required before apply";
+  if (workProduct.kind !== "patch") return `work product kind ${workProduct.kind} is not applyable as a patch`;
+  return null;
+}
+
+function validatePatchBinding(rec: DaemonRunRecord, patch: string): string | null {
+  const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+  const recorded = workProduct?.meta?.["patch_sha256"];
+  if (typeof recorded !== "string" || recorded.length === 0) return "work product patch hash is required before apply";
+  return recorded === sha256(patch) ? null : "patch artifact hash does not match the reviewed work product";
+}
+
+function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, schema: { parse(value: unknown): T }): T | null {
+  try {
+    return readStructured(readTextArtifact(rec, relPath), extname(relPath), schema);
+  } catch {
+    return null;
+  }
+}
+
+function validateApplyRepo(rec: DaemonRunRecord, repoRoot: string): string | null {
+  const original = runRepoRoot(rec);
+  if (!original) return "run original project is unknown; refusing apply";
+  try {
+    const a = realpathSync(original);
+    const b = realpathSync(repoRoot);
+    return a === b ? null : "repoRoot does not match the run's original project";
+  } catch {
+    return "repoRoot cannot be verified";
+  }
 }
 
 function contentType(path: string): string {
@@ -522,6 +635,26 @@ function contentType(path: string): string {
 function isPatchArtifact(path: string): boolean {
   const ext = extname(path);
   return ext === ".diff" || ext === ".patch";
+}
+
+function isTextArtifact(path: string): boolean {
+  return contentType(path).startsWith("text/plain");
+}
+
+const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);
+
+function isAllowedSecretName(name: string): boolean {
+  return ALLOWED_SECRET_NAMES.has(name);
+}
+
+function validSecretSetBody(body: unknown): boolean {
+  return Boolean(
+    body &&
+      typeof body === "object" &&
+      !Array.isArray(body) &&
+      typeof (body as Record<string, unknown>)["name"] === "string" &&
+      isAllowedSecretName(String((body as Record<string, unknown>)["name"])),
+  );
 }
 
 function assertNoInlineSecrets(value: unknown, path = "$"): void {

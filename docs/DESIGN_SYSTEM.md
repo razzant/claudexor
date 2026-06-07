@@ -4,8 +4,9 @@ Status: living document. SSOT for the native macOS app's visual + interaction de
 Target platform: macOS 26 (Tahoe), SwiftUI/AppKit, Liquid Glass. Apple Silicon.
 
 This document is normative. The app implements these tokens and rules; deviations
-must be justified here. It pairs with [`ARCHITECTURE.md`](ARCHITECTURE.md) (how the
-app talks to the engine-service) and the build plan.
+must be justified here. It pairs with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md)
+(product constitution), [`ARCHITECTURE.md`](ARCHITECTURE.md) (how the app talks
+to the engine-service), and the build plan.
 
 ---
 
@@ -21,9 +22,10 @@ to Claudex and instantly familiar to users of Codex App and Claude Code.
 Three design commitments:
 
 1. **Content-first, glass on the navigation layer only.** Liquid Glass lives on the
-   chrome (sidebar, toolbars, inspector, floating cards, sheets, menus). Code, diffs,
-   transcripts, and tables sit on solid, high-contrast surfaces. Never put glass
-   behind code text.
+   chrome (sidebar, toolbars, inspector, floating composer/action controls,
+   sheets, menus). Ordinary cards, settings groups, code, diffs, transcripts,
+   and tables sit on solid, high-contrast surfaces. Never put glass behind code
+   text or dense content.
 2. **Honesty is visible.** Evidence, route-diversity proof, estimated-vs-exact cost,
    and gate status are surfaced as quiet always-on badges with deep evidence one click
    away. The UI never implies more certainty (or more multi-model rigor) than the data
@@ -85,7 +87,9 @@ Status semantics (shared across badges, pipeline, lists):
 
 - `status/running` (azure), `status/success` (green), `status/needs-review` (periwinkle),
   `status/blocked` (amber), `status/failed` (red), `status/cancelled` (neutral/gray),
-  `status/interrupted` (muted amber), `status/queued` (tertiary).
+  `status/interrupted` (muted amber), `status/queued` (tertiary),
+  `status/exhausted` (red/blocked blend), `status/not-converged` (amber),
+  `status/unknown` (neutral warning).
 - Always pair color with a glyph + label (never color alone — accessibility).
 
 **Color discipline (the one rule that keeps it from looking "mixed").** Strong hues are
@@ -111,7 +115,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
   `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
-  a tracked v0.2 refinement.)
+  a tracked beta refinement.)
 - Elevation: glass + material layering for chrome; a solid content card may carry **one**
   soft separation shadow (`black 8%, radius 6, y 2`, centralized in `cardSurface`) for
   dark-mode contrast against the glow. Settings groups are flat and use no shadow. No heavy,
@@ -144,14 +148,19 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 ## 3. Liquid Glass rules
 
-- **Where glass goes:** sidebar, toolbars, the inspector/review panel, floating
-  command cards, sheets, popovers, menus, the run composer overlay.
+- **Where glass goes:** sidebar, toolbars, the inspector/review panel, the
+  floating composer, action controls, sheets, popovers, and menus.
 - **Where glass NEVER goes:** behind code, diffs, terminal/transcript output, tables,
   or any dense small text. Those use `surface/code` / `surface/raised` solids.
 - Use standard structure (`NavigationSplitView` + `.inspector`, `Toolbar`, `Sheet`) to
   get the material for free; avoid custom backgrounds behind bars/sheets.
-- Group custom glass elements in a `GlassEffectContainer`; share a namespace for morphs.
-- Use `.backgroundExtensionEffect()` for hero/empty-state imagery under the sidebar.
+- When a view intentionally uses custom morphing glass, group those elements in a
+  `GlassEffectContainer` and share a namespace for morphs. Do not require every
+  normal screen/card to opt into custom glass.
+- Do not put `.backgroundExtensionEffect()` on the full-window glow or repeated
+  per-screen backgrounds. It can create hard black/white rounded-window side
+  cutouts. If a future hero uses background extension, it must be local,
+  visually QAed in dark/light, Reduce Transparency, and compact widths.
 - Do not stack glass on glass; do not "glass everything" — it fights legibility and battery.
 - Test every screen with Reduce Transparency, Reduce Motion, Increase Contrast, and the
   system Liquid Glass tint settings.
@@ -206,6 +215,11 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   per-hunk apply controls until the backend exposes selected scope.
 - **Budget cockpit.** Spend, circuit breaker, portfolio weights, pre-exhaustion warnings.
 - **Harness Doctor.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
+- **Run detail diagnostics.** Every live run detail has explicit `Answer` and
+  `Diagnostics` tabs. `Answer` reads `final/answer.md`, `final/report.md`, or
+  `final/summary.md`. `Diagnostics` reads engine error, `context/context_error.md`,
+  `events.jsonl`, `arbitration/decision.yaml`, `final/work_product.yaml`, and
+  artifact paths. A failed run must never leave the user hunting for invisible logs.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
@@ -214,6 +228,10 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Help and tooltips.** Every compact/risky control gets layered help: `.help(...)` for hover
   and an info popover when explanation affects cost, access, auth, or routing. Future controls
   must document their consequence at the control, not only in docs.
+- **Harness chips.** Chips reflect Gateway status for the active mode intent. A
+  harness that is not installed, not authenticated, degraded without the required
+  intent, or unable to enforce read-only is visible but disabled, with a hover
+  reason and a path to Harness Doctor/Auth setup.
 - **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth,
   then offer API-key fallback that writes only to the local secret store. The wizard may store
   secret refs, mark setup complete, or skip, but it must not invent app-only auth state. Offline
@@ -235,7 +253,8 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   (Tasks, Review) use `ListScreen(title:) { filters } content: { … }`. Gutter: horizontal
   `Spacing.xxl` (32), vertical `Spacing.xl` (24). Content column is centered and capped at a
   width token: `Layout.contentMaxWidth` (1040) for dashboards/lists, `Layout.readableMaxWidth`
-  (860) for forms/reading (interview, settings). Background is `glowBackdrop()`. Do **not**
+  (860) for forms/reading (interview, settings). Screen backgrounds use the
+  shared solid/glow surface without window-edge extension effects. Do **not**
   hardcode per-screen widths or margins.
 - **Segmented tabs.** In-content tab/segment rows use the shared `SegmentedTabs` (one font,
   `Radius.control` indicator via `matchedGeometryEffect`, optional per-tab count badge,

@@ -181,4 +181,32 @@ describe("daemon", () => {
       await server.stop();
     }
   }, 20000);
+
+  it("maps non-success orchestrator results to honest terminal job states", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const token = "tkn-status";
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      runner: async (_params, ctx) => {
+        ctx.onRunStart({ runId: "run-not-converged", taskId: "t", runDir: "/tmp/run-not-converged" });
+        return { status: "not_converged", summary: "best attempt still has blockers" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const job = await client.enqueue({ prompt: "x" });
+      let st = await client.status(job.id);
+      for (let i = 0; i < 100 && (st.state === "queued" || st.state === "running"); i++) {
+        await sleep(10);
+        st = await client.status(job.id);
+      }
+      expect(st.state).toBe("not_converged");
+      expect(st.error).toContain("best attempt");
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
 });

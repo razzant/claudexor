@@ -1,8 +1,11 @@
-# Claudex v0.2.0 Architecture Reference
+# Claudex v0.3.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
 future wish list.
+
+Read this with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). The Bible is the
+compact constitution; this file is the operational map.
 
 ## 1. System Shape
 
@@ -76,6 +79,13 @@ eligible pool, primary first. Best-of-N expands the eligible pool over N
 candidates. Convergence rotates compatible harnesses when a stall signature
 persists.
 
+Harness availability is determined by discovery + doctor + capabilities:
+`available` alone is not enough. A harness must expose the required intent for
+the selected mode (`explain` for Ask, `implement` for Agent/repair paths,
+`plan`, `audit`, etc.) and must support read-only when the mode requires it.
+Surfaces show unavailable harnesses with reasons, but must gate them out of
+launch and routing.
+
 ## 5. Auth And Secrets
 
 Native harness auth is preferred. API-key fallback uses `packages/secrets`:
@@ -97,6 +107,9 @@ cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
 Creates a run directory, writes a `TaskContract`, runs one adapter with
 `intent: explain`, `access: readonly`, writes `final/answer.md`,
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
+If routing or the harness fails, the run still writes inspectable failure
+artifacts (`context/context_error.md`, `final/summary.md`) and emits
+`run.failed`.
 
 ### Agent
 
@@ -140,7 +153,7 @@ artifact/delivery facade:
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `GET /harnesses`
 - `GET|POST /settings`
-- `GET|POST|DELETE /secrets`
+- `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
 Every endpoint is loopback + bearer-token guarded. Apply endpoints read
@@ -179,7 +192,9 @@ The macOS app is a native control surface over the control API:
 - composer exposes mode, eligible pool, primary harness, portfolio, model hint,
   budget, access profile, and deterministic gates;
 - Settings is a real macOS `Settings` scene (`Cmd+,`) with grouped preferences;
+- Settings edits app preferences and engine defaults exposed by `/settings`;
 - sidebar Operations contains live Budget, Harness Doctor, and Benchmarks;
+- run detail has explicit `Answer` and `Diagnostics` tabs backed by artifacts;
 - Review Queue is table-first;
 - Settings uses flat grouped sections and avoids floating black cutout shadows;
 - onboarding is native-first auth plus optional API-key fallback.

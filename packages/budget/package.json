@@ -1,6 +1,6 @@
 {
   "name": "@claudex/budget",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Budget governor: pre-call lease reservation, loop detection, 3-tier circuit breaker, portfolio routing, observed quota.",
   "type": "module",
   "main": "./dist/index.js",
