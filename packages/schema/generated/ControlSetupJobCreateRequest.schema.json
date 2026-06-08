@@ -1,0 +1,34 @@
+{
+  "$ref": "#/definitions/ControlSetupJobCreateRequest",
+  "definitions": {
+    "ControlSetupJobCreateRequest": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "enum": [
+            "codex",
+            "claude",
+            "cursor",
+            "opencode",
+            "raw"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "install",
+            "login",
+            "doctor",
+            "store_key"
+          ]
+        }
+      },
+      "required": [
+        "harness",
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

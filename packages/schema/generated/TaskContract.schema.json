@@ -60,8 +60,7 @@
                 "until_clean",
                 "plan",
                 "create",
-                "readonly_audit",
-                "benchmark"
+                "readonly_audit"
               ]
             }
           },

@@ -2,9 +2,9 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { HarnessAdapter } from "@claudex/core";
-import { ExecutionEngine, runDoctor } from "@claudex/core";
-import { ConformanceReport, HarnessManifest, type HarnessRunSpec } from "@claudex/schema";
+import type { HarnessAdapter } from "@claudexor/core";
+import { ExecutionEngine, runDoctor } from "@claudexor/core";
+import { ConformanceReport, HarnessManifest, type HarnessRunSpec } from "@claudexor/schema";
 import { createFakeHarness, FAKE_KINDS } from "./index.js";
 
 function registry() {
@@ -15,7 +15,7 @@ function registry() {
 
 describe("ExecutionEngine + fake harness", () => {
   it("runs fake-success end to end and writes artifacts", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudex-test-"));
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-test-"));
     const engine = new ExecutionEngine(registry());
     const res = await engine.run({ repoRoot: repo, prompt: "do it", harnessId: "fake-success" });
     expect(res.status).toBe("success");
@@ -28,7 +28,7 @@ describe("ExecutionEngine + fake harness", () => {
   });
 
   it("forwards access profile and model hint to the harness (agent)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudex-test-"));
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-test-"));
     let seen: HarnessRunSpec | undefined;
     const capture: HarnessAdapter = {
       id: "capture",
@@ -50,7 +50,7 @@ describe("ExecutionEngine + fake harness", () => {
   });
 
   it("marks fake-fail-tests as failed", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudex-test-"));
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-test-"));
     const engine = new ExecutionEngine(registry());
     const res = await engine.run({ repoRoot: repo, prompt: "x", harnessId: "fake-fail-tests" });
     expect(res.status).toBe("failed");

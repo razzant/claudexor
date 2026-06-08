@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
-import { matchAny } from "@claudex/context";
+import { matchAny } from "@claudexor/context";
 
 /** Default commands that always require a human (never auto-run). */
 export const DEFAULT_DENY_COMMANDS = ["git push --force", "git push -f", "rm -rf /", "rm -rf ~", ":(){:|:&};:"];

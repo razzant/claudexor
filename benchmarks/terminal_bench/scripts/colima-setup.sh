@@ -2,12 +2,12 @@
 # Start/resize Colima with generous resources and verify the Docker plumbing
 # Terminal-Bench needs (Compose v2 + buildx). buildx matters: the classic builder
 # fails on tasks whose Dockerfile uses `COPY <<EOT` heredocs.
-#   env overrides: CLAUDEX_COLIMA_CPU CLAUDEX_COLIMA_MEM(GiB) CLAUDEX_COLIMA_DISK(GiB)
+#   env overrides: CLAUDEXOR_COLIMA_CPU CLAUDEXOR_COLIMA_MEM(GiB) CLAUDEXOR_COLIMA_DISK(GiB)
 source "$(dirname "$0")/_common.sh"
 
-CPU="${CLAUDEX_COLIMA_CPU:-12}"
-MEM="${CLAUDEX_COLIMA_MEM:-64}"
-DISK="${CLAUDEX_COLIMA_DISK:-200}"
+CPU="${CLAUDEXOR_COLIMA_CPU:-12}"
+MEM="${CLAUDEXOR_COLIMA_MEM:-64}"
+DISK="${CLAUDEXOR_COLIMA_DISK:-200}"
 
 command -v colima >/dev/null 2>&1 || die "colima not installed (brew install colima docker docker-compose docker-buildx)"
 

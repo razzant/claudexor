@@ -1,5 +1,5 @@
 /**
- * @claudex/schema — single source of truth for all Claudex data shapes.
+ * @claudexor/schema — single source of truth for all Claudexor data shapes.
  *
  * Every other package imports types and validators from here. Do not define
  * competing shapes elsewhere. JSON Schema is generated from these Zod schemas

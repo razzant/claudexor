@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/event-log",
-  "version": "0.4.1",
+  "name": "@claudexor/event-log",
+  "version": "0.5.0",
   "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

@@ -4,8 +4,42 @@
     "ControlApplyRequest": {
       "type": "object",
       "properties": {
-        "repoRoot": {
-          "type": "string"
+        "target": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "original_project"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "project"
+                },
+                "root": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "root"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "default": {
+            "kind": "original_project"
+          }
         },
         "mode": {
           "type": "string",

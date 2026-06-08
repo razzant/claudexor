@@ -1,0 +1,41 @@
+{
+  "$ref": "#/definitions/ControlSpecQuestionsRequest",
+  "definitions": {
+    "ControlSpecQuestionsRequest": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "project"
+            },
+            "root": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "root"
+          ],
+          "additionalProperties": false
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "prompt",
+        "scope"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

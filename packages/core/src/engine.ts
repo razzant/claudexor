@@ -6,11 +6,11 @@ import type {
   RunEvent,
   RunStatus,
   WorkProduct as WorkProductType,
-} from "@claudex/schema";
-import { HarnessRunSpec, SCHEMA_VERSION, TaskContract, WorkProduct } from "@claudex/schema";
-import { ArtifactStore } from "@claudex/artifact-store";
-import { EventLog } from "@claudex/event-log";
-import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudex/util";
+} from "@claudexor/schema";
+import { HarnessRunSpec, SCHEMA_VERSION, TaskContract, WorkProduct } from "@claudexor/schema";
+import { ArtifactStore } from "@claudexor/artifact-store";
+import { EventLog } from "@claudexor/event-log";
+import { hashJson, newId, nowIso, redactSecrets, safeInvoke } from "@claudexor/util";
 import type { AdapterRegistry } from "./adapter.js";
 import { HarnessUnavailableError } from "./errors.js";
 

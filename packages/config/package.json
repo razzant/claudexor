@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/config",
-  "version": "0.4.1",
+  "name": "@claudexor/config",
+  "version": "0.5.0",
   "description": "Layered config loader (precedence + trust). Sensitive settings never from versioned repo config.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1"
   }
 }

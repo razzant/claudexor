@@ -6,7 +6,7 @@ import { git } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudex-ws-"));
+  const repo = mkdtempSync(join(tmpdir(), "claudexor-ws-"));
   await git(repo, ["init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# test\n");
   await git(repo, ["add", "-A"]);
@@ -58,8 +58,8 @@ describe("WorkspaceManager", () => {
   });
 
   it("in-place: works on a non-git dir, diffs via snapshot, and dispose never deletes the live tree", async () => {
-    // A plain (non-git) directory stands in for a benchmark container's /app.
-    const dir = mkdtempSync(join(tmpdir(), "claudex-inplace-"));
+    // A plain (non-git) directory stands in for a stateful external environment.
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-inplace-"));
     writeFileSync(join(dir, "a.txt"), "one\n");
     const mgr = new WorkspaceManager(dir);
 
@@ -82,6 +82,6 @@ describe("WorkspaceManager", () => {
     expect(existsSync(join(dir, "b.txt"))).toBe(true);
     // ...but the scoped envelope base (home + baseline) is removed.
     expect(existsSync(env.home_dir)).toBe(false);
-    expect(existsSync(join(dir, ".claudex", "workspaces", "t-ip", "converge"))).toBe(false);
+    expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
   });
 });

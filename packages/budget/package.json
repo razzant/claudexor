@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/budget",
-  "version": "0.4.1",
+  "name": "@claudexor/budget",
+  "version": "0.5.0",
   "description": "Budget governor: pre-call lease reservation, loop detection, 3-tier circuit breaker, portfolio routing, observed quota.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

@@ -1,0 +1,123 @@
+{
+  "$ref": "#/definitions/ControlSetupJobListResponse",
+  "definitions": {
+    "ControlSetupJobListResponse": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "harness": {
+                "type": "string",
+                "enum": [
+                  "codex",
+                  "claude",
+                  "cursor",
+                  "opencode",
+                  "raw"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "install",
+                  "login",
+                  "doctor",
+                  "store_key"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "waiting_for_input",
+                  "succeeded",
+                  "failed",
+                  "cancelled",
+                  "not_supported"
+                ]
+              },
+              "command": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "guideUrl": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "logPath": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "message": {
+                "type": "string"
+              },
+              "riskFlags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "requiresConfirmation": {
+                "type": "boolean",
+                "default": false
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "finishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "jobId",
+              "harness",
+              "action",
+              "state",
+              "message",
+              "createdAt"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "jobs"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

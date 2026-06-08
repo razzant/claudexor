@@ -1,9 +1,9 @@
-import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec, ProviderFamily } from "@claudex/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError } from "@claudex/core";
-import { resolveSecret } from "@claudex/secrets";
-import { nowIso } from "@claudex/util";
+import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError } from "@claudexor/core";
+import { resolveSecret } from "@claudexor/secrets";
+import { nowIso } from "@claudexor/util";
 import { parseChatCompletion } from "./parse.js";
 
 export interface RawApiConfig {
@@ -22,9 +22,9 @@ export interface RawApiConfig {
 export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const id = config.id ?? "raw-api";
   const providerFamily = config.providerFamily ?? "openai";
-  const baseUrl = config.baseUrl ?? process.env.CLAUDEX_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
-  const keyEnv = config.keyEnv ?? (process.env.CLAUDEX_RAWAPI_KEY ? "CLAUDEX_RAWAPI_KEY" : "OPENAI_API_KEY");
-  const defaultModel = config.defaultModel ?? process.env.CLAUDEX_RAWAPI_MODEL ?? "gpt-4o-mini";
+  const baseUrl = config.baseUrl ?? process.env.CLAUDEXOR_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
+  const keyEnv = config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
+  const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
 
   function apiKey(): string | undefined {
     return process.env[keyEnv] ?? resolveSecret("raw") ?? (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined);
@@ -42,7 +42,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
         version: defaultModel,
-        adapter_version: "0.4.1",
+        adapter_version: "0.5.0",
         provider_family: providerFamily,
         capabilities: {
           plan: true,

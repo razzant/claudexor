@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare per-instance repos for Claudex to solve: clone each task's repo into
+# Prepare per-instance repos for Claudexor to solve: clone each task's repo into
 # <workdir>/<instance_id> and check out its base_commit. Reads a tasks.jsonl produced
 # by export_tasks.py. Idempotent: existing instance dirs are skipped.
 #   usage: prepare-repos.sh <tasks.jsonl> <workdir>

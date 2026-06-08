@@ -1,12 +1,12 @@
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudex/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
-import { resolveSecret } from "@claudex/secrets";
-import { nowIso } from "@claudex/util";
+import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { resolveSecret } from "@claudexor/secrets";
+import { nowIso } from "@claudexor/util";
 import { parseClaudeEvent } from "./parse.js";
 
-const BIN = process.env.CLAUDEX_CLAUDE_BIN || "claude";
+const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -57,7 +57,7 @@ async function authStatusOk(): Promise<boolean> {
 }
 
 function anthropicApiKey(): string | null {
-  return process.env.CLAUDEX_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
+  return process.env.CLAUDEXOR_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
 }
 
 export function createClaudeAdapter(): HarnessAdapter {
@@ -68,7 +68,7 @@ export function createClaudeAdapter(): HarnessAdapter {
       const version = await detectVersion();
       if (version === null) {
         throw new HarnessUnavailableError(
-          "claude CLI not found on PATH (set CLAUDEX_CLAUDE_BIN to override)",
+          "claude CLI not found on PATH (set CLAUDEXOR_CLAUDE_BIN to override)",
         );
       }
       const apiKey = anthropicApiKey() !== null;
@@ -78,7 +78,7 @@ export function createClaudeAdapter(): HarnessAdapter {
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.1",
+        adapter_version: "0.5.0",
         provider_family: "anthropic",
         capabilities: {
           plan: true,
@@ -125,7 +125,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           harness_id: "claude",
           status: "unavailable",
           checks: [{ id: "installed", status: "fail", detail: "claude not found on PATH" }],
-          reasons: ["claude CLI not found (install Claude Code or set CLAUDEX_CLAUDE_BIN)"],
+          reasons: ["claude CLI not found (install Claude Code or set CLAUDEXOR_CLAUDE_BIN)"],
         });
       }
       const apiKey = anthropicApiKey() !== null;
@@ -137,17 +137,17 @@ export function createClaudeAdapter(): HarnessAdapter {
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "isolated Claudex envelopes require an anthropic key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "isolated Claudexor envelopes require an anthropic key fallback" },
         ],
         enabled_intents: ok
-          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
+          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"]
           : [],
         disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
         reasons: ok
           ? []
           : authed
-            ? ["native Claude login is present, but isolated Claudex runs require a stored anthropic API key fallback"]
-            : ["not authenticated (run `claude /login` for native use or store anthropic API key fallback for Claudex runs)"],
+            ? ["native Claude login is present, but isolated Claudexor runs require a stored anthropic API key fallback"]
+            : ["not authenticated (run `claude /login` for native use or store anthropic API key fallback for Claudexor runs)"],
       });
     },
 

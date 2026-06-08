@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { newId } from "@claudex/util";
+import { newId } from "@claudexor/util";
 import { EventBus } from "./event-bus.js";
 
 /** Context handed to the runner so a run can be observed live and cancelled. */
@@ -26,7 +26,7 @@ export interface ControlApiOptions {
   /**
    * How long after a run completes to keep its in-memory handle + event buffer for
    * reconnecting clients before eviction (ms). Bounds memory for a long-lived service.
-   * Default 5 min. Canonical history lives in .claudex/runs; late clients get a `gap`.
+   * Default 5 min. Canonical history lives in .claudexor/runs; late clients get a `gap`.
    */
   runRetentionMs?: number;
 }
@@ -69,7 +69,7 @@ function originIsLoopback(origin: string | undefined): boolean {
  * DURABLE job scheduler (unix socket, crash-persistent registry, queue); this surface
  * is the LIVE observation viewport (HTTP/SSE, ephemeral in-memory fan-out). They are
  * complementary, not duplicates. `GET /runs` here lists only in-process live runs; the
- * durable cross-restart list is the daemon's. When control-api is wired into claudexd,
+ * durable cross-restart list is the daemon's. When control-api is wired into claudexord,
  * its injected runner will delegate to the daemon and the two `RunContext` shapes will
  * be unified into packages/schema.
  */

@@ -6,7 +6,7 @@
  * (not "exact") signal — honest about its provenance.
  *
  * Prices are approximate USD per 1M tokens and can drift; override per model via
- * env: CLAUDEX_CODEX_PRICE_INPUT / _OUTPUT / _CACHED (USD per 1M tokens).
+ * env: CLAUDEXOR_CODEX_PRICE_INPUT / _OUTPUT / _CACHED (USD per 1M tokens).
  */
 export interface TokenUsage {
   input_tokens?: number;
@@ -41,9 +41,9 @@ function envNum(name: string): number | undefined {
 export function priceForModel(model: string | null | undefined): Price {
   const base = TABLE.find((e) => model && e.match.test(model))?.price ?? DEFAULT_PRICE;
   return {
-    input: envNum("CLAUDEX_CODEX_PRICE_INPUT") ?? base.input,
-    output: envNum("CLAUDEX_CODEX_PRICE_OUTPUT") ?? base.output,
-    cached: envNum("CLAUDEX_CODEX_PRICE_CACHED") ?? base.cached,
+    input: envNum("CLAUDEXOR_CODEX_PRICE_INPUT") ?? base.input,
+    output: envNum("CLAUDEXOR_CODEX_PRICE_OUTPUT") ?? base.output,
+    cached: envNum("CLAUDEXOR_CODEX_PRICE_CACHED") ?? base.cached,
   };
 }
 

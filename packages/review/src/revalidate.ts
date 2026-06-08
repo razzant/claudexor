@@ -1,4 +1,4 @@
-import type { FindingStatus, ReviewFinding } from "@claudex/schema";
+import type { FindingStatus, ReviewFinding } from "@claudexor/schema";
 
 export interface RevalidateDecision {
   status: FindingStatus;

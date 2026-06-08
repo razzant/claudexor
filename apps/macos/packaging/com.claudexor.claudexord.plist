@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for the Claudexor engine-service (claudexord). Install per-user at
+  ~/Library/LaunchAgents/com.claudexor.claudexord.plist, then `launchctl load` it (or let the
+  app offer to install it). The app itself does NOT need this — it will connect to claudexord
+  whenever it is running — but a LaunchAgent keeps the durable engine alive across logins.
+
+  Substitute the __PLACEHOLDERS__ for your install (the build script / installer does this):
+    __NODE_BIN__   absolute path to the notarized Node (e.g. ~/.claudexor/node/bin/node)
+    __CLAUDEXORD_JS__ absolute path to packages/cli/dist/claudexord.js (or a bundled copy)
+    __HOME__       the user's home directory
+
+  Modern alternative: SMAppService.agent(plistName:) registers this from inside the app
+  bundle without writing to ~/Library/LaunchAgents directly. See README.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudexor.claudexord</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NODE_BIN__</string>
+        <string>__CLAUDEXORD_JS__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.claudexor/daemon/claudexord.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.claudexor/daemon/claudexord.log</string>
+</dict>
+</plist>

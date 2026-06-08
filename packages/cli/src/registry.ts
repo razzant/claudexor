@@ -1,11 +1,11 @@
-import type { AdapterRegistry } from "@claudex/core";
-import { HarnessGateway } from "@claudex/gateway";
-import { createClaudeAdapter } from "@claudex/harness-claude";
-import { createCodexAdapter } from "@claudex/harness-codex";
-import { createCursorAdapter } from "@claudex/harness-cursor";
-import { FAKE_KINDS, createFakeHarness } from "@claudex/harness-fake";
-import { createOpenCodeAdapter } from "@claudex/harness-opencode";
-import { createRawApiAdapter } from "@claudex/harness-raw-api";
+import type { AdapterRegistry } from "@claudexor/core";
+import { HarnessGateway } from "@claudexor/gateway";
+import { createClaudeAdapter } from "@claudexor/harness-claude";
+import { createCodexAdapter } from "@claudexor/harness-codex";
+import { createCursorAdapter } from "@claudexor/harness-cursor";
+import { FAKE_KINDS, createFakeHarness } from "@claudexor/harness-fake";
+import { createOpenCodeAdapter } from "@claudexor/harness-opencode";
+import { createRawApiAdapter } from "@claudexor/harness-raw-api";
 
 export interface RegistryOptions {
   /** Register the fake-harness suite (so `--harness fake-*` works). Default true. */

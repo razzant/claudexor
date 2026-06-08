@@ -2,9 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureCodexApiAuth } from "./index.js";
+import { codexExecArgs, ensureCodexApiAuth } from "./index.js";
 
-const KEY_VARS = ["CLAUDEX_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY", "CLAUDEX_DISABLE_STORED_SECRETS"] as const;
+const KEY_VARS = ["CLAUDEXOR_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY", "CLAUDEXOR_DISABLE_STORED_SECRETS"] as const;
 
 describe("ensureCodexApiAuth", () => {
   let home: string;
@@ -14,7 +14,7 @@ describe("ensureCodexApiAuth", () => {
     home = mkdtempSync(join(tmpdir(), "codex-home-"));
     saved = Object.fromEntries(KEY_VARS.map((k) => [k, process.env[k]]));
     for (const k of KEY_VARS) delete process.env[k];
-    process.env.CLAUDEX_DISABLE_STORED_SECRETS = "1";
+    process.env.CLAUDEXOR_DISABLE_STORED_SECRETS = "1";
   });
 
   afterEach(() => {
@@ -34,9 +34,9 @@ describe("ensureCodexApiAuth", () => {
     expect(parsed).toEqual({ auth_mode: "apikey", OPENAI_API_KEY: "sk-test-123" });
   });
 
-  it("prefers CLAUDEX_CODEX_API_KEY over OPENAI_API_KEY", () => {
+  it("prefers CLAUDEXOR_CODEX_API_KEY over OPENAI_API_KEY", () => {
     process.env.OPENAI_API_KEY = "sk-generic";
-    process.env.CLAUDEX_CODEX_API_KEY = "sk-scoped";
+    process.env.CLAUDEXOR_CODEX_API_KEY = "sk-scoped";
     ensureCodexApiAuth({ CODEX_HOME: home });
     const parsed = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"));
     expect(parsed.OPENAI_API_KEY).toBe("sk-scoped");
@@ -60,5 +60,20 @@ describe("ensureCodexApiAuth", () => {
     ensureCodexApiAuth({ CODEX_HOME: home });
     const parsed = JSON.parse(readFileSync(authPath, "utf8"));
     expect(parsed.auth_mode).toBe("chatgpt");
+  });
+
+  it("forwards model and reasoning effort as separate Codex config", () => {
+    expect(codexExecArgs({ access: "readonly", model_hint: "gpt-5.5", effort_hint: "xhigh", prompt: "review" })).toEqual([
+      "exec",
+      "--json",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "-m",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="xhigh"',
+      "review",
+    ]);
   });
 });

@@ -1,5 +1,5 @@
-import { runCapture } from "@claudex/core";
-import { newId } from "@claudex/util";
+import { runCapture } from "@claudexor/core";
+import { newId } from "@claudexor/util";
 
 async function git(repo: string, args: string[], input?: string) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
@@ -23,6 +23,7 @@ export async function applyPatch(repoRoot: string, patch: string): Promise<Apply
 }
 
 export type DeliverMode = "artifact_only" | "apply" | "branch" | "commit" | "pr";
+export const DELIVER_MODES = new Set<DeliverMode>(["artifact_only", "apply", "branch", "commit", "pr"]);
 
 export interface DeliverOptions {
   mode: DeliverMode;
@@ -46,13 +47,16 @@ export interface DeliverResult {
  * mutation).
  */
 export async function deliver(repoRoot: string, patch: string, opts: DeliverOptions): Promise<DeliverResult> {
+  if (!DELIVER_MODES.has(opts.mode)) return { mode: "artifact_only", applied: false, detail: `unsupported delivery mode: ${opts.mode}` };
   if (opts.mode === "artifact_only") {
     return { mode: "artifact_only", applied: false, detail: "patch emitted; working tree untouched" };
   }
+  const before = await git(repoRoot, ["status", "--porcelain"]);
+  if (before.stdout.trim()) return { mode: opts.mode, applied: false, detail: "working tree is dirty; refusing delivery mutation" };
 
   let branch = opts.branch;
   if (opts.mode === "branch" || opts.mode === "pr") {
-    branch = branch ?? `claudex/${newId("wp")}`;
+    branch = branch ?? `claudexor/${newId("wp")}`;
     const cb = await git(repoRoot, ["checkout", "-b", branch]);
     if (cb.code !== 0) return { mode: opts.mode, applied: false, detail: `branch failed: ${cb.stderr.trim()}` };
   }
@@ -61,19 +65,19 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
   if (!ap.ok) return { mode: opts.mode, applied: false, branch, detail: `apply failed: ${ap.stderr.trim()}` };
   if (opts.mode === "apply") return { mode: "apply", applied: true };
 
-  await git(repoRoot, ["add", "-A"]);
-  const message = opts.message ?? "claudex: apply work product";
+  await stagePatchPaths(repoRoot, patch);
+  const message = opts.message ?? "claudexor: apply work product";
   const commitRes = await git(repoRoot, [
     "-c",
-    "user.email=claudex@local",
+    "user.email=claudexor@local",
     "-c",
-    "user.name=claudex",
+    "user.name=claudexor",
     "commit",
     "-m",
     message,
   ]);
   if (commitRes.code !== 0) {
-    return { mode: opts.mode, applied: true, branch, detail: `commit failed: ${commitRes.stderr.trim()}` };
+    return { mode: opts.mode, applied: false, branch, detail: `commit failed: ${commitRes.stderr.trim()}` };
   }
   const commit = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
 
@@ -84,10 +88,18 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
   // pr
   const push = await git(repoRoot, ["push", "-u", "origin", branch as string]);
   if (push.code !== 0) {
-    return { mode: "pr", applied: true, branch, commit, detail: `push failed: ${push.stderr.trim()}` };
+    return { mode: "pr", applied: false, branch, commit, detail: `push failed: ${push.stderr.trim()}` };
   }
-  const ghArgs = ["pr", "create", "--head", branch as string, "--title", message, "--body", "Created by Claudex."];
+  const ghArgs = ["pr", "create", "--head", branch as string, "--title", message, "--body", "Created by Claudexor."];
   const pr = await runCapture("gh", ghArgs, { cwd: repoRoot, timeoutMs: 60_000 }).catch(() => null);
   const prUrl = pr && pr.code === 0 ? pr.stdout.trim() : undefined;
-  return { mode: "pr", applied: true, branch, commit, prUrl, detail: prUrl ? undefined : "gh pr create unavailable" };
+  return { mode: "pr", applied: Boolean(prUrl), branch, commit, prUrl, detail: prUrl ? undefined : "gh pr create unavailable" };
+}
+
+async function stagePatchPaths(repoRoot: string, patch: string): Promise<void> {
+  if (!patch.trim()) return;
+  // The worktree was required to be clean before apply, so all post-apply
+  // changes belong to this patch. `git add -A` is the only simple staging path
+  // that handles additions, edits, renames, and deletions consistently.
+  await git(repoRoot, ["add", "-A"]);
 }

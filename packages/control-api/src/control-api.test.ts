@@ -5,7 +5,7 @@ import { DaemonControlApiServer, type DaemonControlApiOptions, type DaemonFacade
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { noProjectRepoRoot, sha256 } from "@claudex/util";
+import { sha256 } from "@claudexor/util";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -250,10 +250,10 @@ describe("ControlApiServer", () => {
 
 describe("DaemonControlApiServer", () => {
   const token = "daemon-token-123";
-  const startAgentBody = () => JSON.stringify({ prompt: "hello", mode: "agent", repoRoot: tmpdir() });
+  const startAgentBody = () => JSON.stringify({ prompt: "hello", mode: "agent", scope: { kind: "project", root: tmpdir() } });
 
   function fakeDaemon(): { daemon: DaemonFacadeClient; record: DaemonRunRecord; cancelled: string[] } {
-    const runDir = mkdtempSync(join(tmpdir(), "claudex-control-run-"));
+    const runDir = mkdtempSync(join(tmpdir(), "claudexor-control-run-"));
     mkdirSync(runDir, { recursive: true });
     mkdirSync(join(runDir, "final"), { recursive: true });
     mkdirSync(join(runDir, "arbitration"), { recursive: true });
@@ -264,7 +264,7 @@ describe("DaemonControlApiServer", () => {
     writeFileSync(join(runDir, "final", "patch.diff"), patch);
     writeFileSync(join(runDir, "final", "work_product.yaml"), `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`);
     writeFileSync(join(runDir, "context", "task.yaml"), `task_id: task-d1\nrepo:\n  root: ${JSON.stringify(runDir)}\n  base_ref: HEAD\n`);
-    writeFileSync(join(runDir, "arbitration", "decision.yaml"), "winner: a01\nstatus: success\nconfidence: 0.9\n");
+    writeFileSync(join(runDir, "arbitration", "decision.yaml"), "winner: a01\nstatus: success\noutcome: ready\n");
     writeFileSync(
       join(runDir, "reviews", "a01.yaml"),
       [
@@ -298,7 +298,7 @@ describe("DaemonControlApiServer", () => {
       runId: "run-d1",
       taskId: "task-d1",
       runDir,
-      params: { prompt: "hello", mode: "agent", harnesses: ["codex"], portfolio: "subscription-first" },
+      params: { prompt: "hello", mode: "agent", scope: { kind: "project", root: runDir, context: "auto" }, harnesses: ["codex"], portfolio: "subscription-first" },
     };
     const cancelled: string[] = [];
     const daemon: DaemonFacadeClient = {
@@ -352,28 +352,28 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: "2+2?", mode: "ask", harnesses: ["codex"] }),
       });
       expect(start.status).toBe(200);
-      expect(enqueued).toMatchObject({ mode: "ask", repoRoot: noProjectRepoRoot(), contextMode: "off" });
+      expect(enqueued).toMatchObject({ mode: "ask", scope: { kind: "none" }, execution: { isolation: "envelope" } });
     });
   });
 
   it("summarizes no-project Ask runs without exposing the synthetic repo root as a project", async () => {
     const { daemon, record } = fakeDaemon();
-    record.params = { prompt: "2+2?", mode: "ask", repoRoot: noProjectRepoRoot(), contextMode: "off" };
+    record.params = { prompt: "2+2?", mode: "ask", scope: { kind: "none" } };
     await withDaemonServer(daemon, async (base) => {
       const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
-        runs: { project: { repoRoot: string | null; projectName: string | null; contextMode: string } }[];
+        runs: { project: { kind: string; root: string | null; projectName: string | null; context: string } }[];
       };
-      expect(list.runs[0]?.project).toEqual({ repoRoot: null, projectName: null, contextMode: "off" });
+      expect(list.runs[0]?.project).toEqual({ kind: "none", root: null, projectName: null, context: "off" });
       const detail = (await (await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
-        summary: { project: { repoRoot: string | null; projectName: string | null; contextMode: string } };
+        summary: { project: { kind: string; root: string | null; projectName: string | null; context: string } };
       };
-      expect(detail.summary.project).toEqual({ repoRoot: null, projectName: null, contextMode: "off" });
+      expect(detail.summary.project).toEqual({ kind: "none", root: null, projectName: null, context: "off" });
     });
   });
 
-  it("rejects contextMode off when a project repoRoot is supplied", async () => {
+  it("rejects legacy repoRoot/contextMode fields instead of accepting the old run DTO", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudex-proj-"));
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-proj-"));
     await withDaemonServer(daemon, async (base) => {
       const start = await fetch(`${base}/runs`, {
         method: "POST",
@@ -381,12 +381,14 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: "2+2?", mode: "ask", repoRoot: repo, contextMode: "off", harnesses: ["codex"] }),
       });
       expect(start.status).toBe(400);
-      expect(await start.text()).toContain("contextMode 'off' is only supported for Ask without a repoRoot");
+      const text = await start.text();
+      expect(text).toContain("repoRoot");
+      expect(text).toContain("contextMode");
     });
     rmSync(repo, { recursive: true, force: true });
   });
 
-  it("rejects project-aware modes without a repoRoot instead of falling back to cwd", async () => {
+  it("rejects project-aware modes without a project scope instead of falling back to cwd", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
       const start = await fetch(`${base}/runs`, {
@@ -395,28 +397,28 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: "edit this", mode: "agent", harnesses: ["codex"] }),
       });
       expect(start.status).toBe(400);
-      expect(await start.text()).toContain("repoRoot is required for mode 'agent'");
+      expect(await start.text()).toContain("project scope is required for mode 'agent'");
     });
   });
 
-  it("rejects relative repoRoot values at run-start and apply boundaries", async () => {
+  it("rejects relative project roots at run-start and apply boundaries", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
       const start = await fetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: "edit this", mode: "agent", repoRoot: ".", harnesses: ["codex"] }),
+        body: JSON.stringify({ prompt: "edit this", mode: "agent", scope: { kind: "project", root: "." }, harnesses: ["codex"] }),
       });
       expect(start.status).toBe(400);
-      expect(await start.text()).toContain("repoRoot must be an absolute path");
+      expect(await start.text()).toContain("project root must be an absolute path");
 
       const check = await fetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ repoRoot: "." }),
+        body: JSON.stringify({ target: { kind: "project", root: "." } }),
       });
       expect(check.status).toBe(400);
-      expect(await check.text()).toContain("repoRoot must be an absolute path");
+      expect(await check.text()).toContain("project root must be an absolute path");
     });
   });
 
@@ -490,7 +492,7 @@ describe("DaemonControlApiServer", () => {
           harness: "claude",
           action: "login",
           status: "prepared",
-          command: "claude /login && claudex doctor --harness claude",
+          command: "claude /login && claudexor doctor --harness claude",
         });
         expect(body.guideUrl).toBe("https://docs.anthropic.com/en/docs/claude-code");
         expect(seen).toEqual([{ harness: "claude", action: "login" }]);
@@ -516,6 +518,13 @@ describe("DaemonControlApiServer", () => {
           body: JSON.stringify({ harness: "codex", action: "login", token: "sk-" + "d".repeat(24) }),
         });
         expect(secretBody.status).toBe(400);
+
+        const legacyExtra = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "codex", action: "login", repoRoot: "/repo", contextMode: "off", inPlace: true }),
+        });
+        expect(legacyExtra.status).toBe(400);
       },
       undefined,
       {
@@ -526,11 +535,139 @@ describe("DaemonControlApiServer", () => {
             harness: p.harness,
             action: p.action,
             status: "prepared",
-            command: "claude /login && claudex doctor --harness claude",
+            command: "claude /login && claudexor doctor --harness claude",
             guideUrl: "https://docs.anthropic.com/en/docs/claude-code",
-            logPath: "/tmp/claudex-setup.log",
+            logPath: "/tmp/claudexor-setup.log",
             message: "prepared",
           };
+        },
+      },
+    );
+  });
+
+  it("validates and forwards setup job lifecycle through typed control-api services", async () => {
+    const { daemon } = fakeDaemon();
+    const job = {
+      jobId: "setup-1",
+      harness: "cursor",
+      action: "install",
+      state: "waiting_for_input",
+      command: "curl https://cursor.com/install -fsS | bash",
+      guideUrl: "https://docs.cursor.com/cli",
+      logPath: "/tmp/claudexor-setup-1.log",
+      message: "confirm installer",
+      riskFlags: ["network_download", "shell_pipe"],
+      requiresConfirmation: true,
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      finishedAt: null,
+    };
+    const seen: unknown[] = [];
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const created = await fetch(`${base}/setup/jobs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "cursor", action: "install" }),
+        });
+        expect(created.status).toBe(200);
+        expect(await created.json()).toMatchObject({ jobId: "setup-1", requiresConfirmation: true });
+        expect(seen).toEqual([{ harness: "cursor", action: "install" }]);
+
+        const listed = await fetch(`${base}/setup/jobs`, { headers: { authorization: `Bearer ${token}` } });
+        expect(listed.status).toBe(200);
+        expect((await listed.json()) as unknown).toMatchObject({ jobs: [{ jobId: "setup-1" }] });
+
+        const status = await fetch(`${base}/setup/jobs/setup-1`, { headers: { authorization: `Bearer ${token}` } });
+        expect(status.status).toBe(200);
+        expect(await status.json()).toMatchObject({ jobId: "setup-1", state: "waiting_for_input" });
+
+        const events = await fetch(`${base}/setup/jobs/setup-1/events`, { headers: { authorization: `Bearer ${token}` } });
+        expect(events.status).toBe(200);
+        expect(await events.text()).toContain("event: setup");
+
+        const confirmed = await fetch(`${base}/setup/jobs/setup-1/confirm`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: "{}",
+        });
+        expect(confirmed.status).toBe(200);
+        expect(await confirmed.json()).toMatchObject({ jobId: "setup-1", state: "running" });
+
+        const cancelled = await fetch(`${base}/setup/jobs/setup-1/cancel`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(cancelled.status).toBe(200);
+        expect(await cancelled.json()).toMatchObject({ jobId: "setup-1", state: "cancelled" });
+      },
+      undefined,
+      {
+        createSetupJob: async (input) => {
+          seen.push(input);
+          return job;
+        },
+        listSetupJobs: async () => ({ jobs: [job] }),
+        setupJobStatus: async () => job,
+        confirmSetupJob: async () => ({ ...job, state: "running", requiresConfirmation: false, startedAt: new Date().toISOString(), message: "running" }),
+        cancelSetupJob: async () => ({ ...job, state: "cancelled", finishedAt: new Date().toISOString(), message: "cancelled" }),
+      },
+    );
+  });
+
+  it("validates spec question/freeze requests with strict scope DTOs", async () => {
+    const { daemon } = fakeDaemon();
+    const seen: unknown[] = [];
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const validQuestions = await fetch(`${base}/spec/questions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "Plan this", scope: { kind: "project", root: "/tmp/project" }, harnesses: ["codex"] }),
+        });
+        expect(validQuestions.status).toBe(200);
+        expect(await validQuestions.json()).toMatchObject({ questions: [] });
+
+        for (const body of [
+          { prompt: "legacy", repoRoot: "/tmp/project" },
+          { prompt: "legacy", scope: { kind: "project", root: "/tmp/project" }, contextMode: "off" },
+          { prompt: "legacy", scope: { kind: "project", root: "/tmp/project" }, inPlace: true },
+        ]) {
+          const bad = await fetch(`${base}/spec/questions`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify(body),
+          });
+          expect(bad.status).toBe(400);
+        }
+
+        const validFreeze = await fetch(`${base}/spec/freeze`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "Freeze this", scope: { kind: "project", root: "/tmp/project" }, plan: "accepted plan" }),
+        });
+        expect(validFreeze.status).toBe(200);
+        expect(await validFreeze.json()).toMatchObject({ specId: "spec-1" });
+
+        const badFreeze = await fetch(`${base}/spec/freeze`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "legacy", scope: { kind: "project", root: "/tmp/project" }, plan: "x", inPlace: true }),
+        });
+        expect(badFreeze.status).toBe(400);
+        expect(seen).toHaveLength(2);
+      },
+      undefined,
+      {
+        specQuestions: async (input) => {
+          seen.push(input);
+          return { planRunId: "run-plan", planDir: "/tmp/run-plan", questions: [] };
+        },
+        specFreeze: async (input) => {
+          seen.push(input);
+          return { specId: "spec-1", specDir: "/tmp/spec-1", specHash: "sha256:" + "a".repeat(64), changes: [] };
         },
       },
     );
@@ -735,7 +872,7 @@ describe("DaemonControlApiServer", () => {
 
   it("refuses symlink artifact escapes", async () => {
     const { daemon, record } = fakeDaemon();
-    const outside = join(tmpdir(), `claudex-outside-${Date.now()}.txt`);
+    const outside = join(tmpdir(), `claudexor-outside-${Date.now()}.txt`);
     writeFileSync(outside, "outside secret\n");
     symlinkSync(outside, join(record.runDir as string, "final", "escape.txt"));
     await withDaemonServer(daemon, async (base) => {
@@ -749,7 +886,7 @@ describe("DaemonControlApiServer", () => {
 
   it("refuses fixed apply artifacts through intermediate symlink directories", async () => {
     const { daemon, record } = fakeDaemon();
-    const outside = mkdtempSync(join(tmpdir(), "claudex-outside-final-"));
+    const outside = mkdtempSync(join(tmpdir(), "claudexor-outside-final-"));
     writeFileSync(join(outside, "patch.diff"), "diff --git a/evil b/evil\n");
     rmSync(join(record.runDir as string, "final"), { recursive: true, force: true });
     symlinkSync(outside, join(record.runDir as string, "final"), "dir");

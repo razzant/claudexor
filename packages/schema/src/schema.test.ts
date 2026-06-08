@@ -3,6 +3,11 @@ import {
   ControlHarnessSetupRequest,
   ControlHarnessSetupResponse,
   ControlRunStartRequest,
+  ControlSetupJob,
+  ControlSetupJobConfirmRequest,
+  ControlSetupJobCreateRequest,
+  ControlSpecFreezeRequest,
+  ControlSpecQuestionsRequest,
   HarnessManifest,
   ReviewFinding,
   RouteProof,
@@ -99,10 +104,18 @@ describe("Control API schemas", () => {
     const req = ControlRunStartRequest.parse({
       prompt: "review it",
       mode: "best_of_n",
-      repoRoot: "/repo",
+      scope: { kind: "project", root: "/repo" },
       reviewerEfforts: { anthropic: "max" },
     });
+    expect(req.scope).toEqual({ kind: "project", root: "/repo", context: "auto" });
     expect(req.reviewerEfforts?.anthropic).toBe("max");
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "legacy",
+        mode: "best_of_n",
+        repoRoot: "/repo",
+      }),
+    ).toThrow();
     expect(() =>
       ControlRunStartRequest.parse({
         prompt: "bad",
@@ -131,6 +144,7 @@ describe("Control API schemas", () => {
     expect(req.action).toBe("login");
     expect(() => ControlHarnessSetupRequest.parse({ harness: "unknown", action: "login" })).toThrow();
     expect(() => ControlHarnessSetupRequest.parse({ harness: "codex", action: "rm_rf" })).toThrow();
+    expect(() => ControlHarnessSetupRequest.parse({ harness: "codex", repoRoot: "/repo" })).toThrow();
 
     const res = ControlHarnessSetupResponse.parse({
       harness: "codex",
@@ -149,5 +163,28 @@ describe("Control API schemas", () => {
         message: "prepared",
       }),
     ).toThrow();
+
+    const jobReq = ControlSetupJobCreateRequest.parse({ harness: "cursor", action: "install" });
+    expect(jobReq).toEqual({ harness: "cursor", action: "install" });
+    expect(ControlSetupJobCreateRequest.parse({ harness: "codex", action: "store_key" })).toEqual({ harness: "codex", action: "store_key" });
+    const job = ControlSetupJob.parse({
+      jobId: "setup-1",
+      harness: "cursor",
+      action: "install",
+      state: "waiting_for_input",
+      message: "confirm",
+      riskFlags: ["network_download"],
+      requiresConfirmation: true,
+      createdAt: new Date().toISOString(),
+    });
+    expect(job.command).toBeNull();
+    expect(job.finishedAt).toBeNull();
+    expect(ControlSetupJobConfirmRequest.parse({}).confirmed).toBe(true);
+
+    const specReq = ControlSpecQuestionsRequest.parse({ prompt: "scope it", scope: { kind: "project", root: "/repo" } });
+    expect(specReq.scope.root).toBe("/repo");
+    expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" })).toThrow();
+    expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, contextMode: "off" })).toThrow();
+    expect(() => ControlSpecFreezeRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, inPlace: true, plan: "x" })).toThrow();
   });
 });

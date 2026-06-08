@@ -18,6 +18,7 @@
           "type": "string",
           "enum": [
             "install_guide",
+            "install",
             "login",
             "doctor"
           ]

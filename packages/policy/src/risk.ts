@@ -1,5 +1,5 @@
-import type { RiskLevel } from "@claudex/schema";
-import { matchAny } from "@claudex/context";
+import type { RiskLevel } from "@claudexor/schema";
+import { matchAny } from "@claudexor/context";
 
 /**
  * Risk is classified from typed diff/path metadata (and optional LLM judgment

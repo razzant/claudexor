@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/review",
-  "version": "0.4.1",
+  "name": "@claudexor/review",
+  "version": "0.5.0",
   "description": "Deterministic gates, cross-family review, finding revalidation, route proof, convergence, readiness-debt.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/core": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/core": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

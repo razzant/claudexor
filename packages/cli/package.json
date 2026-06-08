@@ -1,13 +1,13 @@
 {
-  "name": "@claudex/cli",
-  "version": "0.4.1",
-  "description": "Claudex CLI (claudex). Thin surface over the ExecutionEngine.",
+  "name": "@claudexor/cli",
+  "version": "0.5.0",
+  "description": "Claudexor CLI (claudexor). Thin surface over the ExecutionEngine.",
   "type": "module",
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
   "bin": {
-    "claudex": "./dist/cli.js",
-    "claudexd": "./dist/claudexd.js"
+    "claudexor": "./dist/cli.js",
+    "claudexord": "./dist/claudexord.js"
   },
   "files": ["dist"],
   "scripts": {
@@ -15,26 +15,25 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/acp-server": "workspace:*",
-    "@claudex/artifact-store": "workspace:*",
-    "@claudex/benchmark": "workspace:*",
-    "@claudex/config": "workspace:*",
-    "@claudex/control-api": "workspace:*",
-    "@claudex/delivery": "workspace:*",
-    "@claudex/core": "workspace:*",
-    "@claudex/daemon": "workspace:*",
-    "@claudex/mcp-server": "workspace:*",
-    "@claudex/gateway": "workspace:*",
-    "@claudex/interview": "workspace:*",
-    "@claudex/orchestrator": "workspace:*",
-    "@claudex/harness-claude": "workspace:*",
-    "@claudex/harness-codex": "workspace:*",
-    "@claudex/harness-cursor": "workspace:*",
-    "@claudex/harness-fake": "workspace:*",
-    "@claudex/harness-opencode": "workspace:*",
-    "@claudex/harness-raw-api": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/secrets": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/acp-server": "workspace:*",
+    "@claudexor/artifact-store": "workspace:*",
+    "@claudexor/config": "workspace:*",
+    "@claudexor/control-api": "workspace:*",
+    "@claudexor/delivery": "workspace:*",
+    "@claudexor/core": "workspace:*",
+    "@claudexor/daemon": "workspace:*",
+    "@claudexor/mcp-server": "workspace:*",
+    "@claudexor/gateway": "workspace:*",
+    "@claudexor/interview": "workspace:*",
+    "@claudexor/orchestrator": "workspace:*",
+    "@claudexor/harness-claude": "workspace:*",
+    "@claudexor/harness-codex": "workspace:*",
+    "@claudexor/harness-cursor": "workspace:*",
+    "@claudexor/harness-fake": "workspace:*",
+    "@claudexor/harness-opencode": "workspace:*",
+    "@claudexor/harness-raw-api": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/secrets": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

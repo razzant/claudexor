@@ -1,5 +1,5 @@
-import type { HarnessEvent } from "@claudex/schema";
-import { nowIso } from "@claudex/util";
+import type { HarnessEvent } from "@claudexor/schema";
+import { nowIso } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;

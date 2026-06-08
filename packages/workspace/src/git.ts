@@ -1,4 +1,4 @@
-import { runCapture, WorkspaceError } from "@claudex/core";
+import { runCapture, WorkspaceError } from "@claudexor/core";
 
 export async function git(repo: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const r = await runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000 });
@@ -42,6 +42,7 @@ export async function worktreePrune(repo: string): Promise<void> {
 
 /** Stage everything (so untracked files appear) and return the diff vs the base commit. */
 export async function diffStaged(worktreePath: string): Promise<string> {
+  await runCapture("rm", ["-rf", ".claudexor-review-evidence"], { cwd: worktreePath, timeoutMs: 10_000 }).catch(() => null);
   await git(worktreePath, ["add", "-A"]);
   return (await git(worktreePath, ["diff", "--cached"])).stdout;
 }

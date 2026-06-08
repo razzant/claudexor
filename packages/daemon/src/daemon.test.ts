@@ -11,7 +11,7 @@ function sleep(ms: number): Promise<void> {
 
 describe("daemon", () => {
   it("health, enqueue -> run via injected runner, status, auth, shutdown", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const token = "tkn-123";
     let ran = 0;
@@ -49,7 +49,7 @@ describe("daemon", () => {
   });
 
   it("runs jobs concurrently up to the limit, surfaces runId, and cancels a running job via signal", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const token = "tkn-abc";
     let active = 0;
@@ -103,7 +103,7 @@ describe("daemon", () => {
   }, 20000);
 
   it("persists the job registry across restart (durable run list)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const persistPath = join(dir, "jobs.json");
     const token = "tkn-persist";
@@ -144,7 +144,7 @@ describe("daemon", () => {
   }, 20000);
 
   it("persists runId at run start and never writes the raw result to disk", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const persistPath = join(dir, "jobs.json");
     const token = "tkn-redact";
@@ -183,7 +183,7 @@ describe("daemon", () => {
   }, 20000);
 
   it("maps non-success orchestrator results to honest terminal job states", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-daemon-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const token = "tkn-status";
     const server = new DaemonServer({

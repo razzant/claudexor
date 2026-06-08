@@ -1,4 +1,4 @@
-import type { Portfolio, ProviderFamily } from "@claudex/schema";
+import type { Portfolio, ProviderFamily } from "@claudexor/schema";
 import type { BudgetLedger } from "./ledger.js";
 
 export interface RouterCandidate {
@@ -35,8 +35,6 @@ function weights(p: Portfolio): PortfolioWeights {
       return { quality: 2.0, cost: 0.2, latency: 0.5, preferSubscription: 1, preferApi: 1 };
     case "burn":
       return { quality: 2.0, cost: 0.0, latency: 0.2, preferSubscription: 1, preferApi: 1 };
-    case "benchmark":
-      return { quality: 2.0, cost: 0.1, latency: 0.2, preferSubscription: 1, preferApi: 1 };
     case "subscription-first":
       return { quality: 1.0, cost: 0.5, latency: 0.5, preferSubscription: 1.6, preferApi: 0.6 };
     case "api-overflow":

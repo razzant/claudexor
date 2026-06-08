@@ -1,8 +1,8 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import type { HarnessEvent, HarnessRunSpec } from "@claudex/schema";
-import { ConformanceReport, HarnessManifest } from "@claudex/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { JsonRpcAdapterClient } from "./client.js";
 import { runAdapterServer } from "./server.js";
 

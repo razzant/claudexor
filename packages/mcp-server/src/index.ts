@@ -22,7 +22,7 @@ export interface McpServerOptions {
 /**
  * Minimal MCP server over a newline-delimited JSON-RPC 2.0 stdio transport.
  * Implements initialize / tools/list / tools/call / ping. Tools call injected
- * handlers (the same ExecutionEngine the CLI uses).
+ * handlers (the same orchestrator path the CLI uses).
  */
 export class McpServer {
   private readonly tools: Map<string, McpTool>;
@@ -66,7 +66,7 @@ export class McpServer {
         this.reply(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.4.1" },
+          serverInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.5.0" },
         });
         return;
       case "ping":
@@ -106,8 +106,8 @@ export class McpServer {
 
 export type RunnerFn = (params: any) => Promise<unknown>;
 
-/** Default Claudex tool surface for MCP. */
-export function defaultClaudexTools(runner: RunnerFn): McpTool[] {
+/** Default Claudexor tool surface for MCP. */
+export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   const promptSchema = {
     type: "object",
     properties: { prompt: { type: "string" }, harness: { type: "string" }, n: { type: "number" } },
@@ -120,15 +120,15 @@ export function defaultClaudexTools(runner: RunnerFn): McpTool[] {
     handler: async (args) => JSON.stringify(await runner({ ...args, mode }), null, 2),
   });
   return [
-    mk("claudex_ask", "Answer a question through a read-only selected harness route.", "ask"),
-    mk("claudex_explore", "Run a bounded read-only exploration and verified synthesis.", "explore"),
-    mk("claudex_run", "Run a task in Agent mode and return the WorkProduct summary.", "agent"),
-    mk("claudex_race", "Best-of-N tournament with cross-family review.", "best_of_n"),
-    mk("claudex_plan", "Produce a read-only plan.", "plan"),
-    mk("claudex_create", "Create a new project from scratch.", "create"),
+    mk("claudexor_ask", "Answer a question through a read-only selected harness route.", "ask"),
+    mk("claudexor_explore", "Run a bounded read-only exploration and verified synthesis.", "explore"),
+    mk("claudexor_run", "Run a task in Agent mode and return the WorkProduct summary.", "agent"),
+    mk("claudexor_race", "Best-of-N tournament with cross-family review.", "best_of_n"),
+    mk("claudexor_plan", "Produce a read-only plan.", "plan"),
+    mk("claudexor_create", "Create a new project from scratch.", "create"),
     {
-      name: "claudex_status",
-      description: "Return Claudex/runtime status.",
+      name: "claudexor_status",
+      description: "Return Claudexor/runtime status.",
       inputSchema: { type: "object", properties: {} },
       handler: async () => JSON.stringify(await runner({ mode: "__status" }), null, 2),
     },

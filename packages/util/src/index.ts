@@ -104,7 +104,7 @@ function usableAbsoluteDir(raw: string | undefined): string | null {
 /**
  * Best-effort per-user home for GUI-launched daemons. macOS launch contexts can
  * have a sparse environment; never let a missing/invalid home collapse storage
- * to `/.claudex`.
+ * to `/.claudexor`.
  */
 export function userHomeDir(): string {
   const home =
@@ -112,23 +112,23 @@ export function userHomeDir(): string {
     usableAbsoluteDir(process.env.USERPROFILE) ??
     usableAbsoluteDir(homedir());
   if (!home) {
-    throw new Error("Unable to resolve a safe user home directory; set HOME or CLAUDEX_CONFIG_DIR");
+    throw new Error("Unable to resolve a safe user home directory; set HOME or CLAUDEXOR_CONFIG_DIR");
   }
   return home;
 }
 
 export function userConfigDir(): string {
-  const override = process.env.CLAUDEX_CONFIG_DIR?.trim();
+  const override = process.env.CLAUDEXOR_CONFIG_DIR?.trim();
   if (override) {
     const safe = usableAbsoluteDir(override);
-    if (!safe) throw new Error("CLAUDEX_CONFIG_DIR must be a safe absolute path");
+    if (!safe) throw new Error("CLAUDEXOR_CONFIG_DIR must be a safe absolute path");
     return safe;
   }
-  return join(userHomeDir(), ".claudex");
+  return join(userHomeDir(), ".claudexor");
 }
 
 export function noProjectRepoRoot(): string {
-  return join(userHomeDir(), ".cache", "claudex", "no-project");
+  return join(userHomeDir(), ".cache", "claudexor", "no-project");
 }
 
 const SECRET_PATTERNS: RegExp[] = [

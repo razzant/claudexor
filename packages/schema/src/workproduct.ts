@@ -45,7 +45,6 @@ export const WorkProductKind = z.enum([
   "pr",
   "report",
   "artifact_bundle",
-  "benchmark_submission",
 ]);
 export type WorkProductKind = z.infer<typeof WorkProductKind>;
 

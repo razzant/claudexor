@@ -1,8 +1,8 @@
-import type { HarnessAdapter } from "@claudex/core";
-import type { EffortHint, ProviderFamily, ReviewFinding, RouteProof } from "@claudex/schema";
-import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudex/schema";
-import { newId } from "@claudex/util";
-import { dedupeFindings, extractJsonBlocks, parseFindings, type ReviewerInfo } from "./findings.js";
+import type { HarnessAdapter } from "@claudexor/core";
+import type { EffortHint, ProviderFamily, ReviewFinding, RouteProof } from "@claudexor/schema";
+import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
+import { newId } from "@claudexor/util";
+import { dedupeFindings, extractJsonBlocks, parseFindingsDetailed, type ReviewerInfo } from "./findings.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
 
 export interface ReviewerSpec {
@@ -38,7 +38,7 @@ function reviewPrompt(label: string, evidenceDir: string, diff: string): string 
     "You are an adversarial code reviewer.",
     `First read the evidence packet in ${evidenceDir} (USER_INTENT.md, FORBIDDEN_FINDINGS.md, PLAN_ACCEPTED.md, DECIDED_TRADEOFFS.md, TESTS.txt). If a mandatory file is missing, return INSUFFICIENT_EVIDENCE.`,
     `Review ${label}'s change shown below. Output ONLY a JSON array of findings.`,
-    `Each finding: {"severity":"BLOCK|FIX_FIRST|WARN|NIT|OUT_OF_SCOPE|INSUFFICIENT_EVIDENCE|NEEDS_HUMAN","category":"correctness|regression|security|performance|maintainability|test_gap|spec_gap|deploy|architecture|ux|benchmark","claim":"...","evidence":{"files":[{"path":"...","lines":"..."}]},"proposed_fix":"..."}.`,
+    `Each finding: {"severity":"BLOCK|FIX_FIRST|WARN|NIT|OUT_OF_SCOPE|INSUFFICIENT_EVIDENCE|NEEDS_HUMAN","category":"correctness|regression|security|performance|maintainability|test_gap|spec_gap|deploy|architecture|ux","claim":"...","evidence":{"files":[{"path":"...","lines":"..."}]},"proposed_fix":"..."}.`,
     "Rules: no evidence => do NOT use BLOCK. Do not relitigate FORBIDDEN_FINDINGS or DECIDED_TRADEOFFS.",
     "",
     "DIFF:",
@@ -76,12 +76,17 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
 
     let text = "";
     let observedModel: string | undefined;
+    let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     let reviewerError: string | null = null;
     try {
       const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, spec);
       for await (const ev of iter) {
         if (ev.type === "message" && ev.text) text += ev.text + "\n";
-        if (ev.observed_model) observedModel = ev.observed_model;
+        if (ev.observed_model) {
+          observedModel = ev.observed_model;
+          const source = ev.payload?.["observed_model_source"];
+          observedSource = source === "metadata" || source === "model_catalog" || source === "transcript" ? source : "stream_event";
+        }
       }
     } catch (err) {
       reviewerError = err instanceof Error ? err.message : String(err);
@@ -96,7 +101,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       {
         provider: reviewer.providerFamily,
         model_id: observedModel ?? null,
-        evidence_source: observedModel ? "stream_event" : "unavailable",
+        evidence_source: observedModel ? observedSource : "unavailable",
       },
     );
     routeProofs.push(proof);
@@ -117,8 +122,13 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       all.push(insufficientEvidenceFinding(info, "Reviewer produced no parseable JSON findings."));
       continue;
     }
+    const parsed = parseFindingsDetailed(text, info);
+    if (parsed.malformed > 0) {
+      all.push(insufficientEvidenceFinding(info, `Reviewer produced ${parsed.malformed} malformed finding item(s).`));
+      continue;
+    }
     if (reviewer.providerFamily !== "unknown") healthyFamilies.add(reviewer.providerFamily);
-    all.push(...parseFindings(text, info));
+    all.push(...parsed.findings);
   }
 
   const classifiedProofs = classifyDiversity(routeProofs);
@@ -135,7 +145,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const verifiedFamilies = [
     ...new Set(
       classifiedProofs
-        .filter((p) => p.status === "verified")
+        .filter((p) => p.status === "verified" || p.status === "accepted_model_arg")
         .map((p) => p.requested.provider_family)
         .filter((f) => f !== "unknown"),
     ),

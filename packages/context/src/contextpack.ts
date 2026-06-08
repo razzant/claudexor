@@ -1,7 +1,7 @@
-import type { ContextPack, TaskContract } from "@claudex/schema";
-import { ContextPack as ContextPackSchema } from "@claudex/schema";
-import { ContextOverflowError } from "@claudex/core";
-import { hashJson } from "@claudex/util";
+import type { ContextPack, TaskContract } from "@claudexor/schema";
+import { ContextPack as ContextPackSchema } from "@claudexor/schema";
+import { ContextOverflowError } from "@claudexor/core";
+import { hashJson } from "@claudexor/util";
 import { loadAgentsInstructions } from "./agents.js";
 import { type AtlasOptions, buildScopeAtlas } from "./atlas.js";
 

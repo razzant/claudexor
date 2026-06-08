@@ -15,8 +15,8 @@ export interface AcpServerOptions {
 }
 
 /**
- * Minimal Agent Client Protocol server (JSON-RPC over stdio). Exposes Claudex as
- * a meta-agent: editors can talk to Claudex instead of a single harness.
+ * Minimal Agent Client Protocol server (JSON-RPC over stdio). Exposes Claudexor as
+ * a meta-agent: editors can talk to Claudexor instead of a single harness.
  * Implements initialize / session/new / session/prompt / session/cancel.
  */
 export class AcpServer {
@@ -58,7 +58,7 @@ export class AcpServer {
       case "initialize":
         this.reply(id, {
           protocolVersion: ACP_PROTOCOL_VERSION,
-          agentInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.4.1" },
+          agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.5.0" },
           agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
         });
         return;

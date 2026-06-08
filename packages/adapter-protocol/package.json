@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/adapter-protocol",
-  "version": "0.4.1",
+  "name": "@claudexor/adapter-protocol",
+  "version": "0.5.0",
   "description": "JSON-RPC-over-stdio protocol so external adapters (any language) can implement HarnessAdapter.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/core": "workspace:*",
-    "@claudex/schema": "workspace:*"
+    "@claudexor/core": "workspace:*",
+    "@claudexor/schema": "workspace:*"
   }
 }

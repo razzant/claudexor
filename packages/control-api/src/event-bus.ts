@@ -1,7 +1,7 @@
 /**
  * In-process per-run event bus with bounded buffering and Last-Event-ID replay.
  *
- * The canonical event log is always `.claudex/runs/<runId>/events.jsonl` on disk;
+ * The canonical event log is always `.claudexor/runs/<runId>/events.jsonl` on disk;
  * this bus is an ephemeral fan-out so a reconnecting GUI/service client can resume
  * a live stream cheaply. On overflow it drops the oldest events and reports a `gap`
  * so the client knows to backfill from the canonical file instead of silently

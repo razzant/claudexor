@@ -1,4 +1,4 @@
-import type { ConformanceReport } from "@claudex/schema";
+import type { ConformanceReport } from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec } from "./adapter.js";
 
 /** Run conformance probes across all registered adapters; never throws. */

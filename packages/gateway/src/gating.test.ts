@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ConformanceReport, HarnessManifest } from "@claudex/schema";
+import type { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { allowedIntents } from "./gating.js";
 
 function manifest(): HarnessManifest {

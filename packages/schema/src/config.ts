@@ -64,7 +64,7 @@ export const TrustConfig = z.object({
 });
 export type TrustConfig = z.infer<typeof TrustConfig>;
 
-/** Global user config (~/.claudex/config.yaml). */
+/** Global user config (~/.claudexor/config.yaml). */
 export const GlobalConfig = z.object({
   version: z.literal(1).default(1),
   default_portfolio: Portfolio.default("subscription-first"),

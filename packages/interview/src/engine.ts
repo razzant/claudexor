@@ -3,9 +3,9 @@ import type {
   InterviewAnswer,
   InterviewQuestion,
   SpecPack,
-} from "@claudex/schema";
-import { SCHEMA_VERSION, SpecPack as SpecPackSchema } from "@claudex/schema";
-import { newId, nowIso, redactSecrets } from "@claudex/util";
+} from "@claudexor/schema";
+import { SCHEMA_VERSION, SpecPack as SpecPackSchema } from "@claudexor/schema";
+import { newId, nowIso, redactSecrets } from "@claudexor/util";
 
 /** Snapshot of interview state handed to the (harness-driven) generator/assembler. */
 export interface InterviewState {

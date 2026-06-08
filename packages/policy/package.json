@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/policy",
-  "version": "0.4.1",
+  "name": "@claudexor/policy",
+  "version": "0.5.0",
   "description": "Typed risk classifier + thin policy (path guard, require-human, deny lists). No keyword-regex governance.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/context": "workspace:*",
-    "@claudex/schema": "workspace:*"
+    "@claudexor/context": "workspace:*",
+    "@claudexor/schema": "workspace:*"
   }
 }

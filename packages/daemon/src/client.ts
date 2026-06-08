@@ -44,10 +44,10 @@ export class DaemonClient {
   }
 
   health() {
-    return this.call("claudex.health");
+    return this.call("claudexor.health");
   }
   enqueue(params: unknown) {
-    return this.call<{ id: string; state: string }>("claudex.enqueue", params);
+    return this.call<{ id: string; state: string }>("claudexor.enqueue", params);
   }
   status(id: string) {
     return this.call<{
@@ -63,7 +63,7 @@ export class DaemonClient {
       startedAt?: string;
       finishedAt?: string;
     }>(
-      "claudex.status",
+      "claudexor.status",
       { id },
     );
   }
@@ -81,12 +81,12 @@ export class DaemonClient {
         startedAt?: string;
         finishedAt?: string;
       }[]
-    >("claudex.list");
+    >("claudexor.list");
   }
   cancel(id: string) {
-    return this.call("claudex.cancel", { id });
+    return this.call("claudexor.cancel", { id });
   }
   shutdown() {
-    return this.call("claudex.shutdown");
+    return this.call("claudexor.shutdown");
   }
 }

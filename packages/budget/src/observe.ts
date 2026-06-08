@@ -1,5 +1,5 @@
-import type { BudgetObservation, HarnessEvent } from "@claudex/schema";
-import { nowIso } from "@claudex/util";
+import type { BudgetObservation, HarnessEvent } from "@claudexor/schema";
+import { nowIso } from "@claudexor/util";
 
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 

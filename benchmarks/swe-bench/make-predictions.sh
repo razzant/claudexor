@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Generate SWE-bench predictions with Claudex (best-of-N + cross-family review over
+# Generate SWE-bench predictions with Claudexor (best-of-N + cross-family review over
 # prepared per-instance repos). Writes a predictions file for the official evaluator.
 #   usage: make-predictions.sh <tasks.jsonl> <predictions.jsonl> <workdir>
-# Env: CLAUDEX_SWE_N (candidates, default 2), CLAUDEX_SWE_MAX_USD, CLAUDEX_SWE_REVIEWER_MODEL
+# Env: CLAUDEXOR_SWE_N (candidates, default 2), CLAUDEXOR_SWE_MAX_USD, CLAUDEXOR_SWE_REVIEWER_MODEL
 source "$(dirname "$0")/scripts/_common.sh"
 load_keys
 
@@ -12,10 +12,16 @@ WORKDIR="${3:?usage: make-predictions.sh <tasks.jsonl> <predictions.jsonl> <work
 have_key ANTHROPIC_API_KEY
 have_key OPENAI_API_KEY
 
-ARGS=(bench run swe-bench --tasks "$TASKS" --predictions "$PREDS" --workdir "$WORKDIR" --n "${CLAUDEX_SWE_N:-2}")
-[ -n "${CLAUDEX_SWE_MAX_USD:-}" ] && ARGS+=(--max-usd "$CLAUDEX_SWE_MAX_USD")
-[ -n "${CLAUDEX_SWE_REVIEWER_MODEL:-}" ] && ARGS+=(--reviewer-model "$CLAUDEX_SWE_REVIEWER_MODEL")
+RUNNER="${CLAUDEXOR_BENCHMARK_RUNNER:-}"
+if [ -z "$RUNNER" ]; then
+  echo "CLAUDEXOR_BENCHMARK_RUNNER must point to an external SWE-bench runner; v0.5 core CLI has no bench command." >&2
+  exit 2
+fi
 
-log "claudex bench run -> $PREDS (n=${CLAUDEX_SWE_N:-2}, workdir=$WORKDIR)"
-claudex "${ARGS[@]}"
+ARGS=(--tasks "$TASKS" --predictions "$PREDS" --workdir "$WORKDIR" --n "${CLAUDEXOR_SWE_N:-2}")
+[ -n "${CLAUDEXOR_SWE_MAX_USD:-}" ] && ARGS+=(--max-usd "$CLAUDEXOR_SWE_MAX_USD")
+[ -n "${CLAUDEXOR_SWE_REVIEWER_MODEL:-}" ] && ARGS+=(--reviewer-model "$CLAUDEXOR_SWE_REVIEWER_MODEL")
+
+log "external benchmark runner -> $PREDS (n=${CLAUDEXOR_SWE_N:-2}, workdir=$WORKDIR)"
+"$RUNNER" "${ARGS[@]}"
 log "predictions: $PREDS"

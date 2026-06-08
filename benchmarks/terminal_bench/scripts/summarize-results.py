@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Summarize Harbor Terminal-Bench results into resolve%, per-task status, cost, and
-the Claudex lift (claudex resolve% minus the best baseline).
+the Claudexor lift (claudexor resolve% minus the best baseline).
 
 Harbor writes one ``result.json`` per trial (a serialized TrialResult). A task is
 "resolved" when its verifier rewards reach 1.0 (Terminal-Bench scores 0/1).
@@ -110,13 +110,13 @@ def main(argv: list[str]) -> int:
             print(f"    {'PASS' if s['tasks'][task] else 'FAIL'}  {task}")
         print()
 
-    claudex = next((s for label, s in summaries if "claudex" in label.lower()), None)
-    baselines = [s for label, s in summaries if "claudex" not in label.lower()]
-    if claudex and baselines and claudex["total"]:
+    claudexor = next((s for label, s in summaries if "claudexor" in label.lower()), None)
+    baselines = [s for label, s in summaries if "claudexor" not in label.lower()]
+    if claudexor and baselines and claudexor["total"]:
         best_base = max(b["accuracy"] for b in baselines)
-        lift = claudex["accuracy"] - best_base
-        print(f"Claudex lift over best baseline: {lift * 100:+.1f} percentage points "
-              f"(claudex {claudex['accuracy'] * 100:.1f}% vs best baseline {best_base * 100:.1f}%)")
+        lift = claudexor["accuracy"] - best_base
+        print(f"Claudexor lift over best baseline: {lift * 100:+.1f} percentage points "
+              f"(claudexor {claudexor['accuracy'] * 100:.1f}% vs best baseline {best_base * 100:.1f}%)")
     return 0
 
 

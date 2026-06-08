@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CandidateEvidence } from "@claudex/arbitration";
+import type { CandidateEvidence } from "@claudexor/arbitration";
 import { buildSynthesisPlan, decideSynthesis } from "./index.js";
 
 function cand(label: string, over: Partial<CandidateEvidence> = {}): CandidateEvidence {

@@ -14,7 +14,6 @@ export const Portfolio = z.enum([
   "cheapest",
   "strongest",
   "burn",
-  "benchmark",
   "subscription-first",
   "api-overflow",
   "conserve-claude",

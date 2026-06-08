@@ -1,8 +1,8 @@
-# Claudex Integrations
+# Claudexor Integrations
 
-This document is for tools, editors, and agents that want to drive Claudex as a
+This document is for tools, editors, and agents that want to drive Claudexor as a
 local control plane. It describes current beta integration surfaces. It is not a
-future target spec, and it is not contributor workflow for changing Claudex.
+future target spec, and it is not contributor workflow for changing Claudexor.
 
 ## Surface Matrix
 
@@ -10,21 +10,21 @@ future target spec, and it is not contributor workflow for changing Claudex.
 |---|---|---|
 | CLI | Human and automation entrypoint for ask/run/race/plan/inspect/apply/daemon/auth/secrets/settings flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
-| MCP server | Exposes Claudex tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
-| ACP server | Lets compatible editors or agents talk to Claudex as a local agent surface. | Early beta. |
+| MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
+| ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
 | Adapter protocol | JSON-RPC-over-stdio protocol for external harness adapters. | Beta. Implemented methods are the source of truth. |
 
 ## CLI
 
-Use CLI commands when another process can launch Claudex and read stdout or the
+Use CLI commands when another process can launch Claudexor and read stdout or the
 artifact directory.
 
 ```bash
-claudex ask "explain the auth flow" --json
-claudex explore "map this repo's run storage" --json
-claudex run "fix the failing parser test" --json
-claudex race "fix add() in src/math.js" --harness codex,claude --n 2 --json
-claudex inspect <run_id> --json
+claudexor ask "explain the auth flow" --json
+claudexor explore "map this repo's run storage" --json
+claudexor run "fix the failing parser test" --json
+claudexor race "fix add() in src/math.js" --harness codex,claude --n 2 --json
+claudexor inspect <run_id> --json
 ```
 
 Not every subcommand has stable JSON output. Integrations should prefer the
@@ -44,19 +44,24 @@ Core endpoints:
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
 - `GET /harnesses`, `POST /harnesses/setup`
+- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
 The API is loopback-only and bearer-token guarded. Artifact files remain the
 source of truth; API responses are projections over daemon state and run files.
+Harness setup commands are server allowlisted. Install/login/doctor execution
+uses setup jobs with risk flags and redacted logs; API-key fallback goes through
+`/secrets`, not inline setup payloads.
 
 ## MCP
 
 Run:
 
 ```bash
-claudex mcp serve
+claudexor mcp serve
 ```
 
 The MCP server is a thin surface over the same engine and run artifacts. Keep MCP
@@ -68,7 +73,7 @@ loudly, and apply/delivery state comes from server-owned artifacts.
 Run:
 
 ```bash
-claudex acp serve
+claudexor acp serve
 ```
 
 ACP support is intended for editor and agent hosts that can speak the protocol.
@@ -83,14 +88,14 @@ run, review, and cancel style operations. Do not assume resume, estimate, live
 steering, or structured output support unless the current protocol and adapter
 doctor output prove it.
 
-Adapters must translate native I/O into Claudex events and artifacts. They must
+Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.
 
 ## Storage
 
-Project runs write under the target repository's `.claudex/runs/<run_id>/`.
+Project runs write under the target repository's `.claudexor/runs/<run_id>/`.
 No-project Ask runs use a synthetic cwd and write artifacts under the user-level
-Claudex store. See `docs/ARCHITECTURE.md` for the full current layout.
+Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
 
 ## Stability Rules
 

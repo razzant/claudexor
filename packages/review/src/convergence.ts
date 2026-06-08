@@ -1,5 +1,5 @@
-import type { ConvergencePredicate, GateResult, ReviewFinding } from "@claudex/schema";
-import { isBlocking } from "@claudex/schema";
+import type { ConvergencePredicate, GateResult, ReviewFinding } from "@claudexor/schema";
+import { isBlocking } from "@claudexor/schema";
 import { gatesPassed } from "./gates.js";
 
 export interface ConvergenceInput {

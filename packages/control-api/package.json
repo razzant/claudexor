@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/control-api",
-  "version": "0.4.1",
+  "name": "@claudexor/control-api",
+  "version": "0.5.0",
   "description": "Loopback HTTP+SSE control surface for GUI/service clients: token-auth, Host/Origin guard, live run event stream with Last-Event-ID replay. Runner injected (no second scheduler).",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,9 +17,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/delivery": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*",
+    "@claudexor/delivery": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1"
   }
 }

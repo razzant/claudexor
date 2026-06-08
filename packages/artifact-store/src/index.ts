@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
-import { ensureDir, listDir, readTextSafe, writeJson, writeText } from "@claudex/util";
+import { ensureDir, listDir, readTextSafe, writeJson, writeText } from "@claudexor/util";
 
 export interface RunPaths {
   runId: string;
@@ -18,22 +18,22 @@ export interface RunPaths {
 
 /**
  * Files-first artifact store. Canonical artifacts live under
- * `<repo>/.claudex/`. Nothing here is a database; an optional SQLite index can
+ * `<repo>/.claudexor/`. Nothing here is a database; an optional SQLite index can
  * be rebuilt from these files later.
  */
 export class ArtifactStore {
-  readonly claudexDir: string;
+  readonly claudexorDir: string;
 
-  constructor(public readonly repoRoot: string, options: { claudexDir?: string } = {}) {
-    this.claudexDir = options.claudexDir ?? join(repoRoot, ".claudex");
+  constructor(public readonly repoRoot: string, options: { claudexorDir?: string } = {}) {
+    this.claudexorDir = options.claudexorDir ?? join(repoRoot, ".claudexor");
   }
 
   runsDir(): string {
-    return join(this.claudexDir, "runs");
+    return join(this.claudexorDir, "runs");
   }
 
   workspacesDir(): string {
-    return join(this.claudexDir, "workspaces");
+    return join(this.claudexorDir, "workspaces");
   }
 
   runPaths(runId: string): RunPaths {

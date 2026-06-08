@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
-import type { ResolvedConfig } from "@claudex/schema";
+import type { ResolvedConfig } from "@claudexor/schema";
 import {
   GlobalConfig,
   ProjectConfig,
   ResolvedConfig as ResolvedConfigSchema,
   TrustConfig,
-} from "@claudex/schema";
-import { ensureDir, pathExists, readTextSafe, sha256, userConfigDir, writeText } from "@claudex/util";
+} from "@claudexor/schema";
+import { ensureDir, pathExists, readTextSafe, sha256, userConfigDir, writeText } from "@claudexor/util";
 
 export function globalConfigDir(): string {
   return userConfigDir();
@@ -18,7 +18,7 @@ export class ConfigParseError extends Error {
     public readonly path: string,
     cause: unknown,
   ) {
-    super(`invalid Claudex YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    super(`invalid Claudexor YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = "ConfigParseError";
   }
 }
@@ -51,7 +51,7 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   if (globalRaw !== null) sources.push(globalPath);
   const global = GlobalConfig.parse(globalRaw ?? {});
 
-  const projectPath = join(repoRoot, ".claudex", "config.yaml");
+  const projectPath = join(repoRoot, ".claudexor", "config.yaml");
   const projectRaw = readYaml(projectPath);
   if (projectRaw !== null) sources.push(projectPath);
   const project = ProjectConfig.parse(projectRaw ?? {});
@@ -68,7 +68,7 @@ export function globalConfigPath(): string {
   return join(globalConfigDir(), "config.yaml");
 }
 
-/** Update ~/.claudex/config.yaml with validated global settings. Sensitive values are not accepted here. */
+/** Update ~/.claudexor/config.yaml with validated global settings. Sensitive values are not accepted here. */
 export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): { path: string; config: GlobalConfig } {
   const path = globalConfigPath();
   const current = GlobalConfig.parse(readYaml(path) ?? {});
@@ -83,9 +83,9 @@ export interface InitResult {
   created: boolean;
 }
 
-/** Scaffold a default versioned project config (used by `claudex init`). */
+/** Scaffold a default versioned project config (used by `claudexor init`). */
 export function initProjectConfig(repoRoot: string): InitResult {
-  const configPath = join(repoRoot, ".claudex", "config.yaml");
+  const configPath = join(repoRoot, ".claudexor", "config.yaml");
   if (pathExists(configPath)) {
     return { configPath, created: false };
   }
@@ -98,9 +98,9 @@ export function initProjectConfig(repoRoot: string): InitResult {
     },
   });
   const header =
-    "# Claudex project config (versioned). Safe settings only.\n" +
+    "# Claudexor project config (versioned). Safe settings only.\n" +
     "# Sensitive settings (full access, secrets, budget-above-cap, plugin install,\n" +
-    "# MCP trust) live in ~/.claudex/config.yaml or ~/.claudex/trust/<hash>.yaml.\n";
+    "# MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.\n";
   writeText(configPath, header + yamlStringify(config));
   return { configPath, created: true };
 }

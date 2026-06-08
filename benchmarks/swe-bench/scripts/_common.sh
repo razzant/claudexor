@@ -1,34 +1,34 @@
 # shellcheck shell=bash
-# Common setup for Claudex x SWE-bench operator scripts. Optionally loads API keys from
-# CLAUDEX_KEYS_FILE WITHOUT printing values, sets PATH, and exposes a `claudex` helper that
+# Common setup for Claudexor x SWE-bench operator scripts. Optionally loads API keys from
+# CLAUDEXOR_KEYS_FILE WITHOUT printing values, sets PATH, and exposes a `claudexor` helper that
 # runs the locally built CLI. The official SWE-bench evaluator and HuggingFace dataset
 # loader are invoked via `uv run --with ...` so no global installs are required.
 
 set -euo pipefail
 
-CLAUDEX_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-export CLAUDEX_REPO_ROOT
-export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:/opt/homebrew/bin:$PATH"
+CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+export CLAUDEXOR_REPO_ROOT
+export PATH="$HOME/.local/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
 
-SWE_RUNS_ROOT="${CLAUDEX_SWE_RUNS_ROOT:-$HOME/.claudex/cache/bench-experiments/swe-bench}"
-SWEBENCH_SPEC="${CLAUDEX_SWEBENCH_SPEC:-swebench}"   # uv --with target (pin e.g. swebench==4.1.0 if needed)
-DATASETS_SPEC="${CLAUDEX_DATASETS_SPEC:-datasets}"
+SWE_RUNS_ROOT="${CLAUDEXOR_SWE_RUNS_ROOT:-$HOME/.claudexor/cache/bench-experiments/swe-bench}"
+SWEBENCH_SPEC="${CLAUDEXOR_SWEBENCH_SPEC:-swebench}"   # uv --with target (pin e.g. swebench==4.1.0 if needed)
+DATASETS_SPEC="${CLAUDEXOR_DATASETS_SPEC:-datasets}"
 export SWE_RUNS_ROOT SWEBENCH_SPEC DATASETS_SPEC
 
-log() { printf '[claudex-swe] %s\n' "$*" >&2; }
-die() { printf '[claudex-swe] ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf '[claudexor-swe] %s\n' "$*" >&2; }
+die() { printf '[claudexor-swe] ERROR: %s\n' "$*" >&2; exit 1; }
 have_key() { [ -n "${!1:-}" ] && log "$1: present" || log "$1: MISSING"; }
 
-claudex() {
-  local cli="$CLAUDEX_REPO_ROOT/packages/cli/dist/cli.js"
-  [ -f "$cli" ] || die "claudex CLI not built; run: (cd $CLAUDEX_REPO_ROOT && pnpm build)"
+claudexor() {
+  local cli="$CLAUDEXOR_REPO_ROOT/packages/cli/dist/cli.js"
+  [ -f "$cli" ] || die "claudexor CLI not built; run: (cd $CLAUDEXOR_REPO_ROOT && pnpm build)"
   node "$cli" "$@"
 }
 
 load_keys() {
-  local f="${CLAUDEX_KEYS_FILE:-}"
-  [ -n "$f" ] || { log "CLAUDEX_KEYS_FILE not set (relying on already-exported env)"; return 0; }
+  local f="${CLAUDEXOR_KEYS_FILE:-}"
+  [ -n "$f" ] || { log "CLAUDEXOR_KEYS_FILE not set (relying on already-exported env)"; return 0; }
   [ -f "$f" ] || { log "keys file not found: $f (relying on already-exported env)"; return 0; }
   eval "$(python3 - "$f" <<'PY'
 import os, shlex, sys

@@ -1,6 +1,6 @@
-import type { ModeKind, SpecPack, TaskContract } from "@claudex/schema";
-import { SCHEMA_VERSION, SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudex/schema";
-import { newId, nowIso, redactSecrets } from "@claudex/util";
+import type { ModeKind, SpecPack, TaskContract } from "@claudexor/schema";
+import { SCHEMA_VERSION, SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudexor/schema";
+import { newId, nowIso, redactSecrets } from "@claudexor/util";
 
 export interface SpecToContractOptions {
   repoRoot: string;

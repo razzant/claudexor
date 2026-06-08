@@ -1,5 +1,5 @@
-import type { ProviderFamily, RouteProof } from "@claudex/schema";
-import { RouteProof as RouteProofSchema } from "@claudex/schema";
+import type { ProviderFamily, RouteProof } from "@claudexor/schema";
+import { RouteProof as RouteProofSchema } from "@claudexor/schema";
 
 export interface RouteRequested {
   harness_id: string;
@@ -13,7 +13,7 @@ export interface RouteObserved {
   evidence_source?: RouteProof["observed"]["evidence_source"];
 }
 
-/** Build a RouteProof. Verified requires an observed model id from real evidence. */
+/** Build a RouteProof from observed model evidence or an accepted native CLI model argument. */
 export function buildRouteProof(
   requested: RouteRequested,
   observed: RouteObserved,
@@ -21,6 +21,7 @@ export function buildRouteProof(
 ): RouteProof {
   const evidenceSource = observed.evidence_source ?? "unavailable";
   const hasObserved = Boolean(observed.model_id) && evidenceSource !== "unavailable";
+  const status = !hasObserved ? "unverified" : evidenceSource === "metadata" ? "accepted_model_arg" : "verified";
   return RouteProofSchema.parse({
     requested: {
       harness_id: requested.harness_id,
@@ -33,7 +34,7 @@ export function buildRouteProof(
       evidence_source: evidenceSource,
     },
     diversity_against: diversityAgainst,
-    status: hasObserved ? "verified" : "unverified",
+    status,
   });
 }
 

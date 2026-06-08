@@ -20,6 +20,9 @@
             "running",
             "blocked",
             "succeeded",
+            "no_op",
+            "ungated",
+            "review_not_run",
             "failed",
             "cancelled",
             "interrupted",
@@ -125,7 +128,15 @@
         "project": {
           "type": "object",
           "properties": {
-            "repoRoot": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "project",
+                "none"
+              ],
+              "default": "none"
+            },
+            "root": {
               "type": [
                 "string",
                 "null"
@@ -139,14 +150,14 @@
               ],
               "default": null
             },
-            "contextMode": {
+            "context": {
               "type": "string",
               "enum": [
                 "off",
                 "auto",
                 "deep"
               ],
-              "default": "auto"
+              "default": "off"
             }
           },
           "additionalProperties": false,
@@ -163,8 +174,7 @@
             "until_clean",
             "plan",
             "create",
-            "readonly_audit",
-            "benchmark"
+            "readonly_audit"
           ]
         },
         "prompt": {
@@ -187,7 +197,6 @@
             "cheapest",
             "strongest",
             "burn",
-            "benchmark",
             "subscription-first",
             "api-overflow",
             "conserve-claude",

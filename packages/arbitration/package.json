@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/arbitration",
-  "version": "0.4.1",
+  "name": "@claudexor/arbitration",
+  "version": "0.5.0",
   "description": "Evidence-first arbitration: rank candidates, anti-reward-hacking held-out tests, pairwise, DecisionRecord.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/schema": "workspace:*"
+    "@claudexor/schema": "workspace:*"
   }
 }

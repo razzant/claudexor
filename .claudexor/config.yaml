@@ -1,0 +1,22 @@
+# Claudexor project config (versioned). Safe settings only.
+# Sensitive settings (full access, secrets, budget-above-cap, plugin install,
+# MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.
+version: 1
+project:
+  language_stack: []
+context:
+  agents_md_first: true
+  never_silent_truncate: true
+  mandatory_files:
+    - README.md
+    - docs/ARCHITECTURE.md
+  include: []
+  exclude: []
+tests:
+  commands: []
+delivery: {}
+review:
+  default_attempts: 3
+  strictness: block
+budget:
+  portfolio: subscription-first

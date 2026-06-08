@@ -4,9 +4,9 @@ import type {
   HarnessManifest,
   HarnessRunSpec,
   ProviderFamily,
-} from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { nowIso } from "@claudex/util";
+} from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { nowIso } from "@claudexor/util";
 
 export type FakeKind =
   | "fake-success"
@@ -41,8 +41,8 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
     id,
     display_name: `Fake (${id})`,
     kind: "fake",
-    version: "0.4.1",
-    adapter_version: "0.4.1",
+    version: "0.5.0",
+    adapter_version: "0.5.0",
     provider_family: provider,
     capability_profile: {
       execution_surfaces: [{

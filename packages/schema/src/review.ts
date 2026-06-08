@@ -24,7 +24,6 @@ export const FindingCategory = z.enum([
   "deploy",
   "architecture",
   "ux",
-  "benchmark",
 ]);
 export type FindingCategory = z.infer<typeof FindingCategory>;
 

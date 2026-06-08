@@ -1,45 +1,45 @@
 # shellcheck shell=bash
-# Common setup for Claudex x Terminal-Bench (Harbor) operator scripts.
+# Common setup for Claudexor x Terminal-Bench (Harbor) operator scripts.
 # Source this from every run-*.sh. It sets PATH/DOCKER_HOST/PYTHONPATH, optionally
-# loads API keys from CLAUDEX_KEYS_FILE WITHOUT printing their values, and exposes
+# loads API keys from CLAUDEXOR_KEYS_FILE WITHOUT printing their values, and exposes
 # shared defaults.
 
 set -euo pipefail
 
 # Repo root = three levels up from this scripts/ dir (scripts -> terminal_bench -> benchmarks -> repo).
-CLAUDEX_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-export CLAUDEX_REPO_ROOT
+CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+export CLAUDEXOR_REPO_ROOT
 
 # Toolchain + Docker (Colima) discovery. Override DOCKER_HOST if you use a different VM.
-export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:/opt/homebrew/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
-# So Harbor can import the Claudex agent as a dotted module.
-export PYTHONPATH="${CLAUDEX_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+# So Harbor can import the Claudexor agent as a dotted module.
+export PYTHONPATH="${CLAUDEXOR_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 # Shared defaults (all overridable via env).
-DATASET="${CLAUDEX_TB_DATASET:-terminal-bench/terminal-bench-2-1}"
-AGENT_IMPORT="benchmarks.terminal_bench.claudex_agent:ClaudexAgent"
-N_CONCURRENT="${CLAUDEX_TB_N_CONCURRENT:-4}"
-ATTEMPTS="${CLAUDEX_TB_ATTEMPTS:-2}"
-RUNS_ROOT="${CLAUDEX_TB_RUNS_ROOT:-$HOME/.claudex/cache/bench-experiments/terminal-bench/harbor}"
+DATASET="${CLAUDEXOR_TB_DATASET:-terminal-bench/terminal-bench-2-1}"
+AGENT_IMPORT="benchmarks.terminal_bench.claudexor_agent:ClaudexorAgent"
+N_CONCURRENT="${CLAUDEXOR_TB_N_CONCURRENT:-4}"
+ATTEMPTS="${CLAUDEXOR_TB_ATTEMPTS:-2}"
+RUNS_ROOT="${CLAUDEXOR_TB_RUNS_ROOT:-$HOME/.claudexor/cache/bench-experiments/terminal-bench/harbor}"
 TASKSET_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tasksets/pilot-small.txt"
 export DATASET AGENT_IMPORT N_CONCURRENT ATTEMPTS RUNS_ROOT TASKSET_DEFAULT
 
 # Model slugs are volatile, so they are NOT hardcoded. Set these to current slugs:
-#   CLAUDEX_TB_CLAUDE_MODEL  e.g. anthropic/claude-opus-4-7   (optional; claude-code has its own default)
-#   CLAUDEX_TB_CODEX_MODEL   e.g. openai/<current-codex>      (REQUIRED for any codex arm)
-CLAUDE_MODEL="${CLAUDEX_TB_CLAUDE_MODEL:-}"
-CODEX_MODEL="${CLAUDEX_TB_CODEX_MODEL:-}"
+#   CLAUDEXOR_TB_CLAUDE_MODEL  e.g. anthropic/claude-opus-4-7   (optional; claude-code has its own default)
+#   CLAUDEXOR_TB_CODEX_MODEL   e.g. openai/<current-codex>      (REQUIRED for any codex arm)
+CLAUDE_MODEL="${CLAUDEXOR_TB_CLAUDE_MODEL:-}"
+CODEX_MODEL="${CLAUDEXOR_TB_CODEX_MODEL:-}"
 export CLAUDE_MODEL CODEX_MODEL
 
-log() { printf '[claudex-tb] %s\n' "$*" >&2; }
-die() { printf '[claudex-tb] ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf '[claudexor-tb] %s\n' "$*" >&2; }
+die() { printf '[claudexor-tb] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# Load API keys from CLAUDEX_KEYS_FILE without ever echoing their values. Existing exports
+# Load API keys from CLAUDEXOR_KEYS_FILE without ever echoing their values. Existing exports
 # are preserved (the file only fills in what is missing).
 load_keys() {
-  local f="${CLAUDEX_KEYS_FILE:-}"
-  [ -n "$f" ] || { log "CLAUDEX_KEYS_FILE not set (relying on already-exported env)"; return 0; }
+  local f="${CLAUDEXOR_KEYS_FILE:-}"
+  [ -n "$f" ] || { log "CLAUDEXOR_KEYS_FILE not set (relying on already-exported env)"; return 0; }
   [ -f "$f" ] || { log "keys file not found: $f (relying on already-exported env)"; return 0; }
   eval "$(python3 - "$f" <<'PY'
 import os, shlex, sys
@@ -114,7 +114,7 @@ require_harbor() { command -v harbor >/dev/null 2>&1 || die "harbor not found; r
 # Resolve task-selection flags for `harbor run`:
 #   1) explicit task ids passed as args  -> `-i <id> ...`
 #   2) else non-empty default taskset     -> `-i <id> ...`
-#   3) else                               -> `--n-tasks <CLAUDEX_TB_NTASKS|5>`
+#   3) else                               -> `--n-tasks <CLAUDEXOR_TB_NTASKS|5>`
 # Passing the SAME explicit ids to every arm is what keeps the 3-arm comparison fair.
 task_selection_flags() {
   if [ "$#" -gt 0 ]; then
@@ -127,7 +127,7 @@ task_selection_flags() {
     printf '%s' "$inc"
     return 0
   fi
-  printf -- '--n-tasks %s ' "${CLAUDEX_TB_NTASKS:-5}"
+  printf -- '--n-tasks %s ' "${CLAUDEXOR_TB_NTASKS:-5}"
 }
 
 # Path to Harbor's interpreter (uv tool venv), for import-checking the agent.

@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
-import { McpServer, defaultClaudexTools } from "./index.js";
+import { McpServer, defaultClaudexorTools } from "./index.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -11,7 +11,7 @@ describe("McpServer", () => {
   it("handles initialize, tools/list, and tools/call", async () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();
-    const tools = defaultClaudexTools(async (p) => ({ ok: true, mode: p.mode, prompt: p.prompt }));
+    const tools = defaultClaudexorTools(async (p) => ({ ok: true, mode: p.mode, prompt: p.prompt }));
     const server = new McpServer({ tools, transport: { read: c2s, write: s2c } });
     const serving = server.serve();
 
@@ -24,7 +24,7 @@ describe("McpServer", () => {
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     c2s.write(
-      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudex_run", arguments: { prompt: "hi" } } }) + "\n",
+      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "hi" } } }) + "\n",
     );
     await sleep(60);
     c2s.end();

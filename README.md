@@ -1,15 +1,15 @@
-# Claudex
+# Claudexor
 
-Claudex is a local-first control plane for AI coding harnesses. It runs Codex
+Claudexor is a local-first control plane for AI coding harnesses. It runs Codex
 CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
 behind one typed interface.
 
 The core rule is simple: a harness is not a role. Roles are intents such as
 `explain`, `plan`, `implement`, `repair`, `review`, `compare`, `synthesize`,
-`audit`, and `benchmark`. Any harness that declares the capability can be
-assigned the intent.
+and `audit`. Any harness that declares the capability can be assigned the
+intent.
 
-Current status: **v0.4.1 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.5.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -18,11 +18,11 @@ intentionally not supported.
 pnpm install --frozen-lockfile
 pnpm build
 
-claudex ask "2+2?"
-claudex explore "map this repo's auth and run storage"
-claudex run "fix the failing auth refresh test" --harness codex
-claudex inspect <run_id>
-claudex apply <run_id> --dry-run
+claudexor ask "2+2?"
+claudexor explore "map this repo's auth and run storage"
+claudexor run "fix the failing auth refresh test" --harness codex
+claudexor inspect <run_id>
+claudexor apply <run_id> --dry-run
 ```
 
 `apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
@@ -35,7 +35,7 @@ Canonical mode ids:
 - `ask` - read-only answer/explanation route. Default in the macOS composer.
 - `explore` - bounded read-only research swarm with synthesis, omissions, and
   follow-up questions.
-- `agent` - default `claudex run` route; one primary-biased harness, direct edit.
+- `agent` - default `claudexor run` route; one primary-biased envelope candidate.
 - `best_of_n` - N isolated candidates, review, synthesis when useful,
   arbitration.
 - `max_attempts` - repair loop with a hard attempt cap.
@@ -44,7 +44,6 @@ Canonical mode ids:
 - `plan` - read-only multi-harness planning and draft SpecPack grounding.
 - `create` - create-from-scratch path.
 - `readonly_audit` - read-only audit/map report.
-- `benchmark` - benchmark-oriented best-of-N path.
 
 Unknown modes fail loudly. `daily`, `until_convergence`, `readonly_swarm`, and
 `audit` as mode ids are not aliases.
@@ -52,14 +51,14 @@ Unknown modes fail loudly. `daily`, `until_convergence`, `readonly_swarm`, and
 Examples:
 
 ```bash
-claudex ask "2+2?"
-claudex explore "map this repo's auth and run storage"
-claudex run "fix the failing auth refresh test" --harness codex
-claudex race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
-claudex run "repair the parser test" --mode max-attempts --attempts 3
-claudex run "fix the bug and keep repairing until clean" --mode until-clean
-claudex plan "design a config-to-gates implementation"
-claudex run "map artifact writers and secret risk" --mode readonly_audit
+claudexor ask "2+2?"
+claudexor explore "map this repo's auth and run storage"
+claudexor run "fix the failing auth refresh test" --harness codex
+claudexor race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
+claudexor run "repair the parser test" --mode max-attempts --attempts 3
+claudexor run "fix the bug and keep repairing until clean" --mode until-clean
+claudexor plan "design a config-to-gates implementation"
+claudexor run "map artifact writers and secret risk" --mode readonly_audit
 ```
 
 ## Routing, Auth, And Secrets
@@ -75,19 +74,19 @@ Harness chips in the macOS app are not decorative toggles: unavailable,
 unauthenticated, degraded, or intent-incompatible harnesses are shown with the
 reason and are gated out of launch.
 
-Claudex mirrors native harness auth first. API keys are a fallback and live in
+Claudexor mirrors native harness auth first. API keys are a fallback and live in
 the OS Keychain where available, otherwise a `0600` file. Run params, daemon
 `jobs.json`, artifacts, summaries, patches, and PR text store only refs/metadata,
 not raw secret values. Subscription/native routes scrub provider API-key env
 vars unless an API-key source is explicitly selected.
 
 ```bash
-claudex auth status
-claudex auth login codex   # prints the native setup command/hint; no SaaS broker
-claudex secrets set openai --from-env OPENAI_API_KEY
-claudex secrets list
-claudex settings show
-claudex settings set default_portfolio subscription-first
+claudexor auth status
+claudexor auth login codex   # prints the native setup command/hint; no SaaS broker
+claudexor secrets set openai --from-env OPENAI_API_KEY
+claudexor secrets list
+claudexor settings show
+claudexor settings set default_portfolio subscription-first
 ```
 
 ## Daemon And Control API
@@ -101,28 +100,31 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
 - `GET /harnesses`, `POST /harnesses/setup`
+- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
-Harness setup is server-owned: the control API returns allowlisted native
-login/doctor commands and official guide URLs. UI surfaces can open Terminal or
-copy returned commands, but they must not invent harness setup commands.
+Harness setup is server-owned. `/harnesses/setup` is the typed prepare surface;
+`/setup/jobs` is the execution lifecycle for allowlisted install/login/doctor
+jobs with redacted logs and risk flags. UI surfaces must not invent harness
+setup commands or accept inline secrets.
 
 Start it:
 
 ```bash
-claudex daemon start
-claudex daemon status --json
-claudex daemon logs
-claudex daemon stop
+claudexor daemon start
+claudexor daemon status --json
+claudexor daemon logs
+claudexor daemon stop
 ```
 
 ## Artifact Layout
 
-Every project run creates files under `.claudex/runs/<run_id>/`. App-launched
+Every project run creates files under `.claudexor/runs/<run_id>/`. App-launched
 Ask without a project uses an empty synthetic cwd at
-`~/.cache/claudex/no-project` and writes artifacts to the user-level store
-`~/.claudex/runs/<run_id>/`:
+`~/.cache/claudexor/no-project` and writes artifacts to the user-level store
+`~/.claudexor/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -150,7 +152,7 @@ artifacts, so failed runs are inspectable instead of disappearing into logs.
 
 ## Integrations
 
-Claudex can be driven by other tools through CLI JSON on supported commands, the
+Claudexor can be driven by other tools through CLI JSON on supported commands, the
 local daemon/control API, MCP, ACP, and external JSON-RPC adapter protocol. These
 surfaces are beta and capability-gated; integrations should not assume every
 subcommand has JSON output or every harness supports live steering.
@@ -166,21 +168,21 @@ Important boundaries:
 - `packages/harness-*` adapters translate native tool I/O into typed events.
 - `packages/workspace` owns worktree envelopes and scoped harness homes.
 - `packages/orchestrator` owns Ask, Explore, Agent, Best-of-N, Max Attempts,
-  Until Clean, Plan, Create, Read-only Audit, and Benchmark modes.
+  Until Clean, Plan, Create, and Read-only Audit modes.
 - `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.
 
 Read next:
 
-- [`CLAUDEX_BIBLE.md`](CLAUDEX_BIBLE.md) - product and engineering principles.
+- [`CLAUDEXOR_BIBLE.md`](CLAUDEXOR_BIBLE.md) - product and engineering principles.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - current runtime and package
   map.
 - [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) - external integration
   surfaces.
 - [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) - macOS UI/UX contract.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) - contributor workflow for
-  changing Claudex itself.
+  changing Claudexor itself.
 - [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) - human gates for docs, schema,
   release, visual QA, and security.
 - [`apps/macos/README.md`](apps/macos/README.md) - macOS app notes.
@@ -204,8 +206,8 @@ There is no root `pnpm lint` script.
 macOS:
 
 ```bash
-cd apps/macos/ClaudexKit && swift test
-cd ../ClaudexApp && swift build
+cd apps/macos/ClaudexorKit && swift test
+cd ../ClaudexorApp && swift build
 ```
 
 ## License

@@ -2,7 +2,7 @@ import { type Server, type Socket, createServer } from "node:net";
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudex/util";
+import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -30,6 +30,9 @@ export type JobState =
   | "running"
   | "blocked"
   | "succeeded"
+  | "no_op"
+  | "ungated"
+  | "review_not_run"
   | "failed"
   | "cancelled"
   | "interrupted"
@@ -43,7 +46,7 @@ export interface JobRecord {
   result?: unknown;
   error?: string;
   createdAt: string;
-  /** Surfaced as soon as the run starts so a client can tail .claudex/runs/<runId>/events.jsonl. */
+  /** Surfaced as soon as the run starts so a client can tail .claudexor/runs/<runId>/events.jsonl. */
   runId?: string;
   taskId?: string;
   runDir?: string;
@@ -139,7 +142,7 @@ export class DaemonServer {
 
   private async dispatch(method: string, params: any): Promise<unknown> {
     switch (method) {
-      case "claudex.health":
+      case "claudexor.health":
         return {
           ok: true,
           uptime_ms: Date.now() - this.startedAt,
@@ -148,7 +151,7 @@ export class DaemonServer {
           active: this.active,
           jobs: this.records.size,
         };
-      case "claudex.enqueue": {
+      case "claudexor.enqueue": {
         assertNoInlineSecretValues(params, "$", "daemon job params");
         const id = newId("job");
         this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
@@ -157,14 +160,14 @@ export class DaemonServer {
         void this.drain();
         return { id, state: "queued" };
       }
-      case "claudex.status": {
+      case "claudexor.status": {
         const rec = this.records.get(String(params?.id));
         if (!rec) throw new Error(`no such job: ${params?.id}`);
         return publicJobRecord(rec);
       }
-      case "claudex.list":
+      case "claudexor.list":
         return [...this.records.values()].map(publicJobRecord);
-      case "claudex.cancel": {
+      case "claudexor.cancel": {
         const jid = String(params?.id);
         this.cancelled.add(jid);
         const rec = this.records.get(jid);
@@ -175,7 +178,7 @@ export class DaemonServer {
         this.persist();
         return { id: jid, cancelled: true };
       }
-      case "claudex.shutdown":
+      case "claudexor.shutdown":
         setTimeout(() => void this.stop(), 10);
         return { ok: true };
       default:
@@ -191,7 +194,7 @@ export class DaemonServer {
    * Best-effort durable persistence of the job registry. Writes atomically
    * (temp file + rename) so a crash mid-write cannot corrupt/drop the registry.
    * The raw run `result` is intentionally NOT persisted: canonical output lives
-   * in .claudex/runs (redacted), and result.summary can contain raw model text —
+   * in .claudexor/runs (redacted), and result.summary can contain raw model text —
    * keeping it out of jobs.json upholds the redaction-at-persistence invariant.
    */
   private persist(): void {
@@ -264,7 +267,7 @@ export class DaemonServer {
           rec.taskId = info.taskId;
           rec.runDir = info.runDir;
           // Persist the pointer immediately so a mid-run crash still reloads with
-          // runId/runDir to locate .claudex/runs/<runId> (the recovery path).
+          // runId/runDir to locate .claudexor/runs/<runId> (the recovery path).
           this.persist();
         },
       });
@@ -292,6 +295,12 @@ function jobStateFromResult(result: unknown, aborted: boolean): JobState {
   switch (status) {
     case "success":
       return "succeeded";
+    case "no_op":
+      return "no_op";
+    case "ungated":
+      return "ungated";
+    case "review_not_run":
+      return "review_not_run";
     case "cancelled":
       return "cancelled";
     case "exhausted":

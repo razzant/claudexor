@@ -1,10 +1,9 @@
-import type { ConformanceReport, HarnessCapabilities, HarnessManifest, Intent } from "@claudex/schema";
+import type { ConformanceReport, HarnessCapabilities, HarnessManifest, Intent } from "@claudexor/schema";
 
 /** Intents that must not be played by a degraded adapter unless it explicitly still enables them. */
 export const CRITICAL_INTENTS: Intent[] = [
   "review",
   "arbitrate",
-  "benchmark",
   "synthesize",
   "verify",
 ];
@@ -13,7 +12,7 @@ export const CRITICAL_INTENTS: Intent[] = [
 export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   const intents: Intent[] = [];
   if (caps.plan) intents.push("plan", "spec");
-  if (caps.implement) intents.push("implement", "repair", "benchmark");
+  if (caps.implement) intents.push("implement", "repair");
   if (caps.create_from_scratch) intents.push("create_from_scratch");
   if (caps.review) intents.push("review");
   if (caps.verify) intents.push("verify");

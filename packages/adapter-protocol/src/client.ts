@@ -4,10 +4,10 @@ import type {
   HarnessEvent as HarnessEventT,
   HarnessManifest as HarnessManifestT,
   HarnessRunSpec,
-} from "@claudex/schema";
-import { ConformanceReport, HarnessEvent, HarnessManifest } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { AdapterParseError, HarnessUnavailableError } from "@claudex/core";
+} from "@claudexor/schema";
+import { ConformanceReport, HarnessEvent, HarnessManifest } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { AdapterParseError, HarnessUnavailableError } from "@claudexor/core";
 import {
   METHODS,
   type RpcId,

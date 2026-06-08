@@ -1,5 +1,5 @@
 import { join, relative, sep } from "node:path";
-import { readTextSafe } from "@claudex/util";
+import { readTextSafe } from "@claudexor/util";
 
 export interface AgentsDoc {
   path: string;

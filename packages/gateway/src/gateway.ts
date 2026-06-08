@@ -1,6 +1,6 @@
-import type { HarnessManifest, Intent } from "@claudex/schema";
-import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError, runDoctor } from "@claudex/core";
+import type { HarnessManifest, Intent } from "@claudexor/schema";
+import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError, runDoctor } from "@claudexor/core";
 import { allowedIntents } from "./gating.js";
 
 export interface HarnessStatus {

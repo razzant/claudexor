@@ -6,36 +6,54 @@ import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
 
-export const ControlRunStartRequest = z.object({
-  prompt: z.string().default(""),
-  mode: ModeKind.default("agent"),
-  harnesses: z.array(z.string()).optional(),
-  primaryHarness: z.string().optional(),
-  portfolio: Portfolio.optional(),
-  model: z.string().optional(),
-  reviewerModels: z.record(z.string(), z.string()).optional(),
-  reviewerEfforts: z
-    .object({
-      anthropic: EffortHint.optional(),
-    })
-    .strict()
-    .optional(),
-  n: z.number().int().positive().optional(),
-  attempts: z.number().int().positive().nullable().optional(),
-  maxUsd: z.number().nonnegative().nullable().optional(),
-  access: AccessProfile.optional(),
-  tests: z.array(z.string()).optional(),
-  repoRoot: z.string().optional(),
-  contextMode: z.enum(["off", "auto", "deep"]).optional(),
-  inPlace: z.boolean().optional(),
-  envProfile: z.string().optional(),
-  specPath: z.string().optional(),
-  specId: z.string().optional(),
-  specHash: ContentHash.optional(),
-});
+export const RunScopeContext = z.enum(["auto", "deep"]);
+export type RunScopeContext = z.infer<typeof RunScopeContext>;
+
+export const RunScope = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
+  z.object({ kind: z.literal("none") }).strict(),
+]);
+export type RunScope = z.infer<typeof RunScope>;
+
+export const RunExecution = z
+  .object({
+    isolation: z.enum(["envelope", "live"]).default("envelope"),
+  })
+  .strict();
+export type RunExecution = z.infer<typeof RunExecution>;
+
+export const ControlRunStartRequest = z
+  .object({
+    prompt: z.string().default(""),
+    mode: ModeKind.default("agent"),
+    scope: RunScope.default({ kind: "none" }),
+    execution: RunExecution.default({ isolation: "envelope" }),
+    harnesses: z.array(z.string()).optional(),
+    primaryHarness: z.string().optional(),
+    portfolio: Portfolio.optional(),
+    model: z.string().optional(),
+    effort: EffortHint.optional(),
+    reviewerModels: z.record(z.string(), z.string()).optional(),
+    reviewerEfforts: z
+      .object({
+        anthropic: EffortHint.optional(),
+      })
+      .strict()
+      .optional(),
+    n: z.number().int().positive().optional(),
+    attempts: z.number().int().positive().nullable().optional(),
+    maxUsd: z.number().nonnegative().nullable().optional(),
+    access: AccessProfile.optional(),
+    tests: z.array(z.string()).optional(),
+    envProfile: z.string().optional(),
+    specPath: z.string().optional(),
+    specId: z.string().optional(),
+    specHash: ContentHash.optional(),
+  })
+  .strict();
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
 
-export const ControlHarnessSetupAction = z.enum(["install_guide", "login", "doctor"]);
+export const ControlHarnessSetupAction = z.enum(["install_guide", "install", "login", "doctor"]);
 export type ControlHarnessSetupAction = z.infer<typeof ControlHarnessSetupAction>;
 export const ControlHarnessSetupHarness = z.enum(["codex", "claude", "cursor", "opencode", "raw"]);
 export type ControlHarnessSetupHarness = z.infer<typeof ControlHarnessSetupHarness>;
@@ -43,7 +61,7 @@ export type ControlHarnessSetupHarness = z.infer<typeof ControlHarnessSetupHarne
 export const ControlHarnessSetupRequest = z.object({
   harness: ControlHarnessSetupHarness,
   action: ControlHarnessSetupAction.default("login"),
-});
+}).strict();
 export type ControlHarnessSetupRequest = z.infer<typeof ControlHarnessSetupRequest>;
 
 export const ControlHarnessSetupResponse = z.object({
@@ -56,6 +74,89 @@ export const ControlHarnessSetupResponse = z.object({
   message: z.string(),
 });
 export type ControlHarnessSetupResponse = z.infer<typeof ControlHarnessSetupResponse>;
+
+export const ControlSetupJobAction = z.enum(["install", "login", "doctor", "store_key"]);
+export type ControlSetupJobAction = z.infer<typeof ControlSetupJobAction>;
+
+export const ControlSetupJobState = z.enum([
+  "queued",
+  "running",
+  "waiting_for_input",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "not_supported",
+]);
+export type ControlSetupJobState = z.infer<typeof ControlSetupJobState>;
+
+export const ControlSetupJobCreateRequest = z
+  .object({
+    harness: ControlHarnessSetupHarness,
+    action: ControlSetupJobAction,
+  })
+  .strict();
+export type ControlSetupJobCreateRequest = z.infer<typeof ControlSetupJobCreateRequest>;
+
+export const ControlSetupJob = z
+  .object({
+    jobId: Id,
+    harness: ControlHarnessSetupHarness,
+    action: ControlSetupJobAction,
+    state: ControlSetupJobState,
+    command: z.string().nullable().default(null),
+    guideUrl: z.string().url().nullable().default(null),
+    logPath: z.string().nullable().default(null),
+    message: z.string(),
+    riskFlags: z.array(z.string()).default([]),
+    requiresConfirmation: z.boolean().default(false),
+    createdAt: z.string(),
+    startedAt: z.string().nullable().default(null),
+    finishedAt: z.string().nullable().default(null),
+  })
+  .strict();
+export type ControlSetupJob = z.infer<typeof ControlSetupJob>;
+
+export const ControlSetupJobEvent = z
+  .object({
+    jobId: Id,
+    seq: z.number().int().nonnegative(),
+    time: z.string(),
+    kind: z.enum(["status", "log", "end"]),
+    state: ControlSetupJobState.optional(),
+    message: z.string(),
+  })
+  .strict();
+export type ControlSetupJobEvent = z.infer<typeof ControlSetupJobEvent>;
+
+export const ControlSetupJobListResponse = z.object({
+  jobs: z.array(ControlSetupJob),
+});
+export type ControlSetupJobListResponse = z.infer<typeof ControlSetupJobListResponse>;
+
+export const ControlSetupJobConfirmRequest = z.object({
+  confirmed: z.boolean().default(true),
+}).strict();
+export type ControlSetupJobConfirmRequest = z.infer<typeof ControlSetupJobConfirmRequest>;
+
+export const ControlSpecQuestionsRequest = z
+  .object({
+    prompt: z.string(),
+    scope: z.object({ kind: z.literal("project"), root: z.string() }).strict(),
+    harnesses: z.array(z.string()).optional(),
+  })
+  .strict();
+export type ControlSpecQuestionsRequest = z.infer<typeof ControlSpecQuestionsRequest>;
+
+export const ControlSpecFreezeRequest = z
+  .object({
+    prompt: z.string(),
+    scope: z.object({ kind: z.literal("project"), root: z.string() }).strict(),
+    planDir: z.string().optional(),
+    plan: z.string().optional(),
+    answers: z.array(z.unknown()).optional(),
+  })
+  .strict();
+export type ControlSpecFreezeRequest = z.infer<typeof ControlSpecFreezeRequest>;
 
 export const ControlRunStartInfo = z.object({
   jobId: z.string().optional(),
@@ -70,6 +171,9 @@ export const ControlRunState = z.enum([
   "running",
   "blocked",
   "succeeded",
+  "no_op",
+  "ungated",
+  "review_not_run",
   "failed",
   "cancelled",
   "interrupted",
@@ -113,9 +217,10 @@ export const RunFailure = z.object({
 export type RunFailure = z.infer<typeof RunFailure>;
 
 export const ControlProjectMetadata = z.object({
-  repoRoot: z.string().nullable().default(null),
+  kind: z.enum(["project", "none"]).default("none"),
+  root: z.string().nullable().default(null),
   projectName: z.string().nullable().default(null),
-  contextMode: z.enum(["off", "auto", "deep"]).default("auto"),
+  context: z.enum(["off", "auto", "deep"]).default("off"),
 });
 export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
 
@@ -208,17 +313,27 @@ export const ControlRunControlResponse = z.object({
 });
 export type ControlRunControlResponse = z.infer<typeof ControlRunControlResponse>;
 
-export const ControlApplyCheckRequest = z.object({
-  repoRoot: z.string().optional(),
-});
+export const ApplyTarget = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("original_project") }).strict(),
+  z.object({ kind: z.literal("project"), root: z.string() }).strict(),
+]);
+export type ApplyTarget = z.infer<typeof ApplyTarget>;
+
+export const ControlApplyCheckRequest = z
+  .object({
+    target: ApplyTarget.default({ kind: "original_project" }),
+  })
+  .strict();
 export type ControlApplyCheckRequest = z.infer<typeof ControlApplyCheckRequest>;
 
-export const ControlApplyRequest = z.object({
-  repoRoot: z.string().optional(),
-  mode: z.enum(["artifact_only", "apply", "branch", "commit", "pr"]).default("apply"),
-  branch: z.string().optional(),
-  message: z.string().optional(),
-});
+export const ControlApplyRequest = z
+  .object({
+    target: ApplyTarget.default({ kind: "original_project" }),
+    mode: z.enum(["artifact_only", "apply", "branch", "commit", "pr"]).default("apply"),
+    branch: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .strict();
 export type ControlApplyRequest = z.infer<typeof ControlApplyRequest>;
 
 export const HarnessStatusDto = z.object({

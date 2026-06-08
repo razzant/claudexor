@@ -1,9 +1,9 @@
 import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudex/schema";
-import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudex/schema";
-import { runCapture, WorkspaceError } from "@claudex/core";
-import { ensureDir, newId, nowIso } from "@claudex/util";
+import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
+import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
+import { runCapture, WorkspaceError } from "@claudexor/core";
+import { ensureDir, newId, nowIso } from "@claudexor/util";
 import {
   diffStaged,
   isGitRepo,
@@ -25,8 +25,8 @@ export interface CreateEnvelopeOptions {
   ports?: number;
   /**
    * Run against the live `repoRoot` directly instead of an isolated git worktree.
-   * Used for stateful benchmark containers (e.g. Terminal-Bench `/app`) that may
-   * not be a git repo and whose runtime STATE — not a patch — is the deliverable.
+   * Used for external stateful environments that may not be git repositories
+   * and whose runtime STATE, not a patch, is the deliverable.
    * `dispose()` never deletes the live tree in this mode; a best-effort baseline
    * snapshot backs `diff()` and reviewers also read the live tree directly.
    */
@@ -35,14 +35,14 @@ export interface CreateEnvelopeOptions {
 
 /**
  * Manages WorkspaceEnvelopes: an isolated git worktree plus scoped HOME and
- * per-harness config dirs, allocated ports, and dirty-tree handling. Claudex
+ * per-harness config dirs, allocated ports, and dirty-tree handling. Claudexor
  * owns these envelopes (it does not rely on a harness's native --worktree).
  */
 export class WorkspaceManager {
   constructor(private readonly repoRoot: string) {}
 
   private workspacesDir(): string {
-    return join(this.repoRoot, ".claudex", "workspaces");
+    return join(this.repoRoot, ".claudexor", "workspaces");
   }
 
   /** The scoped envelope base for a task/attempt. The sole on-disk root we delete on dispose. */
@@ -77,7 +77,7 @@ export class WorkspaceManager {
     const ports = await allocatePorts(opts.ports ?? 0);
 
     // In-place mode: mutate the live repoRoot directly (no git, no worktree). Used
-    // for stateful benchmark containers where the runtime state is the deliverable.
+    // for stateful external environments where runtime state is the deliverable.
     if (opts.inPlace) {
       this.snapshotBaseline(base);
       return WorkspaceEnvelopeSchema.parse({
@@ -125,7 +125,7 @@ export class WorkspaceManager {
     }
 
     const path = join(base, "tree");
-    const branch = `claudex/${opts.taskId}/${opts.attemptId}`;
+    const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
     await worktreeAdd(this.repoRoot, path, branch, baseSha);
 
     // dirty "copy" brings untracked + modified files into the worktree explicitly.
@@ -158,15 +158,15 @@ export class WorkspaceManager {
 
   /**
    * Best-effort baseline copy of the live tree for in-place diff(). Copies each
-   * top-level entry individually (skipping heavy/ephemeral dirs, notably `.claudex`
+   * top-level entry individually (skipping heavy/ephemeral dirs, notably `.claudexor`
    * which holds this base) — this both prunes noise and avoids Node's "cannot copy
    * a directory into its own subdirectory" guard, since the baseline lives under
-   * `.claudex`. On any failure the baseline is simply absent and diff() returns
+   * `.claudexor`. On any failure the baseline is simply absent and diff() returns
    * empty; reviewers still read the live tree directly.
    */
   private snapshotBaseline(base: string): void {
     const baseline = join(base, "baseline");
-    const skip = new Set([".git", ".claudex", "node_modules", "__pycache__", ".venv", "venv"]);
+    const skip = new Set([".git", ".claudexor", "node_modules", "__pycache__", ".venv", "venv"]);
     try {
       ensureDir(baseline);
       for (const entry of readdirSync(this.repoRoot)) {
@@ -196,7 +196,7 @@ export class WorkspaceManager {
       HOME: env.home_dir,
       CODEX_HOME: env.harness_config_dirs["codex_home"] ?? join(env.home_dir, ".codex"),
       CLAUDE_CONFIG_DIR: env.harness_config_dirs["claude_config"] ?? join(env.home_dir, ".claude"),
-      CLAUDEX_ENV_DIR: env.env_dir,
+      CLAUDEXOR_ENV_DIR: env.env_dir,
     };
   }
 
@@ -210,7 +210,7 @@ export class WorkspaceManager {
       try {
         const r = await runCapture(
           "diff",
-          ["-ruN", "-x", ".git", "-x", ".claudex", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
+          ["-ruN", "-x", ".git", "-x", ".claudexor", "-x", ".claudexor-review-evidence", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
           { timeoutMs: 120_000 },
         );
         const CAP = 200_000;
@@ -237,7 +237,7 @@ export class WorkspaceManager {
     // Remove only the scoped envelope base (worktree + scoped home/env/logs/artifacts/
     // baseline, including any seeded credentials), derived from task/attempt ids.
     // For git mode this equals dirname(worktree_path); for in-place it is a sibling
-    // under `.claudex/workspaces`, so deriving from ids is exactly what prevents
+    // under `.claudexor/workspaces`, so deriving from ids is exactly what prevents
     // dispose() from ever deleting the live tree.
     try {
       rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });

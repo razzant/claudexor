@@ -19,10 +19,71 @@
             "until_clean",
             "plan",
             "create",
-            "readonly_audit",
-            "benchmark"
+            "readonly_audit"
           ],
           "default": "agent"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "project"
+                },
+                "root": {
+                  "type": "string"
+                },
+                "context": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "deep"
+                  ],
+                  "default": "auto"
+                }
+              },
+              "required": [
+                "kind",
+                "root"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "default": {
+            "kind": "none"
+          }
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "isolation": {
+              "type": "string",
+              "enum": [
+                "envelope",
+                "live"
+              ],
+              "default": "envelope"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "isolation": "envelope"
+          }
         },
         "harnesses": {
           "type": "array",
@@ -41,7 +102,6 @@
             "cheapest",
             "strongest",
             "burn",
-            "benchmark",
             "subscription-first",
             "api-overflow",
             "conserve-claude",
@@ -50,6 +110,16 @@
         },
         "model": {
           "type": "string"
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "reviewerModels": {
           "type": "object",
@@ -61,14 +131,7 @@
           "type": "object",
           "properties": {
             "anthropic": {
-              "type": "string",
-              "enum": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ]
+              "$ref": "#/definitions/ControlRunStartRequest/properties/effort"
             }
           },
           "additionalProperties": false
@@ -116,20 +179,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "repoRoot": {
-          "type": "string"
-        },
-        "contextMode": {
-          "type": "string",
-          "enum": [
-            "off",
-            "auto",
-            "deep"
-          ]
-        },
-        "inPlace": {
-          "type": "boolean"
         },
         "envProfile": {
           "type": "string"

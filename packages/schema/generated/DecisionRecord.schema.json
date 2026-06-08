@@ -15,21 +15,29 @@
             }
           ]
         },
-        "confidence": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "default": 0
-        },
         "status": {
           "type": "string",
           "enum": [
             "success",
+            "no_op",
+            "ungated",
+            "review_not_run",
             "not_converged",
             "failed",
             "exhausted",
             "cancelled"
           ]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "no_op",
+            "ungated",
+            "review_not_run",
+            "blocked"
+          ],
+          "default": "blocked"
         },
         "why_winner": {
           "type": "string",
@@ -50,6 +58,13 @@
           "default": []
         },
         "final_checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "evidence_facts": {
           "type": "array",
           "items": {
             "type": "string"

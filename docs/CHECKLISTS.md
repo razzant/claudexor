@@ -1,6 +1,6 @@
-# Claudex Checklists
+# Claudexor Checklists
 
-These are human gates for contributors changing Claudex. They are intentionally
+These are human gates for contributors changing Claudexor. They are intentionally
 plain checklists, not a metadata system or hardcoded docs allowlist.
 
 ## Docs Hygiene

@@ -17,8 +17,7 @@
             "commit",
             "pr",
             "report",
-            "artifact_bundle",
-            "benchmark_submission"
+            "artifact_bundle"
           ]
         },
         "source_task_id": {

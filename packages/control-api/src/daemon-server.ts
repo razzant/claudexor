@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { checkPatch, deliver } from "@claudex/delivery";
+import { checkPatch, deliver } from "@claudexor/delivery";
 import {
   AccessProfile,
   ControlApplyCheckRequest,
@@ -10,6 +10,13 @@ import {
   ControlHarnessSetupRequest,
   ControlHarnessSetupResponse,
   ControlHarnessListResponse,
+  ControlSetupJob,
+  ControlSetupJobConfirmRequest,
+  ControlSetupJobCreateRequest,
+  ControlSetupJobEvent,
+  ControlSetupJobListResponse,
+  ControlSpecFreezeRequest,
+  ControlSpecQuestionsRequest,
   ControlSecretListResponse,
   ControlRunStartRequest,
   ControlRunStartInfo,
@@ -29,8 +36,8 @@ import {
   RunEvent,
   RunFailure,
   WorkProduct,
-} from "@claudex/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudex/util";
+} from "@claudexor/schema";
+import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -63,6 +70,11 @@ export interface DaemonControlApiOptions {
   services?: {
     harnesses?: () => Promise<unknown>;
     setupHarness?: (input: unknown) => Promise<unknown>;
+    createSetupJob?: (input: unknown) => Promise<unknown>;
+    listSetupJobs?: () => Promise<unknown>;
+    setupJobStatus?: (input: unknown) => Promise<unknown>;
+    cancelSetupJob?: (input: unknown) => Promise<unknown>;
+    confirmSetupJob?: (input: unknown) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
     auth?: () => Promise<unknown>;
@@ -75,7 +87,7 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
+const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
@@ -99,7 +111,7 @@ function originIsLoopback(origin: string | undefined): boolean {
  * HTTP/SSE facade over the durable daemon. Canonical run/job state comes from the
  * daemon (`jobs.json` over the unix-socket JSON-RPC API). This server is a live
  * viewport only: POST/GET/cancel delegate to daemon, and event streams replay/tail
- * the canonical `.claudex/runs/<runId>/events.jsonl` file.
+ * the canonical `.claudexor/runs/<runId>/events.jsonl` file.
  */
 export class DaemonControlApiServer {
   private server?: Server;
@@ -270,8 +282,8 @@ export class DaemonControlApiServer {
       if (applyableError) return this.json(res, 409, { error: applyableError });
       const patchBindingError = validatePatchBinding(rec, patch);
       if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
-      const repoRoot = body.repoRoot ?? runRepoRoot(rec);
-      if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply check" });
+      const repoRoot = applyTargetRoot(body.target, rec);
+      if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply check" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const repoError = validateApplyRepo(rec, repoRoot);
@@ -299,8 +311,8 @@ export class DaemonControlApiServer {
       if (applyableError) return this.json(res, 409, { error: applyableError });
       const patchBindingError = validatePatchBinding(rec, patch);
       if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
-      const repoRoot = body.repoRoot ?? runRepoRoot(rec);
-      if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply" });
+      const repoRoot = applyTargetRoot(body.target, rec);
+      if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const repoError = validateApplyRepo(rec, repoRoot);
@@ -320,6 +332,43 @@ export class DaemonControlApiServer {
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       return this.service(res, "setupHarness", body, ControlHarnessSetupResponse);
+    }
+    if (method === "GET" && path === "/setup/jobs") return this.service(res, "listSetupJobs", undefined, ControlSetupJobListResponse);
+    if (method === "POST" && path === "/setup/jobs") {
+      let body: ControlSetupJobCreateRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlSetupJobCreateRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      return this.service(res, "createSetupJob", body, ControlSetupJob);
+    }
+    const setupJobMatch = /^\/setup\/jobs\/([^/]+)$/.exec(path);
+    if (method === "GET" && setupJobMatch) {
+      return this.service(res, "setupJobStatus", { jobId: decodeURIComponent(setupJobMatch[1] as string) }, ControlSetupJob);
+    }
+    const setupJobCancelMatch = /^\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
+    if (method === "POST" && setupJobCancelMatch) {
+      return this.service(res, "cancelSetupJob", { jobId: decodeURIComponent(setupJobCancelMatch[1] as string) }, ControlSetupJob);
+    }
+    const setupJobConfirmMatch = /^\/setup\/jobs\/([^/]+)\/confirm$/.exec(path);
+    if (method === "POST" && setupJobConfirmMatch) {
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const body = ControlSetupJobConfirmRequest.parse(raw);
+        return this.service(res, "confirmSetupJob", { jobId: decodeURIComponent(setupJobConfirmMatch[1] as string), confirmed: body.confirmed }, ControlSetupJob);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+    const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
+    if (method === "GET" && setupJobEventsMatch) {
+      return this.streamSetupJobEvents(decodeURIComponent(setupJobEventsMatch[1] as string), res);
     }
     if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
@@ -349,8 +398,9 @@ export class DaemonControlApiServer {
     }
     if (method === "POST" && path === "/spec/questions") {
       try {
-        const body = await this.readBody(req);
-        assertNoSpecBodySecrets(body);
+        const raw = await this.readBody(req);
+        assertNoSpecBodySecrets(raw);
+        const body = ControlSpecQuestionsRequest.parse(raw);
         return this.service(res, "specQuestions", body);
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
@@ -359,8 +409,9 @@ export class DaemonControlApiServer {
     }
     if (method === "POST" && path === "/spec/freeze") {
       try {
-        const body = await this.readBody(req);
-        assertNoSpecBodySecrets(body);
+        const raw = await this.readBody(req);
+        assertNoSpecBodySecrets(raw);
+        const body = ControlSpecFreezeRequest.parse(raw);
         return this.service(res, "specFreeze", body);
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
@@ -455,6 +506,36 @@ export class DaemonControlApiServer {
     } catch (err) {
       return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  private async streamSetupJobEvents(jobId: string, res: ServerResponse): Promise<void> {
+    const fn = this.opts.services?.setupJobStatus as ((arg?: unknown) => Promise<unknown>) | undefined;
+    if (!fn) return this.json(res, 501, { error: "setupJobStatus service is not configured" });
+    let job: unknown;
+    try {
+      job = ControlSetupJob.parse(await fn({ jobId }));
+    } catch (err) {
+      return this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+    this.sseClients.add(res);
+    const parsed = ControlSetupJob.parse(job);
+    const event = ControlSetupJobEvent.parse({
+      jobId: parsed.jobId,
+      seq: 1,
+      time: nowIso(),
+      kind: "status",
+      state: parsed.state,
+      message: parsed.message,
+    });
+    res.write(`id: 1\nevent: setup\ndata: ${JSON.stringify(event)}\n\n`);
+    res.write("event: end\ndata: {}\n\n");
+    this.sseClients.delete(res);
+    res.end();
   }
 
   private async waitForRunStart(jobId: string): Promise<DaemonRunRecord> {
@@ -566,31 +647,37 @@ function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
 
 function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const mode = parsed.mode ?? "agent";
-  const repoRoot = parsed.repoRoot?.trim();
-  if (repoRoot) {
+  if (parsed.scope.kind === "project") {
+    const repoRoot = parsed.scope.root.trim();
     const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
     if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
-    if (parsed.contextMode === "off") {
-      throw Object.assign(new Error("contextMode 'off' is only supported for Ask without a repoRoot"), { status: 400 });
-    }
-    return { ...parsed, repoRoot, contextMode: parsed.contextMode ?? "auto" };
+    return { ...parsed, scope: { kind: "project", root: repoRoot, context: parsed.scope.context ?? "auto" } };
   }
   if (mode === "ask") {
     mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-    return { ...parsed, repoRoot: NO_PROJECT_ROOT, contextMode: "off" };
+    return parsed;
   }
-  throw Object.assign(new Error(`repoRoot is required for mode '${mode}'`), { status: 400 });
+  throw Object.assign(new Error(`project scope is required for mode '${mode}'`), { status: 400 });
 }
 
-function projectMetadata(rec: DaemonRunRecord): { repoRoot: string | null; projectName: string | null; contextMode: "off" | "auto" | "deep" } {
+function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" | "deep" } {
   const p = paramsRecord(rec);
-  const repoRoot = typeof p["repoRoot"] === "string" ? p["repoRoot"] : runRepoRoot(rec);
-  const contextMode = p["contextMode"] === "off" || p["contextMode"] === "deep" || p["contextMode"] === "auto" ? p["contextMode"] : "auto";
-  const noProject = contextMode === "off" && repoRoot === NO_PROJECT_ROOT;
+  const scope = p["scope"];
+  if (scope && typeof scope === "object" && !Array.isArray(scope)) {
+    const s = scope as Record<string, unknown>;
+    if (s["kind"] === "none") return { kind: "none", root: null, projectName: null, context: "off" };
+    if (s["kind"] === "project" && typeof s["root"] === "string") {
+      const context = s["context"] === "deep" ? "deep" : "auto";
+      return { kind: "project", root: s["root"], projectName: basename(s["root"]), context };
+    }
+  }
+  const repoRoot = runRepoRoot(rec);
+  const noProject = repoRoot === NO_PROJECT_ROOT;
   return {
-    repoRoot: noProject ? null : repoRoot,
+    kind: noProject ? "none" : "project",
+    root: noProject ? null : repoRoot,
     projectName: noProject || !repoRoot ? null : basename(repoRoot),
-    contextMode,
+    context: noProject ? "off" : "auto",
   };
 }
 
@@ -738,7 +825,12 @@ function readPatch(rec: DaemonRunRecord): string | null {
 
 function runRepoRoot(rec: DaemonRunRecord): string | null {
   const p = paramsRecord(rec);
-  if (typeof p["repoRoot"] === "string") return p["repoRoot"];
+  const scope = p["scope"];
+  if (scope && typeof scope === "object" && !Array.isArray(scope)) {
+    const s = scope as Record<string, unknown>;
+    if (s["kind"] === "project" && typeof s["root"] === "string") return s["root"];
+    if (s["kind"] === "none") return NO_PROJECT_ROOT;
+  }
   let task: unknown = null;
   try {
     task = readStructured(readRawTextArtifact(rec, "context/task.yaml"), ".yaml", { parse: (value: unknown) => value });
@@ -753,6 +845,11 @@ function runRepoRoot(rec: DaemonRunRecord): string | null {
     }
   }
   return null;
+}
+
+function applyTargetRoot(target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"], rec: DaemonRunRecord): string | null {
+  if (target.kind === "project") return target.root;
+  return runRepoRoot(rec);
 }
 
 function validateApplyableRun(rec: DaemonRunRecord): string | null {
@@ -812,9 +909,9 @@ function validateApplyRepo(rec: DaemonRunRecord, repoRoot: string): string | nul
   try {
     const a = realpathSync(original);
     const b = realpathSync(repoRoot);
-    return a === b ? null : "repoRoot does not match the run's original project";
+    return a === b ? null : "project root does not match the run's original project";
   } catch {
-    return "repoRoot cannot be verified";
+    return "project root cannot be verified";
   }
 }
 
@@ -844,7 +941,7 @@ function isTextArtifact(path: string): boolean {
 }
 
 function validateAbsoluteRepoRoot(repoRoot: string): string | null {
-  return isAbsolute(repoRoot) ? null : "repoRoot must be an absolute path";
+  return isAbsolute(repoRoot) ? null : "project root must be an absolute path";
 }
 
 const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);

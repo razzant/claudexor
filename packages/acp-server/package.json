@@ -1,7 +1,7 @@
 {
-  "name": "@claudex/acp-server",
-  "version": "0.4.1",
-  "description": "Minimal ACP server (stdio JSON-RPC) exposing Claudex as a meta-agent to editors. Runner injected.",
+  "name": "@claudexor/acp-server",
+  "version": "0.5.0",
+  "description": "Minimal ACP server (stdio JSON-RPC) exposing Claudexor as a meta-agent to editors. Runner injected.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

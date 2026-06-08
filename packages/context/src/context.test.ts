@@ -2,14 +2,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TaskContract } from "@claudex/schema";
+import { TaskContract } from "@claudexor/schema";
 import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
 import { buildScopeAtlas } from "./atlas.js";
 import { buildContextPack } from "./contextpack.js";
 import { incrementRound, preflightEvidence, readRound, writeEvidencePacket } from "./evidence.js";
 
 function tmp(): string {
-  return mkdtempSync(join(tmpdir(), "claudex-ctx-"));
+  return mkdtempSync(join(tmpdir(), "claudexor-ctx-"));
 }
 
 describe("ScopeAtlas", () => {

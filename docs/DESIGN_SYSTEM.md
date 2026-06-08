@@ -1,10 +1,10 @@
-# Claudex for macOS — Design System
+# Claudexor for macOS — Design System
 
 Status: living document. SSOT for the native macOS app's visual + interaction design.
 Target platform: macOS 26 (Tahoe), SwiftUI/AppKit, Liquid Glass. Apple Silicon.
 
 This document is normative. The app implements these tokens and rules; deviations
-must be justified here. It pairs with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md)
+must be justified here. It pairs with [`../CLAUDEXOR_BIBLE.md`](../CLAUDEXOR_BIBLE.md)
 (product constitution), [`ARCHITECTURE.md`](ARCHITECTURE.md) (how the app talks
 to the engine-service), [`DEVELOPMENT.md`](DEVELOPMENT.md) (contributor
 workflow), and [`CHECKLISTS.md`](CHECKLISTS.md) (visual QA gates).
@@ -13,12 +13,12 @@ workflow), and [`CHECKLISTS.md`](CHECKLISTS.md) (visual QA gates).
 
 ## 1. North star
 
-Claudex is an expressive, native **mission-control** for autonomous AI coding agents:
+Claudexor is an expressive, native **mission-control** for autonomous AI coding agents:
 a structured spec interview turns a vague task into a frozen ТЗ (SpecPack), then
 agents run autonomously for hours-to-days across multiple parallel projects, with a
 human reviewing and approving the results. The feel is a **Liquid Glass showcase** —
 beautiful, alive, and unmistakably native — while staying legible for developers new
-to Claudex and instantly familiar to users of Codex App and Claude Code.
+to Claudexor and instantly familiar to users of Codex App and Claude Code.
 
 Three design commitments:
 
@@ -68,7 +68,7 @@ Text:
 
 Brand + accent:
 
-- `brand/accent` — single Claudex identity accent (a cool, slightly desaturated
+- `brand/accent` — single Claudexor identity accent (a cool, slightly desaturated
   **steel-blue** — neutral chrome so the harness identity hues pop). Used for primary
   actions, **selection/list tint** (the app tints controls with the brand, never the system
   blue), section-header icons, and inline links (`link` == `brand/accent`).
@@ -142,7 +142,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 - **SF Symbols** first (monochrome in toolbars per Tahoe; tint only for meaning).
   Animated symbols for run state. Provide an accessibility label for every icon.
-- A small set of custom marks: the Claudex app icon (Icon Composer, layered,
+- A small set of custom marks: the Claudexor app icon (Icon Composer, layered,
   Light/Dark/Clear/Tinted) and harness-family glyphs.
 
 ---
@@ -207,14 +207,14 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   choice + free text, tier progress, `NEEDS_CLARIFICATION` chips, deep-link citations into
   code. It is Plan/draft-owned, not a permanent top-level sidebar item.
 - **Run composer.** Mode (`Ask`, `Explore`, `Agent`, `Best-of-N`, `Max Attempts`,
-  `Until Clean`, `Plan`, `Create`, `Read-only Audit`, `Benchmark`), Current Project,
+  `Until Clean`, `Plan`, `Create`, `Read-only Audit`), Current Project,
   Project Context (`Auto`/`Deep` when a project is selected; internal `Off` only for
   no-project Ask), harness multiselect as eligible pool
   (family-colored), Primary harness, Portfolio, model hint, N, budget cap, access profile,
   gates/tests. Default mode is `Ask`. Project-aware modes are disabled until Current
   Project is selected; Ask can run without a project.
 - **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
-- **Cross-family review.** Table-first Review Queue: severity, finding, task, reviewer,
+- **Cross-family review.** Solid-grid Review Queue: severity, finding, task, reviewer,
   evidence, and state columns. Cards can still appear in task detail, but local accept/rebut
   toggles are forbidden unless backed by a server endpoint.
 - **Convergence.** Round timeline; accepted findings fed back; convergence predicate state.
@@ -243,11 +243,11 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   intent, or unable to enforce read-only is visible but disabled, with a hover
   reason and a path to Harness Doctor/Auth setup.
 - **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth
-  and guided official install/login flows, then offer API-key fallback that writes only to the
-  local secret store. Claudex does not broker SaaS OAuth itself; it reuses each CLI's native
-  login/session when available. The wizard may store secret refs, mark setup complete, or skip,
-  but it must not invent app-only auth state. Offline or unimplemented surfaces show honest
-  empty states; sample data is opt-in from Settings.
+  and expose setup jobs for official install/login/doctor flows, then offer API-key fallback
+  that writes only to the local secret store. Claudexor does not broker SaaS OAuth itself; it
+  reuses each CLI's native login/session when available. The wizard may store secret refs, mark
+  setup complete, or skip, but it must not invent app-only auth state. Offline or unimplemented
+  surfaces show honest empty states; sample data is opt-in from Settings.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 
@@ -331,4 +331,4 @@ tiny count/label pills still carry per-call padding pending a shared `CountBadge
   macOS Tahoe HIG. APIs: `glassEffect(_:in:)`, `GlassEffectContainer`, `glassEffectID`,
   `.interactive`, `NavigationSplitView`, `.inspector`, `ConcentricRectangle`,
   `.backgroundExtensionEffect()`, `ToolbarSpacer`, glass button styles.
-- Data shapes the UI renders: `@claudex/schema` (generated JSON Schema → Swift Codable).
+- Data shapes the UI renders: `@claudexor/schema` (generated JSON Schema → Swift Codable).

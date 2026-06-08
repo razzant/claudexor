@@ -2,17 +2,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { HarnessAdapter } from "@claudex/core";
-import { runCapture } from "@claudex/core";
-import { createFakeHarness } from "@claudex/harness-fake";
-import type { ProviderFamily } from "@claudex/schema";
-import { ConformanceReport, HarnessManifest } from "@claudex/schema";
-import { noProjectRepoRoot } from "@claudex/util";
-import type { ReviewerSpec } from "@claudex/review";
+import type { HarnessAdapter } from "@claudexor/core";
+import { runCapture } from "@claudexor/core";
+import { createFakeHarness } from "@claudexor/harness-fake";
+import type { ProviderFamily } from "@claudexor/schema";
+import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
+import { noProjectRepoRoot } from "@claudexor/util";
+import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudex-orch-"));
+  const repo = mkdtempSync(join(tmpdir(), "claudexor-orch-"));
   await runCapture("git", ["-C", repo, "init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# repo\n");
   await runCapture("git", ["-C", repo, "add", "-A"]);
@@ -96,7 +96,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "best_of_n", harnesses: ["fake-success"], n: 2 });
     expect(res.mode).toBe("best_of_n");
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
-    expect(res.status).toBe("success");
+    expect(res.status).toBe("no_op");
     // the winner is always present in the returned candidates (incl. a synthesis candidate)
     expect(res.winner && res.candidates.some((c) => c.attemptId === res.winner)).toBeTruthy();
     expect(res.decisionPath && existsSync(res.decisionPath)).toBe(true);
@@ -108,9 +108,10 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["fake-success"], attempts: 3 });
-    expect(res.status).toBe("success");
+    expect(res.status).toBe("no_op");
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
+    expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(true);
   });
 
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
@@ -156,9 +157,9 @@ describe("Orchestrator", () => {
 
   it("applies configured eligible pool, primary harness, model, and portfolio defaults", async () => {
     const repo = await initRepo();
-    mkdirSync(join(repo, ".claudex"), { recursive: true });
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
     writeFileSync(
-      join(repo, ".claudex", "config.yaml"),
+      join(repo, ".claudexor", "config.yaml"),
       [
         "version: 1",
         "budget:",
@@ -259,9 +260,9 @@ describe("Orchestrator", () => {
   });
 
   it("stores no-project Ask artifacts in the user config store, not the synthetic repo root", async () => {
-    const prev = process.env.CLAUDEX_CONFIG_DIR;
-    const configDir = mkdtempSync(join(tmpdir(), "claudex-orch-config-"));
-    process.env.CLAUDEX_CONFIG_DIR = configDir;
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-config-"));
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
       const noProjectRoot = noProjectRepoRoot();
       mkdirSync(noProjectRoot, { recursive: true });
@@ -277,10 +278,10 @@ describe("Orchestrator", () => {
       expect(res.status).toBe("success");
       expect(res.runDir.startsWith(join(configDir, "runs"))).toBe(true);
       expect(existsSync(join(res.runDir, "final", "answer.md"))).toBe(true);
-      expect(existsSync(join(noProjectRoot, ".claudex"))).toBe(false);
+      expect(existsSync(join(noProjectRoot, ".claudexor"))).toBe(false);
     } finally {
-      if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
-      else process.env.CLAUDEX_CONFIG_DIR = prev;
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     }
   });
 
@@ -344,7 +345,7 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["throwing"], n: 1 });
     expect(res.status).not.toBe("success");
-    expect(existsSync(join(repo, ".claudex", "workspaces", res.taskId, "a01"))).toBe(false);
+    expect(existsSync(join(repo, ".claudexor", "workspaces", res.taskId, "a01"))).toBe(false);
   });
 
   it("applies a per-family reviewer model override (cheaper reviewer)", async () => {
@@ -439,6 +440,80 @@ describe("Orchestrator", () => {
     expect(reviewYaml).toContain("route_proofs:");
   });
 
+  it("reviews the candidate worktree rather than the unchanged base repo", async () => {
+    const repo = await initRepo();
+    const writer: HarnessAdapter = {
+      id: "writer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "writer",
+          display_name: "writer",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true, edit_files: true, review: true, structured_events: true },
+          access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "writer", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        writeFileSync(join(spec.cwd, "README.md"), "OK\n");
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "writer-model" };
+        yield { type: "completed", session_id: spec.session_id, ts, observed_model: "writer-model" };
+      },
+    };
+    function cwdAwareReviewer(id: string, family: ProviderFamily): ReviewerSpec {
+      const adapter: HarnessAdapter = {
+        id,
+        async discover() {
+          return HarnessManifest.parse({ id, display_name: id, kind: "local_cli", provider_family: family, capabilities: { review: true } });
+        },
+        async doctor() {
+          return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review"] });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          const readme = readFileSync(join(spec.cwd, "README.md"), "utf8");
+          const findings =
+            readme === "OK\n"
+              ? "[]"
+              : JSON.stringify([
+                  {
+                    severity: "BLOCK",
+                    category: "correctness",
+                    claim: "Reviewer did not see the candidate README.md content.",
+                    evidence: { files: [{ path: "README.md", lines: "1" }] },
+                    proposed_fix: "Run reviewers against the candidate worktree.",
+                  },
+                ]);
+          yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+          yield { type: "message", session_id: spec.session_id, ts, text: findings };
+          yield { type: "completed", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+        },
+      };
+      return { adapter, providerFamily: family };
+    }
+
+    const registry = new Map<string, HarnessAdapter>([["writer", writer]]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [cwdAwareReviewer("rev-openai", "openai"), cwdAwareReviewer("rev-anthropic", "anthropic")],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "change README.md to OK",
+      mode: "best_of_n",
+      harnesses: ["writer"],
+      n: 1,
+      tests: ["grep -qx OK README.md"],
+    });
+    expect(res.status).toBe("success");
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(reviewYaml).not.toContain("Reviewer did not see");
+  });
+
   it("auto-resolves available real harnesses when --harness is omitted", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["realish", realLikeAdapter("realish")]]);
@@ -491,7 +566,7 @@ describe("Orchestrator", () => {
     expect(harnessEvents.length).toBe(0);
   });
 
-  it("isolates a throwing onHarnessEvent observer (agent stays success)", async () => {
+  it("isolates a throwing onHarnessEvent observer (agent stays terminal no-op)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry });
@@ -504,7 +579,7 @@ describe("Orchestrator", () => {
         throw new Error("observer boom");
       },
     });
-    expect(res.status).toBe("success");
+    expect(res.status).toBe("no_op");
   });
 
   it("isolates a throwing onHarnessEvent observer in best_of_n (candidate not failed by observer)", async () => {
@@ -521,7 +596,7 @@ describe("Orchestrator", () => {
         throw new Error("observer boom");
       },
     });
-    expect(res.status).toBe("success");
+    expect(res.status).toBe("no_op");
   });
 
   it("a pre-aborted signal yields a cancelled result (plan + best_of_n, no misleading errors)", async () => {
@@ -537,8 +612,8 @@ describe("Orchestrator", () => {
   });
 
   it("in-place convergence runs against a non-git live dir and never deletes it", async () => {
-    // A plain (non-git) directory standing in for a stateful benchmark container's /app.
-    const dir = mkdtempSync(join(tmpdir(), "claudex-orch-inplace-"));
+    // A plain (non-git) directory standing in for a stateful external environment.
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-orch-inplace-"));
     writeFileSync(join(dir, "task.txt"), "do the thing\n");
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     // Two clean cross-family reviewers -> review-only convergence succeeds on attempt 1.
@@ -552,11 +627,11 @@ describe("Orchestrator", () => {
       inPlace: true,
       access: "full",
     });
-    expect(res.status).toBe("success");
+    expect(res.status).toBe("no_op");
     // The live dir and its file survive (dispose must not delete the tree in-place).
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, "task.txt"))).toBe(true);
     // No scoped envelope leaks after dispose.
-    expect(existsSync(join(dir, ".claudex", "workspaces", res.taskId, "converge"))).toBe(false);
+    expect(existsSync(join(dir, ".claudexor", "workspaces", res.taskId, "converge"))).toBe(false);
   });
 });

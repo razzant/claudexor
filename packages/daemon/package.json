@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/daemon",
-  "version": "0.4.1",
+  "name": "@claudexor/daemon",
+  "version": "0.5.0",
   "description": "Optional local daemon: Unix-socket JSON-RPC, token auth, task queue. Runner injected (no second scheduler).",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/util": "workspace:*"
+    "@claudexor/util": "workspace:*"
   }
 }

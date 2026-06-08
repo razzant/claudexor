@@ -1,5 +1,5 @@
-import type { CandidateEvidence } from "@claudex/arbitration";
-import { candidateSummary, compareCandidates } from "@claudex/arbitration";
+import type { CandidateEvidence } from "@claudexor/arbitration";
+import { candidateSummary, compareCandidates } from "@claudexor/arbitration";
 
 export type SynthesisMode = "auto" | "always" | "never";
 

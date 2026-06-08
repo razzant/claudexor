@@ -1,6 +1,6 @@
-import type { ReviewFinding, RouteProofStatus, Severity } from "@claudex/schema";
-import { ReviewFinding as ReviewFindingSchema } from "@claudex/schema";
-import { newId } from "@claudex/util";
+import type { ReviewFinding, RouteProofStatus, Severity } from "@claudexor/schema";
+import { ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
+import { newId } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -46,8 +46,7 @@ export interface ReviewerInfo {
   route_proof_status?: RouteProofStatus;
 }
 
-/** Normalize reviewer JSON into typed ReviewFindings (injecting reviewer + ids). */
-export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFinding[] {
+export function parseFindingsDetailed(text: string, reviewer: ReviewerInfo): { findings: ReviewFinding[]; malformed: number } {
   const raw: any[] = [];
   for (const block of extractJsonBlocks(text)) {
     if (Array.isArray(block)) raw.push(...block);
@@ -58,8 +57,12 @@ export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFindi
     }
   }
   const out: ReviewFinding[] = [];
+  let malformed = 0;
   for (const r of raw) {
-    if (!r || typeof r !== "object") continue;
+    if (!r || typeof r !== "object") {
+      malformed += 1;
+      continue;
+    }
     try {
       out.push(
         ReviewFindingSchema.parse({
@@ -81,10 +84,15 @@ export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFindi
         }),
       );
     } catch {
-      /* drop malformed finding */
+      malformed += 1;
     }
   }
-  return out;
+  return { findings: out, malformed };
+}
+
+/** Normalize reviewer JSON into typed ReviewFindings (injecting reviewer + ids). */
+export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFinding[] {
+  return parseFindingsDetailed(text, reviewer).findings;
 }
 
 const SEVERITY_ORDER: Severity[] = [

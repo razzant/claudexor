@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderFamily } from "@claudex/schema";
+import type { ProviderFamily } from "@claudexor/schema";
 import { BudgetLedger, promptFingerprint } from "./ledger.js";
 import { observationFromEvent } from "./observe.js";
 import { type RouterCandidate, selectHarness } from "./router.js";

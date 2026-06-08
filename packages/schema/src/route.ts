@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { Id, ProviderFamily } from "./primitives.js";
 
-export const RouteProofStatus = z.enum(["verified", "unverified", "same_model_fallback"]);
+export const RouteProofStatus = z.enum(["verified", "accepted_model_arg", "unverified", "same_model_fallback"]);
 export type RouteProofStatus = z.infer<typeof RouteProofStatus>;
 
 export const RouteEvidenceSource = z.enum([

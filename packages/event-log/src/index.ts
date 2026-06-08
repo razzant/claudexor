@@ -1,6 +1,6 @@
-import type { RunEvent, RunEventType } from "@claudex/schema";
-import { RunEvent as RunEventSchema } from "@claudex/schema";
-import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudex/util";
+import type { RunEvent, RunEventType } from "@claudexor/schema";
+import { RunEvent as RunEventSchema } from "@claudexor/schema";
+import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudexor/util";
 
 /**
  * Append-only JSONL event log for a single run. Terminal output and human

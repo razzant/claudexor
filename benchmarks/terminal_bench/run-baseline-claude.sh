@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Baseline arm: Harbor's built-in `claude-code` agent (a bare single harness). This is
-# the control to isolate the Claudex orchestration lift. Tasks: args, else the default
+# the control to isolate the Claudexor orchestration lift. Tasks: args, else the default
 # taskset, else --n-tasks.
 #   usage: run-baseline-claude.sh [task-id ...]
 source "$(dirname "$0")/scripts/_common.sh"

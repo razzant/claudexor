@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/workspace",
-  "version": "0.4.1",
+  "name": "@claudexor/workspace",
+  "version": "0.5.0",
   "description": "WorkspaceEnvelope manager: git worktree + env/HOME/config isolation + ports + dirty policy.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/core": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/core": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

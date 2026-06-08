@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
-import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudex/schema";
-import { runCapture } from "@claudex/core";
-import { sha256 } from "@claudex/util";
+import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
+import { runCapture } from "@claudexor/core";
+import { sha256 } from "@claudexor/util";
 import { matchAny } from "./glob.js";
 
 const SENSITIVE = [
@@ -80,7 +80,7 @@ async function listFiles(repoRoot: string): Promise<string[]> {
 }
 
 function walk(root: string, dir: string): string[] {
-  const skip = new Set([".git", "node_modules", "dist", ".turbo", ".claudex", "coverage"]);
+  const skip = new Set([".git", "node_modules", "dist", ".turbo", ".claudexor", "coverage"]);
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (skip.has(name)) continue;

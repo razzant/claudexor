@@ -9,15 +9,15 @@ build/
 coverage/
 *.tsbuildinfo
 
-# Claudex repo-local runtime artifacts (canonical artifacts are committed selectively per-project)
-.claudex/*
-!.claudex/
-!.claudex/config.yaml
-.claudex/runs/
-.claudex/workspaces/
-.claudex/cache/
-.claudex/logs/
-.claudex/local.yaml
+# Claudexor repo-local runtime artifacts (canonical artifacts are committed selectively per-project)
+.claudexor/*
+!.claudexor/
+!.claudexor/config.yaml
+.claudexor/runs/
+.claudexor/workspaces/
+.claudexor/cache/
+.claudexor/logs/
+.claudexor/local.yaml
 
 # Adversarial review evidence packets (local by default)
 .adversarial-review/

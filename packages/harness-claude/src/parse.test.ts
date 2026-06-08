@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HarnessEvent, HarnessRunSpec } from "@claudex/schema";
+import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { claudeArgsForSpec } from "./index.js";
 import { parseClaudeEvent } from "./parse.js";
 

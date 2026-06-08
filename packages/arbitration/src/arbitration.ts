@@ -1,5 +1,5 @@
-import type { DecisionRecord, GateResult, PairwiseComparison, ReviewFinding } from "@claudex/schema";
-import { DecisionRecord as DecisionRecordSchema, isBlocking } from "@claudex/schema";
+import type { DecisionRecord, GateResult, PairwiseComparison, ReviewFinding } from "@claudexor/schema";
+import { DecisionRecord as DecisionRecordSchema, isBlocking } from "@claudexor/schema";
 
 /** Evidence assembled for one tournament candidate. */
 export interface CandidateEvidence {
@@ -19,6 +19,7 @@ export interface CandidateEvidence {
   reviewVerified?: boolean;
   /** Smaller = simpler (e.g. diff line count). */
   diffSize?: number;
+  diffBytes?: number;
   costUsd?: number;
   latencyMs?: number;
 }
@@ -155,7 +156,9 @@ export function arbitrate(
       decision: DecisionRecordSchema.parse({
         winner: null,
         status: "failed",
+        outcome: "blocked",
         why_winner: "no candidates",
+        evidence_facts: ["no candidates were produced"],
         apply_recommendation: "continue",
       }),
       pairwise: [],
@@ -168,14 +171,29 @@ export function arbitrate(
 
   const winnerOk =
     requiredGatesPassed(winner) && winner.finalReviewClean && openBlockerCount(winner) === 0;
-  const status = winnerOk ? "success" : "not_converged";
-
-  const margin = runnerUp
-    ? compareTuples(scoreTuple(winner), scoreTuple(runnerUp)) === 0
-      ? 0
-      : 1
-    : 1;
-  const confidence = winnerOk ? (margin === 0 ? 0.55 : 0.9) : 0.4;
+  const hasDiff = (winner.diffBytes ?? winner.diffSize ?? 0) > 0;
+  const hasGates = winner.testsTotal > 0 || winner.gates.length > 0;
+  const reviewRan = winner.reviewVerified === true;
+  const outcome =
+    !hasDiff
+      ? "no_op"
+      : !hasGates
+        ? "ungated"
+        : !reviewRan
+          ? "review_not_run"
+          : winnerOk
+            ? "ready"
+            : "blocked";
+  const status =
+    outcome === "ready"
+      ? "success"
+      : outcome === "no_op"
+        ? "no_op"
+        : outcome === "ungated"
+          ? "ungated"
+          : outcome === "review_not_run"
+            ? "review_not_run"
+            : "not_converged";
 
   const whyNot: Record<string, string> = {};
   for (const c of ranking.slice(1)) {
@@ -194,8 +212,8 @@ export function arbitrate(
 
   const decision = DecisionRecordSchema.parse({
     winner: winner.attemptId,
-    confidence,
     status,
+    outcome,
     why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${(acceptanceFraction(winner) * 100).toFixed(0)}%, blockers=${openBlockerCount(winner)}, tests=${(effectiveTestFraction(winner) * 100).toFixed(0)}%, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
@@ -203,17 +221,26 @@ export function arbitrate(
       `required gates ${requiredGatesPassed(winner) ? "passed" : "FAILED"}`,
       `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
     ],
+    evidence_facts: [
+      `diff ${hasDiff ? "non-empty" : "empty"}`,
+      `gates ${hasGates ? "configured" : "not configured"}`,
+      `review ${reviewRan ? "verified" : "not verified"}`,
+      `blockers ${openBlockerCount(winner)}`,
+    ],
     budget_summary: {
       spend_usd: opts.spendUsd ?? winner.costUsd ?? null,
       estimated: opts.estimatedSpend ?? false,
     },
-    apply_recommendation: winnerOk
-      ? confidence >= 0.8
+    apply_recommendation:
+      outcome === "ready"
         ? "apply"
-        : "inspect"
-      : openBlockerCount(winner) > 0
-        ? "human_review"
-        : "continue",
+        : outcome === "no_op"
+          ? "inspect"
+          : outcome === "ungated" || outcome === "review_not_run"
+            ? "human_review"
+            : openBlockerCount(winner) > 0
+              ? "human_review"
+              : "continue",
   });
 
   const pairs: PairwiseComparison[] = [];

@@ -7,13 +7,13 @@ import { SecretStore, resolveSecret } from "./index.js";
 let prev: string | undefined;
 
 beforeEach(() => {
-  prev = process.env.CLAUDEX_CONFIG_DIR;
-  process.env.CLAUDEX_CONFIG_DIR = mkdtempSync(join(tmpdir(), "claudex-secrets-"));
+  prev = process.env.CLAUDEXOR_CONFIG_DIR;
+  process.env.CLAUDEXOR_CONFIG_DIR = mkdtempSync(join(tmpdir(), "claudexor-secrets-"));
 });
 
 afterEach(() => {
-  if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
-  else process.env.CLAUDEX_CONFIG_DIR = prev;
+  if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+  else process.env.CLAUDEXOR_CONFIG_DIR = prev;
   delete process.env.MY_API_KEY;
 });
 
@@ -23,7 +23,7 @@ describe("SecretStore (file backend)", () => {
     expect(store.set("OPENAI_API_KEY", "sk-test-123")).toBe("file");
     expect(store.get("OPENAI_API_KEY")).toBe("sk-test-123");
 
-    const mode = statSync(join(process.env.CLAUDEX_CONFIG_DIR as string, "secrets.json")).mode & 0o777;
+    const mode = statSync(join(process.env.CLAUDEXOR_CONFIG_DIR as string, "secrets.json")).mode & 0o777;
     expect(mode).toBe(0o600);
 
     store.delete("OPENAI_API_KEY");
@@ -31,10 +31,10 @@ describe("SecretStore (file backend)", () => {
   });
 
   it("fails loudly on malformed file storage instead of treating it as empty", () => {
-    writeFileSync(join(process.env.CLAUDEX_CONFIG_DIR as string, "secrets.json"), "{not-json");
+    writeFileSync(join(process.env.CLAUDEXOR_CONFIG_DIR as string, "secrets.json"), "{not-json");
     const store = new SecretStore("file");
-    expect(() => store.list()).toThrow(/invalid Claudex secret store/);
-    expect(() => store.set("OPENAI_API_KEY", "sk-test-123")).toThrow(/invalid Claudex secret store/);
+    expect(() => store.list()).toThrow(/invalid Claudexor secret store/);
+    expect(() => store.set("OPENAI_API_KEY", "sk-test-123")).toThrow(/invalid Claudexor secret store/);
   });
 });
 

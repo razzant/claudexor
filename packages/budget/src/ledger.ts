@@ -1,6 +1,6 @@
-import type { BudgetLease, BudgetObservation, Intent } from "@claudex/schema";
-import { BudgetLease as BudgetLeaseSchema } from "@claudex/schema";
-import { newId, nowIso, sha256 } from "@claudex/util";
+import type { BudgetLease, BudgetObservation, Intent } from "@claudexor/schema";
+import { BudgetLease as BudgetLeaseSchema } from "@claudexor/schema";
+import { newId, nowIso, sha256 } from "@claudexor/util";
 
 export type CircuitTier = "ok" | "soft" | "downgrade" | "hard";
 

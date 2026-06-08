@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readTextSafe, writeText } from "@claudex/util";
+import { readTextSafe, writeText } from "@claudexor/util";
 
 /**
  * The `.adversarial-review/` evidence packet that bridges clean-context

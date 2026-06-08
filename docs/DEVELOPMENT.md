@@ -1,12 +1,12 @@
-# Developing Claudex
+# Developing Claudexor
 
-This document is for contributors changing Claudex itself. It is not a guide for
-using Claudex on a target project. User-facing behavior belongs in the README
+This document is for contributors changing Claudexor itself. It is not a guide for
+using Claudexor on a target project. User-facing behavior belongs in the README
 and the current runtime map belongs in `docs/ARCHITECTURE.md`.
 
 Read these together before changing shared behavior:
 
-- `CLAUDEX_BIBLE.md` - product and engineering invariants.
+- `CLAUDEXOR_BIBLE.md` - product and engineering invariants.
 - `docs/ARCHITECTURE.md` - current package map, run flow, artifacts, and
   control API.
 - `docs/DESIGN_SYSTEM.md` - macOS visual and interaction contract.
@@ -20,7 +20,7 @@ Read these together before changing shared behavior:
 - `packages/core` owns adapter contracts, process helpers, typed errors, and
   the minimal single-harness execution path.
 - `packages/orchestrator` owns higher-level modes such as Ask, Explore, Agent,
-  Best-of-N, convergence, Plan, Create, Read-only Audit, and Benchmark.
+  Best-of-N, convergence, Plan, Create, and Read-only Audit.
 - `packages/gateway` owns harness discovery, doctor output, and capability
   gating.
 - `packages/harness-*` translate native CLI/API streams into typed events. They
@@ -53,8 +53,8 @@ Prettier formatting when a formatting pass is relevant.
 macOS app checks:
 
 ```bash
-cd apps/macos/ClaudexKit && swift test
-cd ../ClaudexApp && swift build
+cd apps/macos/ClaudexorKit && swift test
+cd ../ClaudexorApp && swift build
 ```
 
 Release verification is wrapped by:
@@ -101,11 +101,11 @@ one-off release scratch.
 Use this split:
 
 - `README.md`: product entrypoint and detailed quickstart.
-- `CLAUDEX_BIBLE.md`: compact product constitution.
+- `CLAUDEXOR_BIBLE.md`: compact product constitution.
 - `docs/ARCHITECTURE.md`: current runtime and package map.
 - `docs/INTEGRATIONS.md`: current external integration surfaces and limitations.
 - `docs/DESIGN_SYSTEM.md`: macOS UI/UX contract.
-- `docs/DEVELOPMENT.md`: developing Claudex itself.
+- `docs/DEVELOPMENT.md`: developing Claudexor itself.
 - `docs/CHECKLISTS.md`: human gates for changes and releases.
 - `apps/macos/README.md`: macOS app contributor notes.
 

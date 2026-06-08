@@ -52,7 +52,6 @@ export const ModeKind = z.enum([
   "plan",
   "create",
   "readonly_audit",
-  "benchmark",
 ]);
 export type ModeKind = z.infer<typeof ModeKind>;
 
@@ -68,7 +67,6 @@ export const Intent = z.enum([
   "compare",
   "synthesize",
   "arbitrate",
-  "benchmark",
   "explain",
   "audit",
 ]);

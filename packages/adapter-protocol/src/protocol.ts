@@ -21,11 +21,11 @@ export interface RpcEvent {
 }
 
 export const METHODS = {
-  discover: "claudex.discover",
-  doctor: "claudex.doctor",
-  run: "claudex.run",
-  review: "claudex.review",
-  cancel: "claudex.cancel",
+  discover: "claudexor.discover",
+  doctor: "claudexor.doctor",
+  run: "claudexor.run",
+  review: "claudexor.review",
+  cancel: "claudexor.cancel",
 } as const;
 
 /** A duplex line transport: `read` carries the peer's messages, `write` sends ours. */

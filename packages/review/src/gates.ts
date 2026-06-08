@@ -1,6 +1,6 @@
-import type { GateResult } from "@claudex/schema";
-import { GateResult as GateResultSchema } from "@claudex/schema";
-import { runCapture } from "@claudex/core";
+import type { GateResult } from "@claudexor/schema";
+import { GateResult as GateResultSchema } from "@claudexor/schema";
+import { runCapture } from "@claudexor/core";
 
 export interface GateSpec {
   id: string;

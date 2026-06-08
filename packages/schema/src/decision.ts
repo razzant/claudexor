@@ -16,6 +16,9 @@ export type PairwiseComparison = z.infer<typeof PairwiseComparison>;
 
 export const RunStatus = z.enum([
   "success",
+  "no_op",
+  "ungated",
+  "review_not_run",
   "not_converged",
   "failed",
   "exhausted",
@@ -32,14 +35,24 @@ export const ApplyRecommendation = z.enum([
 ]);
 export type ApplyRecommendation = z.infer<typeof ApplyRecommendation>;
 
+export const DecisionOutcome = z.enum([
+  "ready",
+  "no_op",
+  "ungated",
+  "review_not_run",
+  "blocked",
+]);
+export type DecisionOutcome = z.infer<typeof DecisionOutcome>;
+
 export const DecisionRecord = z.object({
   winner: Id.nullable(),
-  confidence: z.number().min(0).max(1).default(0),
   status: RunStatus,
+  outcome: DecisionOutcome.default("blocked"),
   why_winner: z.string().default(""),
   why_not_others: z.record(z.string(), z.string()).default({}),
   accepted_risks: z.array(z.string()).default([]),
   final_checks: z.array(z.string()).default([]),
+  evidence_facts: z.array(z.string()).default([]),
   budget_summary: z
     .object({
       // Total settled spend. `estimated` is true when any of it is token-derived

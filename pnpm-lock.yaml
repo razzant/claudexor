@@ -40,118 +40,106 @@ importers:
 
   packages/adapter-protocol:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
 
   packages/arbitration:
     dependencies:
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
 
   packages/artifact-store:
     dependencies:
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
       yaml:
         specifier: ^2.6.1
         version: 2.9.0
 
-  packages/benchmark:
-    dependencies:
-      '@claudex/schema':
-        specifier: workspace:*
-        version: link:../schema
-      '@claudex/util':
-        specifier: workspace:*
-        version: link:../util
-
   packages/budget:
     dependencies:
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/cli:
     dependencies:
-      '@claudex/acp-server':
+      '@claudexor/acp-server':
         specifier: workspace:*
         version: link:../acp-server
-      '@claudex/artifact-store':
+      '@claudexor/artifact-store':
         specifier: workspace:*
         version: link:../artifact-store
-      '@claudex/benchmark':
-        specifier: workspace:*
-        version: link:../benchmark
-      '@claudex/config':
+      '@claudexor/config':
         specifier: workspace:*
         version: link:../config
-      '@claudex/control-api':
+      '@claudexor/control-api':
         specifier: workspace:*
         version: link:../control-api
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/daemon':
+      '@claudexor/daemon':
         specifier: workspace:*
         version: link:../daemon
-      '@claudex/delivery':
+      '@claudexor/delivery':
         specifier: workspace:*
         version: link:../delivery
-      '@claudex/gateway':
+      '@claudexor/gateway':
         specifier: workspace:*
         version: link:../gateway
-      '@claudex/harness-claude':
+      '@claudexor/harness-claude':
         specifier: workspace:*
         version: link:../harness-claude
-      '@claudex/harness-codex':
+      '@claudexor/harness-codex':
         specifier: workspace:*
         version: link:../harness-codex
-      '@claudex/harness-cursor':
+      '@claudexor/harness-cursor':
         specifier: workspace:*
         version: link:../harness-cursor
-      '@claudex/harness-fake':
+      '@claudexor/harness-fake':
         specifier: workspace:*
         version: link:../harness-fake
-      '@claudex/harness-opencode':
+      '@claudexor/harness-opencode':
         specifier: workspace:*
         version: link:../harness-opencode
-      '@claudex/harness-raw-api':
+      '@claudexor/harness-raw-api':
         specifier: workspace:*
         version: link:../harness-raw-api
-      '@claudex/interview':
+      '@claudexor/interview':
         specifier: workspace:*
         version: link:../interview
-      '@claudex/mcp-server':
+      '@claudexor/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
-      '@claudex/orchestrator':
+      '@claudexor/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/config:
     dependencies:
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
       yaml:
@@ -160,25 +148,25 @@ importers:
 
   packages/context:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/control-api:
     dependencies:
-      '@claudex/delivery':
+      '@claudexor/delivery':
         specifier: workspace:*
         version: link:../delivery
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
       yaml:
@@ -187,148 +175,148 @@ importers:
 
   packages/core:
     dependencies:
-      '@claudex/artifact-store':
+      '@claudexor/artifact-store':
         specifier: workspace:*
         version: link:../artifact-store
-      '@claudex/config':
+      '@claudexor/config':
         specifier: workspace:*
         version: link:../config
-      '@claudex/event-log':
+      '@claudexor/event-log':
         specifier: workspace:*
         version: link:../event-log
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/daemon:
     dependencies:
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/delivery:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/event-log:
     dependencies:
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/gateway:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
 
   packages/harness-claude:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/harness-codex:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/harness-cursor:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/harness-fake:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/harness-opencode:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/harness-raw-api:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/secrets':
+      '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/interview:
     dependencies:
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
@@ -336,68 +324,68 @@ importers:
 
   packages/orchestrator:
     dependencies:
-      '@claudex/arbitration':
+      '@claudexor/arbitration':
         specifier: workspace:*
         version: link:../arbitration
-      '@claudex/artifact-store':
+      '@claudexor/artifact-store':
         specifier: workspace:*
         version: link:../artifact-store
-      '@claudex/budget':
+      '@claudexor/budget':
         specifier: workspace:*
         version: link:../budget
-      '@claudex/config':
+      '@claudexor/config':
         specifier: workspace:*
         version: link:../config
-      '@claudex/context':
+      '@claudexor/context':
         specifier: workspace:*
         version: link:../context
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/event-log':
+      '@claudexor/event-log':
         specifier: workspace:*
         version: link:../event-log
-      '@claudex/gateway':
+      '@claudexor/gateway':
         specifier: workspace:*
         version: link:../gateway
-      '@claudex/review':
+      '@claudexor/review':
         specifier: workspace:*
         version: link:../review
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/synthesis':
+      '@claudexor/synthesis':
         specifier: workspace:*
         version: link:../synthesis
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
-      '@claudex/workspace':
+      '@claudexor/workspace':
         specifier: workspace:*
         version: link:../workspace
     devDependencies:
-      '@claudex/harness-fake':
+      '@claudexor/harness-fake':
         specifier: workspace:*
         version: link:../harness-fake
 
   packages/policy:
     dependencies:
-      '@claudex/context':
+      '@claudexor/context':
         specifier: workspace:*
         version: link:../context
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
 
   packages/review:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
@@ -413,13 +401,13 @@ importers:
 
   packages/secrets:
     dependencies:
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 
   packages/synthesis:
     dependencies:
-      '@claudex/arbitration':
+      '@claudexor/arbitration':
         specifier: workspace:*
         version: link:../arbitration
 
@@ -427,13 +415,13 @@ importers:
 
   packages/workspace:
     dependencies:
-      '@claudex/core':
+      '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudex/schema':
+      '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
-      '@claudex/util':
+      '@claudexor/util':
         specifier: workspace:*
         version: link:../util
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { estimateCodexCostUsd, priceForModel } from "./pricing.js";
 
-const ENV_KEYS = ["CLAUDEX_CODEX_PRICE_INPUT", "CLAUDEX_CODEX_PRICE_OUTPUT", "CLAUDEX_CODEX_PRICE_CACHED"] as const;
+const ENV_KEYS = ["CLAUDEXOR_CODEX_PRICE_INPUT", "CLAUDEXOR_CODEX_PRICE_OUTPUT", "CLAUDEXOR_CODEX_PRICE_CACHED"] as const;
 
 describe("codex pricing", () => {
   afterEach(() => {
@@ -20,8 +20,8 @@ describe("codex pricing", () => {
   });
 
   it("honors env price overrides", () => {
-    process.env.CLAUDEX_CODEX_PRICE_INPUT = "2";
-    process.env.CLAUDEX_CODEX_PRICE_OUTPUT = "20";
+    process.env.CLAUDEXOR_CODEX_PRICE_INPUT = "2";
+    process.env.CLAUDEXOR_CODEX_PRICE_OUTPUT = "20";
     const usd = estimateCodexCostUsd("gpt-5-codex", { input_tokens: 1_000_000, output_tokens: 1_000_000 });
     expect(usd).toBeCloseTo(22, 5);
   });

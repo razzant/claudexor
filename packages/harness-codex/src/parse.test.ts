@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HarnessEvent } from "@claudex/schema";
+import { HarnessEvent } from "@claudexor/schema";
 import { parseCodexEvent } from "./parse.js";
 
 const SAMPLE = [

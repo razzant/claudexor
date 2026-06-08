@@ -1,6 +1,6 @@
-# Claudex For macOS
+# Claudexor For macOS
 
-The macOS app is a native SwiftUI control surface for Claudex. It talks to the
+The macOS app is a native SwiftUI control surface for Claudexor. It talks to the
 local loopback control API and displays the same runs, artifacts, harness status,
 settings, and diagnostics that the CLI/daemon expose. The TypeScript control
 plane in `packages/*` remains the source of truth.
@@ -10,8 +10,8 @@ not build it as part of normal package tasks.
 
 ## Layout
 
-- `ClaudexKit/` - SwiftPM library for the control API client and DTOs.
-- `ClaudexApp/` - SwiftUI app.
+- `ClaudexorKit/` - SwiftPM library for the control API client and DTOs.
+- `ClaudexorApp/` - SwiftUI app.
 - `packaging/` - app bundle metadata, entitlements, and LaunchAgent template.
 - `scripts/build-app.sh` - local/release app packaging script.
 
@@ -37,16 +37,16 @@ export PATH="$HOME/.swiftly/bin:$PATH"
 
 ```bash
 export PATH="$HOME/.swiftly/bin:$PATH"
-cd apps/macos/ClaudexKit && swift build && swift test
-cd ../ClaudexApp && swift run ClaudexApp
+cd apps/macos/ClaudexorKit && swift build && swift test
+cd ../ClaudexorApp && swift run ClaudexorApp
 ```
 
 Dev/QA env switches:
 
-- `CLAUDEX_DEBUG_ROUTE`: jump to a screen such as `tasks`, `task`, `review`,
-  `budget`, `harnesses`, `benchmarks`, `settings`, or `composer`.
-- `CLAUDEX_DEBUG_SIZE="WxH"`: deterministic window size.
-- `CLAUDEX_DEBUG_APPEARANCE=light|dark`: deterministic appearance.
+- `CLAUDEXOR_DEBUG_ROUTE`: jump to a screen such as `tasks`, `task`, `review`,
+  `budget`, `harnesses`, `settings`, or `composer`.
+- `CLAUDEXOR_DEBUG_SIZE="WxH"`: deterministic window size.
+- `CLAUDEXOR_DEBUG_APPEARANCE=light|dark`: deterministic appearance.
 
 ## Packaging
 
@@ -58,15 +58,15 @@ apps/macos/scripts/build-app.sh
 MAKE_DMG=1 apps/macos/scripts/build-app.sh
 
 # Signed + notarized + DMG, when Developer ID credentials are configured locally:
-xcrun notarytool store-credentials "claudex-notary" \
+xcrun notarytool store-credentials "claudexor-notary" \
   --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="claudex-notary" MAKE_DMG=1 \
+NOTARY_PROFILE="claudexor-notary" MAKE_DMG=1 \
 apps/macos/scripts/build-app.sh
 ```
 
-Unsigned artifacts are named `Claudex-<version>-unsigned.zip` and
-`Claudex-<version>-unsigned.dmg`. They are beta/local distribution artifacts:
+Unsigned artifacts are named `Claudexor-<version>-unsigned.zip` and
+`Claudexor-<version>-unsigned.dmg`. They are beta/local distribution artifacts:
 Gatekeeper can block them on other Macs until a signed/notarized build is
 produced. Release notes must also call out the macOS 26 minimum.
 
@@ -86,7 +86,7 @@ fully expose yet use honest empty states instead of pretending to be live.
 
 ## Design And Contributor Docs
 
-- [`../../CLAUDEX_BIBLE.md`](../../CLAUDEX_BIBLE.md) - product principles.
+- [`../../CLAUDEXOR_BIBLE.md`](../../CLAUDEXOR_BIBLE.md) - product principles.
 - [`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) - runtime and
   package map.
 - [`../../docs/DESIGN_SYSTEM.md`](../../docs/DESIGN_SYSTEM.md) - macOS visual

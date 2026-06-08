@@ -2,9 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { HarnessAdapter } from "@claudex/core";
-import type { ProviderFamily } from "@claudex/schema";
-import { ConformanceReport, ConvergencePredicate, HarnessManifest, ReviewFinding } from "@claudex/schema";
+import type { HarnessAdapter } from "@claudexor/core";
+import type { ProviderFamily } from "@claudexor/schema";
+import { ConformanceReport, ConvergencePredicate, HarnessManifest, ReviewFinding } from "@claudexor/schema";
 import { evaluateConvergence } from "./convergence.js";
 import { dedupeFindings, parseFindings } from "./findings.js";
 import { gatesPassed, runGate } from "./gates.js";
@@ -66,7 +66,7 @@ function sameObservedModelReviewer(id: string, family: ProviderFamily, findings:
 
 describe("gates", () => {
   it("passes on exit 0, fails on non-zero", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claudex-gate-"));
+    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-"));
     expect((await runGate({ id: "a", command: "exit 0" }, { cwd })).status).toBe("passed");
     expect((await runGate({ id: "b", command: "exit 3" }, { cwd })).status).toBe("failed");
     expect(gatesPassed([await runGate({ id: "a", command: "exit 0" }, { cwd })])).toBe(true);
@@ -78,6 +78,9 @@ describe("route proof", () => {
     expect(
       buildRouteProof({ harness_id: "x", provider_family: "openai" }, { model_id: "gpt", evidence_source: "stream_event" }).status,
     ).toBe("verified");
+    expect(
+      buildRouteProof({ harness_id: "x", provider_family: "openai" }, { model_id: "gpt", evidence_source: "metadata" }).status,
+    ).toBe("accepted_model_arg");
     expect(buildRouteProof({ harness_id: "x", provider_family: "openai" }, {}).status).toBe("unverified");
   });
   it("cross-family needs >= 2 distinct families", () => {
@@ -225,6 +228,22 @@ describe("reviewEngine", () => {
     });
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.status).toBe("insufficient_evidence");
+  });
+
+  it("does not count malformed JSON arrays as healthy clean review", async () => {
+    const r1 = makeReviewer("rev-openai", "openai", [1]);
+    const r2 = makeReviewer("rev-anthropic", "anthropic", [1]);
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [r1, r2],
+    });
+    expect(res.crossFamilyHealthy).toBe(false);
+    expect(res.crossFamilyVerified).toBe(true);
+    expect(res.findings.length).toBeGreaterThan(0);
+    expect(res.findings.every((f) => f.severity === "INSUFFICIENT_EVIDENCE")).toBe(true);
   });
 
   it("keeps route proof verification false when models are not observed", async () => {

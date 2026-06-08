@@ -1,10 +1,10 @@
-# Claudex v0.4.1 Architecture Reference
+# Claudexor v0.5.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
 future wish list.
 
-Read this with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). The Bible is the
+Read this with [`../CLAUDEXOR_BIBLE.md`](../CLAUDEXOR_BIBLE.md). The Bible is the
 compact constitution; this file is the operational map. Contributor workflow,
 release gates, and integration notes live in
 [`DEVELOPMENT.md`](DEVELOPMENT.md), [`CHECKLISTS.md`](CHECKLISTS.md), and
@@ -12,10 +12,10 @@ release gates, and integration notes live in
 
 ## 1. System Shape
 
-Claudex is a local-first control plane over external coding harnesses:
+Claudexor is a local-first control plane over external coding harnesses:
 Codex CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters.
 A harness is not a role. Roles are intents (`explain`, `plan`, `implement`,
-`repair`, `review`, `compare`, `synthesize`, `audit`, `benchmark`).
+`repair`, `review`, `compare`, `synthesize`, `audit`).
 
 ```text
 surface -> schema/control DTO -> orchestrator/core -> gateway -> harness adapter -> native tool/API
@@ -32,7 +32,7 @@ packages, never in macOS or CLI-specific state.
 - `ask` - one selected read-only `explain` route; writes `final/answer.md`.
 - `explore` - bounded read-only research swarm; writes per-explorer findings,
   `final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
-- `agent` - default `claudex run`; one primary-biased direct-edit route.
+- `agent` - default `claudexor run`; one primary-biased orchestrator/envelope route.
 - `best_of_n` - isolated candidate envelopes, review, synthesis, arbitration.
 - `max_attempts` - convergence loop with explicit attempt cap.
 - `until_clean` - convergence loop with no fixed cap; stops on clean review/gates,
@@ -40,7 +40,6 @@ packages, never in macOS or CLI-specific state.
 - `plan` - read-only multi-harness planning; writes `final/plan.md`.
 - `create` - create-from-scratch path, currently sharing the race pipeline.
 - `readonly_audit` - one selected read-only `audit` route; writes `final/report.md`.
-- `benchmark` - benchmark-oriented best-of-N path.
 
 Old mode ids (`daily`, `until_convergence`, `readonly_swarm`) are not aliases.
 
@@ -48,10 +47,11 @@ Old mode ids (`daily`, `until_convergence`, `readonly_swarm`) are not aliases.
 
 - `packages/schema`: Zod schemas, TypeScript types, generated JSON Schema,
   control DTOs, mode ids, config shapes.
-- `packages/core`: adapter interface, process helpers, typed errors, minimal
-  single-harness `ExecutionEngine` used by `agent`.
+- `packages/core`: adapter interface, process helpers, typed errors, and legacy
+  single-harness utility code. Default write modes are orchestrator/envelope
+  paths, not direct live-tree execution.
 - `packages/orchestrator`: Ask, Explore, Agent, Best-of-N, convergence, Plan,
-  Create, Read-only Audit, and Benchmark orchestration.
+  Create, and Read-only Audit orchestration.
 - `packages/gateway`: harness discovery, capability gating, default available
   harness resolution.
 - `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs,
@@ -79,11 +79,11 @@ Routing is `Pool + Primary + Portfolio`:
 - `portfolio` is recorded in `TaskContract.budget.portfolio`, default
   `subscription-first`.
 
-Single-route modes (`ask`, `agent`, `readonly_audit`) choose one route from the
-eligible pool, primary first. `explore` expands a bounded read-only pool
-(default width 4, capped at 8). Best-of-N expands the eligible pool over N
-candidates. Convergence rotates compatible harnesses when a stall signature
-persists.
+Single-route read-only modes (`ask`, `readonly_audit`) choose one route from the
+eligible pool, primary first. `Agent` is a one-candidate envelope run. `explore`
+expands a bounded read-only pool (default width 4, capped at 8). Best-of-N
+expands the eligible pool over N candidates. Convergence rotates compatible
+harnesses when a stall signature persists.
 
 Harness availability is determined by discovery + doctor + capabilities:
 `available` alone is not enough. A harness must be `ok`, expose the required
@@ -122,8 +122,8 @@ Creates a run directory, writes a `TaskContract`, runs one adapter with
 `intent: explain`, `access: readonly`, writes `final/answer.md`,
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
 In the macOS app, Ask may run with no Current Project. The harness cwd is an
-empty synthetic directory at `~/.cache/claudex/no-project`, while artifacts live
-in the user-level store `~/.claudex/runs/<run_id>/`. If routing or the harness
+empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
+in the user-level store `~/.claudexor/runs/<run_id>/`. If routing or the harness
 fails, the run still writes inspectable failure artifacts
 (`context/context_error.md`, `final/failure.yaml`, `final/summary.md`) and emits
 `run.failed`.
@@ -139,11 +139,17 @@ when at least one explorer succeeds; if all explorers fail, the run emits
 
 ### Agent
 
-`claudex run` defaults to `agent`. It uses the minimal `ExecutionEngine`,
-selects one primary-biased compatible harness, writes a contract and summary,
-and lets the harness operate on the requested workspace access profile.
+`claudexor run` defaults to `agent`. It is a one-candidate orchestrator/envelope
+run: the harness works in an isolated workspace, Claudexor captures the git diff,
+emits artifacts, and live project mutation happens only through explicit
+delivery/apply.
 
-### Best-of-N / Create / Benchmark
+Convergence modes also default to isolated envelopes. The CLI-only `--in-place`
+is reserved for explicit stateful external adapters, such as Terminal-Bench
+containers where runtime state is the deliverable and cannot be merged from a
+patch. It is not surfaced in the macOS app and is not the default mutation path.
+
+### Best-of-N / Create
 
 Each candidate gets its own `WorkspaceEnvelope`. The orchestrator reserves
 budget, runs the harness, captures diff from git, runs deterministic gates,
@@ -179,15 +185,19 @@ artifact/delivery facade:
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
 - `GET /harnesses`, `POST /harnesses/setup`
+- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
-`POST /harnesses/setup` owns setup affordances. It validates typed setup
+`POST /harnesses/setup` owns setup preparation. It validates typed setup
 actions, rejects inline secrets, and returns only server-side allowlisted
-commands, official guide URLs, and redacted setup log metadata. Native clients
-may open Terminal or copy the returned command; they do not construct setup
-commands locally.
+commands, official guide URLs, and redacted setup log metadata.
+`/setup/jobs` owns execution lifecycle for install/login/doctor setup work:
+jobs have state, risk flags, command preview, log path, cancel, and an SSE
+status projection. Native clients may open the job's Terminal handoff or show
+the returned command; they do not construct setup commands locally.
 
 Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead
@@ -199,7 +209,7 @@ adapter proves a compatible state-preserving surface.
 
 ## 8. Artifact Layout
 
-Canonical output lives under `.claudex/runs/<run_id>/`:
+Canonical output lives under `.claudexor/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -238,7 +248,7 @@ The macOS app is a native control surface over the control API:
 - Settings edits app preferences and engine defaults exposed by `/settings`,
   including appearance/motion, Current Project, routing/model defaults, budget,
   auth status, and secret refs;
-- sidebar Operations contains live Budget, Harness Doctor, and Benchmarks;
+- sidebar Operations contains live Budget and Harness Doctor;
 - run detail has explicit `Answer` and `Diagnostics` tabs backed by artifacts;
 - Review Queue is table-first;
 - Settings uses flat grouped sections and avoids floating black cutout shadows;
@@ -256,7 +266,7 @@ actions come from server endpoints.
 - Change adapter parsing in `packages/harness-*`.
 - Change delivery in `packages/delivery`.
 - Change macOS UI only after the control DTO/API shape exists.
-- Keep `README.md`, `CLAUDEX_BIBLE.md`, this file, `docs/INTEGRATIONS.md`, and
+- Keep `README.md`, `CLAUDEXOR_BIBLE.md`, this file, `docs/INTEGRATIONS.md`, and
   app docs aligned when behavior changes.
 - Keep contributor process in `docs/DEVELOPMENT.md` and `docs/CHECKLISTS.md`,
   not in runtime architecture sections.

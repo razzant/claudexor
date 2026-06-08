@@ -6,18 +6,18 @@ import { ConfigParseError, loadConfig, repoHash, updateGlobalConfig } from "./in
 
 describe("loadConfig", () => {
   function withTempConfig(fn: (paths: { dir: string; repo: string; configDir: string }) => void): void {
-    const prev = process.env.CLAUDEX_CONFIG_DIR;
-    const dir = mkdtempSync(join(tmpdir(), "claudex-config-test-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-config-test-"));
     const repo = join(dir, "repo");
     const configDir = join(dir, "home");
-    mkdirSync(join(repo, ".claudex"), { recursive: true });
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
     mkdirSync(configDir, { recursive: true });
-    process.env.CLAUDEX_CONFIG_DIR = configDir;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
       fn({ dir, repo, configDir });
     } finally {
-      if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
-      else process.env.CLAUDEX_CONFIG_DIR = prev;
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
       rmSync(dir, { recursive: true, force: true });
     }
   }
@@ -32,7 +32,7 @@ describe("loadConfig", () => {
 
   it("fails loudly on malformed project YAML instead of silently defaulting", () => {
     withTempConfig(({ repo }) => {
-      const configPath = join(repo, ".claudex", "config.yaml");
+      const configPath = join(repo, ".claudexor", "config.yaml");
       writeFileSync(configPath, "version: [unterminated\n");
       try {
         loadConfig(repo);
@@ -40,7 +40,7 @@ describe("loadConfig", () => {
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigParseError);
         expect((err as ConfigParseError).path).toBe(configPath);
-        expect(String((err as Error).message)).toMatch(/invalid Claudex YAML config/);
+        expect(String((err as Error).message)).toMatch(/invalid Claudexor YAML config/);
       }
     });
   });

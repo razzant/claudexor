@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Info.plist for the notarized Claudex.app bundle. The dev workflow runs the SwiftPM
-  executable directly (`swift run ClaudexApp`); scripts/build-app.sh assembles a real
+  Info.plist for the notarized Claudexor.app bundle. The dev workflow runs the SwiftPM
+  executable directly (`swift run ClaudexorApp`); scripts/build-app.sh assembles a real
   .app around the release binary using this file. Version strings are substituted by the
-  script (CLAUDEX_VERSION / CLAUDEX_BUILD) so they stay in one place.
+  script (CLAUDEXOR_VERSION / CLAUDEXOR_BUILD) so they stay in one place.
 -->
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Claudex</string>
+    <string>Claudexor</string>
     <key>CFBundleDisplayName</key>
-    <string>Claudex</string>
+    <string>Claudexor</string>
     <key>CFBundleIdentifier</key>
-    <string>com.claudex.ClaudexApp</string>
+    <string>com.claudexor.ClaudexorApp</string>
     <key>CFBundleExecutable</key>
-    <string>ClaudexApp</string>
+    <string>ClaudexorApp</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>__CLAUDEX_VERSION__</string>
+    <string>__CLAUDEXOR_VERSION__</string>
     <key>CFBundleVersion</key>
-    <string>__CLAUDEX_BUILD__</string>
+    <string>__CLAUDEXOR_BUILD__</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
@@ -31,7 +31,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Claudex. MIT License.</string>
+    <string>Claudexor. MIT License.</string>
     <!-- Single-window app; no document types. -->
     <key>LSUIElement</key>
     <false/>

@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ArtifactStore } from "@claudex/artifact-store";
+import { ArtifactStore } from "@claudexor/artifact-store";
 import {
   InterviewEngine,
   type SpecDraft,
   type SpecFieldChange,
   diffSpecPacks,
-} from "@claudex/interview";
-import { type InterviewAnswer, type InterviewQuestion, type SpecPack, SpecPack as SpecPackSchema } from "@claudex/schema";
-import { ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudex/util";
+} from "@claudexor/interview";
+import { type InterviewAnswer, type InterviewQuestion, type SpecPack, SpecPack as SpecPackSchema } from "@claudexor/schema";
+import { ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudexor/util";
 
 export interface SpecAnswersFile {
   answers: InterviewAnswer[];
@@ -85,7 +85,7 @@ export function draftFromPlanAndAnswers(prompt: string, plan: string, questions:
     forbidden_approaches: file.forbidden_approaches ?? [],
     decided_tradeoffs: [
       ...(file.decided_tradeoffs ?? []),
-      "Grounding came from Claudex plan mode: multi-harness read-only planning plus cross-family plan review.",
+      "Grounding came from Claudexor plan mode: multi-harness read-only planning plus cross-family plan review.",
     ],
     tests: (file.tests ?? []).map((command, i) => ({ id: `gate-${i + 1}`, command, required: true })),
     tasks: [
@@ -128,7 +128,7 @@ export async function freezeSpecFromGrounding(prompt: string, plan: string, answ
 
 function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: string): string {
   return [
-    `# Claudex Spec ${spec.id} v${spec.version}`,
+    `# Claudexor Spec ${spec.id} v${spec.version}`,
     "",
     `Spec hash: \`${specHash}\``,
     "",
@@ -154,7 +154,7 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
     redactSecrets(plan).trim(),
     "",
     "> This file is a generated projection for native harnesses. The canonical SSOT",
-    `> is .claudex/specs/${spec.id}/spec.json (hash above). Regenerate rather than editing this projection.`,
+    `> is .claudexor/specs/${spec.id}/spec.json (hash above). Regenerate rather than editing this projection.`,
     "",
   ].join("\n");
 }
@@ -165,7 +165,7 @@ export function persistSpec(repoRoot: string, spec: SpecPack, plan: string, prev
   changes: SpecFieldChange[];
 } {
   const canonical = SpecPackSchema.parse(spec);
-  const specDir = join(repoRoot, ".claudex", "specs", canonical.id);
+  const specDir = join(repoRoot, ".claudexor", "specs", canonical.id);
   ensureDir(specDir);
   const specHash = hashJson(canonical);
   const changes = previous ? diffSpecPacks(previous, canonical) : [];

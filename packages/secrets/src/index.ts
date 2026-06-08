@@ -3,13 +3,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { platform } from "node:os";
 import { join } from "node:path";
 
-import { userConfigDir } from "@claudex/util";
+import { userConfigDir } from "@claudexor/util";
 
-export { redactSecrets } from "@claudex/util";
+export { redactSecrets } from "@claudexor/util";
 
 export type SecretBackend = "auto" | "keychain" | "file";
 
-const SERVICE = "claudex";
+const SERVICE = "claudexor";
 
 function configDir(): string {
   return userConfigDir();
@@ -33,7 +33,7 @@ function keychainAvailable(): boolean {
  * Secret store mirroring how Codex/Claude store credentials: OS keychain where
  * available (macOS), otherwise a 0600 file under the config dir. Env vars and a
  * helper command take precedence (CI/vault). Subscriptions are NOT stored here —
- * Claudex reuses each harness's own native login.
+ * Claudexor reuses each harness's own native login.
  */
 export class SecretStore {
   constructor(private readonly backend: SecretBackend = "auto") {}
@@ -49,8 +49,8 @@ export class SecretStore {
       try {
         execFileSync(
           "security",
-          ["add-generic-password", "-U", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w", value],
-          { stdio: "ignore" },
+          ["add-generic-password", "-U", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
+          { input: `${value}\n${value}\n`, stdio: ["pipe", "ignore", "ignore"] },
         );
         return "keychain";
       } catch {
@@ -123,7 +123,7 @@ export class SecretStore {
       }
       return out;
     } catch (err) {
-      throw new Error(`invalid Claudex secret store at ${path}: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`invalid Claudexor secret store at ${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

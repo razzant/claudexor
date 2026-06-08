@@ -23,6 +23,9 @@
                 "running",
                 "blocked",
                 "succeeded",
+                "no_op",
+                "ungated",
+                "review_not_run",
                 "failed",
                 "cancelled",
                 "interrupted",
@@ -128,7 +131,15 @@
             "project": {
               "type": "object",
               "properties": {
-                "repoRoot": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "project",
+                    "none"
+                  ],
+                  "default": "none"
+                },
+                "root": {
                   "type": [
                     "string",
                     "null"
@@ -142,14 +153,14 @@
                   ],
                   "default": null
                 },
-                "contextMode": {
+                "context": {
                   "type": "string",
                   "enum": [
                     "off",
                     "auto",
                     "deep"
                   ],
-                  "default": "auto"
+                  "default": "off"
                 }
               },
               "additionalProperties": false,
@@ -166,8 +177,7 @@
                 "until_clean",
                 "plan",
                 "create",
-                "readonly_audit",
-                "benchmark"
+                "readonly_audit"
               ]
             },
             "prompt": {
@@ -190,7 +200,6 @@
                 "cheapest",
                 "strongest",
                 "burn",
-                "benchmark",
                 "subscription-first",
                 "api-overflow",
                 "conserve-claude",
@@ -300,21 +309,29 @@
                     }
                   ]
                 },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1,
-                  "default": 0
-                },
                 "status": {
                   "type": "string",
                   "enum": [
                     "success",
+                    "no_op",
+                    "ungated",
+                    "review_not_run",
                     "not_converged",
                     "failed",
                     "exhausted",
                     "cancelled"
                   ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "no_op",
+                    "ungated",
+                    "review_not_run",
+                    "blocked"
+                  ],
+                  "default": "blocked"
                 },
                 "why_winner": {
                   "type": "string",
@@ -335,6 +352,13 @@
                   "default": []
                 },
                 "final_checks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "evidence_facts": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -403,8 +427,7 @@
                     "commit",
                     "pr",
                     "report",
-                    "artifact_bundle",
-                    "benchmark_submission"
+                    "artifact_bundle"
                   ]
                 },
                 "source_task_id": {
@@ -480,8 +503,7 @@
                   "spec_gap",
                   "deploy",
                   "architecture",
-                  "ux",
-                  "benchmark"
+                  "ux"
                 ]
               },
               "claim": {
@@ -631,6 +653,7 @@
                     "type": "string",
                     "enum": [
                       "verified",
+                      "accepted_model_arg",
                       "unverified",
                       "same_model_fallback"
                     ],

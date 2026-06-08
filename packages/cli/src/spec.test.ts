@@ -15,7 +15,7 @@ const PLAN = `# SpecPack (plan run-1)
 ## Intent
 fix auth
 
-## Open questions / ambiguities (resolve interactively before \`claudex run\`)
+## Open questions / ambiguities (resolve interactively before \`claudexor run\`)
 - Should magic links be single-use?
 - Which database table owns sessions?
 
@@ -41,7 +41,7 @@ describe("spec command helpers", () => {
   });
 
   it("freezes and persists a SpecPack + native PLANS.md projection when all questions are answered", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudex-spec-"));
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-spec-"));
     const spec = await freezeSpecFromGrounding("fix auth", PLAN, {
       answers: [
         { question_id: "q1", option_ids: [], text: "single-use" },
@@ -55,7 +55,7 @@ describe("spec command helpers", () => {
     const specJson = readFileSync(join(persisted.specDir, "spec.json"), "utf8");
     const projection = readFileSync(join(persisted.specDir, "PLANS.md"), "utf8");
     expect(specJson).toContain(spec.id);
-    expect(projection).toContain(`Claudex Spec ${spec.id}`);
+    expect(projection).toContain(`Claudexor Spec ${spec.id}`);
     expect(projection).toContain("WHEN a magic link is used");
   });
 
@@ -67,7 +67,7 @@ describe("spec command helpers", () => {
   });
 
   it("answers files preserve planDir/planRunId so freeze reuses the original plan", () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudex-spec-answers-"));
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-spec-answers-"));
     const path = join(dir, "answers.json");
     const body = {
       prompt: "x",
@@ -76,7 +76,7 @@ describe("spec command helpers", () => {
       questions: [{ id: "q1", tier: 0, prompt: "?", kind: "text", options: [], allow_text: true }],
       answers: [{ question_id: "q1", option_ids: [], text: "answer" }],
     };
-    // JSON written exactly like claudex spec's questions.json draft.
+    // JSON written exactly like claudexor spec's questions.json draft.
     writeFileSync(path, JSON.stringify(body), "utf8");
     const parsed = readAnswers(path);
     expect(parsed.planRunId).toBe("run-original");

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Preflight for Claudex x Terminal-Bench. Verifies the toolchain, Docker plumbing,
-# key presence (values never printed), and that Harbor can import the Claudex agent.
+# Preflight for Claudexor x Terminal-Bench. Verifies the toolchain, Docker plumbing,
+# key presence (values never printed), and that Harbor can import the Claudexor agent.
 # Read-only: makes no changes.
 source "$(dirname "$0")/_common.sh"
 load_keys
 
 ok=0
-note() { printf '[claudex-tb]   %s\n' "$*" >&2; }
+note() { printf '[claudexor-tb]   %s\n' "$*" >&2; }
 
 log "=== preflight: toolchain ==="
 command -v harbor >/dev/null 2>&1 && note "harbor: $(harbor --version 2>/dev/null)" || { note "harbor: MISSING (uv tool install harbor)"; ok=1; }
@@ -27,21 +27,21 @@ have_key ANTHROPIC_API_KEY
 have_key OPENAI_API_KEY
 have_key GITHUB_TOKEN  # optional: only needed when your configured repo/task fetch requires it
 
-log "=== preflight: claudex agent import (Harbor python) ==="
+log "=== preflight: claudexor agent import (Harbor python) ==="
 HPY="$(harbor_python || true)"
 if [ -n "$HPY" ]; then
-  if PYTHONPATH="$CLAUDEX_REPO_ROOT" "$HPY" -c "from benchmarks.terminal_bench.claudex_agent import ClaudexAgent; print('import ok:', ClaudexAgent.name())" 2>/dev/null; then
+  if PYTHONPATH="$CLAUDEXOR_REPO_ROOT" "$HPY" -c "from benchmarks.terminal_bench.claudexor_agent import ClaudexorAgent; print('import ok:', ClaudexorAgent.name())" 2>/dev/null; then
     note "agent import: ok"
   else
-    note "agent import: FAILED (check PYTHONPATH=$CLAUDEX_REPO_ROOT)"; ok=1
+    note "agent import: FAILED (check PYTHONPATH=$CLAUDEXOR_REPO_ROOT)"; ok=1
   fi
 else
   note "harbor python not found; skipping agent import check"
 fi
 
 log "=== preflight: models ==="
-[ -n "$CLAUDE_MODEL" ] && note "CLAUDEX_TB_CLAUDE_MODEL=$CLAUDE_MODEL" || note "CLAUDEX_TB_CLAUDE_MODEL unset (claude-code uses its own default)"
-[ -n "$CODEX_MODEL" ] && note "CLAUDEX_TB_CODEX_MODEL=$CODEX_MODEL" || note "CLAUDEX_TB_CODEX_MODEL unset (codex baseline arm will be skipped; codex reviewer uses default)"
+[ -n "$CLAUDE_MODEL" ] && note "CLAUDEXOR_TB_CLAUDE_MODEL=$CLAUDE_MODEL" || note "CLAUDEXOR_TB_CLAUDE_MODEL unset (claude-code uses its own default)"
+[ -n "$CODEX_MODEL" ] && note "CLAUDEXOR_TB_CODEX_MODEL=$CODEX_MODEL" || note "CLAUDEXOR_TB_CODEX_MODEL unset (codex baseline arm will be skipped; codex reviewer uses default)"
 
 if [ "$ok" -eq 0 ]; then
   log "preflight: OK"

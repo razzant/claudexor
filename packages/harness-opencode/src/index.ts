@@ -1,12 +1,12 @@
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudex/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
-import { resolveSecret } from "@claudex/secrets";
-import { nowIso } from "@claudex/util";
+import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { resolveSecret } from "@claudexor/secrets";
+import { nowIso } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
-const BIN = process.env.CLAUDEX_OPENCODE_BIN || "opencode";
+const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
 
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -54,7 +54,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
     async discover(): Promise<HarnessManifest> {
       const version = await detectVersion();
       if (version === null) {
-        throw new HarnessUnavailableError("opencode not found on PATH (set CLAUDEX_OPENCODE_BIN)");
+        throw new HarnessUnavailableError("opencode not found on PATH (set CLAUDEXOR_OPENCODE_BIN)");
       }
       const authReady = providerKeyAvailable();
       return HarnessManifestSchema.parse({
@@ -62,7 +62,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.1",
+        adapter_version: "0.5.0",
         provider_family: "opencode",
         capabilities: {
           plan: authReady,
@@ -109,7 +109,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           harness_id: "opencode",
           status: "unavailable",
           checks: [{ id: "installed", status: "fail", detail: "opencode not found" }],
-          reasons: ["opencode not found (install OpenCode or set CLAUDEX_OPENCODE_BIN)"],
+          reasons: ["opencode not found (install OpenCode or set CLAUDEXOR_OPENCODE_BIN)"],
         });
       }
       const authReady = providerKeyAvailable();

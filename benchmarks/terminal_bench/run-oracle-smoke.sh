@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Oracle smoke: prove Harbor + Docker can build a Terminal-Bench task and that the
-# reference solution resolves it. No API keys or Claudex needed.
+# reference solution resolves it. No API keys or Claudexor needed.
 #   usage: run-oracle-smoke.sh [task-id]   (default: terminal-bench/sqlite-db-truncate)
 source "$(dirname "$0")/scripts/_common.sh"
 require_harbor

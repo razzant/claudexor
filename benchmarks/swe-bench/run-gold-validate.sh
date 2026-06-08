@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sanity-check the official evaluator + Docker by scoring GOLD patches (must resolve).
-# No Claudex/keys needed; just Docker + the swebench harness.
+# No Claudexor/keys needed; just Docker + the swebench harness.
 #   usage: run-gold-validate.sh [hf-dataset] [instance_id]
 #   default: princeton-nlp/SWE-bench_Lite, a single instance for speed.
 source "$(dirname "$0")/scripts/_common.sh"

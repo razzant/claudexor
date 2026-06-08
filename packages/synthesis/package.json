@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/synthesis",
-  "version": "0.4.1",
+  "name": "@claudexor/synthesis",
+  "version": "0.5.0",
   "description": "Synthesis decision + plan: when to merge candidates into a new (re-checked) candidate.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/arbitration": "workspace:*"
+    "@claudexor/arbitration": "workspace:*"
   }
 }

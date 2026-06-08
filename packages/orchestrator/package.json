@@ -1,7 +1,7 @@
 {
-  "name": "@claudex/orchestrator",
-  "version": "0.4.1",
-  "description": "Hub that composes all subsystems and implements the execution modes (ask, agent, best-of-N, convergence, plan, create, audit, benchmark).",
+  "name": "@claudexor/orchestrator",
+  "version": "0.5.0",
+  "description": "Hub that composes all subsystems and implements the execution modes (ask, agent, best-of-N, convergence, plan, create, audit).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,21 +17,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/arbitration": "workspace:*",
-    "@claudex/artifact-store": "workspace:*",
-    "@claudex/budget": "workspace:*",
-    "@claudex/config": "workspace:*",
-    "@claudex/context": "workspace:*",
-    "@claudex/core": "workspace:*",
-    "@claudex/event-log": "workspace:*",
-    "@claudex/gateway": "workspace:*",
-    "@claudex/review": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/synthesis": "workspace:*",
-    "@claudex/util": "workspace:*",
-    "@claudex/workspace": "workspace:*"
+    "@claudexor/arbitration": "workspace:*",
+    "@claudexor/artifact-store": "workspace:*",
+    "@claudexor/budget": "workspace:*",
+    "@claudexor/config": "workspace:*",
+    "@claudexor/context": "workspace:*",
+    "@claudexor/core": "workspace:*",
+    "@claudexor/event-log": "workspace:*",
+    "@claudexor/gateway": "workspace:*",
+    "@claudexor/review": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/synthesis": "workspace:*",
+    "@claudexor/util": "workspace:*",
+    "@claudexor/workspace": "workspace:*"
   },
   "devDependencies": {
-    "@claudex/harness-fake": "workspace:*"
+    "@claudexor/harness-fake": "workspace:*"
   }
 }

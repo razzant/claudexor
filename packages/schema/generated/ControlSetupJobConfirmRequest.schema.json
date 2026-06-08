@@ -1,0 +1,15 @@
+{
+  "$ref": "#/definitions/ControlSetupJobConfirmRequest",
+  "definitions": {
+    "ControlSetupJobConfirmRequest": {
+      "type": "object",
+      "properties": {
+        "confirmed": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

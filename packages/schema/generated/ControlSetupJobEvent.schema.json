@@ -1,0 +1,52 @@
+{
+  "$ref": "#/definitions/ControlSetupJobEvent",
+  "definitions": {
+    "ControlSetupJobEvent": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "time": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "status",
+            "log",
+            "end"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "waiting_for_input",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "not_supported"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jobId",
+        "seq",
+        "time",
+        "kind",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

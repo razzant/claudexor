@@ -1,24 +1,24 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudex/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
-import { resolveSecret } from "@claudex/secrets";
-import { nowIso } from "@claudex/util";
+import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { resolveSecret } from "@claudexor/secrets";
+import { nowIso } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 
-const BIN = process.env.CLAUDEX_CODEX_BIN || "codex";
+const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
 /**
- * Resolve an OpenAI API key for codex from the environment. Claudex-managed
+ * Resolve an OpenAI API key for codex from the environment. Claudexor-managed
  * `api_key` auth mirrors the harness's own variable (`OPENAI_API_KEY`); a
- * dedicated `CLAUDEX_CODEX_API_KEY` can override it for multi-key setups.
+ * dedicated `CLAUDEXOR_CODEX_API_KEY` can override it for multi-key setups.
  */
 function codexApiKey(): string | undefined {
-  const stored = process.env.CLAUDEX_DISABLE_STORED_SECRETS === "1" ? null : resolveSecret("openai");
-  return process.env.CLAUDEX_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
+  const stored = process.env.CLAUDEXOR_DISABLE_STORED_SECRETS === "1" ? null : resolveSecret("openai");
+  return process.env.CLAUDEXOR_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
 }
 
 /**
@@ -86,6 +86,14 @@ function hasScopedCodexAuth(env?: Record<string, string>): boolean {
   return Boolean(home && existsSync(join(home, "auth.json")));
 }
 
+export function codexExecArgs(spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "prompt">): string[] {
+  const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
+  if (spec.model_hint) args.push("-m", spec.model_hint);
+  if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${spec.effort_hint}"`);
+  args.push(spec.prompt);
+  return args;
+}
+
 export function createCodexAdapter(): HarnessAdapter {
   return {
     id: "codex",
@@ -94,7 +102,7 @@ export function createCodexAdapter(): HarnessAdapter {
       const version = await detectVersion();
       if (version === null) {
         throw new HarnessUnavailableError(
-          "codex CLI not found on PATH (set CLAUDEX_CODEX_BIN to override)",
+          "codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)",
         );
       }
       const apiKey = hasApiKey();
@@ -104,7 +112,7 @@ export function createCodexAdapter(): HarnessAdapter {
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.1",
+        adapter_version: "0.5.0",
         provider_family: "openai",
         capabilities: {
           plan: true,
@@ -151,7 +159,7 @@ export function createCodexAdapter(): HarnessAdapter {
           harness_id: "codex",
           status: "unavailable",
           checks: [{ id: "installed", status: "fail", detail: "codex not found on PATH" }],
-          reasons: ["codex CLI not found (install Codex or set CLAUDEX_CODEX_BIN)"],
+          reasons: ["codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)"],
         });
       }
       const apiKey = hasApiKey();
@@ -163,17 +171,17 @@ export function createCodexAdapter(): HarnessAdapter {
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "isolated Claudex envelopes require an openai key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "isolated Claudexor envelopes require an openai key fallback" },
         ],
         enabled_intents: ok
-          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
+          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"]
           : [],
         disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
         reasons: ok
           ? []
           : authed
-            ? ["native codex login is present, but isolated Claudex runs require a stored openai API key fallback"]
-            : ["not authenticated (run `codex login` for native use or store openai API key fallback for Claudex runs)"],
+            ? ["native codex login is present, but isolated Claudexor runs require a stored openai API key fallback"]
+            : ["not authenticated (run `codex login` for native use or store openai API key fallback for Claudexor runs)"],
       });
     },
 
@@ -201,19 +209,17 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     return;
   }
   ensureCodexApiAuth(spec.env, !nativeAuthed || scopedHomeNeedsAuth);
-  const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
-  if (spec.model_hint) args.push("-m", spec.model_hint);
-  args.push(spec.prompt);
+  const args = codexExecArgs(spec);
   const env: Record<string, string | null | undefined> = {
     ...spec.env,
     OPENAI_API_KEY: null,
     CODEX_API_KEY: null,
-    CLAUDEX_CODEX_API_KEY: null,
+    CLAUDEXOR_CODEX_API_KEY: null,
   };
 
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
-  const model = spec.model_hint ?? process.env.CLAUDEX_CODEX_MODEL ?? null;
+  const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
 
   let sawError = false;
   let exitCode: number | null = null;
@@ -228,13 +234,16 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
         }
         const out = parseCodexEvent(obj, spec.session_id);
         if (out) {
+          if (out.type === "started" && spec.model_hint && !out.observed_model) {
+            out.observed_model = spec.model_hint;
+            out.payload = { ...(out.payload ?? {}), observed_model_source: "metadata", model_arg: spec.model_hint };
+          }
           if (out.type === "error") sawError = true;
           if (out.type === "usage" && out.usage && out.usage.cost_usd === undefined) {
             const est = estimateCodexCostUsd(model, out.usage);
             if (est !== undefined) {
               out.usage.cost_usd = est;
               out.usage.estimated = true;
-              if (model) out.observed_model = model;
             }
           }
           yield out;

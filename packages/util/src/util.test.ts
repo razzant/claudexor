@@ -26,16 +26,16 @@ describe("util", () => {
     expect(containsSecretLikeToken("ordinary prompt")).toBe(false);
   });
 
-  it("rejects unsafe CLAUDEX_CONFIG_DIR overrides", () => {
-    const prev = process.env.CLAUDEX_CONFIG_DIR;
+  it("rejects unsafe CLAUDEXOR_CONFIG_DIR overrides", () => {
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     try {
-      process.env.CLAUDEX_CONFIG_DIR = "/";
+      process.env.CLAUDEXOR_CONFIG_DIR = "/";
       expect(() => userConfigDir()).toThrow(/safe absolute path/);
-      process.env.CLAUDEX_CONFIG_DIR = "relative";
+      process.env.CLAUDEXOR_CONFIG_DIR = "relative";
       expect(() => userConfigDir()).toThrow(/safe absolute path/);
     } finally {
-      if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
-      else process.env.CLAUDEX_CONFIG_DIR = prev;
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     }
   });
 });

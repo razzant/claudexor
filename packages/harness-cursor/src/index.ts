@@ -1,12 +1,12 @@
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudex/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
-import { resolveSecret } from "@claudex/secrets";
-import { nowIso } from "@claudex/util";
+import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { resolveSecret } from "@claudexor/secrets";
+import { nowIso } from "@claudexor/util";
 import { parseCursorEvent } from "./parse.js";
 
-const BIN = process.env.CLAUDEX_CURSOR_BIN || "cursor-agent";
+const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
 
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -51,7 +51,7 @@ async function nativeAuthOk(): Promise<boolean> {
 }
 
 function cursorApiKey(): string | null {
-  return process.env.CLAUDEX_CURSOR_API_KEY || resolveSecret("cursor") || process.env.CURSOR_API_KEY || null;
+  return process.env.CLAUDEXOR_CURSOR_API_KEY || resolveSecret("cursor") || process.env.CURSOR_API_KEY || null;
 }
 
 export function createCursorAdapter(): HarnessAdapter {
@@ -61,7 +61,7 @@ export function createCursorAdapter(): HarnessAdapter {
     async discover(): Promise<HarnessManifest> {
       const version = await detectVersion();
       if (version === null) {
-        throw new HarnessUnavailableError("cursor-agent not found on PATH (set CLAUDEX_CURSOR_BIN)");
+        throw new HarnessUnavailableError("cursor-agent not found on PATH (set CLAUDEXOR_CURSOR_BIN)");
       }
       const authed = await authOk();
       const nativeAuthed = await nativeAuthOk();
@@ -71,7 +71,7 @@ export function createCursorAdapter(): HarnessAdapter {
         display_name: "Cursor CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.1",
+        adapter_version: "0.5.0",
         provider_family: "cursor",
         capabilities: {
           plan: true,
@@ -118,7 +118,7 @@ export function createCursorAdapter(): HarnessAdapter {
           harness_id: "cursor",
           status: "unavailable",
           checks: [{ id: "installed", status: "fail", detail: "cursor-agent not found" }],
-          reasons: ["cursor-agent not found (install Cursor CLI or set CLAUDEX_CURSOR_BIN)"],
+          reasons: ["cursor-agent not found (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)"],
         });
       }
       const authed = await authOk();

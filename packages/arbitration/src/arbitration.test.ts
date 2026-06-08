@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GateResult } from "@claudex/schema";
+import type { GateResult } from "@claudexor/schema";
 import { type CandidateEvidence, arbitrate } from "./arbitration.js";
 
 function gate(passed: boolean): GateResult {
@@ -24,7 +24,9 @@ function candidate(label: string, over: Partial<CandidateEvidence> = {}): Candid
     testsPassed: 10,
     testsTotal: 10,
     finalReviewClean: true,
+    reviewVerified: true,
     diffSize: 50,
+    diffBytes: 50,
     ...over,
   };
 }
@@ -59,7 +61,29 @@ describe("arbitrate", () => {
     const a = candidate("A", { gates: [gate(false)] });
     const res = arbitrate([a]);
     expect(res.decision.status).toBe("not_converged");
+    expect(res.decision.outcome).toBe("blocked");
     expect(res.decision.apply_recommendation).not.toBe("apply");
+  });
+
+  it("marks empty diffs as no_op instead of success", () => {
+    const res = arbitrate([candidate("A", { diffBytes: 0, diffSize: 0 })]);
+    expect(res.decision.status).toBe("no_op");
+    expect(res.decision.outcome).toBe("no_op");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
+  });
+
+  it("marks missing gates as ungated instead of success", () => {
+    const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);
+    expect(res.decision.status).toBe("ungated");
+    expect(res.decision.outcome).toBe("ungated");
+    expect(res.decision.apply_recommendation).toBe("human_review");
+  });
+
+  it("marks missing verified review as review_not_run instead of success", () => {
+    const res = arbitrate([candidate("A", { reviewVerified: false })]);
+    expect(res.decision.status).toBe("review_not_run");
+    expect(res.decision.outcome).toBe("review_not_run");
+    expect(res.decision.apply_recommendation).toBe("human_review");
   });
 
   it("handles no candidates", () => {

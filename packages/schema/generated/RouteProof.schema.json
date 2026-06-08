@@ -80,6 +80,7 @@
           "type": "string",
           "enum": [
             "verified",
+            "accepted_model_arg",
             "unverified",
             "same_model_fallback"
           ]

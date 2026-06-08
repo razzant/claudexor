@@ -1,6 +1,6 @@
 {
-  "name": "@claudex/harness-codex",
-  "version": "0.4.1",
+  "name": "@claudexor/harness-codex",
+  "version": "0.5.0",
   "description": "Codex CLI adapter (codex exec --json).",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,9 +17,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudex/core": "workspace:*",
-    "@claudex/schema": "workspace:*",
-    "@claudex/secrets": "workspace:*",
-    "@claudex/util": "workspace:*"
+    "@claudexor/core": "workspace:*",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/secrets": "workspace:*",
+    "@claudexor/util": "workspace:*"
   }
 }

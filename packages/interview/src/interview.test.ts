@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { InterviewAnswer, InterviewQuestion } from "@claudex/schema";
-import { SpecPack as SpecPackSchema } from "@claudex/schema";
+import type { InterviewAnswer, InterviewQuestion } from "@claudexor/schema";
+import { SpecPack as SpecPackSchema } from "@claudexor/schema";
 import {
   InterviewEngine,
   InterviewNotConvergedError,

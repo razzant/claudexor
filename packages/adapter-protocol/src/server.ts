@@ -1,5 +1,5 @@
-import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
-import type { HarnessRunSpec } from "@claudex/schema";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import type { HarnessRunSpec } from "@claudexor/schema";
 import { METHODS, type Transport, isRequest, readMessages, writeMessage } from "./protocol.js";
 
 /**
