@@ -105,8 +105,21 @@ sensitive powers.
 
 ## 13. Documentation Must Stay Current
 
-`CLAUDEX_BIBLE.md`, `docs/ARCHITECTURE.md`, `docs/DESIGN_SYSTEM.md`,
-`docs/SPEC.md`, `docs/PLAN.md`, `docs/REVIEW.md`, `README.md`, and app READMEs
-must be updated when behavior changes. `AGENTS.md` in a local workspace may add
-operator-specific reminders, but public docs must stay free of local secrets,
-private paths, and dogfood transcripts unless explicitly requested.
+Public docs have separate jobs and must not be mixed together:
+
+- `README.md` is the product entrypoint and detailed quickstart.
+- `CLAUDEX_BIBLE.md` is this compact constitution.
+- `docs/ARCHITECTURE.md` is the current runtime, package, artifact, and control
+  API map.
+- `docs/INTEGRATIONS.md` describes current external integration surfaces and
+  beta limitations.
+- `docs/DESIGN_SYSTEM.md` is the macOS UI/UX contract.
+- `docs/DEVELOPMENT.md` is for contributors changing Claudex itself.
+- `docs/CHECKLISTS.md` holds human gates for docs, schema, release, visual QA,
+  and security.
+- App READMEs cover app-specific build and packaging notes.
+
+Update the relevant docs whenever behavior changes. Public docs must stay free
+of raw planning packets, review transcripts, local operator notes, local paths,
+secrets, and one-off release scratch unless the user explicitly asks to publish a
+sanitized artifact.

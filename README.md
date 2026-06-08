@@ -9,8 +9,24 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `audit`, and `benchmark`. Any harness that declares the capability can be
 assigned the intent.
 
-Current status: **v0.4.0 beta**. This is a breaking preview:
-old mode ids are intentionally not supported.
+Current status: **v0.4.0 beta**. This is a breaking preview: old mode ids are
+intentionally not supported.
+
+## Quickstart
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+
+claudex ask "2+2?"
+claudex explore "map this repo's auth and run storage"
+claudex run "fix the failing auth refresh test" --harness codex
+claudex inspect <run_id>
+claudex apply <run_id> --dry-run
+```
+
+`apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
+not mutate the repo.
 
 ## Modes
 
@@ -20,9 +36,11 @@ Canonical mode ids:
 - `explore` - bounded read-only research swarm with synthesis, omissions, and
   follow-up questions.
 - `agent` - default `claudex run` route; one primary-biased harness, direct edit.
-- `best_of_n` - N isolated candidates, review, synthesis when useful, arbitration.
+- `best_of_n` - N isolated candidates, review, synthesis when useful,
+  arbitration.
 - `max_attempts` - repair loop with a hard attempt cap.
-- `until_clean` - repair loop until gates/review converge, budget/quota exhausts, or it stalls.
+- `until_clean` - repair loop until gates/review converge, budget/quota exhausts,
+  cancellation happens, or the run stalls.
 - `plan` - read-only multi-harness planning and draft SpecPack grounding.
 - `create` - create-from-scratch path.
 - `readonly_audit` - read-only audit/map report.
@@ -31,7 +49,7 @@ Canonical mode ids:
 Unknown modes fail loudly. `daily`, `until_convergence`, `readonly_swarm`, and
 `audit` as mode ids are not aliases.
 
-## Basic Usage
+Examples:
 
 ```bash
 claudex ask "2+2?"
@@ -43,17 +61,6 @@ claudex run "fix the bug and keep repairing until clean" --mode until-clean
 claudex plan "design a config-to-gates implementation"
 claudex run "map artifact writers and secret risk" --mode readonly_audit
 ```
-
-Inspect and apply:
-
-```bash
-claudex inspect <run_id>
-claudex apply <run_id> --dry-run
-claudex apply <run_id> --mode apply
-```
-
-`apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
-not mutate the repo.
 
 ## Routing, Auth, And Secrets
 
@@ -93,7 +100,8 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
-- `GET /harnesses`, `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
+- `GET /harnesses`, `GET|POST /settings`, `GET|POST /secrets`,
+  `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
 Start it:
@@ -108,8 +116,9 @@ claudex daemon stop
 ## Artifact Layout
 
 Every project run creates files under `.claudex/runs/<run_id>/`. App-launched
-Ask without a project uses an empty synthetic cwd at `~/.cache/claudex/no-project`
-and writes artifacts to the user-level store `~/.claudex/runs/<run_id>/`:
+Ask without a project uses an empty synthetic cwd at
+`~/.cache/claudex/no-project` and writes artifacts to the user-level store
+`~/.claudex/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -131,10 +140,19 @@ final/plan.md?
 context/context_error.md?
 ```
 
-Files are the source of truth. Terminal output and UI rows are projections.
-The macOS run detail screen surfaces `Answer` and `Diagnostics` directly from
-these artifacts, so failed runs are inspectable instead of disappearing into
-logs.
+Files are the source of truth. Terminal output and UI rows are projections. The
+macOS run detail screen surfaces `Answer` and `Diagnostics` directly from these
+artifacts, so failed runs are inspectable instead of disappearing into logs.
+
+## Integrations
+
+Claudex can be driven by other tools through CLI JSON on supported commands, the
+local daemon/control API, MCP, ACP, and external JSON-RPC adapter protocol. These
+surfaces are beta and capability-gated; integrations should not assume every
+subcommand has JSON output or every harness supports live steering.
+
+See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for the current integration
+matrix and limitations.
 
 ## Architecture
 
@@ -149,8 +167,19 @@ Important boundaries:
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.
 
-See [`CLAUDEX_BIBLE.md`](CLAUDEX_BIBLE.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-[`docs/SPEC.md`](docs/SPEC.md), and [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md).
+Read next:
+
+- [`CLAUDEX_BIBLE.md`](CLAUDEX_BIBLE.md) - product and engineering principles.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - current runtime and package
+  map.
+- [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) - external integration
+  surfaces.
+- [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) - macOS UI/UX contract.
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) - contributor workflow for
+  changing Claudex itself.
+- [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) - human gates for docs, schema,
+  release, visual QA, and security.
+- [`apps/macos/README.md`](apps/macos/README.md) - macOS app notes.
 
 ## Development
 

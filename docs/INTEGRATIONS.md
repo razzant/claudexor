@@ -1,0 +1,101 @@
+# Claudex Integrations
+
+This document is for tools, editors, and agents that want to drive Claudex as a
+local control plane. It describes current beta integration surfaces. It is not a
+future target spec, and it is not contributor workflow for changing Claudex.
+
+## Surface Matrix
+
+| Surface | Current role | Stability |
+|---|---|---|
+| CLI | Human and automation entrypoint for ask/run/race/plan/inspect/apply/daemon/auth/secrets/settings flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
+| Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
+| MCP server | Exposes Claudex tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
+| ACP server | Lets compatible editors or agents talk to Claudex as a local agent surface. | Early beta. |
+| Adapter protocol | JSON-RPC-over-stdio protocol for external harness adapters. | Beta. Implemented methods are the source of truth. |
+
+## CLI
+
+Use CLI commands when another process can launch Claudex and read stdout or the
+artifact directory.
+
+```bash
+claudex ask "explain the auth flow" --json
+claudex explore "map this repo's run storage" --json
+claudex run "fix the failing parser test" --json
+claudex race "fix add() in src/math.js" --harness codex,claude --n 2 --json
+claudex inspect <run_id> --json
+```
+
+Not every subcommand has stable JSON output. Integrations should prefer the
+daemon/control API for long-running interactive use and use CLI JSON only where
+the command documents or returns machine-readable output.
+
+## Daemon And Control API
+
+The daemon owns local durable scheduling. The loopback control API is the live
+surface used by the macOS app.
+
+Core endpoints:
+
+- `POST /runs`
+- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
+- `POST /runs/:id/control`, `POST /runs/:id/input`
+- `GET /harnesses`
+- `GET|POST /settings`
+- `GET|POST /secrets`, `DELETE /secrets/:name`
+- `POST /spec/questions`, `POST /spec/freeze`
+
+The API is loopback-only and bearer-token guarded. Artifact files remain the
+source of truth; API responses are projections over daemon state and run files.
+
+## MCP
+
+Run:
+
+```bash
+claudex mcp serve
+```
+
+The MCP server is a thin surface over the same engine and run artifacts. Keep MCP
+clients honest: read-only modes stay read-only, unavailable harnesses fail
+loudly, and apply/delivery state comes from server-owned artifacts.
+
+## ACP
+
+Run:
+
+```bash
+claudex acp serve
+```
+
+ACP support is intended for editor and agent hosts that can speak the protocol.
+Treat it as beta and verify the exact behavior against the current package before
+building a hard dependency.
+
+## External Harness Adapters
+
+External adapters can be implemented out of tree and driven over JSON-RPC stdio.
+The adapter protocol currently covers discovery, doctor/capability reporting,
+run, review, and cancel style operations. Do not assume resume, estimate, live
+steering, or structured output support unless the current protocol and adapter
+doctor output prove it.
+
+Adapters must translate native I/O into Claudex events and artifacts. They must
+not orchestrate, arbitrate, manage budgets, or decide review policy.
+
+## Storage
+
+Project runs write under the target repository's `.claudex/runs/<run_id>/`.
+No-project Ask runs use a synthetic cwd and write artifacts under the user-level
+Claudex store. See `docs/ARCHITECTURE.md` for the full current layout.
+
+## Stability Rules
+
+- Schema and generated JSON Schema are the data-shape source of truth.
+- Unknown modes and unavailable harnesses fail loudly.
+- Raw secrets never become run artifacts or docs.
+- Integrations should display beta limitations instead of silently falling back
+  to another harness or another mode.

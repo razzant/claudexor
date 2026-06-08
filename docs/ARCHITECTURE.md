@@ -5,7 +5,10 @@ artifact layout, and invariants. It describes what is implemented now, not a
 future wish list.
 
 Read this with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). The Bible is the
-compact constitution; this file is the operational map.
+compact constitution; this file is the operational map. Contributor workflow,
+release gates, and integration notes live in
+[`DEVELOPMENT.md`](DEVELOPMENT.md), [`CHECKLISTS.md`](CHECKLISTS.md), and
+[`INTEGRATIONS.md`](INTEGRATIONS.md).
 
 ## 1. System Shape
 
@@ -247,4 +250,7 @@ actions come from server endpoints.
 - Change adapter parsing in `packages/harness-*`.
 - Change delivery in `packages/delivery`.
 - Change macOS UI only after the control DTO/API shape exists.
-- Keep `README.md`, `docs/SPEC.md`, and this file aligned when behavior changes.
+- Keep `README.md`, `CLAUDEX_BIBLE.md`, this file, `docs/INTEGRATIONS.md`, and
+  app docs aligned when behavior changes.
+- Keep contributor process in `docs/DEVELOPMENT.md` and `docs/CHECKLISTS.md`,
+  not in runtime architecture sections.

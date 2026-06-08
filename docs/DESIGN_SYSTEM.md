@@ -6,7 +6,8 @@ Target platform: macOS 26 (Tahoe), SwiftUI/AppKit, Liquid Glass. Apple Silicon.
 This document is normative. The app implements these tokens and rules; deviations
 must be justified here. It pairs with [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md)
 (product constitution), [`ARCHITECTURE.md`](ARCHITECTURE.md) (how the app talks
-to the engine-service), and the build plan.
+to the engine-service), [`DEVELOPMENT.md`](DEVELOPMENT.md) (contributor
+workflow), and [`CHECKLISTS.md`](CHECKLISTS.md) (visual QA gates).
 
 ---
 
@@ -157,10 +158,10 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - When a view intentionally uses custom morphing glass, group those elements in a
   `GlassEffectContainer` and share a namespace for morphs. Do not require every
   normal screen/card to opt into custom glass.
-- Do not put `.backgroundExtensionEffect()` on the full-window glow or repeated
-  per-screen backgrounds. It can create hard black/white rounded-window side
-  cutouts. If a future hero uses background extension, it must be local,
-  visually QAed in dark/light, Reduce Transparency, and compact widths.
+- Do not put window-edge material or background-extension effects on full-window
+  glow layers or repeated per-screen backgrounds. Custom background effects must
+  be local, clipped to their owning surface, and visually QAed in dark/light,
+  Reduce Transparency, and compact widths.
 - Animated `MeshGradient` background points must stay inside the legal `0...1`
   mesh domain. Boundary points may move along their own edge only; moving them
   outside the window can create hard diagonal black/white cutouts under hidden
