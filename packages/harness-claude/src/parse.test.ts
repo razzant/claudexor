@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HarnessEvent } from "@claudex/schema";
+import { HarnessEvent, HarnessRunSpec } from "@claudex/schema";
+import { claudeArgsForSpec } from "./index.js";
 import { parseClaudeEvent } from "./parse.js";
 
 describe("parseClaudeEvent", () => {
@@ -35,15 +36,41 @@ describe("parseClaudeEvent", () => {
     for (const e of out) expect(() => HarnessEvent.parse(e)).not.toThrow();
   });
 
-  it("maps result to usage (+ error on non-success subtype)", () => {
+  it("maps result to usage and final text (+ error on non-success subtype)", () => {
     const ok = parseClaudeEvent(
-      { type: "result", subtype: "success", total_cost_usd: 0.25, usage: { input_tokens: 10 } },
+      { type: "result", subtype: "success", result: "[]", total_cost_usd: 0.25, usage: { input_tokens: 10 } },
       "s1",
     );
-    expect(ok.map((e) => e.type)).toEqual(["usage"]);
+    expect(ok.map((e) => e.type)).toEqual(["usage", "message"]);
     expect(ok[0]?.usage?.cost_usd).toBe(0.25);
+    expect(ok[1]?.text).toBe("[]");
 
     const failed = parseClaudeEvent({ type: "result", subtype: "error_max_turns" }, "s1");
     expect(failed.map((e) => e.type)).toEqual(["usage", "error"]);
+  });
+
+  it("forwards model and effort hints to Claude Code", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-test",
+      intent: "review",
+      prompt: "review",
+      cwd: "/tmp",
+      access: "readonly",
+      model_hint: "opus",
+      effort_hint: "max",
+    });
+    expect(claudeArgsForSpec(spec)).toEqual([
+      "-p",
+      "review",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "plan",
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+    ]);
   });
 });

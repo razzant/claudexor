@@ -53,6 +53,14 @@ export const TaskContract = z.object({
     raw: z.string(),
     normalized: z.string().optional(),
   }),
+  spec: z
+    .object({
+      id: Id.optional(),
+      hash: z.string().optional(),
+      path: z.string().optional(),
+      env_profile: z.string().optional(),
+    })
+    .optional(),
   success_criteria: z.array(SuccessCriterion).default([]),
   non_goals: z.array(z.string()).default([]),
   forbidden_approaches: z.array(z.string()).default([]),

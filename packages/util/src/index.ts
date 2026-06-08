@@ -6,7 +6,8 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 
 /** Generate a short unique id, optionally prefixed (e.g. "run-3f2a...."). */
 export function newId(prefix = ""): string {
@@ -92,6 +93,42 @@ export function listDir(path: string): string[] {
   } catch {
     return [];
   }
+}
+
+function usableAbsoluteDir(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value || value === "/" || value === "." || value === "~" || !isAbsolute(value)) return null;
+  return value.replace(/\/+$/, "");
+}
+
+/**
+ * Best-effort per-user home for GUI-launched daemons. macOS launch contexts can
+ * have a sparse environment; never let a missing/invalid home collapse storage
+ * to `/.claudex`.
+ */
+export function userHomeDir(): string {
+  const home =
+    usableAbsoluteDir(process.env.HOME) ??
+    usableAbsoluteDir(process.env.USERPROFILE) ??
+    usableAbsoluteDir(homedir());
+  if (!home) {
+    throw new Error("Unable to resolve a safe user home directory; set HOME or CLAUDEX_CONFIG_DIR");
+  }
+  return home;
+}
+
+export function userConfigDir(): string {
+  const override = process.env.CLAUDEX_CONFIG_DIR?.trim();
+  if (override) {
+    const safe = usableAbsoluteDir(override);
+    if (!safe) throw new Error("CLAUDEX_CONFIG_DIR must be a safe absolute path");
+    return safe;
+  }
+  return join(userHomeDir(), ".claudex");
+}
+
+export function noProjectRepoRoot(): string {
+  return join(userHomeDir(), ".cache", "claudex", "no-project");
 }
 
 const SECRET_PATTERNS: RegExp[] = [

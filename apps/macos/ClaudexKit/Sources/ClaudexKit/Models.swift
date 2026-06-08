@@ -152,7 +152,23 @@ public struct RunDetail: Codable, Sendable, Equatable {
     public let finalSummary: String?
     public let decision: JSONValue?
     public let workProduct: JSONValue?
+    public let reviewFindings: [JSONValue]
     public let failure: RunFailureInfo?
+
+    enum CodingKeys: String, CodingKey {
+        case summary, artifacts, finalSummary, decision, workProduct, reviewFindings, failure
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decode(RunSummary.self, forKey: .summary)
+        artifacts = try c.decodeIfPresent([ArtifactInfo].self, forKey: .artifacts) ?? []
+        finalSummary = try c.decodeIfPresent(String.self, forKey: .finalSummary)
+        decision = try c.decodeIfPresent(JSONValue.self, forKey: .decision)
+        workProduct = try c.decodeIfPresent(JSONValue.self, forKey: .workProduct)
+        reviewFindings = try c.decodeIfPresent([JSONValue].self, forKey: .reviewFindings) ?? []
+        failure = try c.decodeIfPresent(RunFailureInfo.self, forKey: .failure)
+    }
 }
 
 public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
@@ -180,6 +196,26 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
 
 public struct HarnessListResponse: Codable, Sendable {
     public let harnesses: [HarnessStatus]
+}
+
+public struct HarnessSetupRequest: Codable, Sendable, Equatable {
+    public let harness: String
+    public let action: String
+
+    public init(harness: String, action: String = "login") {
+        self.harness = harness
+        self.action = action
+    }
+}
+
+public struct HarnessSetupResponse: Codable, Sendable, Equatable {
+    public let harness: String
+    public let action: String
+    public let status: String
+    public let command: String?
+    public let guideUrl: String?
+    public let logPath: String?
+    public let message: String
 }
 
 public struct SettingsSnapshot: Codable, Sendable, Equatable {

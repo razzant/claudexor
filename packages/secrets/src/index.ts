@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, platform } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { platform } from "node:os";
 import { join } from "node:path";
+
+import { userConfigDir } from "@claudex/util";
 
 export { redactSecrets } from "@claudex/util";
 
@@ -10,7 +12,7 @@ export type SecretBackend = "auto" | "keychain" | "file";
 const SERVICE = "claudex";
 
 function configDir(): string {
-  return process.env.CLAUDEX_CONFIG_DIR || join(homedir(), ".claudex");
+  return userConfigDir();
 }
 
 function fileStorePath(): string {
@@ -42,7 +44,7 @@ export class SecretStore {
     return keychainAvailable() ? "keychain" : "file";
   }
 
-  set(name: string, value: string): void {
+  set(name: string, value: string): "keychain" | "file" {
     if (this.resolvedBackend() === "keychain") {
       try {
         execFileSync(
@@ -50,12 +52,13 @@ export class SecretStore {
           ["add-generic-password", "-U", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w", value],
           { stdio: "ignore" },
         );
-        return;
+        return "keychain";
       } catch {
         /* fall through to file */
       }
     }
     this.fileSet(name, value);
+    return "file";
   }
 
   get(name: string): string | null {
@@ -106,10 +109,21 @@ export class SecretStore {
   }
 
   private fileStore(): Record<string, string> {
+    const path = fileStorePath();
+    if (!existsSync(path)) return {};
     try {
-      return JSON.parse(readFileSync(fileStorePath(), "utf8")) as Record<string, string>;
-    } catch {
-      return {};
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected an object");
+      }
+      const out: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof value !== "string") throw new Error(`secret '${key}' is not a string`);
+        out[key] = value;
+      }
+      return out;
+    } catch (err) {
+      throw new Error(`invalid Claudex secret store at ${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

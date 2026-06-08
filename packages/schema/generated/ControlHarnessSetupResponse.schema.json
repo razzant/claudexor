@@ -1,0 +1,71 @@
+{
+  "$ref": "#/definitions/ControlHarnessSetupResponse",
+  "definitions": {
+    "ControlHarnessSetupResponse": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "enum": [
+            "codex",
+            "claude",
+            "cursor",
+            "opencode",
+            "raw"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "install_guide",
+            "login",
+            "doctor"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "prepared",
+            "not_supported"
+          ]
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "guideUrl": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "logPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "harness",
+        "action",
+        "status",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

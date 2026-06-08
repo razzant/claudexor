@@ -65,6 +65,11 @@ NOTARY_PROFILE="claudex-notary" MAKE_DMG=1 \
 apps/macos/scripts/build-app.sh
 ```
 
+Unsigned artifacts are named `Claudex-<version>-unsigned.zip` and
+`Claudex-<version>-unsigned.dmg`. They are beta/local distribution artifacts:
+Gatekeeper can block them on other Macs until a signed/notarized build is
+produced. Release notes must also call out the macOS 26 minimum.
+
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not
 enabled for that local control-plane model.

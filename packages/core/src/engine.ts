@@ -25,6 +25,11 @@ export interface RunInput {
   access?: AccessProfile;
   /** Optional model hint forwarded to the harness. */
   model?: string;
+  /** Frozen SpecPack provenance when a run is bound to a hard-locked spec. */
+  specId?: string;
+  specHash?: string;
+  specPath?: string;
+  envProfile?: string;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
@@ -91,6 +96,14 @@ export class ExecutionEngine {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD" },
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
+      spec: input.specId || input.specHash || input.specPath || input.envProfile
+        ? {
+            id: input.specId,
+            hash: input.specHash,
+            path: input.specPath,
+            env_profile: input.envProfile,
+          }
+        : undefined,
     });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     store.writeText(join(paths.contextDir, "TASK.md"), `# Task\n\n${redactSecrets(input.prompt)}\n`);

@@ -43,6 +43,27 @@ function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): 
   return { adapter, providerFamily: family };
 }
 
+function sameObservedModelReviewer(id: string, family: ProviderFamily, findings: unknown[], observedModel: string): ReviewerSpec {
+  const spec = makeReviewer(id, family, findings);
+  return {
+    ...spec,
+    adapter: {
+      ...spec.adapter,
+      async *run(runSpec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: runSpec.session_id, ts, observed_model: observedModel };
+        yield {
+          type: "message",
+          session_id: runSpec.session_id,
+          ts,
+          text: "```json\n" + JSON.stringify(findings) + "\n```",
+        };
+        yield { type: "completed", session_id: runSpec.session_id, ts };
+      },
+    },
+  };
+}
+
 describe("gates", () => {
   it("passes on exit 0, fails on non-zero", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "claudex-gate-"));
@@ -167,6 +188,8 @@ describe("reviewEngine", () => {
       cwd: "/tmp",
       reviewers: [r1, r2],
     });
+    expect(res.crossFamilyHealthy).toBe(true);
+    expect(res.healthyProviders.sort()).toEqual(["anthropic", "openai"]);
     expect(res.crossFamilyVerified).toBe(true);
     expect(res.distinctProviders.sort()).toEqual(["anthropic", "openai"]);
     expect(res.findings.length).toBe(2);
@@ -204,7 +227,7 @@ describe("reviewEngine", () => {
     expect(res.findings[0]?.status).toBe("insufficient_evidence");
   });
 
-  it("does not verify cross-family review without observed route proofs", async () => {
+  it("keeps route proof verification false when models are not observed", async () => {
     const r1 = makeReviewer("rev-openai", "openai", []);
     const r2 = makeReviewer("rev-anthropic", "anthropic", []);
     const stripObserved = (r: ReviewerSpec): ReviewerSpec => ({
@@ -224,7 +247,30 @@ describe("reviewEngine", () => {
       cwd: "/tmp",
       reviewers: [stripObserved(r1), stripObserved(r2)],
     });
+    expect(res.crossFamilyHealthy).toBe(true);
+    expect(res.healthyProviders.sort()).toEqual(["anthropic", "openai"]);
     expect(res.crossFamilyVerified).toBe(false);
+    expect(res.distinctProviders).toEqual([]);
     expect(res.routeProofs.every((p) => p.status === "unverified")).toBe(true);
+  });
+
+  it("keeps per-finding route proof status aligned with same-model fallback classification", async () => {
+    const findings = [
+      { severity: "WARN", category: "correctness", claim: "same model route", evidence: { files: [{ path: "a.ts", lines: "1" }] } },
+    ];
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [
+        sameObservedModelReviewer("rev-openai", "openai", findings, "shared-model"),
+        sameObservedModelReviewer("rev-anthropic", "anthropic", findings, "shared-model"),
+      ],
+    });
+    expect(res.crossFamilyHealthy).toBe(true);
+    expect(res.crossFamilyVerified).toBe(false);
+    expect(res.routeProofs.every((p) => p.status === "same_model_fallback")).toBe(true);
+    expect(res.findings.every((f) => f.reviewer.route_proof_status === "same_model_fallback")).toBe(true);
   });
 });

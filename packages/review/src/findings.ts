@@ -19,10 +19,20 @@ export function extractJsonBlocks(text: string): unknown[] {
     }
   }
   if (!found) {
-    try {
-      results.push(JSON.parse(text.trim()));
-    } catch {
-      /* not JSON */
+    const trimmed = text.trim();
+    const candidates = [trimmed];
+    const lines = trimmed.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const candidate = lines.slice(i).join("\n").trim();
+      if (candidate.startsWith("[") || candidate.startsWith("{")) candidates.push(candidate);
+    }
+    for (const candidate of candidates) {
+      try {
+        results.push(JSON.parse(candidate));
+        break;
+      } catch {
+        /* try the next JSON-looking suffix */
+      }
     }
   }
   return results;
@@ -31,6 +41,7 @@ export function extractJsonBlocks(text: string): unknown[] {
 export interface ReviewerInfo {
   harness_id: string;
   requested_model?: string | null;
+  requested_effort?: string | null;
   observed_model?: string | null;
   route_proof_status?: RouteProofStatus;
 }
@@ -62,6 +73,7 @@ export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFindi
           reviewer: {
             harness_id: reviewer.harness_id,
             requested_model: reviewer.requested_model ?? null,
+            requested_effort: reviewer.requested_effort ?? null,
             observed_model: reviewer.observed_model ?? null,
             route_proof_status: reviewer.route_proof_status ?? "unverified",
           },

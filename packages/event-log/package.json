@@ -1,6 +1,6 @@
 {
   "name": "@claudex/event-log",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
   "type": "module",
   "main": "./dist/index.js",

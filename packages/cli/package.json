@@ -1,6 +1,6 @@
 {
   "name": "@claudex/cli",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Claudex CLI (claudex). Thin surface over the ExecutionEngine.",
   "type": "module",
   "main": "./dist/cli.js",

@@ -79,6 +79,7 @@ export const ReviewFinding = z.object({
   reviewer: z.object({
     harness_id: Id,
     requested_model: z.string().nullable().default(null),
+    requested_effort: z.string().nullable().default(null),
     observed_model: z.string().nullable().default(null),
     route_proof_status: RouteProofStatus.default("unverified"),
   }),

@@ -43,7 +43,7 @@ Core endpoints:
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
-- `GET /harnesses`
+- `GET /harnesses`, `POST /harnesses/setup`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`

@@ -5,6 +5,9 @@ import { AccessProfile, Id, Intent, ProviderFamily } from "./primitives.js";
 export const SignalQuality = z.enum(["exact", "native", "observed", "manual", "unknown"]);
 export type SignalQuality = z.infer<typeof SignalQuality>;
 
+export const EffortHint = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export type EffortHint = z.infer<typeof EffortHint>;
+
 export const HarnessKind = z.enum([
   "local_cli",
   "local_server",
@@ -183,6 +186,7 @@ export const HarnessRunSpec = z.object({
   cwd: z.string(),
   access: AccessProfile.default("workspace_write"),
   model_hint: z.string().nullable().default(null),
+  effort_hint: EffortHint.nullable().default(null),
   max_usd: z.number().nullable().default(null),
   max_turns: z.number().int().nullable().default(null),
   env: z.record(z.string(), z.string()).default({}),

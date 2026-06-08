@@ -1,6 +1,6 @@
 {
   "name": "@claudex/harness-opencode",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OpenCode adapter (opencode run --format json).",
   "type": "module",
   "main": "./dist/index.js",

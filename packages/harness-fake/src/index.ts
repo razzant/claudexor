@@ -41,8 +41,8 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
     id,
     display_name: `Fake (${id})`,
     kind: "fake",
-    version: "0.4.0",
-    adapter_version: "0.4.0",
+    version: "0.4.1",
+    adapter_version: "0.4.1",
     provider_family: provider,
     capability_profile: {
       execution_surfaces: [{

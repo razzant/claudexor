@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type {
   AccessProfile,
+  EffortHint,
   GateResult,
   HarnessEvent,
   Intent,
@@ -37,7 +37,18 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudex/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudex/synthesis";
 import { BudgetLedger, observationFromEvent } from "@claudex/budget";
-import { appendLine, containsSecretLikeToken, hashJson, newId, nowIso, redactSecrets, safeInvoke, sha256 } from "@claudex/util";
+import {
+  appendLine,
+  containsSecretLikeToken,
+  hashJson,
+  newId,
+  noProjectRepoRoot,
+  nowIso,
+  redactSecrets,
+  safeInvoke,
+  sha256,
+  userConfigDir,
+} from "@claudex/util";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
@@ -50,6 +61,8 @@ export interface OrchestratorDeps {
    * model id, default keeps each harness's own default reviewer model.
    */
   reviewerModels?: Record<string, string>;
+  /** Optional per-provider-family reviewer effort override where the harness supports it. */
+  reviewerEfforts?: Partial<Record<"anthropic", EffortHint>>;
 }
 
 export interface RunInput {
@@ -75,6 +88,8 @@ export interface RunInput {
   /** Frozen SpecPack provenance when a run is bound to a hard-locked spec. */
   specId?: string;
   specHash?: string;
+  specPath?: string;
+  envProfile?: string;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
@@ -120,7 +135,7 @@ interface CandidateRun {
 }
 
 const LABELS = "ABCDEFGHIJ".split("");
-const NO_PROJECT_ROOT = join(homedir(), ".cache", "claudex", "no-project");
+const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 export class Orchestrator {
   private readonly gateway: HarnessGateway;
@@ -195,6 +210,10 @@ export class Orchestrator {
       mode: "agent",
       access: input.access,
       model: input.model,
+      specId: input.specId,
+      specHash: input.specHash,
+      specPath: input.specPath,
+      envProfile: input.envProfile,
       runId,
       taskId,
       onEvent: input.onEvent,
@@ -231,6 +250,7 @@ export class Orchestrator {
         adapter,
         providerFamily: m.provider_family,
         requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
+        requestedEffort: m.provider_family === "anthropic" ? (this.deps.reviewerEfforts?.anthropic ?? null) : null,
       });
       if (specs.length >= 2) break;
     }
@@ -239,7 +259,7 @@ export class Orchestrator {
 
   private artifactStore(input: RunInput): ArtifactStore {
     if (input.mode === "ask" && input.contextMode === "off" && input.repoRoot === NO_PROJECT_ROOT) {
-      return new ArtifactStore(input.repoRoot, { claudexDir: join(homedir(), ".claudex") });
+      return new ArtifactStore(input.repoRoot, { claudexDir: userConfigDir() });
     }
     return new ArtifactStore(input.repoRoot);
   }
@@ -334,20 +354,12 @@ export class Orchestrator {
     return new Set(reviewers.map((r) => r.providerFamily)).size >= 2;
   }
 
-  private config(repoRoot: string): ReturnType<typeof loadConfig> | null {
-    try {
-      return loadConfig(repoRoot);
-    } catch {
-      return null;
-    }
+  private config(repoRoot: string): ReturnType<typeof loadConfig> {
+    return loadConfig(repoRoot);
   }
 
-  private projectConfig(repoRoot: string): ProjectConfig | null {
-    try {
-      return this.config(repoRoot)?.project ?? null;
-    } catch {
-      return null;
-    }
+  private projectConfig(repoRoot: string): ProjectConfig {
+    return this.config(repoRoot).project;
   }
 
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
@@ -369,6 +381,14 @@ export class Orchestrator {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
+      spec: input.specId || input.specHash || input.specPath || input.envProfile
+        ? {
+            id: input.specId,
+            hash: input.specHash,
+            path: input.specPath,
+            env_profile: input.envProfile,
+          }
+        : undefined,
       tests: { commands },
       budget: {
         portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
@@ -425,6 +445,7 @@ export class Orchestrator {
     let cost = 0;
     let costEstimated = false;
     let errored = false;
+    const errors: string[] = [];
     const onAbort = () => {
       void adapter.cancel?.(spec.session_id)?.catch(() => {});
     };
@@ -440,7 +461,10 @@ export class Orchestrator {
           cost += ev.usage.cost_usd;
           if (ev.usage.estimated) costEstimated = true;
         }
-        if (ev.type === "error") errored = true;
+        if (ev.type === "error") {
+          errored = true;
+          errors.push(redactSecrets(ev.error ?? ev.text ?? "harness emitted error"));
+        }
         // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
         const obs = observationFromEvent(adapter.id, ev);
         if (obs) ledger.observe(obs);
@@ -463,6 +487,7 @@ export class Orchestrator {
       harness_id: adapter.id,
       cost_usd: cost,
       errored,
+      errors: errors.slice(0, 5),
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
       branch: envelope.branch_name,
     });
@@ -757,7 +782,7 @@ export class Orchestrator {
       const result =
         reviewers.length > 0
           ? await reviewCandidate({ candidateLabel: run.label, diff: run.diff, evidenceDir: reviewDir, cwd, reviewers })
-          : { findings: [], routeProofs: [], crossFamilyVerified: false, distinctProviders: [] };
+          : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
       const revalidated = await revalidateFindings(result.findings);
       const noBlockers = !revalidated.some((f) => isBlocking(f));
       // Honest: if reviewers are unavailable, fall back to gates-only and mark review_verified=false.
@@ -765,7 +790,11 @@ export class Orchestrator {
       store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
         attempt_id: run.attemptId,
         review_verified: reviewVerified && result.crossFamilyVerified,
+        cross_family_healthy: result.crossFamilyHealthy,
         cross_family_verified: result.crossFamilyVerified,
+        healthy_providers: result.healthyProviders,
+        verified_providers: result.distinctProviders,
+        reviewer_requests: result.reviewerRequests,
         findings: revalidated,
         route_proofs: result.routeProofs,
       });
@@ -872,10 +901,21 @@ export class Orchestrator {
         const reviewResult =
           reviewers.length > 0
             ? await reviewCandidate({ candidateLabel: `Attempt ${attempt}`, diff: run.diff, evidenceDir: reviewDir, cwd: input.repoRoot, reviewers })
-            : { findings: [], routeProofs: [], crossFamilyVerified: false, distinctProviders: [] };
+            : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
         actualReviewVerified = reviewVerified && reviewResult.crossFamilyVerified;
         const revalidated = await revalidateFindings(reviewResult.findings);
         lastFindings = revalidated;
+        store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
+          attempt_id: attemptId,
+          review_verified: actualReviewVerified,
+          cross_family_healthy: reviewResult.crossFamilyHealthy,
+          cross_family_verified: reviewResult.crossFamilyVerified,
+          healthy_providers: reviewResult.healthyProviders,
+          verified_providers: reviewResult.distinctProviders,
+          reviewer_requests: reviewResult.reviewerRequests,
+          findings: revalidated,
+          route_proofs: reviewResult.routeProofs,
+        });
         const finalReviewClean = reviewers.length === 0 ? gatesPassed(run.gates) && !run.errored : reviewResult.crossFamilyVerified && !revalidated.some((f) => isBlocking(f));
 
         const conv = evaluateConvergence({
@@ -1103,7 +1143,7 @@ export class Orchestrator {
         reviewers,
       });
       ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
-      store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs });
+      store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
     }
 
     const specPack = [

@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { AccessProfile, ContentHash, Id, ModeKind } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { AdapterStatus, HarnessManifest } from "./harness.js";
+import { AdapterStatus, EffortHint, HarnessManifest } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
+import { ReviewFinding } from "./review.js";
 
 export const ControlRunStartRequest = z.object({
   prompt: z.string().default(""),
@@ -13,6 +14,12 @@ export const ControlRunStartRequest = z.object({
   portfolio: Portfolio.optional(),
   model: z.string().optional(),
   reviewerModels: z.record(z.string(), z.string()).optional(),
+  reviewerEfforts: z
+    .object({
+      anthropic: EffortHint.optional(),
+    })
+    .strict()
+    .optional(),
   n: z.number().int().positive().optional(),
   attempts: z.number().int().positive().nullable().optional(),
   maxUsd: z.number().nonnegative().nullable().optional(),
@@ -27,6 +34,28 @@ export const ControlRunStartRequest = z.object({
   specHash: ContentHash.optional(),
 });
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
+
+export const ControlHarnessSetupAction = z.enum(["install_guide", "login", "doctor"]);
+export type ControlHarnessSetupAction = z.infer<typeof ControlHarnessSetupAction>;
+export const ControlHarnessSetupHarness = z.enum(["codex", "claude", "cursor", "opencode", "raw"]);
+export type ControlHarnessSetupHarness = z.infer<typeof ControlHarnessSetupHarness>;
+
+export const ControlHarnessSetupRequest = z.object({
+  harness: ControlHarnessSetupHarness,
+  action: ControlHarnessSetupAction.default("login"),
+});
+export type ControlHarnessSetupRequest = z.infer<typeof ControlHarnessSetupRequest>;
+
+export const ControlHarnessSetupResponse = z.object({
+  harness: ControlHarnessSetupHarness,
+  action: ControlHarnessSetupAction,
+  status: z.enum(["prepared", "not_supported"]),
+  command: z.string().nullable().default(null),
+  guideUrl: z.string().url().nullable().default(null),
+  logPath: z.string().nullable().default(null),
+  message: z.string(),
+});
+export type ControlHarnessSetupResponse = z.infer<typeof ControlHarnessSetupResponse>;
 
 export const ControlRunStartInfo = z.object({
   jobId: z.string().optional(),
@@ -130,6 +159,7 @@ export const ControlRunDetail = z.object({
   finalSummary: z.string().nullable().default(null),
   decision: DecisionRecord.nullable().default(null),
   workProduct: WorkProduct.nullable().default(null),
+  reviewFindings: z.array(ReviewFinding).default([]),
   failure: RunFailure.nullable().default(null),
 });
 export type ControlRunDetail = z.infer<typeof ControlRunDetail>;

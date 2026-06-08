@@ -71,6 +71,9 @@ export function parseClaudeEvent(obj: Json, sessionId: string): HarnessEvent[] {
         cost_usd: numberOrUndef(obj.total_cost_usd),
       },
     });
+    if (typeof obj.result === "string" && obj.result.trim()) {
+      out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
+    }
     if (obj.subtype && obj.subtype !== "success") {
       out.push({ type: "error", session_id: sessionId, ts, error: `result subtype: ${obj.subtype}` });
     }

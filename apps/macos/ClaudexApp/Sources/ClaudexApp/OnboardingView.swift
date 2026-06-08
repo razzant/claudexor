@@ -203,51 +203,70 @@ struct OnboardingView: View {
     private func nativeAuthRow(_ family: HarnessFamily) -> some View {
         let info = model.harnessInfo(for: family)
         let available = info?.health == .ok
-        return HStack(spacing: Theme.Spacing.sm) {
-            HarnessChip(family: family, selected: true, available: available)
-            Text(info?.auth ?? "Not checked yet.")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            Spacer()
-            Button { openInstallGuide(family) } label: {
-                Label("Install guide", systemImage: "arrow.down.circle")
+        let health = info?.health ?? .unavailable
+        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(spacing: Theme.Spacing.sm) {
+                HarnessChip(family: family, selected: true, available: available)
+                Text(info?.auth ?? "Not checked yet.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: Theme.Spacing.md)
+                Label(health.rawValue.capitalized, systemImage: health.glyph)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(health.color)
+                    .padding(.horizontal, Theme.Spacing.sm)
+                    .padding(.vertical, Theme.Spacing.xxs)
+                    .background(health.color.opacity(0.14), in: Capsule())
             }
-            .buttonStyle(.bordered)
-            .help("Open the official install/login guide for \(family.label). Claudex does not bundle third-party CLIs.")
-            Button {
-                copy(nativeLoginCommand(family), label: "\(family.label) login command")
-            } label: {
-                Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
+            FlowLayout(spacing: Theme.Spacing.sm) {
+                Button {
+                    Task { await runSetupCommand(family, action: "login") }
+                } label: {
+                    Label("Run Login", systemImage: "terminal")
+                }
+                .buttonStyle(.bordered)
+                .help("Open Terminal with the native \(family.label) login command, then run Recheck.")
+                Button {
+                    Task { await copySetupCommand(family, action: "login") }
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .help("Copy the native login command. Run it in Terminal, then Recheck.")
+                Button { step = 2 } label: {
+                    Label("Store Key", systemImage: "key")
+                }
+                .buttonStyle(.bordered)
+                .help("Use API-key fallback if native login is unavailable or not installed.")
+                Button { Task { await openInstallGuide(family) } } label: {
+                    Label("Open Guide", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.bordered)
+                .help("Open the official install/login guide for \(family.label). Claudex does not bundle third-party CLIs.")
             }
-            .buttonStyle(.bordered)
-            .help("Copy the native login command. Run it in Terminal, then Recheck.")
         }
     }
 
-    private func nativeLoginCommand(_ family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "codex login && claudex doctor --harness codex"
-        case .claude: return "claude /login && claudex doctor --harness claude"
-        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
-        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
-        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
-        case .fake: return "claudex doctor --all"
-        }
+    private func runSetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        let opened = NativeSetup.runInTerminal(command)
+        copiedCommand = opened ? "Opened Terminal: \(command)" : "Could not open Terminal; copied: \(command)"
+        if !opened { NativeSetup.copy(command) }
     }
 
-    private func openInstallGuide(_ family: HarnessFamily) {
-        guard let url = URL(string: installGuideURL(family)) else { return }
+    private func copySetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        copy(command, label: "\(family.label) setup command")
+    }
+
+    private func openInstallGuide(_ family: HarnessFamily) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: "install_guide"),
+              let raw = response.guideUrl,
+              let url = URL(string: raw) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private func installGuideURL(_ family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "https://developers.openai.com/codex"
-        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
-        case .cursor: return "https://docs.cursor.com/cli"
-        case .opencode: return "https://opencode.ai/docs"
-        case .raw: return "https://platform.openai.com/docs"
-        case .fake: return "https://github.com/joi-lab/claudex"
-        }
     }
 
     private func chooseProjectRoot() {
@@ -263,8 +282,7 @@ struct OnboardingView: View {
     }
 
     private func copy(_ text: String, label: String? = nil) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        NativeSetup.copy(text)
         copiedCommand = label.map { "\($0): \(text)" } ?? text
     }
 }

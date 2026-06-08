@@ -1,6 +1,6 @@
 {
   "name": "@claudex/harness-fake",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Deterministic fake harnesses for tests and pipeline bring-up.",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ControlHarnessSetupRequest,
+  ControlHarnessSetupResponse,
+  ControlRunStartRequest,
   HarnessManifest,
   ReviewFinding,
   RouteProof,
@@ -59,9 +62,10 @@ describe("ReviewFinding.isBlocking", () => {
       category: "correctness",
       claim: "off-by-one",
       evidence: { files: [{ path: "x.ts", lines: "10" }] },
-      reviewer: { harness_id: "claude", route_proof_status: "verified" },
+      reviewer: { harness_id: "claude", requested_effort: "max", route_proof_status: "verified" },
     });
     expect(f.status).toBe("proposed");
+    expect(f.reviewer.requested_effort).toBe("max");
     expect(f.reviewer.route_proof_status).toBe("verified");
   });
 });
@@ -87,5 +91,63 @@ describe("RouteProof + HarnessManifest", () => {
     });
     expect(m.capabilities.implement).toBe(true);
     expect(m.capabilities.quota_signal).toBe("unknown");
+  });
+});
+
+describe("Control API schemas", () => {
+  it("accepts reviewer effort overrides on run start requests", () => {
+    const req = ControlRunStartRequest.parse({
+      prompt: "review it",
+      mode: "best_of_n",
+      repoRoot: "/repo",
+      reviewerEfforts: { anthropic: "max" },
+    });
+    expect(req.reviewerEfforts?.anthropic).toBe("max");
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerEfforts: { anthropic: 1 },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerEfforts: { anthropic: "banana" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerEfforts: { openai: "high" },
+      }),
+    ).toThrow();
+  });
+
+  it("parses harness setup request/response contracts", () => {
+    const req = ControlHarnessSetupRequest.parse({ harness: "codex" });
+    expect(req.action).toBe("login");
+    expect(() => ControlHarnessSetupRequest.parse({ harness: "unknown", action: "login" })).toThrow();
+    expect(() => ControlHarnessSetupRequest.parse({ harness: "codex", action: "rm_rf" })).toThrow();
+
+    const res = ControlHarnessSetupResponse.parse({
+      harness: "codex",
+      action: "doctor",
+      status: "prepared",
+      message: "prepared",
+    });
+    expect(res.command).toBeNull();
+    expect(res.guideUrl).toBeNull();
+    expect(res.logPath).toBeNull();
+    expect(() =>
+      ControlHarnessSetupResponse.parse({
+        harness: "unknown",
+        action: "doctor",
+        status: "prepared",
+        message: "prepared",
+      }),
+    ).toThrow();
   });
 });

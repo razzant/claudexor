@@ -1,4 +1,4 @@
-# Claudex v0.4.0 Architecture Reference
+# Claudex v0.4.1 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
@@ -178,10 +178,16 @@ artifact/delivery facade:
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
-- `GET /harnesses`
+- `GET /harnesses`, `POST /harnesses/setup`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
+
+`POST /harnesses/setup` owns setup affordances. It validates typed setup
+actions, rejects inline secrets, and returns only server-side allowlisted
+commands, official guide URLs, and redacted setup log metadata. Native clients
+may open Terminal or copy the returned command; they do not construct setup
+commands locally.
 
 Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead

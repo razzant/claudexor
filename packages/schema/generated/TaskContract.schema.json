@@ -85,6 +85,24 @@
           ],
           "additionalProperties": false
         },
+        "spec": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/TaskContract/properties/task_id"
+            },
+            "hash": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "env_profile": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
         "success_criteria": {
           "type": "array",
           "items": {

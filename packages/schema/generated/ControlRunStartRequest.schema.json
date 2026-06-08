@@ -57,6 +57,22 @@
             "type": "string"
           }
         },
+        "reviewerEfforts": {
+          "type": "object",
+          "properties": {
+            "anthropic": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "n": {
           "type": "integer",
           "exclusiveMinimum": true,

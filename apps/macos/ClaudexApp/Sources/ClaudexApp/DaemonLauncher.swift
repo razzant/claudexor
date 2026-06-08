@@ -23,7 +23,7 @@ enum DaemonLauncher {
         let process = Process()
         process.executableURL = node
         process.arguments = [daemon.path]
-        // Inherit the user environment; claudexd persists to ~/.claudex/daemon by default.
+        process.environment = daemonEnvironment()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
@@ -32,5 +32,32 @@ enum DaemonLauncher {
         } catch {
             return false
         }
+    }
+
+    private static func daemonEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if env["HOME", default: ""].isEmpty || env["HOME"] == "/" {
+            env["HOME"] = home
+        }
+        let existingPath = env["PATH", default: "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let extraPaths = [
+            "\(home)/.claudex/node/bin",
+            "\(home)/.local/bin",
+            "\(home)/.npm-global/bin",
+            "\(home)/.bun/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+        var seen = Set<String>()
+        env["PATH"] = (extraPaths + [existingPath])
+            .flatMap { $0.split(separator: ":").map(String.init) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .joined(separator: ":")
+        return env
     }
 }

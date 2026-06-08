@@ -48,6 +48,9 @@ pnpm test
 - Add focused tests at the package boundary that owns the behavior.
 - Update `docs/ARCHITECTURE.md` when the run flow, artifact layout, storage,
   auth, routing, settings, or control API changes.
+- Harness setup/login actions must be owned by the Control API. UI code may
+  bridge returned allowlisted commands to Terminal/clipboard, but must not
+  construct harness login/install commands locally.
 
 ## macOS Visual QA
 

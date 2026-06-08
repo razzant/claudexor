@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containsSecretLikeToken, hashJson, newId, redactSecrets, sha256, stableStringify } from "./index.js";
+import { containsSecretLikeToken, hashJson, newId, redactSecrets, sha256, stableStringify, userConfigDir } from "./index.js";
 
 describe("util", () => {
   it("hashes JSON stably regardless of key order", () => {
@@ -24,5 +24,18 @@ describe("util", () => {
     expect(redacted).not.toContain("ghp_aaaa");
     expect(containsSecretLikeToken("token ghp_" + "a".repeat(36))).toBe(true);
     expect(containsSecretLikeToken("ordinary prompt")).toBe(false);
+  });
+
+  it("rejects unsafe CLAUDEX_CONFIG_DIR overrides", () => {
+    const prev = process.env.CLAUDEX_CONFIG_DIR;
+    try {
+      process.env.CLAUDEX_CONFIG_DIR = "/";
+      expect(() => userConfigDir()).toThrow(/safe absolute path/);
+      process.env.CLAUDEX_CONFIG_DIR = "relative";
+      expect(() => userConfigDir()).toThrow(/safe absolute path/);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
+      else process.env.CLAUDEX_CONFIG_DIR = prev;
+    }
   });
 });

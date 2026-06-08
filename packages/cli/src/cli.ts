@@ -22,6 +22,7 @@ import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudex/conf
 import { SecretStore } from "@claudex/secrets";
 import {
   DecisionRecord,
+  EffortHint,
   ModeKind as ModeKindSchema,
   Portfolio,
   type ModeKind,
@@ -58,7 +59,7 @@ function orchestratorRunner() {
   };
 }
 
-const HELP = `claudex — harness-agnostic AI coding control plane (v0.4.0)
+const HELP = `claudex — harness-agnostic AI coding control plane (v0.4.1)
 
 Usage:
   claudex init                          Scaffold repo-local config (.claudex/config.yaml)
@@ -93,6 +94,7 @@ Options:
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
+  --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
   --access <profile>       Access profile: readonly|workspace_write|full|inherit_native
   --model <id>             Model hint forwarded to the selected harness route
   --primary-harness <id>   Bias single-route modes and first candidate choice
@@ -172,6 +174,25 @@ function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
   return Object.keys(map).length > 0 ? map : undefined;
 }
 
+/** Per-family reviewer effort map from `--reviewer-effort "anthropic=max"`. */
+function reviewerEfforts(args: ParsedArgs): Partial<Record<"anthropic", EffortHint>> | undefined {
+  const v = flagStr(args, "reviewer-effort");
+  if (v === undefined) return undefined;
+  const map: Partial<Record<"anthropic", EffortHint>> = {};
+  for (const pair of v.split(",")) {
+    const [family, effort] = pair.split("=").map((s) => s.trim());
+    if (!family && !effort) continue;
+    if (!family || !effort) throw new Error(`invalid --reviewer-effort entry '${pair}'`);
+    if (family !== "anthropic") {
+      throw new Error(`--reviewer-effort currently supports anthropic only; '${family}' would be ignored by its adapter`);
+    }
+    const parsed = EffortHint.safeParse(effort);
+    if (!parsed.success) throw new Error(`invalid reviewer effort '${effort}' (expected low|medium|high|xhigh|max)`);
+    map[family] = parsed.data;
+  }
+  return Object.keys(map).length > 0 ? map : undefined;
+}
+
 async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Promise<number> {
   const rawPrompt = args._.slice(1).join(" ").trim();
   const specPath = flagStr(args, "spec");
@@ -210,11 +231,19 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     process.stderr.write(`claudex: unknown --portfolio '${portfolioRaw}'\n`);
     return 2;
   }
+  let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
+  try {
+    reviewerEffortOverrides = reviewerEfforts(args);
+  } catch (err) {
+    process.stderr.write(`claudex: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
   const orch = new Orchestrator({
     registry: buildRegistry(),
     portfolio: portfolio?.success ? portfolio.data : undefined,
     maxUsd: maxUsd ?? null,
     reviewerModels: reviewerModels(args),
+    reviewerEfforts: reviewerEffortOverrides,
   });
   try {
     const tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
@@ -232,6 +261,9 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       maxUsd: maxUsd ?? null,
       access: accessProfile(args),
       model: flagStr(args, "model"),
+      specId: spec?.id,
+      specHash: spec ? hashJson(spec) : undefined,
+      specPath: specPath ? realpathSync(specPath) : undefined,
       inPlace: flagBool(args, "in-place"),
     });
     if (json) {
@@ -274,6 +306,7 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       const orch = new Orchestrator({
         registry: buildRegistry(),
         reviewerModels: reviewerModels(args),
+        reviewerEfforts: reviewerEfforts(args),
       });
       const plan = await orch.run({
         repoRoot: process.cwd(),
@@ -536,9 +569,9 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       print("secret value required via --from-env or stdin; values are not accepted as positional args");
       return 2;
     }
-    store.set(name, value);
-    if (json) printJson({ name, backend: store.resolvedBackend(), stored: true });
-    else print(`stored ${name} in ${store.resolvedBackend()}`);
+    const backend = store.set(name, value);
+    if (json) printJson({ name, backend, stored: true });
+    else print(`stored ${name} in ${backend}`);
     return 0;
   }
   if (sub === "delete" || sub === "rm") {
@@ -720,6 +753,7 @@ async function main(): Promise<number> {
           portfolio: "benchmark",
           maxUsd: benchMaxUsd ?? null,
           reviewerModels: reviewerModels(args),
+          reviewerEfforts: reviewerEfforts(args),
         });
         const res = await runBenchmark(
           tasks,

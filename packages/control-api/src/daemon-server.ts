@@ -1,13 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { homedir } from "node:os";
-import { basename, extname, join, normalize, relative, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver } from "@claudex/delivery";
 import {
   AccessProfile,
   ControlApplyCheckRequest,
   ControlApplyRequest,
+  ControlHarnessSetupRequest,
+  ControlHarnessSetupResponse,
   ControlHarnessListResponse,
   ControlSecretListResponse,
   ControlRunStartRequest,
@@ -24,11 +25,12 @@ import {
   DecisionRecord,
   ModeKind,
   Portfolio,
+  ReviewFinding,
   RunEvent,
   RunFailure,
   WorkProduct,
 } from "@claudex/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, nowIso, redactSecrets, sha256 } from "@claudex/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudex/util";
 import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -60,6 +62,7 @@ export interface DaemonControlApiOptions {
   runStartTimeoutMs?: number;
   services?: {
     harnesses?: () => Promise<unknown>;
+    setupHarness?: (input: unknown) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
     auth?: () => Promise<unknown>;
@@ -73,7 +76,7 @@ export interface DaemonControlApiOptions {
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
-const NO_PROJECT_ROOT = join(homedir(), ".cache", "claudex", "no-project");
+const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
@@ -85,7 +88,8 @@ function hostIsLoopback(hostHeader: string | undefined): boolean {
 function originIsLoopback(origin: string | undefined): boolean {
   if (!origin) return true;
   try {
-    return LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase());
+    const host = new URL(origin).hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+    return LOOPBACK_HOSTS.has(host);
   } catch {
     return false;
   }
@@ -268,6 +272,8 @@ export class DaemonControlApiServer {
       if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = body.repoRoot ?? runRepoRoot(rec);
       if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply check" });
+      const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+      if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const repoError = validateApplyRepo(rec, repoRoot);
       if (repoError) return this.json(res, 409, { error: repoError });
       return this.json(res, 200, await checkPatch(repoRoot, patch));
@@ -295,12 +301,26 @@ export class DaemonControlApiServer {
       if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = body.repoRoot ?? runRepoRoot(rec);
       if (!repoRoot) return this.json(res, 400, { error: "repoRoot is required for apply" });
+      const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+      if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const repoError = validateApplyRepo(rec, repoRoot);
       if (repoError) return this.json(res, 409, { error: repoError });
       return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
     }
 
     if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
+    if (method === "POST" && path === "/harnesses/setup") {
+      let body: ControlHarnessSetupRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlHarnessSetupRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      return this.service(res, "setupHarness", body, ControlHarnessSetupResponse);
+    }
     if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
       let body: ControlSettingsUpdateRequest;
@@ -548,6 +568,8 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
   const mode = parsed.mode ?? "agent";
   const repoRoot = parsed.repoRoot?.trim();
   if (repoRoot) {
+    const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+    if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
     if (parsed.contextMode === "off") {
       throw Object.assign(new Error("contextMode 'off' is only supported for Ask without a repoRoot"), { status: 400 });
     }
@@ -640,6 +662,7 @@ function detailFor(rec: DaemonRunRecord): ControlRunDetail {
     finalSummary: readTextArtifact(rec, "final/summary.md"),
     decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
+    reviewFindings: readReviewFindings(rec),
     failure,
   });
 }
@@ -758,9 +781,34 @@ function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, sc
   }
 }
 
+function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
+  if (!rec.runDir) return [];
+  const reviewsDir = safeArtifactPath(rec.runDir, "reviews");
+  if (!reviewsDir || !lstatSync(reviewsDir).isDirectory()) return [];
+  const out: ReviewFinding[] = [];
+  for (const name of readdirSync(reviewsDir).sort()) {
+    const ext = extname(name);
+    if (ext !== ".yaml" && ext !== ".yml" && ext !== ".json") continue;
+    try {
+      const rel = `reviews/${name}`;
+      const raw = readTextArtifact(rec, rel);
+      if (!raw) continue;
+      const doc = ext === ".json" ? JSON.parse(raw) : parseYaml(raw);
+      const findings = doc && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>)["findings"] : [];
+      if (!Array.isArray(findings)) continue;
+      for (const finding of findings) out.push(ReviewFinding.parse(finding));
+    } catch {
+      /* malformed review artifact: omit from UI projection, artifact remains fetchable for diagnostics */
+    }
+  }
+  return out;
+}
+
 function validateApplyRepo(rec: DaemonRunRecord, repoRoot: string): string | null {
   const original = runRepoRoot(rec);
   if (!original) return "run original project is unknown; refusing apply";
+  const originalAbsoluteError = validateAbsoluteRepoRoot(original);
+  if (originalAbsoluteError) return "run original project is not an absolute path; refusing apply";
   try {
     const a = realpathSync(original);
     const b = realpathSync(repoRoot);
@@ -791,7 +839,12 @@ function isPatchArtifact(path: string): boolean {
 }
 
 function isTextArtifact(path: string): boolean {
-  return contentType(path).startsWith("text/plain");
+  const type = contentType(path);
+  return type.startsWith("text/plain") || type.startsWith("application/json");
+}
+
+function validateAbsoluteRepoRoot(repoRoot: string): string | null {
+  return isAbsolute(repoRoot) ? null : "repoRoot must be an absolute path";
 }
 
 const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);

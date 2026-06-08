@@ -1,6 +1,6 @@
 {
   "name": "@claudex/artifact-store",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Files-first canonical artifact store (repo-local .claudex/runs layout).",
   "type": "module",
   "main": "./dist/index.js",

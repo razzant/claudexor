@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `audit`, and `benchmark`. Any harness that declares the capability can be
 assigned the intent.
 
-Current status: **v0.4.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.4.1 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -100,9 +100,13 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`, `POST /runs/:id/input`
-- `GET /harnesses`, `GET|POST /settings`, `GET|POST /secrets`,
-  `DELETE /secrets/:name`
+- `GET /harnesses`, `POST /harnesses/setup`
+- `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
+
+Harness setup is server-owned: the control API returns allowlisted native
+login/doctor commands and official guide URLs. UI surfaces can open Terminal or
+copy returned commands, but they must not invent harness setup commands.
 
 Start it:
 

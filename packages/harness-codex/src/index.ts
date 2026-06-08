@@ -81,6 +81,11 @@ function hasApiKey(): boolean {
   return Boolean(codexApiKey());
 }
 
+function hasScopedCodexAuth(env?: Record<string, string>): boolean {
+  const home = env?.["CODEX_HOME"];
+  return Boolean(home && existsSync(join(home, "auth.json")));
+}
+
 export function createCodexAdapter(): HarnessAdapter {
   return {
     id: "codex",
@@ -92,14 +97,14 @@ export function createCodexAdapter(): HarnessAdapter {
           "codex CLI not found on PATH (set CLAUDEX_CODEX_BIN to override)",
         );
       }
-      const authed = await loggedIn();
       const apiKey = hasApiKey();
+      const authed = await loggedIn();
       return HarnessManifestSchema.parse({
         id: "codex",
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.0",
+        adapter_version: "0.4.1",
         provider_family: "openai",
         capabilities: {
           plan: true,
@@ -130,7 +135,7 @@ export function createCodexAdapter(): HarnessAdapter {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { resume_latest: false, resume_by_id: false },
           output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
-          auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: authed ? "native_session" : apiKey ? "provider_auth_file" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
+          auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
         },
         auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
@@ -149,22 +154,26 @@ export function createCodexAdapter(): HarnessAdapter {
           reasons: ["codex CLI not found (install Codex or set CLAUDEX_CODEX_BIN)"],
         });
       }
-      const authed = await loggedIn();
       const apiKey = hasApiKey();
-      const ok = authed || apiKey;
+      const authed = await loggedIn();
+      const ok = apiKey;
       return ConformanceReportSchema.parse({
         harness_id: "codex",
         status: ok ? "ok" : "degraded",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "no openai key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "isolated Claudex envelopes require an openai key fallback" },
         ],
         enabled_intents: ok
           ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
           : [],
         disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
-        reasons: ok ? [] : ["not authenticated (run `codex login` or store openai API key)"],
+        reasons: ok
+          ? []
+          : authed
+            ? ["native codex login is present, but isolated Claudex runs require a stored openai API key fallback"]
+            : ["not authenticated (run `codex login` for native use or store openai API key fallback for Claudex runs)"],
       });
     },
 
@@ -180,7 +189,18 @@ export function createCodexAdapter(): HarnessAdapter {
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const nativeAuthed = await loggedIn();
-  ensureCodexApiAuth(spec.env, !nativeAuthed);
+  const scopedHomeNeedsAuth = Boolean(spec.env?.["CODEX_HOME"]) && !hasScopedCodexAuth(spec.env);
+  if (scopedHomeNeedsAuth && !codexApiKey()) {
+    yield {
+      type: "error",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      error: "isolated CODEX_HOME requires a stored OpenAI API key fallback; native codex login cannot be reused inside this envelope",
+    };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+    return;
+  }
+  ensureCodexApiAuth(spec.env, !nativeAuthed || scopedHomeNeedsAuth);
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
   args.push(spec.prompt);

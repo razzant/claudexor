@@ -448,6 +448,230 @@
           ],
           "default": null
         },
+        "reviewFindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "BLOCK",
+                  "FIX_FIRST",
+                  "WARN",
+                  "NIT",
+                  "OUT_OF_SCOPE",
+                  "INSUFFICIENT_EVIDENCE",
+                  "NEEDS_HUMAN"
+                ]
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "correctness",
+                  "regression",
+                  "security",
+                  "performance",
+                  "maintainability",
+                  "test_gap",
+                  "spec_gap",
+                  "deploy",
+                  "architecture",
+                  "ux",
+                  "benchmark"
+                ]
+              },
+              "claim": {
+                "type": "string"
+              },
+              "linked_acceptance_criteria": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                },
+                "default": []
+              },
+              "evidence": {
+                "type": "object",
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "lines": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        }
+                      },
+                      "required": [
+                        "path"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  },
+                  "diff_hunks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "command": {
+                          "type": "string"
+                        },
+                        "result_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "command"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  },
+                  "logs": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  }
+                },
+                "additionalProperties": false,
+                "default": {}
+              },
+              "repro": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "expected": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "actual": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  }
+                },
+                "additionalProperties": false
+              },
+              "proposed_fix": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "reviewer": {
+                "type": "object",
+                "properties": {
+                  "harness_id": {
+                    "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                  },
+                  "requested_model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "requested_effort": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "observed_model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "route_proof_status": {
+                    "type": "string",
+                    "enum": [
+                      "verified",
+                      "unverified",
+                      "same_model_fallback"
+                    ],
+                    "default": "unverified"
+                  }
+                },
+                "required": [
+                  "harness_id"
+                ],
+                "additionalProperties": false
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "proposed",
+                  "accepted",
+                  "rebutted",
+                  "fixed",
+                  "accepted_risk",
+                  "duplicate",
+                  "stale",
+                  "out_of_scope",
+                  "insufficient_evidence"
+                ],
+                "default": "proposed"
+              },
+              "revalidation_note": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "severity",
+              "category",
+              "claim",
+              "reviewer"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
         "failure": {
           "anyOf": [
             {

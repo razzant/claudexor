@@ -241,6 +241,7 @@ final class AppModel {
             liveTasks = summaries
                 .filter { !known.contains($0.runId) }
                 .map { Self.liveTask(from: $0) }
+            await hydrateReviewFindings()
         } catch {
             // keep last-known live tasks; connection badge reflects reality elsewhere
         }
@@ -259,6 +260,21 @@ final class AppModel {
             }
         } catch {
             // Keep last-known harness rows.
+        }
+    }
+
+    func prepareHarnessSetup(family: HarnessFamily, action: String) async -> HarnessSetupResponse? {
+        guard let client else {
+            settingsStatus = "Engine offline: reconnect before preparing \(family.label) setup."
+            return nil
+        }
+        do {
+            let response = try await client.setupHarness(HarnessSetupRequest(harness: family.rawValue, action: action))
+            settingsStatus = response.message
+            return response
+        } catch {
+            settingsStatus = "Could not prepare \(family.label) setup: \(error)"
+            return nil
         }
     }
 
@@ -506,6 +522,10 @@ final class AppModel {
             }
             task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/report.md", "final/summary.md"])
             task.diagnosticText = await diagnosticText(client: client, runId: id, detail: detail, error: task.engineError)
+            let persistedFindings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: task.title) }
+            if !persistedFindings.isEmpty {
+                task.findings = persistedFindings
+            }
             if !detail.artifacts.isEmpty, task.plan.isEmpty {
                 task.plan = detail.artifacts
                     .filter { $0.kind == "file" }
@@ -541,6 +561,21 @@ final class AppModel {
             }
         }
         return nil
+    }
+
+    private func hydrateReviewFindings() async {
+        guard let client else { return }
+        let ids = liveTasks.map(\.id)
+        for id in ids {
+            guard let idx = liveTasks.firstIndex(where: { $0.id == id }) else { continue }
+            if !liveTasks[idx].findings.isEmpty { continue }
+            guard let detail = try? await client.runDetail(runId: id) else { continue }
+            let title = liveTasks[idx].title
+            let findings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: title) }
+            if !findings.isEmpty {
+                liveTasks[idx].findings = findings
+            }
+        }
     }
 
     private func diagnosticText(client: GatewayClient, runId: String, detail: RunDetail, error: String?) async -> String {
@@ -653,7 +688,6 @@ final class AppModel {
         }
 
         if type == "end" {
-            if t.status.isActive { t.status = .succeeded }
             return
         }
         if let phase = Self.phase(for: type) { t.activePhase = phase }
@@ -723,21 +757,35 @@ final class AppModel {
         guard let payload else { return nil }
         let sevRaw = (payload["severity"]?.stringValue ?? "minor").lowercased()
         let severity: Severity = sevRaw.contains("block") ? .blocker
-            : sevRaw.contains("major") || sevRaw.contains("high") ? .major
+            : sevRaw.contains("fix_first") || sevRaw.contains("major") || sevRaw.contains("high") ? .major
             : sevRaw.contains("nit") || sevRaw.contains("low") ? .nit : .minor
-        let title = payload["title"]?.stringValue ?? payload["summary"]?.stringValue ?? "Finding"
+        let evidenceFile = payload["file"]?.stringValue ?? payload["path"]?.stringValue ?? Self.firstEvidenceFile(payload)?.path
+        let evidenceLine = payload["line"]?.doubleValue.map(Int.init) ?? Self.firstEvidenceFile(payload)?.line
+        let reviewerRaw = payload["reviewer"]?.stringValue
+            ?? payload["reviewer"]?["harness_id"]?.stringValue
+            ?? payload["harness"]?.stringValue
+        let routeProofRaw = payload["reviewer"]?["route_proof_status"]?.stringValue
+        let title = payload["title"]?.stringValue ?? payload["summary"]?.stringValue ?? payload["claim"]?.stringValue ?? "Finding"
+        let detail = payload["detail"]?.stringValue ?? payload["body"]?.stringValue ?? payload["claim"]?.stringValue ?? ""
         return Finding(
             id: payload["id"]?.stringValue ?? UUID().uuidString,
             severity: severity,
             category: payload["category"]?.stringValue ?? "Review",
             title: title,
-            detail: payload["detail"]?.stringValue ?? payload["body"]?.stringValue ?? "",
-            reviewer: (payload["reviewer"]?.stringValue ?? payload["harness"]?.stringValue).flatMap { HarnessFamily(rawValue: $0) } ?? .raw,
-            routeProof: (payload["route_verified"]?.boolValue ?? false) ? .verified : .unverified,
-            evidenceFile: payload["file"]?.stringValue ?? payload["path"]?.stringValue,
-            evidenceLine: payload["line"]?.doubleValue.map(Int.init),
-            accepted: nil,
+            detail: detail,
+            reviewer: reviewerRaw.flatMap { HarnessFamily(rawValue: $0) } ?? .raw,
+            routeProof: (payload["route_verified"]?.boolValue ?? false) || routeProofRaw == "verified" ? .verified : .unverified,
+            evidenceFile: evidenceFile,
+            evidenceLine: evidenceLine,
+            accepted: (payload["status"]?.stringValue == "accepted") ? true : nil,
             taskTitle: taskTitle
         )
+    }
+
+    private static func firstEvidenceFile(_ payload: JSONValue) -> (path: String?, line: Int?)? {
+        guard case .array(let files) = payload["evidence"]?["files"], let first = files.first else { return nil }
+        let lines = first["lines"]?.stringValue
+        let line = lines.flatMap { raw in raw.split(separator: "-").first.map(String.init).flatMap(Int.init) }
+        return (first["path"]?.stringValue, line)
     }
 }

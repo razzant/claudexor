@@ -48,7 +48,8 @@ async function detectVersion(): Promise<string | null> {
 
 async function authStatusOk(): Promise<boolean> {
   try {
-    const r = await runCapture(BIN, ["auth", "status"], { timeoutMs: 10_000 });
+    const env = Object.fromEntries(CLAUDE_PROVIDER_ENV_DENYLIST.map((name) => [name, null]));
+    const r = await runCapture(BIN, ["auth", "status"], { env, timeoutMs: 10_000 });
     return r.code === 0;
   } catch {
     return false;
@@ -70,14 +71,14 @@ export function createClaudeAdapter(): HarnessAdapter {
           "claude CLI not found on PATH (set CLAUDEX_CLAUDE_BIN to override)",
         );
       }
-      const authed = await authStatusOk();
       const apiKey = anthropicApiKey() !== null;
+      const authed = await authStatusOk();
       return HarnessManifestSchema.parse({
         id: "claude",
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.4.0",
+        adapter_version: "0.4.1",
         provider_family: "anthropic",
         capabilities: {
           plan: true,
@@ -108,7 +109,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { resume_latest: false, resume_by_id: false },
           output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
-          auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: authed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
+          auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
         },
         auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
@@ -127,22 +128,26 @@ export function createClaudeAdapter(): HarnessAdapter {
           reasons: ["claude CLI not found (install Claude Code or set CLAUDEX_CLAUDE_BIN)"],
         });
       }
-      const authed = await authStatusOk();
       const apiKey = anthropicApiKey() !== null;
-      const ok = authed || apiKey;
+      const authed = await authStatusOk();
+      const ok = apiKey;
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok ? "ok" : "degraded",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "no anthropic key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "isolated Claudex envelopes require an anthropic key fallback" },
         ],
         enabled_intents: ok
           ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
           : [],
         disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
-        reasons: ok ? [] : ["not authenticated (run `claude /login` or store anthropic API key)"],
+        reasons: ok
+          ? []
+          : authed
+            ? ["native Claude login is present, but isolated Claudex runs require a stored anthropic API key fallback"]
+            : ["not authenticated (run `claude /login` for native use or store anthropic API key fallback for Claudex runs)"],
       });
     },
 
@@ -156,15 +161,32 @@ export function createClaudeAdapter(): HarnessAdapter {
   };
 }
 
-async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+export function claudeArgsForSpec(spec: HarnessRunSpec): string[] {
   const args = ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
+  if (spec.effort_hint) args.push("--effort", spec.effort_hint);
   if (spec.extra?.["bare"] === true) args.push("--bare");
+  return args;
+}
+
+async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+  const args = claudeArgsForSpec(spec);
   const nativeAuthed = await authStatusOk();
   const key = anthropicApiKey();
+  const scopedConfigNeedsAuth = Boolean(spec.env?.["CLAUDE_CONFIG_DIR"]);
+  if (scopedConfigNeedsAuth && !key) {
+    yield {
+      type: "error",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      error: "isolated CLAUDE_CONFIG_DIR requires a stored Anthropic API key fallback; native Claude login cannot be reused inside this envelope",
+    };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+    return;
+  }
   const env: Record<string, string | null | undefined> = { ...spec.env };
   for (const name of CLAUDE_PROVIDER_ENV_DENYLIST) env[name] = null;
-  if (!nativeAuthed && key) env.ANTHROPIC_API_KEY = key;
+  if ((!nativeAuthed || scopedConfigNeedsAuth) && key) env.ANTHROPIC_API_KEY = key;
 
   let sawError = false;
   let exitCode: number | null = null;

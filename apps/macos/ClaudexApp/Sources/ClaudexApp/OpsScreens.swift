@@ -116,13 +116,18 @@ private struct HarnessRow: View {
                 }
                 if info.health != .ok {
                     FlowLayout(spacing: Theme.Spacing.sm) {
-                        Button { openInstallGuide(info.family) } label: {
-                            Label("Install guide", systemImage: "arrow.down.circle")
+                        Button { Task { await openInstallGuide(info.family) } } label: {
+                            Label("Open Guide", systemImage: "arrow.up.forward.app")
                         }
                         .buttonStyle(.bordered)
                         .help("Open the official \(info.family.label) install/login guide. Claudex does not bundle third-party CLIs.")
-                        Button { copy(nativeLoginCommand(for: info.family)) } label: {
-                            Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
+                        Button { Task { await runSetupCommand(info.family, action: "login") } } label: {
+                            Label("Run Login", systemImage: "terminal")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Open Terminal with the native \(info.family.label) login command, then run Recheck.")
+                        Button { Task { await copySetupCommand(info.family, action: "login") } } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
                         }
                         .buttonStyle(.bordered)
                         .help("Copy the native login command for \(info.family.label).")
@@ -131,7 +136,7 @@ private struct HarnessRow: View {
                         }
                         .buttonStyle(.bordered)
                         .help("Open Settings -> Auth & Billing to store or verify API-key fallback refs.")
-                        Button { copy("claudex ask \"2+2?\" --harness \(info.family.rawValue)") } label: {
+                        Button { NativeSetup.copy("claudex ask \"2+2?\" --harness \(info.family.rawValue)") } label: {
                             Label("Copy Smoke", systemImage: "checkmark.seal")
                         }
                         .buttonStyle(.bordered)
@@ -156,36 +161,25 @@ private struct HarnessRow: View {
         }
     }
 
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+    private func runSetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        if !NativeSetup.runInTerminal(command) { NativeSetup.copy(command) }
     }
 
-    private func nativeLoginCommand(for family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "codex login && claudex doctor --harness codex"
-        case .claude: return "claude /login && claudex doctor --harness claude"
-        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
-        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
-        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
-        case .fake: return "claudex doctor --all"
-        }
+    private func copySetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        NativeSetup.copy(command)
     }
 
-    private func openInstallGuide(_ family: HarnessFamily) {
-        guard let url = URL(string: installGuideURL(family)) else { return }
+    private func openInstallGuide(_ family: HarnessFamily) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: "install_guide"),
+              let raw = response.guideUrl,
+              let url = URL(string: raw) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private func installGuideURL(_ family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "https://developers.openai.com/codex"
-        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
-        case .cursor: return "https://docs.cursor.com/cli"
-        case .opencode: return "https://opencode.ai/docs"
-        case .raw: return "https://platform.openai.com/docs"
-        case .fake: return "https://github.com/joi-lab/claudex"
-        }
     }
 }
 
@@ -419,7 +413,7 @@ struct SettingsScreen: View {
                 }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudex for macOS")
-                    KeyValueRow(key: "Version", value: "v0.4.0 beta")
+                    KeyValueRow(key: "Version", value: "v0.4.1 beta")
                     KeyValueRow(key: "Engine", value: "@claudex/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Table-first queue; apply/check server endpoints only")
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
@@ -481,53 +475,71 @@ struct SettingsScreen: View {
 
     private func nativeAuthRow(_ family: HarnessFamily) -> some View {
         let info = model.harnessInfo(for: family)
-        let command = nativeLoginCommand(family)
-        return HStack(alignment: .center, spacing: Theme.Spacing.sm) {
-            HarnessChip(family: family, selected: true, available: info?.health == .ok)
-            Text(info?.auth ?? "Harness Doctor has not loaded this harness.")
-                .font(.caption).foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer()
-            Button { openInstallGuide(family) } label: {
-                Label("Install guide", systemImage: "arrow.down.circle")
+        let health = info?.health ?? .unavailable
+        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+                HarnessChip(family: family, selected: true, available: info?.health == .ok)
+                Text(info?.auth ?? "Harness Doctor has not loaded this harness.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: Theme.Spacing.md)
+                Label(health.rawValue.capitalized, systemImage: health.glyph)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(health.color)
+                    .padding(.horizontal, Theme.Spacing.sm)
+                    .padding(.vertical, Theme.Spacing.xxs)
+                    .background(health.color.opacity(0.14), in: Capsule())
             }
-            .buttonStyle(.bordered)
-            .help("Open the official \(family.label) install/login guide.")
-            Button {
-                copy(command)
-            } label: {
-                Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
+            FlowLayout(spacing: Theme.Spacing.sm) {
+                Button { Task { await runSetupCommand(family, action: "login") } } label: {
+                    Label("Run Login", systemImage: "terminal")
+                }
+                .buttonStyle(.bordered)
+                .help("Open Terminal with the native \(family.label) login command, then run Recheck.")
+                Button { Task { await copySetupCommand(family, action: "login") } } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .help("Copy the native login command. Claudex does not broker SaaS OAuth; it reuses each CLI's native login.")
+                Button { Task { await openInstallGuide(family) } } label: {
+                    Label("Open Guide", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.bordered)
+                .help("Open the official \(family.label) install/login guide.")
+                Button { Task { await model.refreshHarnesses() } } label: {
+                    Label("Recheck", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .help("Refresh install/auth/capability status after setup.")
             }
-            .buttonStyle(.bordered)
-            .help("Copy the native login command. Claudex does not broker SaaS OAuth; it reuses each CLI's native login.")
         }
     }
 
-    private func nativeLoginCommand(_ family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "codex login && claudex doctor --harness codex"
-        case .claude: return "claude /login && claudex doctor --harness claude"
-        case .cursor: return "cursor-agent login && claudex doctor --harness cursor"
-        case .opencode: return "opencode auth login && claudex doctor --harness opencode"
-        case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
-        case .fake: return "claudex doctor --all"
+    private func runSetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        if NativeSetup.runInTerminal(command) {
+            copiedCommand = "Opened Terminal: \(command)"
+        } else {
+            NativeSetup.copy(command)
+            copiedCommand = "Could not open Terminal; copied: \(command)"
         }
     }
 
-    private func openInstallGuide(_ family: HarnessFamily) {
-        guard let url = URL(string: installGuideURL(family)) else { return }
+    private func copySetupCommand(_ family: HarnessFamily, action: String) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: action),
+              let command = response.command,
+              !command.isEmpty else { return }
+        NativeSetup.copy(command)
+        copiedCommand = command
+    }
+
+    private func openInstallGuide(_ family: HarnessFamily) async {
+        guard let response = await model.prepareHarnessSetup(family: family, action: "install_guide"),
+              let raw = response.guideUrl,
+              let url = URL(string: raw) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private func installGuideURL(_ family: HarnessFamily) -> String {
-        switch family {
-        case .codex: return "https://developers.openai.com/codex"
-        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
-        case .cursor: return "https://docs.cursor.com/cli"
-        case .opencode: return "https://opencode.ai/docs"
-        case .raw: return "https://platform.openai.com/docs"
-        case .fake: return "https://github.com/joi-lab/claudex"
-        }
     }
 
     private func chooseProjectRoot() {

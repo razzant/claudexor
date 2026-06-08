@@ -1,5 +1,5 @@
 import type { HarnessAdapter } from "@claudex/core";
-import type { ProviderFamily, ReviewFinding, RouteProof } from "@claudex/schema";
+import type { EffortHint, ProviderFamily, ReviewFinding, RouteProof } from "@claudex/schema";
 import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudex/schema";
 import { newId } from "@claudex/util";
 import { dedupeFindings, extractJsonBlocks, parseFindings, type ReviewerInfo } from "./findings.js";
@@ -9,6 +9,7 @@ export interface ReviewerSpec {
   adapter: HarnessAdapter;
   providerFamily: ProviderFamily;
   requestedModel?: string | null;
+  requestedEffort?: EffortHint | null;
 }
 
 export interface ReviewCandidateInput {
@@ -23,6 +24,11 @@ export interface ReviewCandidateInput {
 export interface ReviewCandidateResult {
   findings: ReviewFinding[];
   routeProofs: RouteProof[];
+  reviewerRequests: { harness_id: string; provider_family: ProviderFamily; requested_model: string | null; requested_effort: string | null }[];
+  /** True only when >=2 distinct provider families returned parseable JSON. Not a route-proof claim. */
+  crossFamilyHealthy: boolean;
+  healthyProviders: ProviderFamily[];
+  /** True only when >=2 distinct provider families have verified route proofs. */
   crossFamilyVerified: boolean;
   distinctProviders: ProviderFamily[];
 }
@@ -48,8 +54,16 @@ function reviewPrompt(label: string, evidenceDir: string, diff: string): string 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
   const all: ReviewFinding[] = [];
   const routeProofs: RouteProof[] = [];
+  const reviewerRequests: ReviewCandidateResult["reviewerRequests"] = [];
+  const healthyFamilies = new Set<ProviderFamily>();
 
   for (const reviewer of input.reviewers) {
+    reviewerRequests.push({
+      harness_id: reviewer.adapter.id,
+      provider_family: reviewer.providerFamily,
+      requested_model: reviewer.requestedModel ?? null,
+      requested_effort: reviewer.requestedEffort ?? null,
+    });
     const spec = HarnessRunSpec.parse({
       session_id: newId("rev"),
       intent: "review",
@@ -57,6 +71,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       cwd: input.cwd,
       access: "readonly",
       model_hint: reviewer.requestedModel ?? null,
+      effort_hint: reviewer.requestedEffort ?? null,
     });
 
     let text = "";
@@ -89,6 +104,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     const info: ReviewerInfo = {
       harness_id: reviewer.adapter.id,
       requested_model: reviewer.requestedModel ?? null,
+      requested_effort: reviewer.requestedEffort ?? null,
       observed_model: observedModel ?? null,
       route_proof_status: proof.status,
     };
@@ -96,24 +112,40 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       all.push(insufficientEvidenceFinding(info, `Reviewer failed: ${reviewerError}`));
       continue;
     }
-    if (text.trim() === "" || extractJsonBlocks(text).length === 0) {
+    const jsonBlocks = extractJsonBlocks(text);
+    if (text.trim() === "" || jsonBlocks.length === 0) {
       all.push(insufficientEvidenceFinding(info, "Reviewer produced no parseable JSON findings."));
       continue;
     }
+    if (reviewer.providerFamily !== "unknown") healthyFamilies.add(reviewer.providerFamily);
     all.push(...parseFindings(text, info));
   }
 
   const classifiedProofs = classifyDiversity(routeProofs);
+  const proofStatusByHarness = new Map(classifiedProofs.map((p) => [p.requested.harness_id, p.status]));
+  const findings = all.map((f) => {
+    const status = proofStatusByHarness.get(f.reviewer.harness_id);
+    if (!status || f.reviewer.route_proof_status === status) return f;
+    return ReviewFindingSchema.parse({
+      ...f,
+      reviewer: { ...f.reviewer, route_proof_status: status },
+    });
+  });
+  const healthyProviders = [...healthyFamilies];
   const verifiedFamilies = [
     ...new Set(
       classifiedProofs
-        .filter((p) => p.status === "verified" && p.requested.provider_family !== "unknown")
-        .map((p) => p.requested.provider_family),
+        .filter((p) => p.status === "verified")
+        .map((p) => p.requested.provider_family)
+        .filter((f) => f !== "unknown"),
     ),
   ];
   return {
-    findings: dedupeFindings(all),
+    findings: dedupeFindings(findings),
     routeProofs: classifiedProofs,
+    reviewerRequests,
+    crossFamilyHealthy: healthyProviders.length >= 2,
+    healthyProviders,
     crossFamilyVerified: verifiedFamilies.length >= 2,
     distinctProviders: verifiedFamilies,
   };
@@ -130,6 +162,7 @@ function insufficientEvidenceFinding(reviewer: ReviewerInfo, claim: string): Rev
     reviewer: {
       harness_id: reviewer.harness_id,
       requested_model: reviewer.requested_model ?? null,
+      requested_effort: reviewer.requested_effort ?? null,
       observed_model: reviewer.observed_model ?? null,
       route_proof_status: reviewer.route_proof_status ?? "unverified",
     },

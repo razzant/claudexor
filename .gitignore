@@ -10,6 +10,9 @@ coverage/
 *.tsbuildinfo
 
 # Claudex repo-local runtime artifacts (canonical artifacts are committed selectively per-project)
+.claudex/*
+!.claudex/
+!.claudex/config.yaml
 .claudex/runs/
 .claudex/workspaces/
 .claudex/cache/

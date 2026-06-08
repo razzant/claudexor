@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import type { ResolvedConfig } from "@claudex/schema";
@@ -8,10 +7,20 @@ import {
   ResolvedConfig as ResolvedConfigSchema,
   TrustConfig,
 } from "@claudex/schema";
-import { ensureDir, pathExists, readTextSafe, sha256, writeText } from "@claudex/util";
+import { ensureDir, pathExists, readTextSafe, sha256, userConfigDir, writeText } from "@claudex/util";
 
 export function globalConfigDir(): string {
-  return join(homedir(), ".claudex");
+  return userConfigDir();
+}
+
+export class ConfigParseError extends Error {
+  constructor(
+    public readonly path: string,
+    cause: unknown,
+  ) {
+    super(`invalid Claudex YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "ConfigParseError";
+  }
 }
 
 /** Short stable hash of a repo root path, used to key user-local trust files. */
@@ -24,8 +33,8 @@ function readYaml(path: string): unknown | null {
   if (text === null) return null;
   try {
     return yamlParse(text);
-  } catch {
-    return null;
+  } catch (err) {
+    throw new ConfigParseError(path, err);
   }
 }
 

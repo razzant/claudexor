@@ -11,43 +11,12 @@ struct ReviewScreen: View {
             if findings.isEmpty {
                 EmptyStateView(title: "Inbox zero", message: "No open findings across your projects. Cross-family reviewers post blockers and suggestions here.", systemImage: "checkmark.seal")
             } else {
-                Table(findings) {
-                    TableColumn("Severity") { finding in
-                        Label(finding.severity.label, systemImage: finding.severity.glyph)
-                            .foregroundStyle(finding.severity.color)
-                    }
-                    TableColumn("Finding") { finding in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(finding.title).font(.callout.weight(.medium)).lineLimit(1)
-                            Text(finding.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                    }
-                    TableColumn("Task") { finding in
-                        Text(finding.taskTitle.isEmpty ? "—" : finding.taskTitle).lineLimit(1)
-                    }
-                    TableColumn("Reviewer") { finding in
-                        HStack(spacing: Theme.Spacing.xs) {
-                            HarnessDot(family: finding.reviewer, size: 7)
-                            Text(finding.reviewer.label)
-                        }
-                    }
-                    TableColumn("Evidence") { finding in
-                        if let file = finding.evidenceFile {
-                            Text("\(file)\(finding.evidenceLine.map { ":\($0)" } ?? "")")
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(Theme.link)
-                                .lineLimit(1)
-                        } else {
-                            Text("No evidence").foregroundStyle(.secondary)
-                        }
-                    }
-                    TableColumn("State") { finding in
-                        Text(finding.accepted == true ? "Accepted" : finding.accepted == false ? "Rebutted" : "Proposed")
-                            .foregroundStyle(.secondary)
-                    }
+                Panel(padding: 0) {
+                    ReviewFindingsTable(findings: findings)
+                        .frame(minWidth: ReviewTableMetrics.minWidth, minHeight: 420)
                 }
-                .tableStyle(.inset(alternatesRowBackgrounds: true))
                 .padding(Theme.Spacing.xxl)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
     }
@@ -78,6 +47,92 @@ struct ReviewScreen: View {
                 || $0.detail.localizedCaseInsensitiveContains(q)
                 || $0.taskTitle.localizedCaseInsensitiveContains(q)
         }
+    }
+}
+
+private enum ReviewTableMetrics {
+    static let minWidth: CGFloat = 980
+}
+
+private struct ReviewFindingsTable: View {
+    let findings: [Finding]
+
+    var body: some View {
+        Table(findings) {
+            TableColumn("Severity") { finding in
+                Label(finding.severity.label, systemImage: finding.severity.glyph)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(finding.severity.color)
+            }
+            TableColumn("Finding") { finding in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(finding.title)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                    Text(finding.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            TableColumn("Task") { finding in
+                Text(finding.taskTitle.isEmpty ? "No task" : finding.taskTitle)
+                    .font(.callout)
+                    .foregroundStyle(finding.taskTitle.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+            }
+            TableColumn("Reviewer") { finding in
+                HStack(spacing: Theme.Spacing.xs) {
+                    HarnessDot(family: finding.reviewer, size: 7)
+                    Text(finding.reviewer.label).lineLimit(1)
+                }
+                .font(.callout)
+            }
+            TableColumn("Evidence") { finding in
+                ReviewEvidenceCell(finding: finding)
+            }
+            TableColumn("State") { finding in
+                ReviewStateBadge(finding: finding)
+            }
+        }
+        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .scrollContentBackground(.hidden)
+        .background(Theme.surfaceRaised)
+    }
+}
+
+private struct ReviewEvidenceCell: View {
+    let finding: Finding
+
+    @ViewBuilder
+    var body: some View {
+        if let file = finding.evidenceFile {
+            Label("\(file)\(finding.evidenceLine.map { ":\($0)" } ?? "")", systemImage: "doc.text.magnifyingglass")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Theme.link)
+                .lineLimit(1)
+        } else {
+            Label("No evidence", systemImage: "exclamationmark.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct ReviewStateBadge: View {
+    let finding: Finding
+
+    var body: some View {
+        let label = finding.accepted == true ? "Accepted" : finding.accepted == false ? "Rebutted" : "Proposed"
+        let tint: Color = finding.accepted == true ? Theme.status(.succeeded) : finding.accepted == false ? Theme.status(.failed) : .secondary
+        Text(label)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, Theme.Spacing.xxs)
+            .background(tint.opacity(0.13), in: Capsule())
+            .lineLimit(1)
     }
 }
 

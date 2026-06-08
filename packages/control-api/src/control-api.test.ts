@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EventBus } from "./event-bus.js";
 import { type ControlRunner, ControlApiServer } from "./server.js";
-import { DaemonControlApiServer, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
+import { DaemonControlApiServer, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256 } from "@claudex/util";
+import { noProjectRepoRoot, sha256 } from "@claudex/util";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -258,12 +258,32 @@ describe("DaemonControlApiServer", () => {
     mkdirSync(join(runDir, "final"), { recursive: true });
     mkdirSync(join(runDir, "arbitration"), { recursive: true });
     mkdirSync(join(runDir, "context"), { recursive: true });
+    mkdirSync(join(runDir, "reviews"), { recursive: true });
     writeFileSync(join(runDir, "final", "summary.md"), "# Summary\n\nDone.\n");
     const patch = "diff --git a/x b/x\n";
     writeFileSync(join(runDir, "final", "patch.diff"), patch);
     writeFileSync(join(runDir, "final", "work_product.yaml"), `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`);
     writeFileSync(join(runDir, "context", "task.yaml"), `task_id: task-d1\nrepo:\n  root: ${JSON.stringify(runDir)}\n  base_ref: HEAD\n`);
     writeFileSync(join(runDir, "arbitration", "decision.yaml"), "winner: a01\nstatus: success\nconfidence: 0.9\n");
+    writeFileSync(
+      join(runDir, "reviews", "a01.yaml"),
+      [
+        "findings:",
+        "  - id: f-test",
+        "    severity: WARN",
+        "    category: correctness",
+        "    claim: persisted finding",
+        "    evidence:",
+        "      files:",
+        "        - path: src/app.ts",
+        "          lines: '12'",
+        "    reviewer:",
+        "      harness_id: claude",
+        "      requested_effort: max",
+        "      route_proof_status: verified",
+        "",
+      ].join("\n"),
+    );
     writeFileSync(
       join(runDir, "events.jsonl"),
       [
@@ -304,8 +324,9 @@ describe("DaemonControlApiServer", () => {
     daemon: DaemonFacadeClient,
     fn: (base: string) => Promise<void>,
     runStartTimeoutMs?: number,
+    services?: DaemonControlApiOptions["services"],
   ): Promise<void> {
-    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5, runStartTimeoutMs });
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5, runStartTimeoutMs, services });
     const { host, port } = await server.start();
     try {
       await fn(`http://${host}:${port}`);
@@ -331,7 +352,22 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: "2+2?", mode: "ask", harnesses: ["codex"] }),
       });
       expect(start.status).toBe(200);
-      expect(enqueued).toMatchObject({ repoRoot: join(homedir(), ".cache", "claudex", "no-project"), contextMode: "off" });
+      expect(enqueued).toMatchObject({ mode: "ask", repoRoot: noProjectRepoRoot(), contextMode: "off" });
+    });
+  });
+
+  it("summarizes no-project Ask runs without exposing the synthetic repo root as a project", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = { prompt: "2+2?", mode: "ask", repoRoot: noProjectRepoRoot(), contextMode: "off" };
+    await withDaemonServer(daemon, async (base) => {
+      const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        runs: { project: { repoRoot: string | null; projectName: string | null; contextMode: string } }[];
+      };
+      expect(list.runs[0]?.project).toEqual({ repoRoot: null, projectName: null, contextMode: "off" });
+      const detail = (await (await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        summary: { project: { repoRoot: string | null; projectName: string | null; contextMode: string } };
+      };
+      expect(detail.summary.project).toEqual({ repoRoot: null, projectName: null, contextMode: "off" });
     });
   });
 
@@ -361,6 +397,187 @@ describe("DaemonControlApiServer", () => {
       expect(start.status).toBe(400);
       expect(await start.text()).toContain("repoRoot is required for mode 'agent'");
     });
+  });
+
+  it("rejects relative repoRoot values at run-start and apply boundaries", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "edit this", mode: "agent", repoRoot: ".", harnesses: ["codex"] }),
+      });
+      expect(start.status).toBe(400);
+      expect(await start.text()).toContain("repoRoot must be an absolute path");
+
+      const check = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ repoRoot: "." }),
+      });
+      expect(check.status).toBe(400);
+      expect(await check.text()).toContain("repoRoot must be an absolute path");
+    });
+  });
+
+  it("validates reviewer effort overrides at the HTTP boundary", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueued: unknown;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const valid = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          reviewerEfforts: { anthropic: "max" },
+        }),
+      });
+      expect(valid.status).toBe(200);
+      expect(enqueued).toMatchObject({ reviewerEfforts: { anthropic: "max" } });
+
+      enqueued = undefined;
+      const ignoredFamily = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          reviewerEfforts: { openai: "high" },
+        }),
+      });
+      expect(ignoredFamily.status).toBe(400);
+      expect(enqueued).toBeUndefined();
+
+      const invalidValue = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          reviewerEfforts: { anthropic: "banana" },
+        }),
+      });
+      expect(invalidValue.status).toBe(400);
+      expect(enqueued).toBeUndefined();
+    });
+  });
+
+  it("validates and forwards harness setup through a typed control-api service", async () => {
+    const { daemon } = fakeDaemon();
+    const seen: unknown[] = [];
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const setup = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "claude", action: "login" }),
+        });
+        expect(setup.status).toBe(200);
+        const body = (await setup.json()) as { harness: string; action: string; command: string; guideUrl: string; status: string };
+        expect(body).toMatchObject({
+          harness: "claude",
+          action: "login",
+          status: "prepared",
+          command: "claude /login && claudex doctor --harness claude",
+        });
+        expect(body.guideUrl).toBe("https://docs.anthropic.com/en/docs/claude-code");
+        expect(seen).toEqual([{ harness: "claude", action: "login" }]);
+
+        const invalid = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "unknown", action: "login" }),
+        });
+        expect(invalid.status).toBe(400);
+
+        const defaultAction = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "codex" }),
+        });
+        expect(defaultAction.status).toBe(200);
+        expect(seen.at(-1)).toEqual({ harness: "codex", action: "login" });
+
+        const secretBody = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "codex", action: "login", token: "sk-" + "d".repeat(24) }),
+        });
+        expect(secretBody.status).toBe(400);
+      },
+      undefined,
+      {
+        setupHarness: async (input) => {
+          const p = input as { harness: string; action: string };
+          seen.push({ harness: p.harness, action: p.action });
+          return {
+            harness: p.harness,
+            action: p.action,
+            status: "prepared",
+            command: "claude /login && claudex doctor --harness claude",
+            guideUrl: "https://docs.anthropic.com/en/docs/claude-code",
+            logPath: "/tmp/claudex-setup.log",
+            message: "prepared",
+          };
+        },
+      },
+    );
+  });
+
+  it("redacts secret-like strings from JSON artifacts before serving them", async () => {
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(join(record.runDir as string, "final", "metadata.json"), JSON.stringify({ token: "sk-" + "a".repeat(24) }));
+    await withDaemonServer(daemon, async (base) => {
+      const res = await fetch(`${base}/runs/run-d1/artifacts/final/metadata.json`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const text = await res.text();
+      expect(text).toContain("[redacted]");
+      expect(text).not.toContain("sk-" + "a".repeat(24));
+    });
+  });
+
+  it("returns 501 when harness setup service is not configured", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const setup = await fetch(`${base}/harnesses/setup`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ harness: "codex", action: "doctor" }),
+      });
+      expect(setup.status).toBe(501);
+    });
+  });
+
+  it("rejects malformed harness setup service responses", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const setup = await fetch(`${base}/harnesses/setup`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ harness: "codex", action: "doctor" }),
+        });
+        expect(setup.status).toBe(400);
+      },
+      undefined,
+      { setupHarness: async () => ({ harness: "codex", action: "doctor", status: "bogus", message: "bad" }) },
+    );
   });
 
   it("rejects secret-like string values in run params before enqueue", async () => {
@@ -494,6 +711,7 @@ describe("DaemonControlApiServer", () => {
         finalSummary?: string;
         decision?: { winner?: string };
         workProduct?: { id?: string };
+        reviewFindings: { id: string; claim: string; reviewer: { requested_effort?: string } }[];
         artifacts: { path: string }[];
       };
       expect(body.summary.mode).toBe("agent");
@@ -501,6 +719,8 @@ describe("DaemonControlApiServer", () => {
       expect(body.finalSummary).toContain("Done");
       expect(body.decision?.winner).toBe("a01");
       expect(body.workProduct?.id).toBe("wp-test");
+      expect(body.reviewFindings[0]?.claim).toBe("persisted finding");
+      expect(body.reviewFindings[0]?.reviewer.requested_effort).toBe("max");
       expect(body.artifacts.some((a) => a.path === "final/summary.md")).toBe(true);
 
       const artifacts = await fetch(`${base}/runs/run-d1/artifacts`, { headers: { authorization: `Bearer ${token}` } });

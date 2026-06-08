@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userConfigDir } from "@claudex/util";
 
 export function daemonDir(): string {
-  return join(process.env.CLAUDEX_CONFIG_DIR || join(homedir(), ".claudex"), "daemon");
+  return join(userConfigDir(), "daemon");
 }
 
 export function defaultSocketPath(): string {

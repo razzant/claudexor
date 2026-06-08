@@ -66,7 +66,7 @@ export class McpServer {
         this.reply(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.4.0" },
+          serverInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.4.1" },
         });
         return;
       case "ping":

@@ -7,6 +7,7 @@ import { runCapture } from "@claudex/core";
 import { createFakeHarness } from "@claudex/harness-fake";
 import type { ProviderFamily } from "@claudex/schema";
 import { ConformanceReport, HarnessManifest } from "@claudex/schema";
+import { noProjectRepoRoot } from "@claudex/util";
 import type { ReviewerSpec } from "@claudex/review";
 import { Orchestrator } from "./orchestrator.js";
 
@@ -183,6 +184,25 @@ describe("Orchestrator", () => {
     expect(taskYaml).toContain("portfolio: balanced");
   });
 
+  it("persists frozen spec provenance in the task contract", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      specId: "spec-123",
+      specHash: "sha256:abc",
+      specPath: "/tmp/spec.json",
+    });
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("id: spec-123");
+    expect(taskYaml).toContain("hash: sha256:abc");
+    expect(taskYaml).toContain("path: /tmp/spec.json");
+  });
+
   it("rejects a primary harness outside the selected eligible pool", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
@@ -236,6 +256,41 @@ describe("Orchestrator", () => {
     expect(res.summary).toMatch(/perform 'explain'/);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("Status: failed");
+  });
+
+  it("stores no-project Ask artifacts in the user config store, not the synthetic repo root", async () => {
+    const prev = process.env.CLAUDEX_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), "claudex-orch-config-"));
+    process.env.CLAUDEX_CONFIG_DIR = configDir;
+    try {
+      const noProjectRoot = noProjectRepoRoot();
+      mkdirSync(noProjectRoot, { recursive: true });
+      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      const res = await orch.run({
+        repoRoot: noProjectRoot,
+        prompt: "2+2?",
+        mode: "ask",
+        contextMode: "off",
+        harnesses: ["fake-success"],
+      });
+      expect(res.status).toBe("success");
+      expect(res.runDir.startsWith(join(configDir, "runs"))).toBe(true);
+      expect(existsSync(join(res.runDir, "final", "answer.md"))).toBe(true);
+      expect(existsSync(join(noProjectRoot, ".claudex"))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEX_CONFIG_DIR;
+      else process.env.CLAUDEX_CONFIG_DIR = prev;
+    }
+  });
+
+  it("rejects contextMode off outside no-project Ask", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(orch.run({ repoRoot: repo, prompt: "2+2?", mode: "ask", contextMode: "off", harnesses: ["fake-success"] })).rejects.toThrow(
+      "contextMode 'off' is only supported for Ask without a repoRoot",
+    );
   });
 
   it("runs explore as a bounded read-only swarm with synthesis and per-explorer artifacts", async () => {
@@ -307,6 +362,81 @@ describe("Orchestrator", () => {
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("o-cheap-model");
     expect(reviewYaml).toContain("a-cheap-model");
+  });
+
+  it("applies per-family reviewer effort overrides", async () => {
+    const repo = await initRepo();
+    const seen: { id: string; model: string | null; effort: string | null }[] = [];
+    function reviewer(id: string, family: ProviderFamily): HarnessAdapter {
+      return {
+        id,
+        async discover() {
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: family,
+            capabilities: { review: true, structured_events: true },
+            access_profiles_supported: ["readonly"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review"] });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          seen.push({ id, model: spec.model_hint, effort: spec.effort_hint });
+          yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-observed` };
+          yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        },
+      };
+    }
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+      ["rev-openai", reviewer("rev-openai", "openai")],
+      ["rev-anthropic", reviewer("rev-anthropic", "anthropic")],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewerModels: { openai: "o-review", anthropic: "opus" },
+      reviewerEfforts: { anthropic: "max" },
+    });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1 });
+    expect(seen).toEqual(
+      expect.arrayContaining([
+        { id: "rev-openai", model: "o-review", effort: null },
+        { id: "rev-anthropic", model: "opus", effort: "max" },
+      ]),
+    );
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(reviewYaml).toContain("reviewer_requests:");
+    expect(reviewYaml).toContain("requested_effort: max");
+  });
+
+  it("persists convergence review artifacts with reviewer effort metadata", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const anthropic = cleanReviewer("rev-anthropic", "anthropic");
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [
+        cleanReviewer("rev-openai", "openai"),
+        { ...anthropic, requestedModel: "opus", requestedEffort: "max" },
+      ],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "max_attempts",
+      harnesses: ["fake-success"],
+      attempts: 1,
+      tests: ["true"],
+    });
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(reviewYaml).toContain("reviewer_requests:");
+    expect(reviewYaml).toContain("requested_effort: max");
+    expect(reviewYaml).toContain("findings:");
+    expect(reviewYaml).toContain("route_proofs:");
   });
 
   it("auto-resolves available real harnesses when --harness is omitted", async () => {

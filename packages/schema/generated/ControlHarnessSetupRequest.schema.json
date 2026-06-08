@@ -1,0 +1,33 @@
+{
+  "$ref": "#/definitions/ControlHarnessSetupRequest",
+  "definitions": {
+    "ControlHarnessSetupRequest": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "enum": [
+            "codex",
+            "claude",
+            "cursor",
+            "opencode",
+            "raw"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "install_guide",
+            "login",
+            "doctor"
+          ],
+          "default": "login"
+        }
+      },
+      "required": [
+        "harness"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
