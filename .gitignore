@@ -21,6 +21,13 @@ coverage/
 
 # Local operator guidance (not public repo docs)
 AGENTS.md
+CLAUDE.md
+
+# Local agent/editor runtime state
+.codex/
+.claude/
+.cursor/
+.opencode/
 
 # Local toolchain
 .toolchain/
@@ -52,6 +59,12 @@ __pycache__/
 # Logs / misc
 *.log
 *.tgz
+*.db
+*.sqlite
+*.sqlite3
+*.transcript
+*.transcript.json
+*.transcript.jsonl
 
 # Local benchmark smoke outputs
 benchmarks/swe-bench/logs/

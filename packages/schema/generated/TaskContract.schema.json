@@ -53,6 +53,7 @@
               "type": "string",
               "enum": [
                 "ask",
+                "explore",
                 "agent",
                 "best_of_n",
                 "max_attempts",

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-# Common setup for Claudex x SWE-bench operator scripts. Loads API keys from
-# ~/file1.txt WITHOUT printing values, sets PATH, and exposes a `claudex` helper that
+# Common setup for Claudex x SWE-bench operator scripts. Optionally loads API keys from
+# CLAUDEX_KEYS_FILE WITHOUT printing values, sets PATH, and exposes a `claudex` helper that
 # runs the locally built CLI. The official SWE-bench evaluator and HuggingFace dataset
 # loader are invoked via `uv run --with ...` so no global installs are required.
 
@@ -27,7 +27,8 @@ claudex() {
 }
 
 load_keys() {
-  local f="${CLAUDEX_KEYS_FILE:-$HOME/file1.txt}"
+  local f="${CLAUDEX_KEYS_FILE:-}"
+  [ -n "$f" ] || { log "CLAUDEX_KEYS_FILE not set (relying on already-exported env)"; return 0; }
   [ -f "$f" ] || { log "keys file not found: $f (relying on already-exported env)"; return 0; }
   eval "$(python3 - "$f" <<'PY'
 import os, shlex, sys

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensureCodexApiAuth } from "./index.js";
 
-const KEY_VARS = ["CLAUDEX_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY"] as const;
+const KEY_VARS = ["CLAUDEX_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY", "CLAUDEX_DISABLE_STORED_SECRETS"] as const;
 
 describe("ensureCodexApiAuth", () => {
   let home: string;
@@ -14,6 +14,7 @@ describe("ensureCodexApiAuth", () => {
     home = mkdtempSync(join(tmpdir(), "codex-home-"));
     saved = Object.fromEntries(KEY_VARS.map((k) => [k, process.env[k]]));
     for (const k of KEY_VARS) delete process.env[k];
+    process.env.CLAUDEX_DISABLE_STORED_SECRETS = "1";
   });
 
   afterEach(() => {

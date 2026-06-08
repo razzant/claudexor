@@ -32,7 +32,8 @@ Account / partner gated (NOT reproducible here, documented for completeness):
 - Docker running (Colima is fine; the Terminal-Bench `scripts/colima-setup.sh` works here too).
 - `uv` (the official `swebench` harness and the `datasets` loader run via `uv run --with ...`; no global installs).
 - A built Claudex CLI: `(cd <repo> && pnpm build)`.
-- Keys in `~/file1.txt` or exported: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (cross-family reviewer), `GITHUB_TOKEN`
+- Keys exported in the environment, or loaded from an explicit `CLAUDEX_KEYS_FILE`:
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (cross-family reviewer), `GITHUB_TOKEN`
   (cloning some instance repos).
 
 ## Quickstart

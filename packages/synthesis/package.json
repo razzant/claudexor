@@ -1,6 +1,6 @@
 {
   "name": "@claudex/synthesis",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Synthesis decision + plan: when to merge candidates into a new (re-checked) candidate.",
   "type": "module",
   "main": "./dist/index.js",

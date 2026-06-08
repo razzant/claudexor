@@ -2,7 +2,7 @@ import { type Server, type Socket, createServer } from "node:net";
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudex/util";
+import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudex/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -28,6 +28,7 @@ export interface DaemonOptions {
 export type JobState =
   | "queued"
   | "running"
+  | "blocked"
   | "succeeded"
   | "failed"
   | "cancelled"
@@ -148,7 +149,7 @@ export class DaemonServer {
           jobs: this.records.size,
         };
       case "claudex.enqueue": {
-        assertNoInlineSecrets(params);
+        assertNoInlineSecretValues(params, "$", "daemon job params");
         const id = newId("job");
         this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
         this.queue.push(id);
@@ -229,7 +230,7 @@ export class DaemonServer {
     const saved = readJsonSafe<JobRecord[]>(this.opts.persistPath);
     if (!saved) return;
     for (const rec of saved) {
-      if (rec.state === "running" || rec.state === "queued") rec.state = "interrupted";
+      if (rec.state === "running" || rec.state === "queued" || rec.state === "blocked") rec.state = "interrupted";
       this.records.set(rec.id, rec);
     }
   }
@@ -314,20 +315,6 @@ function resultSummary(result: unknown): string | null {
   if (!result || typeof result !== "object" || Array.isArray(result)) return null;
   const summary = (result as Record<string, unknown>)["summary"];
   return typeof summary === "string" ? redactSecrets(summary) : null;
-}
-
-function assertNoInlineSecrets(value: unknown, path = "$"): void {
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoInlineSecrets(v, `${path}[${i}]`));
-    return;
-  }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
-      throw new Error(`inline secrets/env are not accepted in daemon job params (${path}.${key})`);
-    }
-    assertNoInlineSecrets(child, `${path}.${key}`);
-  }
 }
 
 function publicJobRecord(rec: JobRecord): JobRecord {

@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 
 export interface SpawnOptions {
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | null | undefined>;
   input?: string;
   timeoutMs?: number;
 }
@@ -23,9 +23,14 @@ export async function* spawnProcess(
   args: string[],
   opts: SpawnOptions = {},
 ): AsyncGenerator<ProcEvent> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [key, value] of Object.entries(opts.env ?? {})) {
+    if (value === undefined || value === null) delete env[key];
+    else env[key] = value;
+  }
   const child = spawn(cmd, args, {
     cwd: opts.cwd,
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
 

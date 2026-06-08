@@ -1,6 +1,6 @@
 {
   "name": "@claudex/benchmark",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "BenchmarkRunner + SWE-bench Verified (predictions/report) with ablations; scaffolds for Terminal-Bench/OSWorld/ProgramBench.",
   "type": "module",
   "main": "./dist/index.js",

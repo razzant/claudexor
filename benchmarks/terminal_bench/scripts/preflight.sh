@@ -25,7 +25,7 @@ docker buildx version >/dev/null 2>&1 && note "buildx: ok" || { note "buildx: MI
 log "=== preflight: keys (presence only) ==="
 have_key ANTHROPIC_API_KEY
 have_key OPENAI_API_KEY
-have_key GITHUB_TOKEN
+have_key GITHUB_TOKEN  # optional: only needed when your configured repo/task fetch requires it
 
 log "=== preflight: claudex agent import (Harbor python) ==="
 HPY="$(harbor_python || true)"

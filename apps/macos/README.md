@@ -102,13 +102,17 @@ Live bridge (real, partial):
 - Connects to the loopback control-api: health, run list/detail/artifacts, harness doctor,
   settings, secrets metadata,
   **start** (with composer policy — eligible pool, Primary, portfolio, model hint, budget cap,
-  access profile, gate commands — forwarded through `daemon.enqueue` to the orchestrator),
+  access profile, gate commands, Current Project, Project Context — forwarded through
+  `daemon.enqueue` to the orchestrator),
   **cancel**, secret setting for onboarding/settings, and the **SSE stream** (parsed from the daemon's canonical
   `events.jsonl` types: `run.*`, `harness.*`, `gate.*`, `review.*`, `budget.*` → live
-  status, phase, activity, spend, and findings).
+  status, phase, activity, spend, and findings). Ask can run with no Current Project,
+  using `~/.cache/claudex/no-project` as a synthetic cwd and storing artifacts in
+  `~/.claudex/runs`; project-aware modes are gated until Current Project is selected.
 - **Sample data is OFF by default** behind Settings → "Show sample data". Surfaces the
   engine doesn't expose yet (budget live ledger, benchmarks, the GUI spec interview)
   show honest empty states when sample data is off; they are previews, not live.
 
-`scripts/build-app.sh` produces an unsigned `.app` + ZIP by default; `MAKE_DMG=1`
-also creates an unsigned or signed DMG depending on signing credentials.
+`scripts/build-app.sh` produces an unsigned `.app` + ZIP by default for the current
+version (`v0.4.0` unless `CLAUDEX_VERSION` overrides it); `MAKE_DMG=1` also creates
+an unsigned or signed DMG depending on signing credentials.

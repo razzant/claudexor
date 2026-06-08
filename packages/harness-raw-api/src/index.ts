@@ -2,6 +2,7 @@ import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec, 
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
 import { HarnessUnavailableError } from "@claudex/core";
+import { resolveSecret } from "@claudex/secrets";
 import { nowIso } from "@claudex/util";
 import { parseChatCompletion } from "./parse.js";
 
@@ -26,7 +27,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const defaultModel = config.defaultModel ?? process.env.CLAUDEX_RAWAPI_MODEL ?? "gpt-4o-mini";
 
   function apiKey(): string | undefined {
-    return process.env[keyEnv];
+    return process.env[keyEnv] ?? resolveSecret("raw") ?? (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined);
   }
 
   return {
@@ -41,7 +42,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
         version: defaultModel,
-        adapter_version: "0.3.0",
+        adapter_version: "0.4.0",
         provider_family: providerFamily,
         capabilities: {
           plan: true,
@@ -65,8 +66,15 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           mcp: false,
           plugins: false,
           worktree_native: false,
-          quota_signal: "exact",
+          quota_signal: "unknown",
           usage_signal: "exact",
+        },
+        capability_profile: {
+          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "json", event_schema: "normalized" }],
+          session: { resume_latest: false, resume_by_id: false },
+          output: { final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "unknown" },
+          auth: { supported_sources: ["api_key_env"], preferred_source: "api_key_env", probe_command: [], env_vars: [keyEnv] },
+          access_control: { readonly: true, workspace_write: false, full: false, mechanism: "remote chat-completions only" },
         },
         auth_modes: ["api_key"],
         access_profiles_supported: ["readonly"],

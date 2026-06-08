@@ -24,8 +24,8 @@ export interface RunPaths {
 export class ArtifactStore {
   readonly claudexDir: string;
 
-  constructor(public readonly repoRoot: string) {
-    this.claudexDir = join(repoRoot, ".claudex");
+  constructor(public readonly repoRoot: string, options: { claudexDir?: string } = {}) {
+    this.claudexDir = options.claudexDir ?? join(repoRoot, ".claudex");
   }
 
   runsDir(): string {

@@ -3,7 +3,7 @@ import { EventBus } from "./event-bus.js";
 import { type ControlRunner, ControlApiServer } from "./server.js";
 import { DaemonControlApiServer, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "@claudex/util";
 
@@ -250,6 +250,7 @@ describe("ControlApiServer", () => {
 
 describe("DaemonControlApiServer", () => {
   const token = "daemon-token-123";
+  const startAgentBody = () => JSON.stringify({ prompt: "hello", mode: "agent", repoRoot: tmpdir() });
 
   function fakeDaemon(): { daemon: DaemonFacadeClient; record: DaemonRunRecord; cancelled: string[] } {
     const runDir = mkdtempSync(join(tmpdir(), "claudex-control-run-"));
@@ -313,10 +314,73 @@ describe("DaemonControlApiServer", () => {
     }
   }
 
+  it("allows Ask without a project by normalizing it to user-level context-off storage", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueued: unknown;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "2+2?", mode: "ask", harnesses: ["codex"] }),
+      });
+      expect(start.status).toBe(200);
+      expect(enqueued).toMatchObject({ repoRoot: join(homedir(), ".cache", "claudex", "no-project"), contextMode: "off" });
+    });
+  });
+
+  it("rejects contextMode off when a project repoRoot is supplied", async () => {
+    const { daemon } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudex-proj-"));
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "2+2?", mode: "ask", repoRoot: repo, contextMode: "off", harnesses: ["codex"] }),
+      });
+      expect(start.status).toBe(400);
+      expect(await start.text()).toContain("contextMode 'off' is only supported for Ask without a repoRoot");
+    });
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("rejects project-aware modes without a repoRoot instead of falling back to cwd", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "edit this", mode: "agent", harnesses: ["codex"] }),
+      });
+      expect(start.status).toBe(400);
+      expect(await start.text()).toContain("repoRoot is required for mode 'agent'");
+    });
+  });
+
+  it("rejects secret-like string values in run params before enqueue", async () => {
+    const { daemon } = fakeDaemon();
+    const secret = "sk-" + "c".repeat(24);
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "safe", mode: "ask", tests: [`echo ${secret}`] }),
+      });
+      expect(start.status).toBe(400);
+      expect(await start.text()).toContain("secret-like value is not accepted");
+    });
+  });
+
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
     const { daemon, cancelled } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: startAgentBody() });
       expect(start.status).toBe(200);
       const started = (await start.json()) as { jobId: string; runId: string; taskId: string; runDir: string };
       expect(started.jobId).toBe("job-d1");
@@ -348,7 +412,7 @@ describe("DaemonControlApiServer", () => {
     delete record.runId;
     delete record.runDir;
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: startAgentBody() });
       expect(start.status).toBe(202);
       expect(await start.text()).toContain("job-d1");
     }, 20);
@@ -375,7 +439,7 @@ describe("DaemonControlApiServer", () => {
       const res = await fetch(`http://${host}:${port}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: "{}",
+        body: startAgentBody(),
       });
       expect(res.status).toBe(202);
       const body = (await res.json()) as { jobId: string; state: string };
@@ -550,6 +614,19 @@ describe("DaemonControlApiServer", () => {
       const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, { headers: { authorization: `Bearer ${token}` } });
       expect(summary.status).toBe(200);
       const text = await summary.text();
+      expect(text).toContain("[redacted]");
+      expect(text).not.toContain(secret);
+    });
+  });
+
+  it("redacts secret-like jsonl artifacts before serving them", async () => {
+    const { daemon, record } = fakeDaemon();
+    const secret = "sk-" + "d".repeat(24);
+    writeFileSync(join(record.runDir as string, "events.jsonl"), JSON.stringify({ type: "message", text: secret }) + "\n");
+    await withDaemonServer(daemon, async (base) => {
+      const events = await fetch(`${base}/runs/run-d1/artifacts/events.jsonl`, { headers: { authorization: `Bearer ${token}` } });
+      expect(events.status).toBe(200);
+      const text = await events.text();
       expect(text).toContain("[redacted]");
       expect(text).not.toContain(secret);
     });

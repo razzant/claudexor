@@ -161,6 +161,10 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   per-screen backgrounds. It can create hard black/white rounded-window side
   cutouts. If a future hero uses background extension, it must be local,
   visually QAed in dark/light, Reduce Transparency, and compact widths.
+- Animated `MeshGradient` background points must stay inside the legal `0...1`
+  mesh domain. Boundary points may move along their own edge only; moving them
+  outside the window can create hard diagonal black/white cutouts under hidden
+  titlebars and split views.
 - Do not stack glass on glass; do not "glass everything" — it fights legibility and battery.
 - Test every screen with Reduce Transparency, Reduce Motion, Increase Contrast, and the
   system Liquid Glass tint settings.
@@ -201,10 +205,13 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Spec interview (quiz cards).** Hierarchical, AI-generated question cards: single/multi
   choice + free text, tier progress, `NEEDS_CLARIFICATION` chips, deep-link citations into
   code. It is Plan/draft-owned, not a permanent top-level sidebar item.
-- **Run composer.** Mode (`Ask`, `Agent`, `Best-of-N`, `Max Attempts`, `Until Clean`,
-  `Plan`, `Create`, `Read-only Audit`, `Benchmark`), harness multiselect as eligible pool
+- **Run composer.** Mode (`Ask`, `Explore`, `Agent`, `Best-of-N`, `Max Attempts`,
+  `Until Clean`, `Plan`, `Create`, `Read-only Audit`, `Benchmark`), Current Project,
+  Project Context (`Auto`/`Deep` when a project is selected; internal `Off` only for
+  no-project Ask), harness multiselect as eligible pool
   (family-colored), Primary harness, Portfolio, model hint, N, budget cap, access profile,
-  gates/tests. Default mode is `Ask`.
+  gates/tests. Default mode is `Ask`. Project-aware modes are disabled until Current
+  Project is selected; Ask can run without a project.
 - **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
 - **Cross-family review.** Table-first Review Queue: severity, finding, task, reviewer,
   evidence, and state columns. Cards can still appear in task detail, but local accept/rebut
@@ -225,17 +232,21 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
   Appearance, Projects, Agent & Routing, Harness Doctor & Auth, Secrets, Budget, Review, Delivery,
   Advanced & About. Settings groups are flat, solid, and shadowless.
-- **Help and tooltips.** Every compact/risky control gets layered help: `.help(...)` for hover
-  and an info popover when explanation affects cost, access, auth, or routing. Future controls
-  must document their consequence at the control, not only in docs.
+- **Help and tooltips.** Every compact/non-obvious control gets `.help(...)` hover help.
+  Mode menus and harness chips expose descriptions on hover directly; do not add a
+  separate adjacent info button just to explain a normal mode. Use a richer click popover
+  only for risky controls where explanation affects cost, access, auth, routing, or data
+  deletion. Future controls must document their consequence at the control, not only in docs.
 - **Harness chips.** Chips reflect Gateway status for the active mode intent. A
   harness that is not installed, not authenticated, degraded without the required
   intent, or unable to enforce read-only is visible but disabled, with a hover
   reason and a path to Harness Doctor/Auth setup.
-- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth,
-  then offer API-key fallback that writes only to the local secret store. The wizard may store
-  secret refs, mark setup complete, or skip, but it must not invent app-only auth state. Offline
-  or unimplemented surfaces show honest empty states; sample data is opt-in from Settings.
+- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth
+  and guided official install/login flows, then offer API-key fallback that writes only to the
+  local secret store. Claudex does not broker SaaS OAuth itself; it reuses each CLI's native
+  login/session when available. The wizard may store secret refs, mark setup complete, or skip,
+  but it must not invent app-only auth state. Offline or unimplemented surfaces show honest
+  empty states; sample data is opt-in from Settings.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 

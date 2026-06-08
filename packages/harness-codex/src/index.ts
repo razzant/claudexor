@@ -4,6 +4,7 @@ import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, H
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
+import { resolveSecret } from "@claudex/secrets";
 import { nowIso } from "@claudex/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
@@ -16,7 +17,8 @@ const BIN = process.env.CLAUDEX_CODEX_BIN || "codex";
  * dedicated `CLAUDEX_CODEX_API_KEY` can override it for multi-key setups.
  */
 function codexApiKey(): string | undefined {
-  return process.env.CLAUDEX_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
+  const stored = process.env.CLAUDEX_DISABLE_STORED_SECRETS === "1" ? null : resolveSecret("openai");
+  return process.env.CLAUDEX_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
 }
 
 /**
@@ -27,7 +29,8 @@ function codexApiKey(): string | undefined {
  * `codex login --with-api-key` produces. No-op when not isolated (use codex's
  * native auth), when no key is available, or when auth already exists.
  */
-export function ensureCodexApiAuth(env?: Record<string, string>): void {
+export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = true): void {
+  if (!allowApiKey) return;
   const home = env?.["CODEX_HOME"];
   if (!home) return;
   const apiKey = codexApiKey();
@@ -50,7 +53,7 @@ function sandboxArgs(access: AccessProfile): string[] {
       return ["--sandbox", "workspace-write"];
     case "full":
     case "external_sandbox_full":
-      return ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
+      return ["--sandbox", "danger-full-access"];
     case "inherit_native":
       return [];
   }
@@ -74,6 +77,10 @@ async function loggedIn(): Promise<boolean> {
   }
 }
 
+function hasApiKey(): boolean {
+  return Boolean(codexApiKey());
+}
+
 export function createCodexAdapter(): HarnessAdapter {
   return {
     id: "codex",
@@ -86,12 +93,13 @@ export function createCodexAdapter(): HarnessAdapter {
         );
       }
       const authed = await loggedIn();
+      const apiKey = hasApiKey();
       return HarnessManifestSchema.parse({
         id: "codex",
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.3.0",
+        adapter_version: "0.4.0",
         provider_family: "openai",
         capabilities: {
           plan: true,
@@ -109,8 +117,8 @@ export function createCodexAdapter(): HarnessAdapter {
           apply_patch: true,
           structured_events: true,
           structured_output: true,
-          json_schema_output: true,
-          resume: true,
+          json_schema_output: false,
+          resume: false,
           cancel: false,
           mcp: true,
           plugins: true,
@@ -118,7 +126,14 @@ export function createCodexAdapter(): HarnessAdapter {
           quota_signal: "observed",
           usage_signal: "native",
         },
-        auth_modes: authed ? ["local_session", "api_key"] : ["api_key"],
+        capability_profile: {
+          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
+          session: { resume_latest: false, resume_by_id: false },
+          output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
+          auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: authed ? "native_session" : apiKey ? "provider_auth_file" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
+          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
+        },
+        auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
         models: { discovery: "experimental" },
       });
@@ -135,18 +150,21 @@ export function createCodexAdapter(): HarnessAdapter {
         });
       }
       const authed = await loggedIn();
+      const apiKey = hasApiKey();
+      const ok = authed || apiKey;
       return ConformanceReportSchema.parse({
         harness_id: "codex",
-        status: authed ? "ok" : "degraded",
+        status: ok ? "ok" : "degraded",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "no openai key fallback" },
         ],
-        enabled_intents: authed
+        enabled_intents: ok
           ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
-          : ["explain", "audit"],
-        disabled_intents: authed ? [] : ["implement", "review", "arbitrate"],
-        reasons: authed ? [] : ["not authenticated (run `codex login`)"],
+          : [],
+        disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
+        reasons: ok ? [] : ["not authenticated (run `codex login` or store openai API key)"],
       });
     },
 
@@ -161,10 +179,17 @@ export function createCodexAdapter(): HarnessAdapter {
 }
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-  ensureCodexApiAuth(spec.env);
+  const nativeAuthed = await loggedIn();
+  ensureCodexApiAuth(spec.env, !nativeAuthed);
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
   args.push(spec.prompt);
+  const env: Record<string, string | null | undefined> = {
+    ...spec.env,
+    OPENAI_API_KEY: null,
+    CODEX_API_KEY: null,
+    CLAUDEX_CODEX_API_KEY: null,
+  };
 
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
@@ -173,7 +198,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env: spec.env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {

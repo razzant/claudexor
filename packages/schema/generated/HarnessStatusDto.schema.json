@@ -58,6 +58,251 @@
                   ],
                   "default": "unknown"
                 },
+                "capability_profile": {
+                  "type": "object",
+                  "properties": {
+                    "execution_surfaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "cli_one_shot",
+                              "stdin_stream_session",
+                              "background_session",
+                              "local_http_server",
+                              "acp_stdio_jsonrpc"
+                            ]
+                          },
+                          "input": {
+                            "type": "string",
+                            "enum": [
+                              "prompt_arg",
+                              "stdin_once",
+                              "stdin_stream",
+                              "json_rpc",
+                              "http"
+                            ],
+                            "default": "prompt_arg"
+                          },
+                          "output": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "json",
+                              "ndjson",
+                              "sse",
+                              "json_rpc"
+                            ],
+                            "default": "text"
+                          },
+                          "event_schema": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "native",
+                              "normalized",
+                              "versioned"
+                            ],
+                            "default": "none"
+                          },
+                          "supports_followup": {
+                            "type": "boolean",
+                            "default": false
+                          },
+                          "supports_interrupt": {
+                            "type": "boolean",
+                            "default": false
+                          },
+                          "supports_permission_reply": {
+                            "type": "boolean",
+                            "default": false
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "default": []
+                    },
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "native_session_id_emitted": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "resume_latest": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "resume_by_id": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "fork": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "list": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "logs": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "attach_tui": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "export": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "diff": {
+                          "type": "boolean",
+                          "default": false
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    },
+                    "output": {
+                      "type": "object",
+                      "properties": {
+                        "ndjson_events": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "partial_deltas": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "tool_lifecycle": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "file_changes": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "final_json": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "json_schema_final": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "usage_signal": {
+                          "type": "string",
+                          "enum": [
+                            "exact",
+                            "native",
+                            "observed",
+                            "manual",
+                            "unknown"
+                          ],
+                          "default": "unknown"
+                        },
+                        "cost_signal": {
+                          "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
+                          "default": "unknown"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    },
+                    "auth": {
+                      "type": "object",
+                      "properties": {
+                        "supported_sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "native_session",
+                              "browser_login",
+                              "api_key_env",
+                              "api_key_flag",
+                              "provider_auth_file",
+                              "project_env",
+                              "none"
+                            ]
+                          },
+                          "default": []
+                        },
+                        "preferred_source": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/auth/properties/supported_sources/items"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "probe_command": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        },
+                        "env_vars": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        },
+                        "can_scrub_env": {
+                          "type": "boolean",
+                          "default": true
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    },
+                    "access_control": {
+                      "type": "object",
+                      "properties": {
+                        "readonly": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "workspace_write": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "full": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "mechanism": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        },
+                        "conformance_required": {
+                          "type": "boolean",
+                          "default": true
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {}
+                },
                 "capabilities": {
                   "type": "object",
                   "properties": {
@@ -146,18 +391,11 @@
                       "default": false
                     },
                     "quota_signal": {
-                      "type": "string",
-                      "enum": [
-                        "exact",
-                        "native",
-                        "observed",
-                        "manual",
-                        "unknown"
-                      ],
+                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
                       "default": "unknown"
                     },
                     "usage_signal": {
-                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capabilities/properties/quota_signal",
+                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
                       "default": "unknown"
                     }
                   },

@@ -1,6 +1,6 @@
 {
   "name": "@claudex/delivery",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Apply a WorkProduct patch: dry-run / apply / branch / commit / pr.",
   "type": "module",
   "main": "./dist/index.js",

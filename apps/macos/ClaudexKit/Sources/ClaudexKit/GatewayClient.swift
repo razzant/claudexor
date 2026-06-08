@@ -57,7 +57,9 @@ public final class GatewayClient: Sendable {
     }
 
     public func cancel(runId: String) async throws {
-        let req = request("runs/\(runId)/cancel", method: "POST")
+        var req = request("runs/\(runId)/control", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data(#"{"control":{"kind":"cancel"}}"#.utf8)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1

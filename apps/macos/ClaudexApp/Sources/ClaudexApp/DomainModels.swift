@@ -111,28 +111,29 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
     }
     var color: Color { Theme.status(self) }
     var isActive: Bool { self == .running || self == .queued }
-    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .exhausted || self == .notConverged || self == .unknown }
+    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .failed || self == .exhausted || self == .notConverged || self == .unknown }
 }
 
 // MARK: - Run modes
 
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case ask, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, benchmark, unknown
+    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, benchmark, unknown
     var id: String { rawValue }
     static var allCases: [RunMode] {
-        [.ask, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .benchmark]
+        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .benchmark]
     }
 
     /// The wire value the control-api / orchestrator expects.
     var apiValue: String {
         switch self {
         case .ask: return "ask"
+        case .explore: return "explore"
         case .agent: return "agent"
         case .bestOfN: return "best_of_n"
         case .maxAttempts: return "max_attempts"
         case .untilClean: return "until_clean"
         case .plan: return "plan"
-        case .create: return "create_from_scratch"
+        case .create: return "create"
         case .readOnlyAudit: return "readonly_audit"
         case .benchmark: return "benchmark"
         case .unknown: return "unknown"
@@ -141,6 +142,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     init(apiValue: String?) {
         switch apiValue {
         case "ask": self = .ask
+        case "explore": self = .explore
         case "agent": self = .agent
         case "best_of_n": self = .bestOfN
         case "max_attempts": self = .maxAttempts
@@ -155,6 +157,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     var label: String {
         switch self {
         case .ask: return "Ask"
+        case .explore: return "Explore"
         case .agent: return "Agent"
         case .bestOfN: return "Best-of-N"
         case .maxAttempts: return "Max Attempts"
@@ -169,6 +172,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     var glyph: String {
         switch self {
         case .ask: return "questionmark.bubble"
+        case .explore: return "map"
         case .agent: return "bolt.fill"
         case .bestOfN: return "flag.checkered.2.crossed"
         case .maxAttempts: return "repeat"
@@ -183,6 +187,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     var blurb: String {
         switch self {
         case .ask: return "Read-only answer. No edit, run, or apply controls."
+        case .explore: return "Bounded read-only research swarm with verified synthesis and omissions."
         case .agent: return "Single primary-biased route. Direct edit path."
         case .bestOfN: return "N candidates in isolated envelopes, cross-reviewed, best wins."
         case .maxAttempts: return "Repair loop with a hard attempt cap and gates."
@@ -195,14 +200,16 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         }
     }
     var isMultiCandidate: Bool { self == .bestOfN }
-    var isReadOnly: Bool { self == .ask || self == .plan || self == .readOnlyAudit }
+    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit }
+    var requiresProject: Bool { self != .ask }
     var requiredIntent: String {
         switch self {
         case .ask: return "explain"
+        case .explore: return "audit"
         case .plan: return "plan"
         case .readOnlyAudit: return "audit"
         case .benchmark: return "benchmark"
-        case .create: return "create"
+        case .create: return "create_from_scratch"
         case .unknown: return "implement"
         default: return "implement"
         }
@@ -481,6 +488,8 @@ struct TaskRun: Identifiable, Hashable {
     var diagnosticText: String?
     var engineError: String?
     var artifactPaths: [String] = []
+    var runDir: String?
+    var repoRoot: String?
 
     var planDone: Int { plan.filter { $0.state == .done }.count }
     var filesChanged: Int { diff.count }

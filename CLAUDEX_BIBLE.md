@@ -32,11 +32,12 @@ and unavailable harnesses fail loudly.
 
 ## 4. Modes Are Canonical And Breaking
 
-The canonical modes are `ask`, `agent`, `best_of_n`, `max_attempts`,
+The canonical modes are `ask`, `explore`, `agent`, `best_of_n`, `max_attempts`,
 `until_clean`, `plan`, `create`, `readonly_audit`, and `benchmark`. `Ask` is the
-default app composer mode and is read-only. `Agent` is the default
-`claudex run` route. Old ids are not compatibility aliases unless explicitly
-reintroduced in schema and docs.
+default app composer mode and is read-only. `Explore` is a bounded read-only
+research swarm that writes synthesis, per-explorer findings, omissions, and
+follow-up questions. `Agent` is the default `claudex run` route. Old ids are not
+compatibility aliases unless explicitly reintroduced in schema and docs.
 
 ## 5. Evidence Beats Summaries
 
@@ -56,8 +57,10 @@ Scoped harness homes/config dirs stay outside the mutation worktree.
 
 Claudex must distinguish the Claudex product repo, the user-selected target
 project, temporary workspaces, and harness native homes. The app must show which
-project a run will use. `Ask` may answer general questions, but repo-aware
-answers must use an explicit project context and read-only access.
+project a run will use. `Ask` may answer general questions without a project,
+using a non-sensitive synthetic cwd and storing artifacts in the user-level
+Claudex store. Project-aware modes require an
+explicit Current Project and must not silently fall back to a process cwd.
 
 ## 8. Spec-Driven Work Is First-Class
 
@@ -95,7 +98,10 @@ Prefer simple, typed, local solutions over speculative abstractions. Keep
 surfaces thin, adapters translational, and orchestration centralized. Add an
 abstraction only when it removes real duplication or captures an established
 boundary. Avoid overengineering, hidden state, silent fallback, and broad
-refactors unrelated to the user-visible problem.
+refactors unrelated to the user-visible problem. Follow SSOT, DRY, and SOLID as
+pragmatic engineering constraints: one owner per contract, no duplicated
+business rules across surfaces, and no config path that lets a project self-grant
+sensitive powers.
 
 ## 13. Documentation Must Stay Current
 

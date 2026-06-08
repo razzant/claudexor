@@ -1,3 +1,0 @@
-{
-  "setup-worktree-unix": "[ -d \"$HOME/.claudex/node/bin\" ] && export PATH=\"$HOME/.claudex/node/bin:$PATH\"; corepack enable >/dev/null 2>&1 || true; pnpm install --frozen-lockfile"
-}

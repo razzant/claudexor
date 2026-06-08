@@ -8,7 +8,8 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 - **Primary priority**: maximize coding quality and reliability across harnesses; a reproducible SWE-bench Verified runner is included for objective evaluation.
 - **Ouroboros integration**: design a clean embeddable substrate API now; Ouroboros is the first integration testbed.
 - **Name**: Claudex (rename from working "Clawdex").
-- **Repo**: private `github.com/joi-lab/claudex`.
+- **Repo**: Claudex product repository; public/private hosting is a release decision,
+  not a runtime contract.
 - **Build autonomy**: agent builds directly, end-to-end, committing as it goes, running the adversarial-review loop at milestones.
 
 ## Batch 2 — Architecture & execution
@@ -39,11 +40,15 @@ Captures the planning-quiz decisions (so the rationale is versioned). Format: de
 - **Trust layering**: versioned repo config can NEVER self-grant sensitive powers (full access, bypass, network, secrets, disable review/audit, raise budget, install plugins, trust MCP).
 
 ## Batch 5 — Modes, WorkProduct & embed API
-- **Modes**: canonical v0.3 beta ids are `ask`, `agent`, `best_of_n`, `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, `benchmark`.
+- **Modes**: canonical v0.4 beta ids are `ask`, `explore`, `agent`, `best_of_n`, `max_attempts`, `until_clean`, `plan`, `create`, `readonly_audit`, `benchmark`.
 - **Plan mode**: multi-harness independent planning → adversarial plan review → ambiguity extraction → user interview → freeze SpecPack (clarify=required).
-- **Create-from-scratch**: first-class, WorkProduct kind `new_repo` (git bundle + tree manifest + archive), build/test gates, materialize policy.
+- **Create-from-scratch**: canonical mode id is present. In the current beta it
+  shares the race/envelope pipeline; full `new_repo` materialization (bundle +
+  tree manifest + archive) remains target architecture.
 - **WorkProduct kinds**: all (patch, new_repo, branch, commit, pr, report, artifact_bundle, benchmark_submission).
-- **CLI**: full command surface; every command supports `--json` (schema-backed).
+- **CLI**: broad command surface; primary run/inspect/control paths support
+  machine-readable output. Full `--json` coverage for every subcommand remains
+  target architecture.
 - **Ouroboros embed API**: all three boundaries — stable CLI `--json`, JSON-RPC over stdio (adapter-protocol), MCP server.
 - **Coding standards**: strict TS + typed errors; looser LOC limits (no hard caps).
 

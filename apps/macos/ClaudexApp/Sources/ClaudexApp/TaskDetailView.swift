@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct TaskDetailView: View {
@@ -239,6 +240,51 @@ struct TaskDetailView: View {
     private func diagnosticsContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel("Diagnostics", systemImage: "stethoscope")
+            HStack(spacing: Theme.Spacing.sm) {
+                Button {
+                    copyDiagnostics(task)
+                } label: {
+                    Label("Copy Diagnostics", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .help("Copy the visible diagnostics text and run metadata.")
+                Button {
+                    if let runDir = task.runDir { NSWorkspace.shared.open(URL(fileURLWithPath: runDir)) }
+                } label: {
+                    Label("Open Run Folder", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .disabled(task.runDir == nil)
+                .help(task.runDir ?? "Run folder is not available yet.")
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claudex/daemon/claudexd.log"))
+                } label: {
+                    Label("Open Daemon Log", systemImage: "terminal")
+                }
+                .buttonStyle(.bordered)
+                .help("Open ~/.claudex/daemon/claudexd.log.")
+                Button {
+                    Task {
+                        await model.startRun(
+                            prompt: task.prompt,
+                            mode: task.mode,
+                            harnesses: task.harnesses,
+                            primary: task.harnesses.first,
+                            portfolio: "subscription-first",
+                            model: nil,
+                            n: task.n,
+                            capUsd: task.capUsd,
+                            access: task.mode.isReadOnly ? "readonly" : "workspace_write",
+                            repoRootOverride: task.repoRoot
+                        )
+                    }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .help("Start a new run with the same prompt, mode, harness pool, and budget.")
+            }
             if let error = task.engineError, !error.isEmpty {
                 Panel(padding: Theme.Spacing.md) {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -267,5 +313,19 @@ struct TaskDetailView: View {
                 }
             }
         }
+    }
+
+    private func copyDiagnostics(_ task: TaskRun) {
+        var text = [
+            "run: \(task.id)",
+            "mode: \(task.mode.apiValue)",
+            "status: \(task.status.label)",
+            "project: \(task.project)",
+        ].joined(separator: "\n")
+        if let runDir = task.runDir { text += "\nrunDir: \(runDir)" }
+        if let engineError = task.engineError { text += "\n\n# Engine Error\n\(engineError)" }
+        if let diagnostics = task.diagnosticText { text += "\n\n# Diagnostics\n\(diagnostics)" }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }

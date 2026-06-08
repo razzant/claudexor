@@ -2,10 +2,26 @@ import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, H
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
+import { resolveSecret } from "@claudex/secrets";
 import { nowIso } from "@claudex/util";
 import { parseClaudeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEX_CLAUDE_BIN || "claude";
+const CLAUDE_PROVIDER_ENV_DENYLIST = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_PROFILE",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+];
 
 function permissionArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -39,6 +55,10 @@ async function authStatusOk(): Promise<boolean> {
   }
 }
 
+function anthropicApiKey(): string | null {
+  return process.env.CLAUDEX_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
+}
+
 export function createClaudeAdapter(): HarnessAdapter {
   return {
     id: "claude",
@@ -51,12 +71,13 @@ export function createClaudeAdapter(): HarnessAdapter {
         );
       }
       const authed = await authStatusOk();
+      const apiKey = anthropicApiKey() !== null;
       return HarnessManifestSchema.parse({
         id: "claude",
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.3.0",
+        adapter_version: "0.4.0",
         provider_family: "anthropic",
         capabilities: {
           plan: true,
@@ -74,8 +95,8 @@ export function createClaudeAdapter(): HarnessAdapter {
           apply_patch: true,
           structured_events: true,
           structured_output: true,
-          json_schema_output: true,
-          resume: true,
+          json_schema_output: false,
+          resume: false,
           cancel: false,
           mcp: true,
           plugins: true,
@@ -83,7 +104,14 @@ export function createClaudeAdapter(): HarnessAdapter {
           quota_signal: "observed",
           usage_signal: "exact",
         },
-        auth_modes: authed ? ["local_session", "api_key"] : ["api_key"],
+        capability_profile: {
+          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
+          session: { resume_latest: false, resume_by_id: false },
+          output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
+          auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: authed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
+          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
+        },
+        auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
         models: { discovery: "available" },
       });
@@ -100,18 +128,21 @@ export function createClaudeAdapter(): HarnessAdapter {
         });
       }
       const authed = await authStatusOk();
+      const apiKey = anthropicApiKey() !== null;
+      const ok = authed || apiKey;
       return ConformanceReportSchema.parse({
         harness_id: "claude",
-        status: authed ? "ok" : "degraded",
+        status: ok ? "ok" : "degraded",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "no anthropic key fallback" },
         ],
-        enabled_intents: authed
+        enabled_intents: ok
           ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "benchmark", "explain", "audit"]
-          : ["explain", "audit"],
-        disabled_intents: authed ? [] : ["implement", "review", "arbitrate"],
-        reasons: authed ? [] : ["not authenticated (run `claude /login` or set ANTHROPIC_API_KEY)"],
+          : [],
+        disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
+        reasons: ok ? [] : ["not authenticated (run `claude /login` or store anthropic API key)"],
       });
     },
 
@@ -129,11 +160,16 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const args = ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   if (spec.extra?.["bare"] === true) args.push("--bare");
+  const nativeAuthed = await authStatusOk();
+  const key = anthropicApiKey();
+  const env: Record<string, string | null | undefined> = { ...spec.env };
+  for (const name of CLAUDE_PROVIDER_ENV_DENYLIST) env[name] = null;
+  if (!nativeAuthed && key) env.ANTHROPIC_API_KEY = key;
 
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env: spec.env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {

@@ -1,0 +1,59 @@
+{
+  "$ref": "#/definitions/ControlRunControlRequest",
+  "definitions": {
+    "ControlRunControlRequest": {
+      "type": "object",
+      "properties": {
+        "control": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cancel",
+                "interrupt",
+                "successor_run",
+                "answer_question",
+                "approve",
+                "reject"
+              ]
+            },
+            "target": {
+              "type": "object",
+              "properties": {
+                "attemptId": {
+                  "type": "string"
+                },
+                "harnessId": {
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "requestId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "reason": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "control"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

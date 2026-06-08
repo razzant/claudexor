@@ -1,6 +1,6 @@
 {
   "name": "@claudex/arbitration",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Evidence-first arbitration: rank candidates, anti-reward-hacking held-out tests, pairwise, DecisionRecord.",
   "type": "module",
   "main": "./dist/index.js",

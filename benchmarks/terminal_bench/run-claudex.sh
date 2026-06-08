@@ -16,7 +16,7 @@ load_keys
 require_harbor
 have_key ANTHROPIC_API_KEY
 have_key OPENAI_API_KEY
-have_key GITHUB_TOKEN
+have_key GITHUB_TOKEN  # optional: only needed when your configured repo/task fetch requires it
 
 SEL="$(task_selection_flags "$@")"
 RUN_ID="claudex-$(date +%Y%m%d-%H%M%S)"

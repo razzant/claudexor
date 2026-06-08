@@ -13,7 +13,7 @@ import {
 } from "@claudex/benchmark";
 import { ArtifactStore } from "@claudex/artifact-store";
 import { type DeliverMode, checkPatch, deliver } from "@claudex/delivery";
-import { containsSecretLikeToken, ensureDir, hashJson, readTextSafe, sha256, writeJson } from "@claudex/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, ensureDir, hashJson, readTextSafe, sha256, writeJson } from "@claudex/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudex/daemon";
 import { McpServer, defaultClaudexTools } from "@claudex/mcp-server";
@@ -58,17 +58,18 @@ function orchestratorRunner() {
   };
 }
 
-const HELP = `claudex — harness-agnostic AI coding control plane (v0.3.0)
+const HELP = `claudex — harness-agnostic AI coding control plane (v0.4.0)
 
 Usage:
   claudex init                          Scaffold repo-local config (.claudex/config.yaml)
   claudex doctor [--harness <id>] [--all]   Detect + conformance-test harnesses
   claudex ask "<question>" [opts]       Read-only answer/explanation route
+  claudex explore "<question>" [opts]   Read-only research swarm / verified synthesis
   claudex run "<prompt>" [opts]         Run a task (default mode: agent)
   claudex race "<prompt>" [--n N]       Best-of-N tournament with cross-family review
   claudex plan "<prompt>"               Read-only planning report
   claudex spec "<prompt>" [--answers file]  Multi-harness plan grounding -> quiz -> frozen SpecPack
-  claudex create "<prompt>" [--target]  Create-from-scratch (new repo)
+  claudex create "<prompt>"             Create-from-scratch via current envelope pipeline
   claudex audit | map                   Read-only repo audit / map
   claudex inspect <run_id>              Inspect a run's decision + artifacts
   claudex apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
@@ -86,7 +87,7 @@ Usage:
 
 Options:
   --harness <id[,id...]>   Force harness(es)
-  --mode <mode>            ask | agent | best_of_n | max_attempts | until_clean | plan | create | readonly_audit | benchmark
+  --mode <mode>            ask | explore | agent | best_of_n | max_attempts | until_clean | plan | create | readonly_audit | benchmark
   --n <N>                  Candidates for Best-of-N
   --attempts <N>           Max attempts (max_attempts mode)
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
@@ -106,6 +107,7 @@ Options:
 
 const MODES = new Set<ModeKind>([
   "ask",
+  "explore",
   "agent",
   "best_of_n",
   "max_attempts",
@@ -215,6 +217,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     reviewerModels: reviewerModels(args),
   });
   try {
+    const tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
+    assertNoInlineSecretValues({ tests }, "$", "CLI run params");
     const res = await orch.run({
       repoRoot: process.cwd(),
       prompt: prompt || "audit this repository",
@@ -224,7 +228,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       portfolio: portfolio?.success ? portfolio.data : undefined,
       n: intFlag(args, "n"),
       attempts: intFlag(args, "attempts") ?? null,
-      tests: testCommands(args) ?? spec?.tests.map((t) => t.command),
+      tests,
       maxUsd: maxUsd ?? null,
       access: accessProfile(args),
       model: flagStr(args, "model"),
@@ -250,6 +254,10 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const prompt = args._.slice(1).join(" ").trim();
   if (!prompt) {
     process.stderr.write("claudex: missing spec prompt\n");
+    return 2;
+  }
+  if (containsSecretLikeToken(prompt)) {
+    process.stderr.write("claudex spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt\n");
     return 2;
   }
   const answersPath = flagStr(args, "answers");
@@ -598,7 +606,7 @@ async function main(): Promise<number> {
           process.stderr.write(`claudex: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
           return 2;
         }
-        if ((mode === "agent" || mode === "ask") && flagStr(args, "spec")) {
+        if ((mode === "agent" || mode === "ask" || mode === "explore") && flagStr(args, "spec")) {
           process.stderr.write("claudex: --spec requires a gated mode; use 'claudex race --spec <file>' or 'claudex run --mode max-attempts --spec <file>'\n");
           return 2;
         }
@@ -613,6 +621,9 @@ async function main(): Promise<number> {
 
     case "ask":
       return orchestrate(args, "ask", json);
+
+    case "explore":
+      return orchestrate(args, "explore", json);
 
     case "race":
       return orchestrate(args, "best_of_n", json);

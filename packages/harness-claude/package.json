@@ -1,6 +1,6 @@
 {
   "name": "@claudex/harness-claude",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Claude Code adapter (claude -p --output-format stream-json).",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,6 +19,7 @@
   "dependencies": {
     "@claudex/core": "workspace:*",
     "@claudex/schema": "workspace:*",
+    "@claudex/secrets": "workspace:*",
     "@claudex/util": "workspace:*"
   }
 }

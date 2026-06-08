@@ -27,8 +27,8 @@ Run (PYTHONPATH must include the repo root so this module is importable):
       -m anthropic/claude-opus-4-7 \\
       --ak harness=claude --ak reviewer_model=<openai-model> --ak attempts=2
 
-Host env required: ANTHROPIC_API_KEY and/or OPENAI_API_KEY (the chosen harness + the
-cross-family reviewer) and GITHUB_TOKEN (to clone the private Claudex repo).
+Host env required: ANTHROPIC_API_KEY and/or OPENAI_API_KEY for the chosen harness
+and cross-family reviewer. The Claudex repo URL/ref are configurable via agent kwargs.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class ClaudexAgent(BaseInstalledAgent):
         attempts: int | str = 2,
         max_usd: float | str | None = None,
         claudex_ref: str = "main",
-        claudex_repo: str = "github.com/joi-lab/claudex.git",
+        claudex_repo: str | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -83,7 +83,7 @@ class ClaudexAgent(BaseInstalledAgent):
         self._attempts = max(1, int(attempts))
         self._max_usd = float(max_usd) if max_usd not in (None, "") else None
         self._claudex_ref = str(claudex_ref)
-        self._claudex_repo = str(claudex_repo)
+        self._claudex_repo = str(claudex_repo or os.environ.get("CLAUDEX_TB_REPO", "https://github.com/joi-lab/claudex.git"))
         super().__init__(logs_dir, *args, **kwargs)
 
     # No auto version probe; the launcher resolves Node lazily via nvm.
@@ -114,9 +114,6 @@ class ClaudexAgent(BaseInstalledAgent):
         # 2) Node 22 (nvm), the harness CLIs, and the Claudex CLI (built from source),
         #    all as the default agent user so the runtime user owns them.
         install_env: dict[str, str] = {"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
-        token = self._get_env("GITHUB_TOKEN")
-        if token:
-            install_env["GITHUB_TOKEN"] = token
         await self.exec_as_agent(
             environment,
             command=(
@@ -124,7 +121,6 @@ class ClaudexAgent(BaseInstalledAgent):
                 # Persist the full install log to the host trial dir even on failure.
                 "mkdir -p /logs/agent 2>/dev/null || true\n"
                 'exec > >(tee -a /logs/agent/claudex-install.log) 2>&1\n'
-                ': "${GITHUB_TOKEN:?GITHUB_TOKEN is required to clone the private Claudex repo}"\n'
                 'export NVM_DIR="$HOME/.nvm"\n'
                 'mkdir -p "$NVM_DIR"\n'
                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash\n"
@@ -143,7 +139,7 @@ class ClaudexAgent(BaseInstalledAgent):
                 # or vice versa) is always available.
                 "npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest\n"
                 f"git clone --depth 1 --branch {shlex.quote(self._claudex_ref)} "
-                f'"https://${{GITHUB_TOKEN}}@{self._claudex_repo}" "$HOME/claudex"\n'
+                f"{shlex.quote(self._claudex_repo)} \"$HOME/claudex\"\n"
                 'cd "$HOME/claudex"\n'
                 # --ignore-scripts skips dependency postinstalls; the esbuild native
                 # binary's postinstall SIGSEGVs in TB's sandboxed container, and esbuild
@@ -174,8 +170,6 @@ class ClaudexAgent(BaseInstalledAgent):
         )
 
     def _run_env(self) -> dict[str, str]:
-        # Note: GITHUB_TOKEN is intentionally NOT exposed to the task run — it is only
-        # needed at install time to clone the Claudex repo.
         env: dict[str, str] = {}
         for key in (
             "ANTHROPIC_API_KEY",

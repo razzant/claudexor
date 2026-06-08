@@ -196,12 +196,13 @@ struct GlowBackground: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("claudex.reducedVisualEffects") private var reducedVisualEffects = false
 
     var body: some View {
         if reduceTransparency {
             Theme.surfaceBase
-        } else if reduceMotion {
-            ZStack { Theme.surfaceBase; mesh(0) }
+        } else if reduceMotion || reducedVisualEffects {
+            ZStack { Theme.surfaceBase; mesh(0).opacity(reducedVisualEffects ? 0.55 : 1) }
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { ctx in
                 ZStack { Theme.surfaceBase; mesh(ctx.date.timeIntervalSinceReferenceDate) }
@@ -214,9 +215,24 @@ struct GlowBackground: View {
     /// no harsh overlay band). Edge/center control points drift for visible, calm motion;
     /// corners stay pinned. Muted enough to preserve content contrast everywhere.
     private func mesh(_ t: TimeInterval) -> some View {
-        // Faster, wider drift so the light is visibly alive (corners pinned to avoid jitter).
-        func pt(_ x: Float, _ y: Float, _ ax: Double, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(x + Float(sin(t * 0.40 + ph) * ax), y + Float(cos(t * 0.34 + ph) * ay))
+        // MeshGradient expects stable edge geometry. Letting boundary points drift outside
+        // 0...1 produces the hard diagonal cutouts seen near hidden titlebars/split views.
+        // Keep edges on their edges; only the center moves in two dimensions.
+        func clamp(_ v: Float) -> Float { min(0.96, max(0.04, v)) }
+        func top(_ x: Float, _ ax: Double, _ ph: Double) -> SIMD2<Float> {
+            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), 0)
+        }
+        func left(_ y: Float, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
+            SIMD2(0, clamp(y + Float(cos(t * 0.34 + ph) * ay)))
+        }
+        func right(_ y: Float, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
+            SIMD2(1, clamp(y + Float(cos(t * 0.34 + ph) * ay)))
+        }
+        func bottom(_ x: Float, _ ax: Double, _ ph: Double) -> SIMD2<Float> {
+            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), 1)
+        }
+        func center(_ x: Float, _ y: Float, _ ax: Double, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
+            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), clamp(y + Float(cos(t * 0.34 + ph) * ay)))
         }
         let dark = scheme == .dark
         func c(_ color: Color, _ o: Double) -> Color { color.opacity(dark ? o : o * 0.7) }
@@ -224,9 +240,9 @@ struct GlowBackground: View {
         return MeshGradient(
             width: 3, height: 3,
             points: [
-                SIMD2(0, 0), pt(0.5, 0.0, 0.16, 0.06, 1.0), SIMD2(1, 0),
-                pt(0.0, 0.5, 0.06, 0.16, 2.0), pt(0.5, 0.5, 0.20, 0.14, 3.0), pt(1.0, 0.5, 0.06, 0.16, 4.0),
-                SIMD2(0, 1), pt(0.5, 1.0, 0.16, 0.06, 5.0), SIMD2(1, 1),
+                SIMD2(0, 0), top(0.5, 0.16, 1.0), SIMD2(1, 0),
+                left(0.5, 0.16, 2.0), center(0.5, 0.5, 0.20, 0.14, 3.0), right(0.5, 0.16, 4.0),
+                SIMD2(0, 1), bottom(0.5, 0.16, 5.0), SIMD2(1, 1),
             ],
             colors: [
                 c(a, 0.30), c(hi, 0.34), c(a, 0.24),

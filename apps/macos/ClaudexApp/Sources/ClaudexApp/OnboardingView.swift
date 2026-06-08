@@ -85,7 +85,7 @@ struct OnboardingView: View {
             Label("Current project", systemImage: "folder")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.accent)
-            Text("Pick the repo Claudex should read and mutate. Ask starts read-only, but it still needs an explicit project context.")
+            Text("Pick the repo Claudex should read and mutate. Ask can run without a project; Agent, Plan, Create, Audit, Benchmark, and Explore require a Current Project.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 HStack(spacing: Theme.Spacing.sm) {
@@ -137,6 +137,29 @@ struct OnboardingView: View {
                 KeyValueRow(key: "Settings", value: "Cmd+,")
                 KeyValueRow(key: "Live operations", value: "Budget, Harness Doctor, Benchmarks")
                 KeyValueRow(key: "Review", value: "Table-first queue")
+                Button {
+                    Task {
+                        let harnesses = model.availableHarnesses(for: .ask, selected: [.codex, .claude, .cursor, .opencode])
+                        await model.startRun(
+                            prompt: "2+2?",
+                            mode: .ask,
+                            harnesses: harnesses,
+                            primary: harnesses.first,
+                            portfolio: "subscription-first",
+                            model: nil,
+                            n: 1,
+                            capUsd: 0.25,
+                            access: "readonly"
+                        )
+                        completed = true
+                    }
+                } label: {
+                    Label("Smoke Test Ask", systemImage: "checkmark.seal")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .disabled(model.availableHarnesses(for: .ask, selected: [.codex, .claude, .cursor, .opencode]).isEmpty)
+                .help("Run a no-project read-only Ask smoke test with the first ready harness.")
             }
             .padding(Theme.Spacing.lg)
             .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
@@ -185,13 +208,18 @@ struct OnboardingView: View {
             Text(info?.auth ?? "Not checked yet.")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             Spacer()
-            Button {
-                copy(nativeLoginCommand(family))
-            } label: {
-                Label("Copy setup", systemImage: "doc.on.doc")
+            Button { openInstallGuide(family) } label: {
+                Label("Install guide", systemImage: "arrow.down.circle")
             }
             .buttonStyle(.bordered)
-            .help("Copy the native setup command. Run it in Terminal, then Recheck.")
+            .help("Open the official install/login guide for \(family.label). Claudex does not bundle third-party CLIs.")
+            Button {
+                copy(nativeLoginCommand(family), label: "\(family.label) login command")
+            } label: {
+                Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
+            }
+            .buttonStyle(.bordered)
+            .help("Copy the native login command. Run it in Terminal, then Recheck.")
         }
     }
 
@@ -203,6 +231,22 @@ struct OnboardingView: View {
         case .opencode: return "opencode auth login && claudex doctor --harness opencode"
         case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
         case .fake: return "claudex doctor --all"
+        }
+    }
+
+    private func openInstallGuide(_ family: HarnessFamily) {
+        guard let url = URL(string: installGuideURL(family)) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func installGuideURL(_ family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "https://developers.openai.com/codex"
+        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
+        case .cursor: return "https://docs.cursor.com/cli"
+        case .opencode: return "https://opencode.ai/docs"
+        case .raw: return "https://platform.openai.com/docs"
+        case .fake: return "https://github.com/joi-lab/claudex"
         }
     }
 
@@ -218,9 +262,9 @@ struct OnboardingView: View {
         }
     }
 
-    private func copy(_ text: String) {
+    private func copy(_ text: String, label: String? = nil) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        copiedCommand = text
+        copiedCommand = label.map { "\($0): \(text)" } ?? text
     }
 }

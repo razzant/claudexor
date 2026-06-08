@@ -21,8 +21,8 @@ Reproducible benchmark harnesses for Claudex. Two families, two paradigms:
 
 ## Conventions
 
-- Secrets are read from `~/file1.txt` (override `CLAUDEX_KEYS_FILE`) and **never
-  printed**; you can also export them directly.
+- Secrets are read from exported env vars, or from an explicit `CLAUDEX_KEYS_FILE`
+  path when you opt in. Values are never printed.
 - Model slugs rotate over time and are therefore **not hardcoded** — set the current
   ones via env (see each suite's `config.example.env` / README).
 - Run artifacts default to `~/.claudex/cache/bench-experiments/` (gitignored).

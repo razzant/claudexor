@@ -37,9 +37,9 @@ stays available for tasks that need it (e.g. installing/operating services).
 - Docker via Colima with Compose v2 **and buildx** (buildx is required: the classic
   builder fails on tasks using `COPY <<EOT` heredocs). Run `scripts/colima-setup.sh`.
 - `uv tool install harbor`.
-- Keys (in `~/file1.txt` or exported): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (for the
-  cross-family reviewer / codex), `GITHUB_TOKEN` (to clone the private Claudex repo
-  into the container).
+- Keys exported in the environment, or loaded from an explicit `CLAUDEX_KEYS_FILE`:
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (for the cross-family reviewer / codex),
+  `GITHUB_TOKEN` only for private external fetches configured by your benchmark run.
 - Model slugs rotate — set `CLAUDEX_TB_CODEX_MODEL` (and optionally
   `CLAUDEX_TB_CLAUDE_MODEL`) to current slugs. See `config.example.env`.
 

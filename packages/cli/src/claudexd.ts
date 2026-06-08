@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, DaemonServer, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudex/daemon";
 import { DaemonControlApiServer } from "@claudex/control-api";
@@ -11,6 +12,8 @@ import { buildGateway, buildRegistry } from "./registry.js";
 import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+const NO_PROJECT_ROOT = join(homedir(), ".cache", "claudex", "no-project");
 
 async function main(): Promise<void> {
   mkdirSync(daemonDir(), { recursive: true });
@@ -24,15 +27,25 @@ async function main(): Promise<void> {
     persistPath: join(daemonDir(), "jobs.json"),
     runner: async (params, ctx) => {
       const p = (params ?? {}) as any;
+      const mode = typeof p.mode === "string" ? p.mode : "agent";
+      const explicitRepoRoot = typeof p.repoRoot === "string" && p.repoRoot.trim() ? p.repoRoot.trim() : null;
+      const repoRoot = explicitRepoRoot ?? (mode === "ask" ? NO_PROJECT_ROOT : null);
+      if (!repoRoot) throw new Error(`repoRoot is required for mode '${mode}'`);
+      const noProjectAsk = mode === "ask" && !explicitRepoRoot;
+      if (noProjectAsk) mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
+      if (p.contextMode === "off" && !noProjectAsk) {
+        throw new Error("contextMode 'off' is only supported for Ask without a repoRoot");
+      }
       const orchestrator = new Orchestrator({
         registry: buildRegistry(),
         portfolio: p.portfolio,
         reviewerModels: p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
       });
       return orchestrator.run({
-        repoRoot: p.repoRoot ?? process.cwd(),
+        repoRoot,
         prompt: String(p.prompt ?? ""),
         mode: p.mode,
+        contextMode: noProjectAsk ? "off" : p.contextMode,
         harnesses: p.harnesses,
         primaryHarness: p.primaryHarness,
         portfolio: p.portfolio,

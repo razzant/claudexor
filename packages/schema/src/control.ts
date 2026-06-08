@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccessProfile, ModeKind } from "./primitives.js";
+import { AccessProfile, ContentHash, Id, ModeKind } from "./primitives.js";
 import { Portfolio } from "./budget.js";
 import { AdapterStatus, HarnessManifest } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
@@ -19,8 +19,12 @@ export const ControlRunStartRequest = z.object({
   access: AccessProfile.optional(),
   tests: z.array(z.string()).optional(),
   repoRoot: z.string().optional(),
+  contextMode: z.enum(["off", "auto", "deep"]).optional(),
   inPlace: z.boolean().optional(),
   envProfile: z.string().optional(),
+  specPath: z.string().optional(),
+  specId: z.string().optional(),
+  specHash: ContentHash.optional(),
 });
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
 
@@ -35,6 +39,7 @@ export type ControlRunStartInfo = z.infer<typeof ControlRunStartInfo>;
 export const ControlRunState = z.enum([
   "queued",
   "running",
+  "blocked",
   "succeeded",
   "failed",
   "cancelled",
@@ -51,6 +56,40 @@ export const ControlQueuedRunInfo = z.object({
 });
 export type ControlQueuedRunInfo = z.infer<typeof ControlQueuedRunInfo>;
 
+export const RunFailure = z.object({
+  phase: z.string().default("unknown"),
+  category: z
+    .enum([
+      "validation",
+      "project",
+      "auth",
+      "harness_unavailable",
+      "harness_error",
+      "budget",
+      "policy",
+      "cancelled",
+      "internal",
+      "unknown",
+    ])
+    .default("unknown"),
+  harnessId: z.string().nullable().default(null),
+  attemptId: z.string().nullable().default(null),
+  safeMessage: z.string(),
+  rawDetailRef: z.string().nullable().default(null),
+  logRefs: z.array(z.string()).default([]),
+  eventRefs: z.array(z.string()).default([]),
+  runDir: z.string().nullable().default(null),
+  nextActions: z.array(z.string()).default([]),
+});
+export type RunFailure = z.infer<typeof RunFailure>;
+
+export const ControlProjectMetadata = z.object({
+  repoRoot: z.string().nullable().default(null),
+  projectName: z.string().nullable().default(null),
+  contextMode: z.enum(["off", "auto", "deep"]).default("auto"),
+});
+export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
+
 export const ControlRunSummary = z.object({
   jobId: z.string(),
   runId: z.string(),
@@ -58,6 +97,8 @@ export const ControlRunSummary = z.object({
   state: ControlRunState,
   runDir: z.string().optional(),
   error: z.string().optional(),
+  failure: RunFailure.nullable().default(null),
+  project: ControlProjectMetadata.default({}),
   mode: ModeKind.optional(),
   prompt: z.string().optional(),
   harnesses: z.array(z.string()).optional(),
@@ -68,6 +109,8 @@ export const ControlRunSummary = z.object({
   maxUsd: z.number().nullable().optional(),
   access: AccessProfile.optional(),
   tests: z.array(z.string()).optional(),
+  specId: z.string().optional(),
+  specHash: ContentHash.optional(),
   createdAt: z.string().optional(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),
@@ -87,8 +130,53 @@ export const ControlRunDetail = z.object({
   finalSummary: z.string().nullable().default(null),
   decision: DecisionRecord.nullable().default(null),
   workProduct: WorkProduct.nullable().default(null),
+  failure: RunFailure.nullable().default(null),
 });
 export type ControlRunDetail = z.infer<typeof ControlRunDetail>;
+
+export const RunControlTarget = z.object({
+  attemptId: z.string().optional(),
+  harnessId: z.string().optional(),
+  sessionId: z.string().optional(),
+  requestId: z.string().optional(),
+});
+export type RunControlTarget = z.infer<typeof RunControlTarget>;
+
+export const RunControl = z.object({
+  kind: z.enum(["cancel", "interrupt", "successor_run", "answer_question", "approve", "reject"]),
+  target: RunControlTarget.default({}),
+  reason: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+});
+export type RunControl = z.infer<typeof RunControl>;
+
+export const RunInput = z.object({
+  kind: z.enum(["message", "answer", "approval", "rejection", "correction"]),
+  target: RunControlTarget.default({}),
+  text: z.string().optional(),
+  answers: z.array(z.record(z.string(), z.unknown())).default([]),
+  idempotencyKey: z.string().optional(),
+});
+export type RunInput = z.infer<typeof RunInput>;
+
+export const ControlRunControlRequest = z.object({
+  control: RunControl,
+});
+export type ControlRunControlRequest = z.infer<typeof ControlRunControlRequest>;
+
+export const ControlRunInputRequest = z.object({
+  input: RunInput,
+});
+export type ControlRunInputRequest = z.infer<typeof ControlRunInputRequest>;
+
+export const ControlRunControlResponse = z.object({
+  accepted: z.boolean(),
+  status: z.enum(["applied", "queued", "rejected", "unsupported"]).default("queued"),
+  runId: Id.optional(),
+  successorRunId: Id.optional(),
+  message: z.string().optional(),
+});
+export type ControlRunControlResponse = z.infer<typeof ControlRunControlResponse>;
 
 export const ControlApplyCheckRequest = z.object({
   repoRoot: z.string().optional(),

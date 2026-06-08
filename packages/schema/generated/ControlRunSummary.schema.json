@@ -18,6 +18,7 @@
           "enum": [
             "queued",
             "running",
+            "blocked",
             "succeeded",
             "failed",
             "cancelled",
@@ -32,10 +33,130 @@
         "error": {
           "type": "string"
         },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "phase": {
+                  "type": "string",
+                  "default": "unknown"
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "validation",
+                    "project",
+                    "auth",
+                    "harness_unavailable",
+                    "harness_error",
+                    "budget",
+                    "policy",
+                    "cancelled",
+                    "internal",
+                    "unknown"
+                  ],
+                  "default": "unknown"
+                },
+                "harnessId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "attemptId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "safeMessage": {
+                  "type": "string"
+                },
+                "rawDetailRef": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "logRefs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "eventRefs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "runDir": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "nextActions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "safeMessage"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "project": {
+          "type": "object",
+          "properties": {
+            "repoRoot": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "projectName": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "contextMode": {
+              "type": "string",
+              "enum": [
+                "off",
+                "auto",
+                "deep"
+              ],
+              "default": "auto"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
         "mode": {
           "type": "string",
           "enum": [
             "ask",
+            "explore",
             "agent",
             "best_of_n",
             "max_attempts",
@@ -100,6 +221,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "specId": {
+          "type": "string"
+        },
+        "specHash": {
+          "type": "string",
+          "minLength": 1
         },
         "createdAt": {
           "type": "string"

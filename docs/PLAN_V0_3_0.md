@@ -107,11 +107,11 @@ Apple Liquid Glass guidance is interpreted as:
 
 ### Claudex Product Repo
 
-The Claudex product repo is the repository containing Claudex itself. In Anton's
-workspace it is currently:
+The Claudex product repo is the repository containing Claudex itself. In a local
+development checkout it is represented as:
 
 ```text
-/Users/anton/Clawdexor
+<local-claudex-workspace>
 ```
 
 It owns:
@@ -121,7 +121,7 @@ It owns:
 - `docs/ARCHITECTURE.md`;
 - `docs/DESIGN_SYSTEM.md`;
 - public docs;
-- local operator `AGENTS.md`.
+- local-only operator notes, if present, stay outside public product docs.
 
 ### Target Project Repo
 
@@ -576,7 +576,7 @@ Update:
 - `docs/REVIEW.md`;
 - `docs/DESIGN_SYSTEM.md`;
 - `apps/macos/README.md`;
-- local `AGENTS.md`.
+- local-only operator notes, when present.
 
 Fix current-vs-target drift:
 

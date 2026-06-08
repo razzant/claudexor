@@ -32,7 +32,7 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudex.app"
 
-VERSION="${CLAUDEX_VERSION:-0.3.0}"
+VERSION="${CLAUDEX_VERSION:-0.4.0}"
 BUILD="${CLAUDEX_BUILD:-$(date +%Y%m%d%H%M)}"
 
 # On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be

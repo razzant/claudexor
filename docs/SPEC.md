@@ -1,10 +1,10 @@
 # Claudex v1.0 — Historical Technical Specification
 
-Status: historical broad spec. The active v0.3.0 beta scope and non-negotiable
-product invariants are [`PLAN_V0_3_0.md`](PLAN_V0_3_0.md) and
-[`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md). This document remains useful for
-long-term design context, but it must not override current canonical mode ids,
-control-plane contracts, or UI/UX decisions.
+Status: historical broad spec. The active v0.4.0 beta product truth and
+non-negotiable invariants are [`../CLAUDEX_BIBLE.md`](../CLAUDEX_BIBLE.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md), and [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md).
+This document remains useful for long-term design context, but it must not
+override current canonical mode ids, control-plane contracts, or UI/UX decisions.
 
 Supersedes the original working draft; incorporates 2026 harness research, competitor-pitfall research, and the planning-quiz decisions ([DECISIONS.md](DECISIONS.md)).
 
@@ -36,12 +36,15 @@ Primary runtime: TypeScript / Node (ESM). Ships a reproducible SWE-bench Verifie
 ## 3. Primary modes (canonical ids)
 
 - `ask` — read-only explanation/answer route; default composer mode; no patch/apply controls.
+- `explore` — bounded read-only research swarm; per-explorer findings, verified synthesis, omissions, and follow-up questions. No patch/apply controls.
 - `agent` — `claudex run "…"`: one primary-biased route; direct edit path.
 - `best_of_n` — `claudex race "…" --n 4`: N envelopes → gates → cross-review → revalidation → pairwise → synthesis (auto) → arbitration → DecisionRecord.
 - `max_attempts` — `claudex run --mode max-attempts --attempts 3 "…"`: convergence loop, capped; honest `not_converged` with best WorkProduct + open findings.
 - `until_clean` — `claudex run --mode until-clean "…"`: no fixed iteration cap; stops on clean convergence, cancel, budget/quota exhaustion, policy hard-stop, or no-progress stall after eligible route rotation.
 - `plan` — `claudex plan "…"`: multi-harness planning → adversarial plan review → ambiguity extraction → Plan-owned draft interview → freeze `SpecPack`. No mutation.
-- `create` — `claudex create "…" --target ./x`: from-scratch generation; WorkProduct kind `new_repo`.
+- `create` — `claudex create "…"`: beta create-from-scratch mode using the
+  race/envelope pipeline. Full `--target` materialization and `new_repo` bundles
+  remain target architecture.
 - `readonly_audit` — `claudex audit "…"` / `claudex map`: read-only audit/map report. No writes.
 - `benchmark` — `claudex bench run swe-bench --portfolio benchmark`: reproducible, high-budget best-of-N + synthesis + cross-family clean review + full traces + route proof.
 
@@ -186,7 +189,7 @@ Append-only JSONL `RunEvent {ts, run_id, task_id, type, payload}`. Types: `run.c
 
 ## 22. Acceptance (v1.0)
 
-See [PLAN.md](PLAN.md) §8 — condensed: init/doctor; conformance-gated adapters; repo-local schema-validated artifacts; no silent truncation; `--json` everywhere; access honored; evidence-required + revalidated + stale-on-diff + cross-family findings with RouteProof; best-of-n with gates→review→synthesis→arbitration→DecisionRecord; budget reservation + circuit breaker + ≥1-harness-suffices; delivery native-live/artifact-only/apply/branch/commit/pr/new-repo; explicit-trust full access; secret redaction; single-harness collapse; reproducible SWE-bench Verified run.
+See [PLAN.md](PLAN.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for the current implementation map — condensed: init/doctor; conformance-gated adapters; repo-local schema-validated artifacts; no silent truncation; structured JSON where implemented; access honored; evidence-required + revalidated + stale-on-diff + cross-family findings with RouteProof; best-of-n with gates→review→synthesis→arbitration→DecisionRecord; budget reservation + circuit breaker + ≥1-harness-suffices; delivery native-live/artifact-only/apply/branch/commit/pr/new-repo; explicit-trust full access; secret redaction; single-harness collapse; reproducible SWE-bench Verified run.
 
 ---
 
@@ -211,7 +214,7 @@ Concrete facts captured during research; adapters target these. Flag everything 
 - Worktrees: native `--worktree` BUT trust-gate (errors in `-p` until accepted once) + no `-p` auto-clean → Claudex owns envelopes.
 - Subagents/skills/plugins/hooks/MCP rich; one-line plugin install `/plugin install <name>@<marketplace>` (or `--plugin-dir/--plugin-url` session-only); `claude mcp serve`; `--mcp-config --strict-mcp-config`.
 - Sessions: `-c`/`--continue`, `-r <id>`/`--resume`, `--session-id`, `--fork-session`; `session_id` in `system/init`.
-- Auth: precedence Bedrock/Vertex → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` (always used in `-p` if present) → `apiKeyHelper` → `CLAUDE_CODE_OAUTH_TOKEN` → subscription OAuth. `claude auth status` (exit 0/1, JSON). Creds: macOS Keychain (`Claude Code-credentials`) / Linux `~/.claude/.credentials.json` (0600) / Windows file; `CLAUDE_CONFIG_DIR` override. ⚠️ 2026-06-15: `-p`/Agent SDK on subscription draws a separate "Agent SDK credit". Quota: status-line JSON `rate_limits.{five_hour,seven_day}.used_percentage/resets_at` (Pro/Max only, after first response).
+- Auth: precedence Bedrock/Vertex → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` (always used in `-p` if present) → `apiKeyHelper` → `CLAUDE_CODE_OAUTH_TOKEN` → subscription OAuth. `claude auth status` (exit 0/1, JSON). Creds: macOS Keychain (`Claude Code-credentials`) / Linux `~/.claude/.credentials.json` (0600) / Windows file; `CLAUDE_CONFIG_DIR` override. Subscription/API billing behavior is upstream-version-dependent; Claudex must surface the chosen auth/billing source and avoid silently inheriting provider API keys into subscription-first runs. Quota: status-line JSON `rate_limits.{five_hour,seven_day}.used_percentage/resets_at` (Pro/Max only, after first response).
 - Model/effort: `--model sonnet|opus|haiku|opus[1m]|opusplan|…`, `--effort low|medium|high|xhigh|max`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`. Guardrails: `--max-turns`, `--max-budget-usd`, `--fallback-model`.
 - Patch: edits are tool calls (no native diff) → `git diff`.
 

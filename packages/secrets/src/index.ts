@@ -64,7 +64,7 @@ export class SecretStore {
         const out = execFileSync(
           "security",
           ["find-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
-          { encoding: "utf8" },
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
         );
         const v = out.trim();
         if (v) return v;
@@ -145,7 +145,7 @@ export class SecretStore {
       const out = execFileSync(
         "security",
         ["find-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
-        { encoding: "utf8" },
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
       );
       const v = out.trim();
       return v || null;

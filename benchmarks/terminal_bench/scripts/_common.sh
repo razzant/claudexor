@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Common setup for Claudex x Terminal-Bench (Harbor) operator scripts.
-# Source this from every run-*.sh. It sets PATH/DOCKER_HOST/PYTHONPATH, loads API
-# keys from ~/file1.txt WITHOUT printing their values, and exposes shared defaults.
+# Source this from every run-*.sh. It sets PATH/DOCKER_HOST/PYTHONPATH, optionally
+# loads API keys from CLAUDEX_KEYS_FILE WITHOUT printing their values, and exposes
+# shared defaults.
 
 set -euo pipefail
 
@@ -34,10 +35,11 @@ export CLAUDE_MODEL CODEX_MODEL
 log() { printf '[claudex-tb] %s\n' "$*" >&2; }
 die() { printf '[claudex-tb] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# Load API keys from ~/file1.txt without ever echoing their values. Existing exports
+# Load API keys from CLAUDEX_KEYS_FILE without ever echoing their values. Existing exports
 # are preserved (the file only fills in what is missing).
 load_keys() {
-  local f="${CLAUDEX_KEYS_FILE:-$HOME/file1.txt}"
+  local f="${CLAUDEX_KEYS_FILE:-}"
+  [ -n "$f" ] || { log "CLAUDEX_KEYS_FILE not set (relying on already-exported env)"; return 0; }
   [ -f "$f" ] || { log "keys file not found: $f (relying on already-exported env)"; return 0; }
   eval "$(python3 - "$f" <<'PY'
 import os, shlex, sys

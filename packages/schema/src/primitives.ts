@@ -44,6 +44,7 @@ export type ProviderFamily = z.infer<typeof ProviderFamily>;
 
 export const ModeKind = z.enum([
   "ask",
+  "explore",
   "agent",
   "best_of_n",
   "max_attempts",

@@ -201,7 +201,7 @@ describe("Orchestrator", () => {
     const adapter: HarnessAdapter = {
       id: "leaky",
       async discover() {
-        return HarnessManifest.parse({ id: "leaky", display_name: "leaky", kind: "local_cli", provider_family: "openai", capabilities: { implement: true } });
+        return HarnessManifest.parse({ id: "leaky", display_name: "leaky", kind: "local_cli", provider_family: "openai", capabilities: { implement: true }, access_profiles_supported: ["workspace_write"] });
       },
       async doctor() {
         return ConformanceReport.parse({ harness_id: "leaky", status: "ok", enabled_intents: ["implement"] });
@@ -236,6 +236,20 @@ describe("Orchestrator", () => {
     expect(res.summary).toMatch(/perform 'explain'/);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("Status: failed");
+  });
+
+  it("runs explore as a bounded read-only swarm with synthesis and per-explorer artifacts", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "explore", harnesses: ["fake-success"], n: 2 });
+    expect(res.status).toBe("success");
+    expect(res.candidates).toHaveLength(2);
+    expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
+    expect(readFileSync(join(res.runDir, "final", "explore.md"), "utf8")).toContain("Explorers succeeded: 2/2");
+    expect(existsSync(join(res.runDir, "final", "explore-findings.yaml"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
   });
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {

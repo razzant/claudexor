@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Observation
 import ClaudexKit
 
@@ -55,6 +56,9 @@ final class AppModel {
     var composerPresented = false
     var projectRoot: String = "" {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudex.projectRoot") }
+    }
+    var projectContextMode: String = "auto" {
+        didSet { UserDefaults.standard.set(projectContextMode, forKey: "claudex.projectContextMode") }
     }
 
     /// App-wide search query. Declared once on the NavigationSplitView (per WWDC25 "Build a
@@ -125,6 +129,8 @@ final class AppModel {
         default: break
         }
         projectRoot = UserDefaults.standard.string(forKey: "claudex.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEX_PROJECT_ROOT"] ?? ""
+        projectContextMode = UserDefaults.standard.string(forKey: "claudex.projectContextMode") ?? "auto"
+        if projectContextMode != "deep" { projectContextMode = "auto" }
     }
 
     var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
@@ -172,7 +178,7 @@ final class AppModel {
                                        reason: "Harness Doctor has not loaded \(family.label). Reconnect the engine, then recheck.",
                                        intent: intent, info: nil)
         }
-        guard info.health != .unavailable else {
+        guard info.health == .ok else {
             return HarnessAvailability(family: family, available: false,
                                        reason: info.reasons.first ?? info.auth,
                                        intent: intent, info: info)
@@ -265,6 +271,36 @@ final class AppModel {
         }
     }
 
+    var normalizedProjectRoot: String {
+        projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasCurrentProject: Bool { !normalizedProjectRoot.isEmpty }
+
+    var currentProjectName: String {
+        guard hasCurrentProject else { return "No project" }
+        return URL(fileURLWithPath: normalizedProjectRoot).lastPathComponent
+    }
+
+    func chooseProject() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Current Project"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = true
+        if hasCurrentProject {
+            panel.directoryURL = URL(fileURLWithPath: normalizedProjectRoot, isDirectory: true)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            projectRoot = url.path
+        }
+    }
+
+    func clearProject() {
+        projectRoot = ""
+    }
+
     func refreshSecrets() async {
         guard let client else { return }
         do {
@@ -297,13 +333,14 @@ final class AppModel {
         let prompt = s.prompt ?? ""
         let title = prompt.isEmpty ? prettyTitle(s.runId) : String(prompt.prefix(64))
         let families = (s.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
-        return TaskRun(
+        let projectName = s.project?.projectName ?? s.project?.repoRoot.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "No project"
+        var task = TaskRun(
             id: s.runId,
             title: title,
             prompt: prompt,
             mode: RunMode(apiValue: s.mode),
             status: RunStatus(api: s.state),
-            project: "live",
+            project: projectName,
             specTitle: nil,
             harnesses: families,
             n: s.n ?? max(1, families.count),
@@ -315,6 +352,14 @@ final class AppModel {
             plan: [], activity: [], candidates: [], findings: [], diff: [],
             isLive: true
         )
+        task.repoRoot = s.project?.repoRoot
+        task.engineError = s.failure?.safeMessage ?? s.error
+        task.runDir = s.runDir ?? s.failure?.runDir
+        task.artifactPaths = s.failure.map { ($0.rawDetailRef.map { [$0] } ?? []) + $0.eventRefs + $0.logRefs } ?? []
+        if let failure = s.failure {
+            task.diagnosticText = failure.safeMessage
+        }
+        return task
     }
 
     private static func prettyTitle(_ id: String) -> String {
@@ -325,15 +370,22 @@ final class AppModel {
 
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
                   portfolio: String, model: String?, n: Int, capUsd: Double,
-                  access: String = "workspace_write", tests: [String] = []) async {
+                  access: String = "workspace_write", tests: [String] = [], repoRootOverride: String? = nil) async {
         composerPresented = false
-        let optimistic = TaskRun(
+        let launchRepoRoot = repoRootOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
+        guard !mode.requiresProject || !launchRepoRoot.isEmpty else {
+            settingsStatus = "Choose a Current Project before launching \(mode.label). Ask can run without a project."
+            return
+        }
+        let launchContextMode = launchRepoRoot.isEmpty ? "off" : (projectContextMode == "deep" ? "deep" : "auto")
+        let launchProjectName = launchRepoRoot.isEmpty ? "No project" : URL(fileURLWithPath: launchRepoRoot).lastPathComponent
+        var optimistic = TaskRun(
             id: "pending-\(UUID().uuidString.prefix(6))",
             title: String(prompt.prefix(64)),
             prompt: prompt,
             mode: mode,
             status: .queued,
-            project: "live",
+            project: launchProjectName,
             specTitle: nil,
             harnesses: harnesses,
             n: n,
@@ -346,6 +398,7 @@ final class AppModel {
             candidates: [], findings: [], diff: [],
             isLive: true
         )
+        optimistic.repoRoot = launchRepoRoot.isEmpty ? nil : launchRepoRoot
         liveTasks.insert(optimistic, at: 0)
         route = .task(optimistic.id)
 
@@ -368,19 +421,23 @@ final class AppModel {
                                       n: n,
                                       maxUsd: capUsd, access: access,
                                       tests: tests.isEmpty ? nil : tests,
-                                      repoRoot: projectRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : projectRoot)
+                                      repoRoot: launchRepoRoot.isEmpty ? nil : launchRepoRoot,
+                                      contextMode: launchContextMode)
             let result = try await client.startRun(req)
             switch result {
             case .started(let info):
                 // swap the optimistic row for one keyed by the real run id
                 if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
                     let prev = liveTasks[idx]
-                    liveTasks[idx] = TaskRun(
+                    var started = TaskRun(
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .context,
                         spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
                         plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
+                    started.runDir = info.runDir
+                    started.repoRoot = prev.repoRoot
+                    liveTasks[idx] = started
                     route = .task(info.runId)
                     stream(runId: info.runId)
                 }
@@ -398,6 +455,7 @@ final class AppModel {
                         row.engineError = error
                         row.diagnosticText = error
                     }
+                    row.repoRoot = prev.repoRoot
                     liveTasks[idx] = row
                     route = .task(info.jobId)
                 }
@@ -434,9 +492,13 @@ final class AppModel {
             task.mode = RunMode(apiValue: detail.summary.mode)
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }
+            task.project = detail.summary.project?.projectName ?? detail.summary.project?.repoRoot.map { URL(fileURLWithPath: $0).lastPathComponent } ?? task.project
+            task.repoRoot = detail.summary.project?.repoRoot ?? task.repoRoot
             task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
             task.capUsd = detail.summary.maxUsd ?? task.capUsd
-            task.engineError = detail.summary.error
+            let failure = detail.failure ?? detail.summary.failure
+            task.engineError = failure?.safeMessage ?? detail.summary.error
+            task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.artifactPaths = detail.artifacts.map(\.path)
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {
@@ -483,8 +545,32 @@ final class AppModel {
 
     private func diagnosticText(client: GatewayClient, runId: String, detail: RunDetail, error: String?) async -> String {
         var sections: [String] = []
+        let failure = detail.failure ?? detail.summary.failure
+        if let failure {
+            var failureLines = [
+                "phase: \(failure.phase)",
+                "category: \(failure.category)",
+                "message: \(failure.safeMessage)"
+            ]
+            if let harness = failure.harnessId { failureLines.append("harness: \(harness)") }
+            if let attempt = failure.attemptId { failureLines.append("attempt: \(attempt)") }
+            if let ref = failure.rawDetailRef { failureLines.append("detail: \(ref)") }
+            if !failure.eventRefs.isEmpty { failureLines.append("events:\n" + failure.eventRefs.map { "- \($0)" }.joined(separator: "\n")) }
+            if !failure.logRefs.isEmpty { failureLines.append("logs:\n" + failure.logRefs.map { "- \($0)" }.joined(separator: "\n")) }
+            if let runDir = failure.runDir { failureLines.append("runDir: \(runDir)") }
+            if !failure.nextActions.isEmpty { failureLines.append("next actions:\n" + failure.nextActions.map { "- \($0)" }.joined(separator: "\n")) }
+            sections.append("# Failure\n\n" + failureLines.joined(separator: "\n"))
+        }
         if let error, !error.isEmpty { sections.append("# Engine Error\n\n\(error)") }
-        for path in ["context/context_error.md", "events.jsonl", "arbitration/decision.yaml", "final/work_product.yaml"] {
+        var diagnosticPaths: [String] = ["final/failure.yaml", "context/context_error.md"]
+        if let failure {
+            if let ref = failure.rawDetailRef { diagnosticPaths.append(ref) }
+            diagnosticPaths.append(contentsOf: failure.eventRefs)
+            diagnosticPaths.append(contentsOf: failure.logRefs)
+        }
+        diagnosticPaths.append(contentsOf: ["attempts/a01/events.jsonl", "events.jsonl", "arbitration/decision.yaml", "final/work_product.yaml"])
+        var seen = Set<String>()
+        for path in diagnosticPaths where seen.insert(path).inserted {
             if let text = try? await client.artifactText(runId: runId, path: path), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 sections.append("## \(path)\n\n\(text)")
             }
@@ -556,7 +642,15 @@ final class AppModel {
         let payload = env.event["payload"] ?? env.event
         let before = liveTasks[idx].status
         var t = liveTasks[idx]
-        defer { t.updatedAt = .now; liveTasks[idx] = t; Self.notifyTransition(from: before, to: t.status, title: t.title) }
+        var shouldLoadDetail = false
+        defer {
+            t.updatedAt = .now
+            liveTasks[idx] = t
+            Self.notifyTransition(from: before, to: t.status, title: t.title)
+            if shouldLoadDetail {
+                Task { await self.loadRunDetail(runId) }
+            }
+        }
 
         if type == "end" {
             if t.status.isActive { t.status = .succeeded }
@@ -565,8 +659,13 @@ final class AppModel {
         if let phase = Self.phase(for: type) { t.activePhase = phase }
 
         if type.hasPrefix("run.") {
-            if type == "run.completed" { t.status = .succeeded }
-            else if type == "run.failed" { t.status = .failed }
+            if type == "run.completed" {
+                t.status = .succeeded
+                shouldLoadDetail = true
+            } else if type == "run.failed" {
+                t.status = .failed
+                shouldLoadDetail = true
+            }
             else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.status = RunStatus(api: s) }
             else if t.status == .queued { t.status = .running }
         } else if type.hasPrefix("harness.") {

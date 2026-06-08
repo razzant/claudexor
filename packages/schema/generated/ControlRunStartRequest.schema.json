@@ -12,6 +12,7 @@
           "type": "string",
           "enum": [
             "ask",
+            "explore",
             "agent",
             "best_of_n",
             "max_attempts",
@@ -103,11 +104,29 @@
         "repoRoot": {
           "type": "string"
         },
+        "contextMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "deep"
+          ]
+        },
         "inPlace": {
           "type": "boolean"
         },
         "envProfile": {
           "type": "string"
+        },
+        "specPath": {
+          "type": "string"
+        },
+        "specId": {
+          "type": "string"
+        },
+        "specHash": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false

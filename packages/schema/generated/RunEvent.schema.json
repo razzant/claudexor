@@ -33,6 +33,15 @@
             "synthesis.started",
             "arbitration.completed",
             "work_product.emitted",
+            "control.requested",
+            "control.applied",
+            "control.rejected",
+            "input.requested",
+            "input.received",
+            "input.forwarded",
+            "run.blocked",
+            "run.unblocked",
+            "run.successor_created",
             "run.completed",
             "run.failed"
           ]

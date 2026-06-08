@@ -2,6 +2,7 @@ import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, H
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudex/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudex/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudex/core";
+import { resolveSecret } from "@claudex/secrets";
 import { nowIso } from "@claudex/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
@@ -28,6 +29,24 @@ async function detectVersion(): Promise<string | null> {
   }
 }
 
+const PROVIDER_KEY_ENV = ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
+
+function providerKey(env: Record<string, string | undefined> = process.env): { envVar: (typeof PROVIDER_KEY_ENV)[number]; value: string } | null {
+  for (const envVar of PROVIDER_KEY_ENV) {
+    if (env[envVar]) return { envVar, value: env[envVar] as string };
+  }
+  return (
+    (resolveSecret("opencode") && { envVar: "OPENCODE_API_KEY" as const, value: resolveSecret("opencode") as string }) ||
+    (resolveSecret("openai") && { envVar: "OPENAI_API_KEY" as const, value: resolveSecret("openai") as string }) ||
+    (resolveSecret("anthropic") && { envVar: "ANTHROPIC_API_KEY" as const, value: resolveSecret("anthropic") as string }) ||
+    null
+  );
+}
+
+function providerKeyAvailable(): boolean {
+  return providerKey() !== null;
+}
+
 export function createOpenCodeAdapter(): HarnessAdapter {
   return {
     id: "opencode",
@@ -37,16 +56,17 @@ export function createOpenCodeAdapter(): HarnessAdapter {
       if (version === null) {
         throw new HarnessUnavailableError("opencode not found on PATH (set CLAUDEX_OPENCODE_BIN)");
       }
+      const authReady = providerKeyAvailable();
       return HarnessManifestSchema.parse({
         id: "opencode",
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.3.0",
+        adapter_version: "0.4.0",
         provider_family: "opencode",
         capabilities: {
-          plan: true,
-          spec: true,
+          plan: authReady,
+          spec: authReady,
           implement: true,
           create_from_scratch: true,
           repair: true,
@@ -61,7 +81,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           structured_events: true,
           structured_output: true,
           json_schema_output: false,
-          resume: true,
+          resume: false,
           cancel: false,
           mcp: true,
           plugins: true,
@@ -69,7 +89,14 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           quota_signal: "observed",
           usage_signal: "observed",
         },
-        auth_modes: ["local_session", "api_key"],
+        capability_profile: {
+          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "json", event_schema: "native" }],
+          session: { resume_latest: false, resume_by_id: false },
+          output: { final_json: true, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
+          auth: { supported_sources: ["api_key_env"], preferred_source: authReady ? "api_key_env" : null, probe_command: [], env_vars: [...PROVIDER_KEY_ENV] },
+          access_control: { readonly: false, workspace_write: true, full: true, mechanism: "opencode permissions not yet conformance-proven" },
+        },
+        auth_modes: authReady ? ["api_key"] : [],
         access_profiles_supported: ["workspace_write", "full", "inherit_native"],
         models: { discovery: "available" },
       });
@@ -85,11 +112,18 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           reasons: ["opencode not found (install OpenCode or set CLAUDEX_OPENCODE_BIN)"],
         });
       }
+      const authReady = providerKeyAvailable();
       return ConformanceReportSchema.parse({
         harness_id: "opencode",
-        status: "ok",
-        checks: [{ id: "installed", status: "pass", detail: version }],
-          enabled_intents: ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize"],
+        status: authReady ? "ok" : "degraded",
+        checks: [
+          { id: "installed", status: "pass", detail: version },
+          { id: "provider_auth", status: authReady ? "pass" : "fail" },
+          { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
+        ],
+        enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize"] : [],
+        disabled_intents: authReady ? ["explain", "audit"] : ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize", "explain", "audit"],
+        reasons: authReady ? ["readonly/audit not enabled until conformance-proven"] : ["opencode provider auth not configured"],
       });
     },
 
@@ -107,11 +141,14 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const args = ["run", "--format", "json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   args.push(spec.prompt);
+  const env: Record<string, string | null | undefined> = { ...spec.env };
+  const key = providerKey(spec.env);
+  for (const envVar of PROVIDER_KEY_ENV) env[envVar] = key?.envVar === envVar ? key.value : null;
 
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env: spec.env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {

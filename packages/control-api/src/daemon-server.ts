@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { extname, join, normalize, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, extname, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver } from "@claudex/delivery";
 import {
   AccessProfile,
@@ -12,6 +13,9 @@ import {
   ControlRunStartRequest,
   ControlRunStartInfo,
   ControlQueuedRunInfo,
+  ControlRunControlRequest,
+  ControlRunControlResponse,
+  ControlRunInputRequest,
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
@@ -20,9 +24,11 @@ import {
   DecisionRecord,
   ModeKind,
   Portfolio,
+  RunEvent,
+  RunFailure,
   WorkProduct,
 } from "@claudex/schema";
-import { containsSecretLikeToken, redactSecrets, sha256 } from "@claudex/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, nowIso, redactSecrets, sha256 } from "@claudex/util";
 import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -67,6 +73,7 @@ export interface DaemonControlApiOptions {
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
+const NO_PROJECT_ROOT = join(homedir(), ".cache", "claudex", "no-project");
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
@@ -182,9 +189,9 @@ export class DaemonControlApiServer {
       let params: ControlRunStartRequest;
       try {
         const body = await this.readBody(req);
-        assertNoInlineSecrets(body);
+        assertNoInlineSecretValues(body);
         const parsed = ControlRunStartRequest.parse(body);
-        params = { ...parsed, repoRoot: parsed.repoRoot ?? process.cwd() };
+        params = normalizeRunStart(parsed);
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
@@ -245,9 +252,12 @@ export class DaemonControlApiServer {
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       let body: ControlApplyCheckRequest;
       try {
-        body = ControlApplyCheckRequest.parse(await this.readBody(req));
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlApplyCheckRequest.parse(raw);
       } catch (err) {
-        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
@@ -269,9 +279,12 @@ export class DaemonControlApiServer {
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       let body: ControlApplyRequest;
       try {
-        body = ControlApplyRequest.parse(await this.readBody(req));
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlApplyRequest.parse(raw);
       } catch (err) {
-        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
@@ -292,9 +305,12 @@ export class DaemonControlApiServer {
     if (method === "POST" && path === "/settings") {
       let body: ControlSettingsUpdateRequest;
       try {
-        body = ControlSettingsUpdateRequest.parse(await this.readBody(req));
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlSettingsUpdateRequest.parse(raw);
       } catch (err) {
-        return this.json(res, 400, { error: err instanceof Error ? err.message : "bad request" });
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       return this.service(res, "updateSettings", body);
     }
@@ -311,8 +327,81 @@ export class DaemonControlApiServer {
       if (!isAllowedSecretName(name)) return this.json(res, 400, { error: "secret name must be openai, anthropic, cursor, opencode, or raw" });
       return this.service(res, "deleteSecret", name);
     }
-    if (method === "POST" && path === "/spec/questions") return this.service(res, "specQuestions", await this.readBody(req));
-    if (method === "POST" && path === "/spec/freeze") return this.service(res, "specFreeze", await this.readBody(req));
+    if (method === "POST" && path === "/spec/questions") {
+      try {
+        const body = await this.readBody(req);
+        assertNoSpecBodySecrets(body);
+        return this.service(res, "specQuestions", body);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+    if (method === "POST" && path === "/spec/freeze") {
+      try {
+        const body = await this.readBody(req);
+        assertNoSpecBodySecrets(body);
+        return this.service(res, "specFreeze", body);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
+    const controlMatch = /^\/runs\/([^/]+)\/control$/.exec(path);
+    if (method === "POST" && controlMatch) {
+      const rec = await this.findRun(decodeURIComponent(controlMatch[1] as string));
+      if (!rec) return this.json(res, 404, { error: "no such run" });
+      let body: ControlRunControlRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlRunControlRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      if (body.control.kind === "cancel" || body.control.kind === "interrupt") {
+        appendRunAuditEvent(rec, "control.requested", { control: body.control });
+        await this.opts.daemon.cancel(rec.id);
+        appendRunAuditEvent(rec, "control.applied", { control: body.control });
+        return this.json(res, 200, ControlRunControlResponse.parse({
+          accepted: true,
+          status: "applied",
+          runId: rec.runId ?? rec.id,
+          message: `${body.control.kind} requested`,
+        }));
+      }
+      appendRunAuditEvent(rec, "control.rejected", { control: body.control, reason: "unsupported" });
+      return this.json(res, 409, ControlRunControlResponse.parse({
+        accepted: false,
+        status: "unsupported",
+        runId: rec.runId ?? rec.id,
+        message: `control '${body.control.kind}' is not supported by this run yet`,
+      }));
+    }
+
+    const inputMatch = /^\/runs\/([^/]+)\/input$/.exec(path);
+    if (method === "POST" && inputMatch) {
+      const rec = await this.findRun(decodeURIComponent(inputMatch[1] as string));
+      if (!rec) return this.json(res, 404, { error: "no such run" });
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const body = ControlRunInputRequest.parse(raw);
+        appendRunAuditEvent(rec, "input.received", { input: body.input });
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      appendRunAuditEvent(rec, "control.rejected", { input: true, reason: "unsupported" });
+      return this.json(res, 409, ControlRunControlResponse.parse({
+        accepted: false,
+        status: "unsupported",
+        runId: rec.runId ?? rec.id,
+        message: "live input is not supported by this run yet",
+      }));
+    }
 
     const cancelMatch = /^\/runs\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancelMatch) {
@@ -455,6 +544,62 @@ function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
   return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
 }
 
+function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
+  const mode = parsed.mode ?? "agent";
+  const repoRoot = parsed.repoRoot?.trim();
+  if (repoRoot) {
+    if (parsed.contextMode === "off") {
+      throw Object.assign(new Error("contextMode 'off' is only supported for Ask without a repoRoot"), { status: 400 });
+    }
+    return { ...parsed, repoRoot, contextMode: parsed.contextMode ?? "auto" };
+  }
+  if (mode === "ask") {
+    mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
+    return { ...parsed, repoRoot: NO_PROJECT_ROOT, contextMode: "off" };
+  }
+  throw Object.assign(new Error(`repoRoot is required for mode '${mode}'`), { status: 400 });
+}
+
+function projectMetadata(rec: DaemonRunRecord): { repoRoot: string | null; projectName: string | null; contextMode: "off" | "auto" | "deep" } {
+  const p = paramsRecord(rec);
+  const repoRoot = typeof p["repoRoot"] === "string" ? p["repoRoot"] : runRepoRoot(rec);
+  const contextMode = p["contextMode"] === "off" || p["contextMode"] === "deep" || p["contextMode"] === "auto" ? p["contextMode"] : "auto";
+  const noProject = contextMode === "off" && repoRoot === NO_PROJECT_ROOT;
+  return {
+    repoRoot: noProject ? null : repoRoot,
+    projectName: noProject || !repoRoot ? null : basename(repoRoot),
+    contextMode,
+  };
+}
+
+function readFailure(rec: DaemonRunRecord): RunFailure | null {
+  const fromArtifact = safeReadStructuredArtifact(rec, "final/failure.yaml", RunFailure);
+  if (fromArtifact) return fromArtifact;
+  if (!rec.error) return null;
+  return RunFailure.parse({
+    category: "unknown",
+    safeMessage: rec.error,
+    runDir: rec.runDir ?? null,
+  });
+}
+
+function appendRunAuditEvent(rec: DaemonRunRecord, type: string, payload: Record<string, unknown>): void {
+  if (!rec.runDir) return;
+  try {
+    const redactedPayload = JSON.parse(redactSecrets(JSON.stringify(payload))) as Record<string, unknown>;
+    const event = RunEvent.parse({
+      ts: nowIso(),
+      run_id: rec.runId ?? rec.id,
+      task_id: rec.taskId ?? "unknown",
+      type,
+      payload: redactedPayload,
+    });
+    appendFileSync(join(rec.runDir, "events.jsonl"), JSON.stringify(event) + "\n", { mode: 0o600 });
+  } catch {
+    /* audit append must not change control behavior */
+  }
+}
+
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const p = paramsRecord(rec);
   const parsedMode = typeof p["mode"] === "string" ? ModeKind.parse(p["mode"]) : undefined;
@@ -467,6 +612,8 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     state: rec.state,
     runDir: rec.runDir,
     error: rec.error,
+    failure: readFailure(rec),
+    project: projectMetadata(rec),
     mode: parsedMode,
     prompt: typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined,
     harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
@@ -477,6 +624,8 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     maxUsd: typeof p["maxUsd"] === "number" || p["maxUsd"] === null ? (p["maxUsd"] as number | null) : undefined,
     access: parsedAccess,
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
+    specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
+    specHash: typeof p["specHash"] === "string" ? p["specHash"] : undefined,
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,
@@ -484,12 +633,14 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
 }
 
 function detailFor(rec: DaemonRunRecord): ControlRunDetail {
+  const failure = readFailure(rec);
   return ControlRunDetail.parse({
     summary: summarizeRun(rec),
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     finalSummary: readTextArtifact(rec, "final/summary.md"),
     decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
+    failure,
   });
 }
 
@@ -624,6 +775,8 @@ function contentType(path: string): string {
     case ".json": return "application/json; charset=utf-8";
     case ".md":
     case ".txt":
+    case ".jsonl":
+    case ".log":
     case ".diff":
     case ".patch":
     case ".yaml":
@@ -657,17 +810,11 @@ function validSecretSetBody(body: unknown): boolean {
   );
 }
 
-function assertNoInlineSecrets(value: unknown, path = "$"): void {
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoInlineSecrets(v, `${path}[${i}]`));
-    return;
-  }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
-      throw Object.assign(new Error(`inline secrets/env are not accepted in run params (${path}.${key}); store values via /secrets or claudex secrets and pass refs/profiles`), { status: 400 });
-    }
-    assertNoInlineSecrets(child, `${path}.${key}`);
+function assertNoSpecBodySecrets(body: unknown): void {
+  assertNoInlineSecretValues(body, "$", "spec body");
+  const serialized = JSON.stringify(body ?? null);
+  if (containsSecretLikeToken(serialized)) {
+    throw Object.assign(new Error("secret-like value is not accepted in spec body; store secrets by ref and keep specs durable/sanitized"), { status: 400 });
   }
 }
 

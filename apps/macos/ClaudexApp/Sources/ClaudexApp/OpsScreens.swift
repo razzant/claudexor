@@ -115,12 +115,27 @@ private struct HarnessRow: View {
                     Text(info.auth).font(.caption).foregroundStyle(.secondary)
                 }
                 if info.health != .ok {
-                    HStack(spacing: Theme.Spacing.sm) {
-                        Button { copy(nativeSetupCommand(for: info.family)) } label: {
-                            Label("Copy setup", systemImage: "doc.on.doc")
+                    FlowLayout(spacing: Theme.Spacing.sm) {
+                        Button { openInstallGuide(info.family) } label: {
+                            Label("Install guide", systemImage: "arrow.down.circle")
                         }
                         .buttonStyle(.bordered)
-                        .help("Copy the native install/login command for \(info.family.label).")
+                        .help("Open the official \(info.family.label) install/login guide. Claudex does not bundle third-party CLIs.")
+                        Button { copy(nativeLoginCommand(for: info.family)) } label: {
+                            Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Copy the native login command for \(info.family.label).")
+                        Button { model.route = .settings } label: {
+                            Label("Use Stored Key", systemImage: "key")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Open Settings -> Auth & Billing to store or verify API-key fallback refs.")
+                        Button { copy("claudex ask \"2+2?\" --harness \(info.family.rawValue)") } label: {
+                            Label("Copy Smoke", systemImage: "checkmark.seal")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Copy a minimal smoke-test command for this harness.")
                         Button { Task { await model.refreshHarnesses() } } label: {
                             Label("Recheck", systemImage: "arrow.clockwise")
                         }
@@ -146,7 +161,7 @@ private struct HarnessRow: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    private func nativeSetupCommand(for family: HarnessFamily) -> String {
+    private func nativeLoginCommand(for family: HarnessFamily) -> String {
         switch family {
         case .codex: return "codex login && claudex doctor --harness codex"
         case .claude: return "claude /login && claudex doctor --harness claude"
@@ -154,6 +169,22 @@ private struct HarnessRow: View {
         case .opencode: return "opencode auth login && claudex doctor --harness opencode"
         case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
         case .fake: return "claudex doctor --all"
+        }
+    }
+
+    private func openInstallGuide(_ family: HarnessFamily) {
+        guard let url = URL(string: installGuideURL(family)) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func installGuideURL(_ family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "https://developers.openai.com/codex"
+        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
+        case .cursor: return "https://docs.cursor.com/cli"
+        case .opencode: return "https://opencode.ai/docs"
+        case .raw: return "https://platform.openai.com/docs"
+        case .fake: return "https://github.com/joi-lab/claudex"
         }
     }
 }
@@ -230,6 +261,7 @@ struct SettingsScreen: View {
     @State private var anthropicKey = ""
     @State private var secretStatus: String?
     @State private var copiedCommand: String?
+    @AppStorage("claudex.reducedVisualEffects") private var reducedVisualEffects = false
 
     var body: some View {
         @Bindable var model = model
@@ -256,11 +288,19 @@ struct SettingsScreen: View {
                         ForEach(AppearanceMode.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    Toggle(isOn: $reducedVisualEffects) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Reduce ambient glow motion").font(.callout)
+                            Text("Keeps the Liquid Glass/chrome style but freezes and softens the mesh backdrop.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch).tint(Theme.accent)
                     Text("Liquid Glass stays on navigation/chrome; dense content uses opaque surfaces for contrast.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 settingsGroup("Current Project", "folder") {
-                    Text("Runs are sent to this repo root. Ask reads context from it only when the selected harness supports read-only explain.")
+                    Text("Project-aware modes require this repo root. Ask can run without a project and stores artifacts in the user-level Claudex store.")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: Theme.Spacing.sm) {
                         TextField("Project root", text: $projectRootDraft)
@@ -274,7 +314,12 @@ struct SettingsScreen: View {
                         } label: { Label("Use", systemImage: "checkmark") }
                             .buttonStyle(.borderedProminent).tint(Theme.accent)
                     }
-                    KeyValueRow(key: "Effective project", value: model.projectRoot.isEmpty ? "Daemon working directory" : model.projectRoot, mono: true)
+                    Picker("Project context", selection: $model.projectContextMode) {
+                        Text("Auto").tag("auto")
+                        Text("Deep").tag("deep")
+                    }
+                    .help("Controls how much repository context the engine should package when a project is selected.")
+                    KeyValueRow(key: "Effective project", value: model.projectRoot.isEmpty ? "No project selected" : model.projectRoot, mono: true)
                     KeyValueRow(key: "Project config", value: ".claudex/config.yaml", mono: true)
                 }
                 settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
@@ -366,7 +411,7 @@ struct SettingsScreen: View {
                             .help("Default cap for runs. Composer per-run cap can still override it.")
                         TextField("Max USD per day", text: $maxUsdPerDay)
                             .textFieldStyle(.roundedBorder)
-                            .help("User-level daily cap. Empty means no configured cap.")
+                            .help("User-level per-day budget cap. Empty means no configured cap.")
                     }
                     Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "square.and.arrow.down") }
                         .buttonStyle(.bordered)
@@ -374,7 +419,7 @@ struct SettingsScreen: View {
                 }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudex for macOS")
-                    KeyValueRow(key: "Version", value: "v0.3.0 beta")
+                    KeyValueRow(key: "Version", value: "v0.4.0 beta")
                     KeyValueRow(key: "Engine", value: "@claudex/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Table-first queue; apply/check server endpoints only")
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
@@ -382,7 +427,7 @@ struct SettingsScreen: View {
                 }
             }
             .padding(.horizontal, Theme.Spacing.xl)
-            .padding(.top, Theme.Spacing.xxl)
+            .padding(.top, Theme.Spacing.xxxl)
             .padding(.bottom, Theme.Spacing.xl)
             .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -443,13 +488,18 @@ struct SettingsScreen: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer()
+            Button { openInstallGuide(family) } label: {
+                Label("Install guide", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.bordered)
+            .help("Open the official \(family.label) install/login guide.")
             Button {
                 copy(command)
             } label: {
-                Label("Copy setup", systemImage: "doc.on.doc")
+                Label("Copy Login", systemImage: "person.crop.circle.badge.checkmark")
             }
             .buttonStyle(.bordered)
-            .help("Copy the native setup command. Claudex does not broker SaaS OAuth; it reuses each CLI's native login.")
+            .help("Copy the native login command. Claudex does not broker SaaS OAuth; it reuses each CLI's native login.")
         }
     }
 
@@ -461,6 +511,22 @@ struct SettingsScreen: View {
         case .opencode: return "opencode auth login && claudex doctor --harness opencode"
         case .raw: return "claudex secrets set openai --from-env OPENAI_API_KEY"
         case .fake: return "claudex doctor --all"
+        }
+    }
+
+    private func openInstallGuide(_ family: HarnessFamily) {
+        guard let url = URL(string: installGuideURL(family)) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func installGuideURL(_ family: HarnessFamily) -> String {
+        switch family {
+        case .codex: return "https://developers.openai.com/codex"
+        case .claude: return "https://docs.anthropic.com/en/docs/claude-code"
+        case .cursor: return "https://docs.cursor.com/cli"
+        case .opencode: return "https://opencode.ai/docs"
+        case .raw: return "https://platform.openai.com/docs"
+        case .fake: return "https://github.com/joi-lab/claudex"
         }
     }
 

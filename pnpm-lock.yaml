@@ -244,6 +244,9 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
@@ -256,6 +259,9 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
@@ -268,6 +274,9 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
@@ -292,6 +301,9 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudex/util':
         specifier: workspace:*
         version: link:../util
@@ -304,6 +316,9 @@ importers:
       '@claudex/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudex/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudex/util':
         specifier: workspace:*
         version: link:../util

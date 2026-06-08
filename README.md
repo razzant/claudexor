@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `audit`, and `benchmark`. Any harness that declares the capability can be
 assigned the intent.
 
-Current status: **v0.3.0 beta**. This is a breaking preview:
+Current status: **v0.4.0 beta**. This is a breaking preview:
 old mode ids are intentionally not supported.
 
 ## Modes
@@ -17,6 +17,8 @@ old mode ids are intentionally not supported.
 Canonical mode ids:
 
 - `ask` - read-only answer/explanation route. Default in the macOS composer.
+- `explore` - bounded read-only research swarm with synthesis, omissions, and
+  follow-up questions.
 - `agent` - default `claudex run` route; one primary-biased harness, direct edit.
 - `best_of_n` - N isolated candidates, review, synthesis when useful, arbitration.
 - `max_attempts` - repair loop with a hard attempt cap.
@@ -33,12 +35,13 @@ Unknown modes fail loudly. `daily`, `until_convergence`, `readonly_swarm`, and
 
 ```bash
 claudex ask "2+2?"
+claudex explore "map this repo's auth and run storage"
 claudex run "fix the failing auth refresh test" --harness codex
 claudex race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
 claudex run "repair the parser test" --mode max-attempts --attempts 3
 claudex run "fix the bug and keep repairing until clean" --mode until-clean
 claudex plan "design a config-to-gates implementation"
-claudex audit "map artifact writers and secret risk"
+claudex run "map artifact writers and secret risk" --mode readonly_audit
 ```
 
 Inspect and apply:
@@ -68,7 +71,8 @@ reason and are gated out of launch.
 Claudex mirrors native harness auth first. API keys are a fallback and live in
 the OS Keychain where available, otherwise a `0600` file. Run params, daemon
 `jobs.json`, artifacts, summaries, patches, and PR text store only refs/metadata,
-not raw secret values.
+not raw secret values. Subscription/native routes scrub provider API-key env
+vars unless an API-key source is explicitly selected.
 
 ```bash
 claudex auth status
@@ -88,6 +92,7 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
+- `POST /runs/:id/control`, `POST /runs/:id/input`
 - `GET /harnesses`, `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
@@ -102,7 +107,9 @@ claudex daemon stop
 
 ## Artifact Layout
 
-Every run creates files under `.claudex/runs/<run_id>/`:
+Every project run creates files under `.claudex/runs/<run_id>/`. App-launched
+Ask without a project uses an empty synthetic cwd at `~/.cache/claudex/no-project`
+and writes artifacts to the user-level store `~/.claudex/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -114,7 +121,11 @@ arbitration/decision.yaml
 final/patch.diff
 final/work_product.yaml
 final/summary.md
+final/failure.yaml?
 final/answer.md?
+final/explore.md?
+final/explore-findings.yaml?
+final/omissions.md?
 final/report.md?
 final/plan.md?
 context/context_error.md?
@@ -132,8 +143,8 @@ Important boundaries:
 - `packages/schema` owns contracts and generated JSON Schema.
 - `packages/harness-*` adapters translate native tool I/O into typed events.
 - `packages/workspace` owns worktree envelopes and scoped harness homes.
-- `packages/orchestrator` owns Ask, Agent, Best-of-N, Max Attempts, Until Clean,
-  Plan, Create, Read-only Audit, and Benchmark modes.
+- `packages/orchestrator` owns Ask, Explore, Agent, Best-of-N, Max Attempts,
+  Until Clean, Plan, Create, Read-only Audit, and Benchmark modes.
 - `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.

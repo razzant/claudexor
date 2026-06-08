@@ -1,6 +1,6 @@
 {
   "name": "@claudex/mcp-server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Minimal MCP server (stdio JSON-RPC) exposing Claudex tools. Runner injected.",
   "type": "module",
   "main": "./dist/index.js",

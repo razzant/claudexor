@@ -72,7 +72,7 @@ struct TasksScreen: View {
         case .all: return model.tasks
         case .active: return model.tasks.filter { $0.status.isActive }
         case .needsYou: return model.tasks.filter { $0.status.needsAttention }
-        case .done: return model.tasks.filter { [.succeeded, .failed, .cancelled].contains($0.status) }
+        case .done: return model.tasks.filter { [.succeeded, .cancelled].contains($0.status) }
         }
     }
 

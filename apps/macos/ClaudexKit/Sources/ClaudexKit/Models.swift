@@ -31,11 +31,12 @@ public struct StartRunRequest: Codable, Sendable {
     public var access: String?
     public var tests: [String]?
     public var repoRoot: String?
+    public var contextMode: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil,
                 primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
-                tests: [String]? = nil, repoRoot: String? = nil) {
+                tests: [String]? = nil, repoRoot: String? = nil, contextMode: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -47,6 +48,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.access = access
         self.tests = tests
         self.repoRoot = repoRoot
+        self.contextMode = contextMode
     }
 }
 
@@ -69,6 +71,43 @@ public enum RunStartResult: Sendable, Equatable {
     case queued(QueuedRunInfo)
 }
 
+public struct RunFailureInfo: Codable, Sendable, Equatable {
+    public let phase: String
+    public let category: String
+    public let harnessId: String?
+    public let attemptId: String?
+    public let safeMessage: String
+    public let rawDetailRef: String?
+    public let logRefs: [String]
+    public let eventRefs: [String]
+    public let runDir: String?
+    public let nextActions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case phase, category, harnessId, attemptId, safeMessage, rawDetailRef, logRefs, eventRefs, runDir, nextActions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? "unknown"
+        category = try c.decodeIfPresent(String.self, forKey: .category) ?? "unknown"
+        harnessId = try c.decodeIfPresent(String.self, forKey: .harnessId)
+        attemptId = try c.decodeIfPresent(String.self, forKey: .attemptId)
+        safeMessage = try c.decode(String.self, forKey: .safeMessage)
+        rawDetailRef = try c.decodeIfPresent(String.self, forKey: .rawDetailRef)
+        logRefs = try c.decodeIfPresent([String].self, forKey: .logRefs) ?? []
+        eventRefs = try c.decodeIfPresent([String].self, forKey: .eventRefs) ?? []
+        runDir = try c.decodeIfPresent(String.self, forKey: .runDir)
+        nextActions = try c.decodeIfPresent([String].self, forKey: .nextActions) ?? []
+    }
+}
+
+public struct RunProjectInfo: Codable, Sendable, Equatable {
+    public let repoRoot: String?
+    public let projectName: String?
+    public let contextMode: String
+}
+
 public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let jobId: String?
     public let runId: String
@@ -76,6 +115,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let state: String
     public let runDir: String?
     public let error: String?
+    public let failure: RunFailureInfo?
+    public let project: RunProjectInfo?
     public let mode: String?
     public let prompt: String?
     public let harnesses: [String]?
@@ -86,6 +127,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let maxUsd: Double?
     public let access: String?
     public let tests: [String]?
+    public let specId: String?
+    public let specHash: String?
     public let createdAt: String?
     public let startedAt: String?
     public let finishedAt: String?
@@ -109,6 +152,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
     public let finalSummary: String?
     public let decision: JSONValue?
     public let workProduct: JSONValue?
+    public let failure: RunFailureInfo?
 }
 
 public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {

@@ -47,12 +47,12 @@ function sortKeys(value: unknown): unknown {
 }
 
 export function ensureDir(path: string): void {
-  mkdirSync(path, { recursive: true });
+  mkdirSync(path, { recursive: true, mode: 0o700 });
 }
 
 export function writeText(path: string, text: string): void {
   ensureDir(dirname(path));
-  writeFileSync(path, text, "utf8");
+  writeFileSync(path, text, { encoding: "utf8", mode: 0o600 });
 }
 
 export function writeJson(path: string, value: unknown): void {
@@ -61,7 +61,7 @@ export function writeJson(path: string, value: unknown): void {
 
 export function appendLine(path: string, line: string): void {
   ensureDir(dirname(path));
-  writeFileSync(path, line.endsWith("\n") ? line : line + "\n", { flag: "a" });
+  writeFileSync(path, line.endsWith("\n") ? line : line + "\n", { flag: "a", mode: 0o600 });
 }
 
 export function readTextSafe(path: string): string | null {
@@ -116,6 +116,33 @@ export function redactSecrets(text: string): string {
 
 export function containsSecretLikeToken(text: string): boolean {
   return redactSecrets(text) !== text;
+}
+
+export function assertNoInlineSecretValues(value: unknown, path = "$", context = "run params"): void {
+  if (typeof value === "string") {
+    if (containsSecretLikeToken(value)) {
+      throw Object.assign(
+        new Error(`secret-like value is not accepted in ${context} (${path}); store values via secrets and pass refs/profiles`),
+        { status: 400 },
+      );
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoInlineSecretValues(v, `${path}[${i}]`, context));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "prompt") continue;
+    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
+      throw Object.assign(
+        new Error(`inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`),
+        { status: 400 },
+      );
+    }
+    assertNoInlineSecretValues(child, `${path}.${key}`, context);
+  }
 }
 
 /**

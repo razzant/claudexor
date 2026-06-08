@@ -66,7 +66,7 @@ export class McpServer {
         this.reply(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.3.0" },
+          serverInfo: { name: this.opts.name ?? "claudex", version: this.opts.version ?? "0.4.0" },
         });
         return;
       case "ping":
@@ -121,6 +121,7 @@ export function defaultClaudexTools(runner: RunnerFn): McpTool[] {
   });
   return [
     mk("claudex_ask", "Answer a question through a read-only selected harness route.", "ask"),
+    mk("claudex_explore", "Run a bounded read-only exploration and verified synthesis.", "explore"),
     mk("claudex_run", "Run a task in Agent mode and return the WorkProduct summary.", "agent"),
     mk("claudex_race", "Best-of-N tournament with cross-family review.", "best_of_n"),
     mk("claudex_plan", "Produce a read-only plan.", "plan"),

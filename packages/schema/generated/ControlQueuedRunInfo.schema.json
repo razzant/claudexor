@@ -12,6 +12,7 @@
           "enum": [
             "queued",
             "running",
+            "blocked",
             "succeeded",
             "failed",
             "cancelled",

@@ -59,6 +59,7 @@ struct ComposerView: View {
     private var canLaunch: Bool {
         model.health == .connected &&
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (!mode.requiresProject || model.hasCurrentProject) &&
         !availableSelectedHarnesses.isEmpty
     }
 
@@ -69,6 +70,7 @@ struct ComposerView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                     promptSection
+                    projectSection
                     modeSection
                     harnessSection
                     routingSection
@@ -124,6 +126,46 @@ struct ComposerView: View {
         }
     }
 
+    private var projectSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            SectionLabel("Current Project", systemImage: "folder")
+            HStack(spacing: Theme.Spacing.md) {
+                Label(model.currentProjectName, systemImage: model.hasCurrentProject ? "folder" : "folder.badge.questionmark")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(mode.requiresProject && !model.hasCurrentProject ? Theme.status(.blocked) : .primary)
+                    .lineLimit(1)
+                Spacer()
+                if model.hasCurrentProject {
+                    Picker("Context", selection: Binding(get: { model.projectContextMode }, set: { model.projectContextMode = $0 })) {
+                        Text("Auto").tag("auto")
+                        Text("Deep").tag("deep")
+                    }
+                    .labelsHidden()
+                    .frame(width: 112)
+                    .help("Project Context controls how much repository context this run receives.")
+                    Button { model.clearProject() } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Clear the Current Project. Ask can still run without a project.")
+                }
+                Button { model.chooseProject() } label: {
+                    Label(model.hasCurrentProject ? "Change" : "Choose", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .help("Choose the repository or workspace this run should operate on.")
+            }
+            .padding(Theme.Spacing.md)
+            .cardSurface()
+
+            if mode.requiresProject && !model.hasCurrentProject {
+                Label("\(mode.label) needs a Current Project. Ask can run without one.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.status(.blocked))
+            }
+        }
+    }
+
     private func modeCard(_ m: RunMode) -> some View {
         let active = m == mode
         return Button { withAnimation(.snappy) { mode = m } } label: {
@@ -175,11 +217,12 @@ struct ComposerView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             SectionLabel("Routing", systemImage: "point.3.connected.trianglepath.dotted")
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Picker("Primary", selection: $primaryHarness) {
+                Picker("Primary", selection: Binding(get: { effectivePrimary ?? primaryHarness }, set: { primaryHarness = $0 })) {
                     ForEach(availableSelectedHarnesses) { family in
                         Label(family.label, systemImage: family.glyph).tag(family)
                     }
                 }
+                .disabled(availableSelectedHarnesses.isEmpty)
                 .help("Primary biases Ask/Agent and the first route. Selected harness chips remain the eligible pool.")
 
                 Picker("Portfolio", selection: $portfolio) {
@@ -260,6 +303,9 @@ struct ComposerView: View {
         HStack(spacing: Theme.Spacing.md) {
             if model.health != .connected {
                 Label("Engine offline — reconnect before launching", systemImage: "bolt.slash")
+                    .font(.caption).foregroundStyle(Theme.status(.blocked))
+            } else if mode.requiresProject && !model.hasCurrentProject {
+                Label("Choose a Current Project for \(mode.label)", systemImage: "folder.badge.questionmark")
                     .font(.caption).foregroundStyle(Theme.status(.blocked))
             } else if availableSelectedHarnesses.isEmpty {
                 Label("No selected harness can handle \(mode.requiredIntent)", systemImage: "slash.circle")

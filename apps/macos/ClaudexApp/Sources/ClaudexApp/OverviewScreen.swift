@@ -1,7 +1,6 @@
 import SwiftUI
 
 /// Home — composer-led, like Codex/Claude Code (no greeting; this is a dev tool). The
-/// Home — composer-led, like Codex/Claude Code (no greeting; this is a dev tool). The
 /// glow is a contained visual layer, and a single floating Liquid Glass composer is the
 /// signature glass moment. Everything below is solid content.
 struct HomeScreen: View {
@@ -9,7 +8,6 @@ struct HomeScreen: View {
     @State private var prompt = ""
     @State private var mode: RunMode = .ask
     @State private var harnesses: Set<HarnessFamily> = [.codex, .claude]
-    @State private var modeHelpPresented = false
     @FocusState private var promptFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -83,25 +81,7 @@ struct HomeScreen: View {
             // minimum on the detail column (the cause of the small-window clipping).
             FlowLayout(spacing: Theme.Spacing.sm) {
                 modeMenu
-                Button { modeHelpPresented.toggle() } label: {
-                    Image(systemName: "info.circle")
-                        .imageScale(.small)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accent)
-                .popover(isPresented: $modeHelpPresented, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        Label(mode.label, systemImage: mode.glyph)
-                            .font(.callout.weight(.semibold))
-                        Text(mode.blurb)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(Theme.Spacing.md)
-                    .frame(width: 260, alignment: .leading)
-                }
-                .help("\(mode.label): \(mode.blurb)")
+                projectMenu
                 ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
                     let availability = model.availability(for: family, mode: mode)
                     Button {
@@ -127,12 +107,14 @@ struct HomeScreen: View {
     private var canLaunch: Bool {
         model.health == .connected &&
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (!mode.requiresProject || model.hasCurrentProject) &&
         !selectedAvailableHarnesses.isEmpty
     }
 
     private var launchHelp: String {
         if model.health != .connected { return "Reconnect the local engine before launching." }
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Enter a question or task first." }
+        if mode.requiresProject && !model.hasCurrentProject { return "\(mode.label) needs a Current Project. Ask can run without one." }
         if selectedAvailableHarnesses.isEmpty { return "Select at least one harness that is available for \(mode.requiredIntent)." }
         return "Launch \(mode.label) with \(selectedAvailableHarnesses.map(\.label).joined(separator: ", ")) (⌘↵)"
     }
@@ -157,10 +139,45 @@ struct HomeScreen: View {
         .help("\(mode.label): \(mode.blurb)")
     }
 
+    private var projectMenu: some View {
+        Menu {
+            Button { model.chooseProject() } label: {
+                Label(model.hasCurrentProject ? "Change Project..." : "Choose Project...", systemImage: "folder")
+            }
+            if model.hasCurrentProject {
+                Button(role: .destructive) { model.clearProject() } label: {
+                    Label("Clear Project", systemImage: "xmark.circle")
+                }
+                Divider()
+                Picker("Project Context", selection: Binding(get: { model.projectContextMode }, set: { model.projectContextMode = $0 })) {
+                    Text("Auto").tag("auto")
+                    Text("Deep").tag("deep")
+                }
+            }
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: model.hasCurrentProject ? "folder" : "folder.badge.questionmark").imageScale(.small)
+                Text(model.currentProjectName).lineLimit(1)
+                if model.hasCurrentProject {
+                    Text(model.projectContextMode == "deep" ? "Deep" : "Auto")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.up.chevron.down").imageScale(.small).foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(mode.requiresProject && !model.hasCurrentProject ? Theme.status(.blocked) : .secondary)
+            .frame(maxWidth: 240, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(model.hasCurrentProject ? "Current Project: \(model.normalizedProjectRoot). Project Context controls how much repository context Ask/Plan/Agent receive." : "Choose a Current Project for Agent, Plan, Create, Audit, Benchmark, and Explore. Ask can run without a project.")
+    }
+
     private func launch() {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = selectedAvailableHarnesses
-        guard !text.isEmpty, !selected.isEmpty else { return }
+        guard !text.isEmpty, !selected.isEmpty, (!mode.requiresProject || model.hasCurrentProject) else { return }
         let n = mode.isMultiCandidate ? max(2, selected.count) : 1
         Task { await model.startRun(prompt: text, mode: mode, harnesses: selected,
                                     primary: selected.first, portfolio: "subscription-first",
