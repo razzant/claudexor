@@ -13,9 +13,9 @@ struct TaskDetailView: View {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .answer: return "Answer"
+            case .answer: return "Outcome"
             case .plan: return "Plan"
-            case .activity: return "Activity"
+            case .activity: return "Timeline"
             case .candidates: return "Candidates"
             case .diff: return "Diff"
             case .review: return "Review"
@@ -38,13 +38,13 @@ struct TaskDetailView: View {
     private var task: TaskRun? { model.task(taskId) }
 
     private func defaultTab(for task: TaskRun) -> Tab {
+        if task.status.isActive {
+            return .activity
+        }
         if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .exhausted {
-            return .diagnostics
+            return task.answerText == nil ? .diagnostics : .answer
         }
-        if task.mode == .ask || task.answerText != nil {
-            return .answer
-        }
-        return .plan
+        return .answer
     }
 
     private func autoSelectDefaultTab(for task: TaskRun) {
@@ -73,6 +73,7 @@ struct TaskDetailView: View {
             }
             .onChange(of: task.status) { _, _ in autoSelectDefaultTab(for: task) }
             .onChange(of: task.engineError ?? "") { _, _ in autoSelectDefaultTab(for: task) }
+            .onChange(of: task.answerText ?? "") { _, _ in autoSelectDefaultTab(for: task) }
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")
@@ -97,12 +98,13 @@ struct TaskDetailView: View {
                 }
                 RouteProofBadge(proof: task.routeProof)
                 ForEach(task.harnesses) { HarnessChip(family: $0) }
-                BudgetMini(spend: task.spendUsd, cap: task.capUsd)
+                BudgetMini(spend: task.spendUsd, cap: task.capUsd, spendKnown: task.spendKnown, capKnown: task.capKnown, spendEstimated: task.spendEstimated)
                 if task.isLive && task.status.isActive {
                     Button(role: .destructive) { Task { await model.cancel(task.id) } } label: {
                         Label("Cancel", systemImage: "stop.circle")
                     }
                     .buttonStyle(.bordered)
+                    .help("Request cancel/interrupt for the active harness process.")
                 }
             }
 
@@ -157,7 +159,7 @@ struct TaskDetailView: View {
             }
         case .activity:
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Activity", systemImage: "waveform", accessory: AnyView(verbosityMenu))
+                SectionLabel("Timeline", systemImage: "waveform", accessory: AnyView(verbosityMenu))
                 Panel { ActivityFeedView(events: task.activity.reversed(), verbosity: verbosity) }
             }
         case .candidates:
@@ -173,7 +175,7 @@ struct TaskDetailView: View {
 
     private func answerContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            SectionLabel(task.mode == .ask ? "Answer" : "Final output", systemImage: "text.bubble")
+            SectionLabel(task.mode == .ask ? "Answer" : "Outcome", systemImage: "text.bubble")
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(answer)
@@ -198,6 +200,7 @@ struct TaskDetailView: View {
             Label(verbosity.label, systemImage: "slider.horizontal.3").font(.caption)
         }
         .menuStyle(.borderlessButton).fixedSize()
+        .help("Choose how much timeline detail to show.")
     }
 
     private func candidatesContent(_ task: TaskRun) -> some View {
@@ -273,7 +276,7 @@ struct TaskDetailView: View {
                             portfolio: "subscription-first",
                             model: nil,
                             n: task.n,
-                            capUsd: task.capUsd,
+                            capUsd: task.capKnown ? task.capUsd : nil,
                             access: task.mode.isReadOnly ? "readonly" : "workspace_write",
                             repoRootOverride: task.repoRoot
                         )

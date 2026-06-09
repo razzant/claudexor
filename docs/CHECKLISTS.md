@@ -51,6 +51,15 @@ pnpm test
 - Harness setup/login actions must be owned by the Control API. UI code may
   bridge returned allowlisted commands to Terminal/clipboard, but must not
   construct harness login/install commands locally.
+- Cancel/interrupt must stop the underlying harness process, not only mark the
+  job as cancelled in UI/daemon state.
+- Run success/no-op semantics must be evidence-based: auth/API/harness failures
+  are failed diagnostics, not empty-diff `no_op`.
+- If a native surface is discovered but not wired to active runs, expose it as a
+  capability note only; do not enable live input/steering controls.
+- Treat manifest auth sources as source availability only. Readiness, run
+  routing, Auth UI status, and reviewer eligibility must come from doctor status,
+  enabled intents, and smoke/conformance checks.
 
 ## macOS Visual QA
 
@@ -61,6 +70,13 @@ pnpm test
   and onboarding.
 - Look specifically for hard side/top material artifacts, titlebar overlap,
   unreadable glass behind dense content, and hover help gaps.
+- Check every sheet or blocking subflow has a visible close/Done or Back/Continue
+  path.
+- Check Review Queue and other dense grids do not force the whole app window to
+  a wide fixed minimum.
+- Check budget cap editing uses validated currency input fields, not sliders.
+- Check completed runs show Outcome/answer first, running runs show Timeline,
+  and failures without output show Diagnostics.
 - Keep dense content on solid surfaces; use Liquid Glass on navigation/chrome and
   floating controls.
 
@@ -82,6 +98,37 @@ pnpm test
 - `pnpm release:verify` passes.
 - Schema generated diff is clean.
 - Swift tests/build pass.
-- App package artifacts are labeled honestly as signed/notarized or unsigned.
+- Local app package artifacts are labeled honestly as signed/notarized or
+  unsigned, but they are smoke artifacts only for v0.6.0.
+- Final DMG/ZIP release assets are produced by GitHub Actions from the committed
+  `v*` tag/sha and uploaded to the GitHub Release by the workflow. Do not upload
+  stale local `apps/macos/dist` artifacts unless Anton explicitly re-approves
+  that fallback.
 - GitHub release notes summarize shipped behavior; they do not publish private
   planning notes or review scratch.
+
+## Review Protocol
+
+- Review the exact current tree/diff. Any mutation after review makes the review
+  stale for touched files.
+- Findings need evidence: file/line, diff, command output, artifact, or observed
+  UI behavior. No evidence means no blocking finding.
+- Check Bible/architecture/design/development alignment at the same strictness as
+  correctness and security.
+- Classify each finding as accepted, rejected, duplicate, deferred, or out of
+  scope. Fix only accepted findings verified against current code/docs.
+- Reject scope drift and overengineering that does not serve the accepted user
+  intent.
+- Before release, run the local multi-review protocol and Claudexor dogfood
+  review when available; if reviewer output is empty, erroneous, or reads the
+  wrong tree, treat the review gate as failed rather than ceremonial.
+- Reviewers must read file-backed evidence (`DIFF.patch`, `DIFF_SUMMARY.md`,
+  user intent, decided tradeoffs, tests) from the candidate tree. Do not pass the
+  full diff through the process argv or a giant prompt as the normal review path.
+- Persist local/redacted per-reviewer telemetry: requested model/effort, observed
+  model/source, route proof, start/first-event/completion-or-timeout timestamps,
+  duration, raw normalized stream or transcript, parsed JSON blocks, and parse
+  errors.
+- Emit reviewer progress events (`reviewer.started`, `reviewer.first_event`,
+  `reviewer.completed`, `reviewer.timed_out`, `reviewer.failed`) so a sequential
+  panel is diagnosable and does not look like a hang.

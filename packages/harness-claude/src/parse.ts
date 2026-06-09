@@ -58,6 +58,23 @@ export function parseClaudeEvent(obj: Json, sessionId: string): HarnessEvent[] {
     return out;
   }
 
+  if (type === "user") {
+    const content: Json[] = obj.message?.content ?? [];
+    const out: HarnessEvent[] = [];
+    for (const block of content) {
+      if (block?.type === "tool_result") {
+        out.push({
+          type: "tool_call",
+          session_id: sessionId,
+          ts,
+          text: block.is_error === true ? "tool_result: error" : "tool_result",
+          payload: { tool_use_id: block.tool_use_id, is_error: block.is_error === true },
+        });
+      }
+    }
+    return out;
+  }
+
   if (type === "result") {
     const out: HarnessEvent[] = [];
     const u = obj.usage ?? {};

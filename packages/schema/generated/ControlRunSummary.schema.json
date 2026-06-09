@@ -215,6 +215,15 @@
             "null"
           ]
         },
+        "spendUsd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spendEstimated": {
+          "type": "boolean"
+        },
         "access": {
           "type": "string",
           "enum": [

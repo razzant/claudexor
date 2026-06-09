@@ -532,6 +532,9 @@ struct TaskRun: Identifiable, Hashable {
     var activePhase: Phase
     var spendUsd: Double
     var capUsd: Double
+    var spendKnown: Bool = true
+    var capKnown: Bool = true
+    var spendEstimated: Bool = false
     var routeProof: RouteProof
     var attentionNote: String?
     var plan: [PlanItem]
@@ -549,7 +552,12 @@ struct TaskRun: Identifiable, Hashable {
 
     var planDone: Int { plan.filter { $0.state == .done }.count }
     var filesChanged: Int { diff.count }
-    var spendFraction: Double { capUsd > 0 ? min(spendUsd / capUsd, 1) : 0 }
+    var spendFraction: Double { spendKnown && capKnown && capUsd > 0 ? min(spendUsd / capUsd, 1) : 0 }
+    var budgetLabel: String {
+        let spend = spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spendUsd))" : "Unknown"
+        let cap = capKnown ? String(format: "$%.2f", capUsd) : "Unknown"
+        return "\(spend) / \(cap)"
+    }
 }
 
 // MARK: - Projects & specs
@@ -594,6 +602,7 @@ struct HarnessInfo: Identifiable, Hashable {
     var auth: String
     var intents: [String]
     var reasons: [String] = []
+    var checks: [String] = []
     var id: String { family.rawValue }
 }
 
@@ -610,11 +619,22 @@ struct HarnessAvailability: Hashable {
 struct BudgetState: Hashable {
     var spend: Double
     var cap: Double
+    var spendKnown: Bool = true
+    var capKnown: Bool = true
+    var spendEstimated: Bool = false
+    var source: String = "unknown"
+    var nativeQuota: [String] = []
     var breakerTier: Int            // 0 = healthy, 1 = warn, 2 = throttle, 3 = open
     var perHarness: [HarnessFamily: Double]
-    static let empty = BudgetState(spend: 0, cap: 0, breakerTier: 0, perHarness: [:])
+    static let empty = BudgetState(spend: 0, cap: 0, spendKnown: false, capKnown: false, source: "unknown", nativeQuota: [], breakerTier: 0, perHarness: [:])
     var fraction: Double { cap > 0 ? min(spend / cap, 1) : 0 }
+    var spendLabel: String { spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spend))" : "Unknown" }
+    var capLabel: String { capKnown ? String(format: "$%.2f", cap) : "Unknown" }
+    var remainingLabel: String {
+        spendKnown && capKnown ? String(format: "$%.4f", max(0, cap - spend)) : "Unknown"
+    }
     var breakerLabel: String {
+        if !spendKnown && !capKnown { return "Unknown" }
         switch breakerTier {
         case 0: return "Healthy"
         case 1: return "Watch"

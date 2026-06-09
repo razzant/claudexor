@@ -169,14 +169,21 @@ export function arbitrate(
   const winner = ranking[0] as CandidateEvidence;
   const runnerUp = ranking[1];
 
-  const winnerOk =
-    requiredGatesPassed(winner) && winner.finalReviewClean && openBlockerCount(winner) === 0;
+  const requiredOk = requiredGatesPassed(winner);
+  const blockerCount = openBlockerCount(winner);
+  const winnerOk = requiredOk && winner.finalReviewClean && blockerCount === 0;
+  const noOpOk = requiredOk && blockerCount === 0;
   const hasDiff = (winner.diffBytes ?? winner.diffSize ?? 0) > 0;
   const hasGates = winner.testsTotal > 0 || winner.gates.length > 0;
   const reviewRan = winner.reviewVerified === true;
+  const harnessFailed = winner.gates.some((g) => g.id === "harness" && g.status === "failed");
   const outcome =
-    !hasDiff
-      ? "no_op"
+    harnessFailed
+      ? "blocked"
+      : !hasDiff
+        ? noOpOk
+          ? "no_op"
+          : "blocked"
       : !hasGates
         ? "ungated"
         : !reviewRan
@@ -185,7 +192,9 @@ export function arbitrate(
             ? "ready"
             : "blocked";
   const status =
-    outcome === "ready"
+    harnessFailed
+      ? "failed"
+      : outcome === "ready"
       ? "success"
       : outcome === "no_op"
         ? "no_op"

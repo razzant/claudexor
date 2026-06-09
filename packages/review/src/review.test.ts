@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -228,6 +228,138 @@ describe("reviewEngine", () => {
     });
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.status).toBe("insufficient_evidence");
+  });
+
+  it("redacts reviewer failures before writing findings or parse-error artifacts", async () => {
+    const token = "sk-" + "a".repeat(24);
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const adapter: HarnessAdapter = {
+      id: "throwing-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "throwing-reviewer",
+          display_name: "throwing",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "throwing-reviewer", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run() {
+        throw new Error(`auth failed with ${token}`);
+      },
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+      artifactsDir,
+    });
+    expect(res.findings[0]?.claim).not.toContain(token);
+    expect(res.findings[0]?.claim).toContain("[redacted]");
+    const parseError = readFileSync(join(artifactsDir, "01-throwing-reviewer", "parse-error.json"), "utf8");
+    expect(parseError).not.toContain(token);
+    expect(parseError).toContain("[redacted]");
+  });
+
+  it("times out a stalled reviewer and forwards abort to the adapter", async () => {
+    let aborted = false;
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const adapter: HarnessAdapter = {
+      id: "stalled-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "stalled-reviewer",
+          display_name: "stalled",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "stalled-reviewer", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "stalled-model" };
+        const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            aborted = true;
+            resolve();
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+      reviewerTimeoutMs: 20,
+      artifactsDir,
+    });
+    expect(aborted).toBe(true);
+    expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
+    expect(res.findings[0]?.claim).toContain("timed out");
+    expect(existsSync(join(artifactsDir, "reviewer-progress.jsonl"))).toBe(true);
+    expect(readFileSync(join(artifactsDir, "01-stalled-reviewer", "metadata.json"), "utf8")).toContain("timed_out");
+  });
+
+  it("uses file-backed patch evidence instead of embedding the full diff prompt", async () => {
+    let prompt = "";
+    const secretDiffLine = "+UNIQUE_REVIEW_BODY_SHOULD_NOT_BE_IN_PROMPT";
+    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const adapter: HarnessAdapter = {
+      id: "file-backed-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "file-backed-reviewer",
+          display_name: "file-backed",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "file-backed-reviewer", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run(spec) {
+        prompt = spec.prompt;
+        const ts = new Date().toISOString();
+        yield { type: "message", session_id: spec.session_id, ts, observed_model: "file-backed-model", text: "[]\n" };
+      },
+    };
+    await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: ["diff --git a/a.ts b/a.ts", "@@ -1 +1 @@", secretDiffLine].join("\n"),
+      evidenceDir,
+      artifactsDir,
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+    });
+    expect(prompt).toContain("DIFF.patch");
+    expect(prompt).not.toContain(secretDiffLine);
+    expect(readFileSync(join(evidenceDir, "DIFF.patch"), "utf8")).toContain(secretDiffLine);
+    expect(readFileSync(join(artifactsDir, "evidence", "DIFF.patch"), "utf8")).toContain(secretDiffLine);
+    expect(readFileSync(join(artifactsDir, "01-file-backed-reviewer", "metadata.json"), "utf8")).toContain("persistent_diff_path");
+    expect(readFileSync(join(artifactsDir, "01-file-backed-reviewer", "raw-normalized-stream.jsonl"), "utf8")).toContain("file-backed-model");
+    expect(readFileSync(join(artifactsDir, "01-file-backed-reviewer", "parsed-json-blocks.json"), "utf8")).toContain("[]");
   });
 
   it("does not count malformed JSON arrays as healthy clean review", async () => {

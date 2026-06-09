@@ -84,7 +84,7 @@ struct OnboardingView: View {
                     TextField("Project root", text: $projectRootDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
-                    Button { chooseProjectRoot() } label: { Label("Choose", systemImage: "folder") }
+                    Button { chooseProjectRoot() } label: { Label("Choose / Create", systemImage: "folder.badge.plus") }
                         .buttonStyle(.bordered)
                 }
                 KeyValueRow(key: "Config", value: ".claudexor/config.yaml", mono: true)
@@ -212,10 +212,16 @@ struct OnboardingView: View {
             }
             FlowLayout(spacing: Theme.Spacing.sm) {
                 Button { model.authSheetHarness = family } label: {
-                    Label("Setup", systemImage: "person.crop.circle.badge.checkmark")
+                    Label(available ? "Manage" : "Setup", systemImage: available ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
                 }
-                .buttonStyle(.borderedProminent).tint(Theme.accent)
-                .help("Open native login and API-key fallback setup for \(family.label).")
+                .buttonStyle(.bordered)
+                .tint(Theme.accent)
+                .help(available ? "Open \(family.label) auth details and fallback key management." : "Open native login and API-key fallback setup for \(family.label).")
+                Button { Task { await model.refreshHarnesses() } } label: {
+                    Label("Recheck", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .help("Refresh \(family.label) install/auth/capability status.")
             }
         }
     }
@@ -224,8 +230,9 @@ struct OnboardingView: View {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Use Project"
+        panel.prompt = "Choose / Create"
         if panel.runModal() == .OK, let url = panel.url {
             projectRootDraft = url.path
             model.projectRoot = url.path

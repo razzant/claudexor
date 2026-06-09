@@ -167,6 +167,27 @@ describe("ControlApiServer", () => {
     });
   });
 
+  it("redacts secret-like strings before publishing live SSE events", async () => {
+    const secret = "sk-" + "b".repeat(24);
+    const runner: ControlRunner = async (_params, ctx) => {
+      ctx.onRunStart({ runId: "run-redact", taskId: "task-1", runDir: "/tmp/run-redact" });
+      ctx.onHarnessEvent({ type: "message", text: `token ${secret}` });
+      return { ok: true };
+    };
+    await withServer(runner, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      const info = (await start.json()) as { runId: string };
+      const sse = await fetch(`${base}/runs/${info.runId}/events`, { headers: { authorization: `Bearer ${token}` } });
+      const text = await sse.text();
+      expect(text).toContain("[redacted]");
+      expect(text).not.toContain(secret);
+    });
+  });
+
   it("replays only events after Last-Event-ID on reconnect (HTTP boundary)", async () => {
     const runner: ControlRunner = async (_params, ctx) => {
       ctx.onRunStart({ runId: "run-replay", taskId: "t", runDir: "/tmp/run-replay" });
@@ -288,6 +309,47 @@ describe("DaemonControlApiServer", () => {
       join(runDir, "events.jsonl"),
       [
         JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", type: "run.created", payload: {} }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "harness.event",
+          payload: {
+            harness_id: "codex",
+            attempt_id: "a01",
+            type: "usage",
+            title: "usage: 100 in / 20 out",
+            usage: { input_tokens: 100, output_tokens: 20, cost_usd: 0.1234, estimated: true },
+          },
+        }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "reviewer.started",
+          payload: { harness_id: "codex", provider_family: "openai", requested_model: "gpt-5.5", requested_effort: "xhigh", artifact_dir: "reviews/a01-reviewers/01-codex" },
+        }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "reviewer.completed",
+          payload: { harness_id: "codex", provider_family: "openai", requested_model: "gpt-5.5", requested_effort: "xhigh", route_proof_status: "verified", duration_ms: 1200, artifact_dir: "reviews/a01-reviewers/01-codex" },
+        }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "reviewer.failed",
+          payload: { harness_id: "claude", provider_family: "anthropic", requested_model: "opus", requested_effort: "high", message: "reviewer failed", artifact_dir: "reviews/a01-reviewers/02-claude" },
+        }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "finding.revalidated",
+          payload: { attempt_id: "a01", severity: "WARN", status: "accepted" },
+        }),
         JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", type: "run.completed", payload: { status: "success" } }),
         "",
       ].join("\n"),
@@ -440,14 +502,14 @@ describe("DaemonControlApiServer", () => {
           prompt: "2+2?",
           mode: "ask",
           harnesses: ["codex"],
-          reviewerEfforts: { anthropic: "max" },
+          reviewerEfforts: { anthropic: "max", openai: "xhigh" },
         }),
       });
       expect(valid.status).toBe(200);
-      expect(enqueued).toMatchObject({ reviewerEfforts: { anthropic: "max" } });
+      expect(enqueued).toMatchObject({ reviewerEfforts: { anthropic: "max", openai: "xhigh" } });
 
       enqueued = undefined;
-      const ignoredFamily = await fetch(`${base}/runs`, {
+      const openaiFamily = await fetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -457,9 +519,10 @@ describe("DaemonControlApiServer", () => {
           reviewerEfforts: { openai: "high" },
         }),
       });
-      expect(ignoredFamily.status).toBe(400);
-      expect(enqueued).toBeUndefined();
+      expect(openaiFamily.status).toBe(200);
+      expect(enqueued).toMatchObject({ reviewerEfforts: { openai: "high" } });
 
+      enqueued = undefined;
       const invalidValue = await fetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
@@ -471,6 +534,19 @@ describe("DaemonControlApiServer", () => {
         }),
       });
       expect(invalidValue.status).toBe(400);
+      expect(enqueued).toBeUndefined();
+
+      const invalidProvider = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          reviewerEfforts: { banana: "max" },
+        }),
+      });
+      expect(invalidProvider.status).toBe(400);
       expect(enqueued).toBeUndefined();
     });
   });
@@ -541,6 +617,51 @@ describe("DaemonControlApiServer", () => {
             message: "prepared",
           };
         },
+      },
+    );
+  });
+
+  it("serves harness readiness checks and intent gating through the typed control-api service", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/harnesses`, { headers: { authorization: `Bearer ${token}` } });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+          harnesses: {
+            id: string;
+            status: string;
+            enabledIntents: string[];
+            disabledIntents: string[];
+            checks: { id: string; status: string; detail?: string }[];
+            reasons: string[];
+          }[];
+        };
+        expect(body.harnesses[0]).toMatchObject({
+          id: "codex",
+          status: "degraded",
+          enabledIntents: [],
+          disabledIntents: ["review"],
+          reasons: ["isolated smoke failed"],
+        });
+        expect(body.harnesses[0]?.checks).toContainEqual({ id: "isolated_api_smoke", status: "fail", detail: "401" });
+      },
+      undefined,
+      {
+        harnesses: async () => ({
+          harnesses: [
+            {
+              id: "codex",
+              status: "degraded",
+              manifest: null,
+              enabledIntents: [],
+              disabledIntents: ["review"],
+              checks: [{ id: "isolated_api_smoke", status: "fail", detail: "401" }],
+              reasons: ["isolated smoke failed"],
+            },
+          ],
+        }),
       },
     );
   });
@@ -742,15 +863,20 @@ describe("DaemonControlApiServer", () => {
       expect(started.taskId).toBe("task-d1");
 
       const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
-        runs: { jobId: string; runId: string; state: string }[];
+        runs: { jobId: string; runId: string; state: string; spendUsd?: number; spendEstimated?: boolean }[];
       };
       expect(list.runs[0]?.runId).toBe("run-d1");
       expect(list.runs[0]?.state).toBe("succeeded");
+      expect(list.runs[0]?.spendUsd).toBeCloseTo(0.1234);
+      expect(list.runs[0]?.spendEstimated).toBe(true);
 
       const sse = await fetch(`${base}/runs/run-d1/events`, { headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "1" } });
       expect(sse.status).toBe(200);
       const text = await sse.text();
       expect(text).not.toContain("run.created");
+      expect(text).toContain("reviewer.completed");
+      expect(text).toContain("reviewer.failed");
+      expect(text).toContain("finding.revalidated");
       expect(text).toContain("run.completed");
       expect(text).toContain("event: end");
 
@@ -845,6 +971,9 @@ describe("DaemonControlApiServer", () => {
       expect(detail.status).toBe(200);
       const body = (await detail.json()) as {
         summary: { mode?: string; prompt?: string };
+        primaryOutput?: { kind: string; path: string; text: string };
+        timeline: { type: string; harnessId?: string | null; title: string }[];
+        budget: { spendUsd?: number; source: string; estimated: boolean };
         finalSummary?: string;
         decision?: { winner?: string };
         workProduct?: { id?: string };
@@ -853,6 +982,16 @@ describe("DaemonControlApiServer", () => {
       };
       expect(body.summary.mode).toBe("agent");
       expect(body.summary.prompt).toBe("hello");
+      expect(body.primaryOutput?.kind).toBe("summary");
+      expect(body.primaryOutput?.text).toContain("Done");
+      expect(body.timeline.some((e) => e.type === "harness.event" && e.harnessId === "codex")).toBe(true);
+      expect(body.timeline.some((e) => e.type === "reviewer.started")).toBe(true);
+      expect(body.timeline.some((e) => e.type === "reviewer.completed")).toBe(true);
+      expect(body.timeline.some((e) => e.type === "reviewer.failed")).toBe(true);
+      expect(body.timeline.some((e) => e.type === "finding.revalidated")).toBe(true);
+      expect(body.budget.spendUsd).toBeCloseTo(0.1234);
+      expect(body.budget.source).toBe("events");
+      expect(body.budget.estimated).toBe(true);
       expect(body.finalSummary).toContain("Done");
       expect(body.decision?.winner).toBe("a01");
       expect(body.workProduct?.id).toBe("wp-test");
@@ -867,6 +1006,41 @@ describe("DaemonControlApiServer", () => {
       const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, { headers: { authorization: `Bearer ${token}` } });
       expect(summary.status).toBe(200);
       expect(await summary.text()).toContain("Summary");
+    });
+  });
+
+  it("selects primary output by run mode and falls back to diagnostics", async () => {
+    const cases: { mode: string; path: string; kind: string; text: string }[] = [
+      { mode: "ask", path: "final/answer.md", kind: "answer", text: "Answer: 4" },
+      { mode: "plan", path: "final/plan.md", kind: "plan", text: "# Plan" },
+      { mode: "explore", path: "final/explore.md", kind: "report", text: "# Explore" },
+      { mode: "readonly_audit", path: "final/report.md", kind: "report", text: "# Audit" },
+    ];
+    for (const c of cases) {
+      const { daemon, record } = fakeDaemon();
+      record.params = { ...(record.params as Record<string, unknown>), mode: c.mode };
+      writeFileSync(join(record.runDir as string, c.path), `${c.text}\n`);
+      await withDaemonServer(daemon, async (base) => {
+        const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
+        expect(detail.status).toBe(200);
+        const body = (await detail.json()) as { primaryOutput?: { kind: string; path: string; text: string } };
+        expect(body.primaryOutput?.kind).toBe(c.kind);
+        expect(body.primaryOutput?.path).toBe(c.path);
+        expect(body.primaryOutput?.text).toContain(c.text);
+      });
+    }
+
+    const { daemon, record } = fakeDaemon();
+    record.params = { ...(record.params as Record<string, unknown>), mode: "agent" };
+    record.state = "failed";
+    rmSync(join(record.runDir as string, "final", "summary.md"), { force: true });
+    rmSync(join(record.runDir as string, "final", "patch.diff"), { force: true });
+    writeFileSync(join(record.runDir as string, "final", "failure.yaml"), "safeMessage: Auth failed\ncategory: auth\n");
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
+      const body = (await detail.json()) as { primaryOutput?: { kind: string; text: string } };
+      expect(body.primaryOutput?.kind).toBe("diagnostic");
+      expect(body.primaryOutput?.text).toContain("Auth failed");
     });
   });
 
@@ -989,6 +1163,27 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("redacts secret-like run events before daemon SSE replay", async () => {
+    const { daemon, record } = fakeDaemon();
+    const secret = "sk-" + "e".repeat(24);
+    writeFileSync(
+      join(record.runDir as string, "events.jsonl"),
+      [
+        JSON.stringify({ type: "harness.event", payload: { text: secret } }),
+        JSON.stringify({ type: "run.completed", payload: { status: "success" } }),
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const events = await fetch(`${base}/runs/run-d1/events`, { headers: { authorization: `Bearer ${token}` } });
+      expect(events.status).toBe(200);
+      const text = await events.text();
+      expect(text).toContain("[redacted]");
+      expect(text).not.toContain(secret);
+      expect(text).toContain("event: run.completed");
+    });
+  });
+
   it("refuses apply with malformed decision artifacts instead of throwing a 500", async () => {
     const { daemon, record } = fakeDaemon();
     writeFileSync(join(record.runDir as string, "arbitration", "decision.yaml"), "winner: [\n");
@@ -1001,6 +1196,27 @@ describe("DaemonControlApiServer", () => {
       expect(apply.status).toBe(409);
       expect(await apply.text()).toContain("decision record is required");
     });
+  });
+
+  it("redacts service errors before returning control-api JSON", async () => {
+    const { daemon } = fakeDaemon();
+    const secret = "sk-" + "f".repeat(24);
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/settings`, { headers: { authorization: `Bearer ${token}` } });
+        expect(res.status).toBe(400);
+        const text = await res.text();
+        expect(text).toContain("[redacted]");
+        expect(text).not.toContain(secret);
+      },
+      undefined,
+      {
+        settings: async () => {
+          throw new Error(`settings failed with ${secret}`);
+        },
+      },
+    );
   });
 
   it("validates settings patches and managed secret names", async () => {

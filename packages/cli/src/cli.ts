@@ -35,6 +35,7 @@ import {
   readAnswers,
   type SpecCommandResult,
 } from "./spec.js";
+import { parseReviewerEffortMap } from "./reviewer-options.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
@@ -54,7 +55,7 @@ function orchestratorRunner() {
   };
 }
 
-const HELP = `claudexor — harness-agnostic AI coding control plane (v0.5.0)
+const HELP = `claudexor — harness-agnostic AI coding control plane (v0.6.0)
 
 Usage:
   claudexor init                          Scaffold repo-local config (.claudexor/config.yaml)
@@ -176,23 +177,9 @@ function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
   return Object.keys(map).length > 0 ? map : undefined;
 }
 
-/** Per-family reviewer effort map from `--reviewer-effort "anthropic=max"`. */
-function reviewerEfforts(args: ParsedArgs): Partial<Record<"anthropic", EffortHint>> | undefined {
-  const v = flagStr(args, "reviewer-effort");
-  if (v === undefined) return undefined;
-  const map: Partial<Record<"anthropic", EffortHint>> = {};
-  for (const pair of v.split(",")) {
-    const [family, effort] = pair.split("=").map((s) => s.trim());
-    if (!family && !effort) continue;
-    if (!family || !effort) throw new Error(`invalid --reviewer-effort entry '${pair}'`);
-    if (family !== "anthropic") {
-      throw new Error(`--reviewer-effort currently supports anthropic only; '${family}' would be ignored by its adapter`);
-    }
-    const parsed = EffortHint.safeParse(effort);
-    if (!parsed.success) throw new Error(`invalid reviewer effort '${effort}' (expected low|medium|high|xhigh|max)`);
-    map[family] = parsed.data;
-  }
-  return Object.keys(map).length > 0 ? map : undefined;
+/** Per-family reviewer effort map from `--reviewer-effort "openai=xhigh,anthropic=high"`. */
+function reviewerEfforts(args: ParsedArgs): Record<string, EffortHint> | undefined {
+  return parseReviewerEffortMap(flagStr(args, "reviewer-effort"));
 }
 
 async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Promise<number> {
@@ -389,6 +376,25 @@ function statusGlyph(status: string): string {
   return status === "ok" ? "[ok]" : status === "degraded" ? "[degraded]" : "[unavailable]";
 }
 
+function authSourceAvailability(status: {
+  manifest?: {
+    auth_modes?: string[];
+    capability_profile?: { auth?: { supported_sources?: string[]; preferred_source?: string | null } };
+  } | null;
+}): string {
+  const auth = status.manifest?.capability_profile?.auth;
+  const present = status.manifest?.auth_modes?.length ? status.manifest.auth_modes.join(",") : "unknown";
+  const supported = auth?.supported_sources?.length ? auth.supported_sources.join(",") : "unknown";
+  const preferred = auth?.preferred_source ? ` preferred=${auth.preferred_source}` : "";
+  return `present=${present} supported=${supported}${preferred}`;
+}
+
+function checksSummary(status: { checks?: { id: string; status: string; detail?: string }[] }): string {
+  const checks = status.checks ?? [];
+  if (checks.length === 0) return "none";
+  return checks.map((c) => `${c.id}:${c.status}`).join(", ");
+}
+
 async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
   if (sub === "start") {
@@ -514,8 +520,8 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
       return 0;
     }
     for (const s of filtered) {
-      const modes = s.manifest?.auth_modes?.join(", ") || "unknown";
-      print(`${statusGlyph(s.status)} ${s.id} auth=${modes}`);
+      print(`${statusGlyph(s.status)} ${s.id} ready=${s.status} sources=${authSourceAvailability(s)}`);
+      print(`    checks: ${checksSummary(s)}`);
       if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
     }
     return 0;
@@ -629,6 +635,8 @@ async function main(): Promise<number> {
         const ver = s.manifest?.version ? ` ${s.manifest.version}` : "";
         print(`${statusGlyph(s.status)} ${s.id}${ver}`);
         if (s.enabledIntents.length) print(`    intents: ${s.enabledIntents.join(", ")}`);
+        print(`    auth sources: ${authSourceAvailability(s)}`);
+        print(`    checks: ${checksSummary(s)}`);
         if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
       }
       return 0;

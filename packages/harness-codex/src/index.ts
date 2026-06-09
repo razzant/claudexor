@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 
@@ -86,6 +87,44 @@ function hasScopedCodexAuth(env?: Record<string, string>): boolean {
   return Boolean(home && existsSync(join(home, "auth.json")));
 }
 
+async function smokeIsolatedApiKey(): Promise<{ ok: boolean; detail: string }> {
+  if (!codexApiKey()) return { ok: false, detail: "no API key fallback available" };
+  const dir = mkdtempSync(join(tmpdir(), "claudexor-codex-smoke-"));
+  const codexHome = join(dir, ".codex");
+  try {
+    ensureCodexApiAuth({ CODEX_HOME: codexHome });
+    const r = await runCapture(
+      BIN,
+      ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "Reply exactly OK"],
+      {
+        cwd: dir,
+        env: {
+          HOME: dir,
+          XDG_CONFIG_HOME: join(dir, ".config"),
+          CODEX_HOME: codexHome,
+          OPENAI_API_KEY: null,
+          CODEX_API_KEY: null,
+          CLAUDEXOR_CODEX_API_KEY: null,
+        },
+        timeoutMs: 25_000,
+      },
+    );
+    const text = `${r.stdout}\n${r.stderr}`;
+    if (r.code === 0 && text.includes("\"turn.completed\"") && text.includes("OK")) {
+      return { ok: true, detail: "isolated CODEX_HOME smoke passed" };
+    }
+    return { ok: false, detail: redactCodexDoctorDetail(text || `codex exited with code ${r.code}`) };
+  } catch (err) {
+    return { ok: false, detail: redactCodexDoctorDetail(err instanceof Error ? err.message : String(err)) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function redactCodexDoctorDetail(text: string): string {
+  return redactSecrets(text).slice(0, 500);
+}
+
 export function codexExecArgs(spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "prompt">): string[] {
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
@@ -107,12 +146,16 @@ export function createCodexAdapter(): HarnessAdapter {
       }
       const apiKey = hasApiKey();
       const authed = await loggedIn();
+      const authModes = [
+        ...(authed ? ["local_session"] : []),
+        ...(apiKey ? ["api_key"] : []),
+      ];
       return HarnessManifestSchema.parse({
         id: "codex",
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.5.0",
+        adapter_version: "0.6.0",
         provider_family: "openai",
         capabilities: {
           plan: true,
@@ -132,7 +175,7 @@ export function createCodexAdapter(): HarnessAdapter {
           structured_output: true,
           json_schema_output: false,
           resume: false,
-          cancel: false,
+          cancel: true,
           mcp: true,
           plugins: true,
           worktree_native: false,
@@ -140,13 +183,15 @@ export function createCodexAdapter(): HarnessAdapter {
           usage_signal: "native",
         },
         capability_profile: {
-          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
+          execution_surfaces: [
+            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
+          ],
           session: { resume_latest: false, resume_by_id: false },
           output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
           auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
         },
-        auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
+        auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
         models: { discovery: "experimental" },
       });
@@ -164,23 +209,24 @@ export function createCodexAdapter(): HarnessAdapter {
       }
       const apiKey = hasApiKey();
       const authed = await loggedIn();
-      const ok = apiKey;
+      const smoke = apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: "no API key fallback available" };
+      const ok = smoke.ok;
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"];
       return ConformanceReportSchema.parse({
         harness_id: "codex",
-        status: ok ? "ok" : "degraded",
+        status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
           { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "isolated Claudexor envelopes require an openai key fallback" },
+          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : "fail", detail: smoke.detail },
         ],
-        enabled_intents: ok
-          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"]
-          : [],
-        disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
+        enabled_intents: ok ? allIntents : [],
+        disabled_intents: ok ? [] : allIntents,
         reasons: ok
           ? []
-          : authed
-            ? ["native codex login is present, but isolated Claudexor runs require a stored openai API key fallback"]
+          : authed || apiKey
+            ? [`isolated Codex API-key smoke failed: ${smoke.detail}`]
             : ["not authenticated (run `codex login` for native use or store openai API key fallback for Claudexor runs)"],
       });
     },
@@ -224,7 +270,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {
@@ -270,4 +316,13 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     };
   }
   yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+}
+
+function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
+  const signal = spec.extra?.["abortSignal"];
+  if (!signal || typeof signal !== "object") return undefined;
+  const candidate = signal as Partial<AbortSignal>;
+  return typeof candidate.aborted === "boolean" && typeof candidate.addEventListener === "function"
+    ? (signal as AbortSignal)
+    : undefined;
 }

@@ -147,6 +147,12 @@ struct ActivityFeedView: View {
 
 private struct ActivityRow: View {
     let event: ActivityEvent
+    @State private var expanded = false
+
+    private var canExpand: Bool {
+        (event.detail?.isEmpty == false) || (event.code?.isEmpty == false)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.md) {
             ZStack {
@@ -164,15 +170,29 @@ private struct ActivityRow: View {
                     Text(event.timestamp, style: .relative).font(.caption2).foregroundStyle(.tertiary).fixedSize()
                 }
                 if let detail = event.detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(expanded ? nil : 3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if let code = event.code {
+                if expanded, let code = event.code {
                     Text(code)
                         .font(.system(.caption, design: .monospaced))
                         .padding(Theme.Spacing.sm)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .codeSurface(8)
                         .textSelection(.enabled)
+                }
+                if canExpand {
+                    Button {
+                        withAnimation(.snappy) { expanded.toggle() }
+                    } label: {
+                        Label(expanded ? "Hide details" : "Show details", systemImage: expanded ? "chevron.up" : "chevron.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help(expanded ? "Collapse raw event details." : "Expand raw event details, artifact references, or full output.")
                 }
             }
         }
@@ -260,15 +280,25 @@ struct TaskRowView: View {
 struct BudgetMini: View {
     let spend: Double
     let cap: Double
+    var spendKnown: Bool = true
+    var capKnown: Bool = true
+    var spendEstimated: Bool = false
     var tint: Color = Theme.accent
     var body: some View {
         VStack(alignment: .trailing, spacing: 3) {
             HStack(spacing: 3) {
-                Text(String(format: "$%.4f", spend)).font(.system(.caption, design: .monospaced))
+                Text(spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spend))" : "Unknown").font(.system(.caption, design: .monospaced))
                 Text("/").foregroundStyle(.tertiary)
-                Text(String(format: "$%.2f", cap)).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                Text(capKnown ? String(format: "$%.2f", cap) : "Unknown").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }
-            MeterBar(fraction: cap > 0 ? spend / cap : 0, tint: tint).frame(width: 130)
+            MeterBar(fraction: spendKnown && capKnown && cap > 0 ? spend / cap : 0, tint: tint).frame(width: 130)
         }
+        .help(helpText)
+    }
+
+    private var helpText: String {
+        let spendText = spendKnown ? "\(spendEstimated ? "Estimated " : "")spend \(String(format: "$%.4f", spend))" : "Spend is not verified yet"
+        let capText = capKnown ? "cap \(String(format: "$%.2f", cap))" : "cap is unknown"
+        return "\(spendText); \(capText). Native provider quota is shown only when verified."
     }
 }

@@ -1,4 +1,4 @@
-import type { HarnessManifest, Intent } from "@claudexor/schema";
+import type { ConformanceCheck, HarnessManifest, Intent } from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, runDoctor } from "@claudexor/core";
 import { allowedIntents } from "./gating.js";
@@ -9,6 +9,8 @@ export interface HarnessStatus {
   status: "ok" | "degraded" | "unavailable";
   manifest: HarnessManifest | null;
   enabledIntents: Intent[];
+  disabledIntents: Intent[];
+  checks: ConformanceCheck[];
   reasons: string[];
 }
 
@@ -29,8 +31,12 @@ export class HarnessGateway {
   }
 
   async statusAll(spec: DoctorSpec): Promise<HarnessStatus[]> {
+    return this.statusAllForAdapters([...this.registry.values()], spec);
+  }
+
+  private async statusAllForAdapters(adapters: HarnessAdapter[], spec: DoctorSpec): Promise<HarnessStatus[]> {
     const out: HarnessStatus[] = [];
-    for (const adapter of this.registry.values()) {
+    for (const adapter of adapters) {
       let manifest: HarnessManifest | null = null;
       try {
         manifest = await adapter.discover();
@@ -45,43 +51,40 @@ export class HarnessGateway {
         status,
         manifest,
         enabledIntents: manifest ? allowedIntents(manifest, report) : [],
+        disabledIntents: report?.disabled_intents ?? [],
+        checks: report?.checks ?? [],
         reasons: report?.reasons ?? [],
       });
     }
     return out;
   }
 
-  async resolve(requestedId?: string): Promise<HarnessAdapter> {
+  async resolve(requestedId?: string, spec: DoctorSpec = { cwd: process.cwd() }): Promise<HarnessAdapter> {
     if (requestedId) {
       const adapter = this.registry.get(requestedId);
       if (!adapter) throw new HarnessUnavailableError(`Harness not registered: ${requestedId}`);
+      const [status] = await this.statusAllForAdapters([adapter], spec);
+      if (!status?.available || status.enabledIntents.length === 0) {
+        throw new HarnessUnavailableError(`Harness is not smoke-ready: ${requestedId}`);
+      }
       return adapter;
     }
-    for (const adapter of this.registry.values()) {
-      let manifest: HarnessManifest | null = null;
-      try {
-        manifest = await adapter.discover();
-      } catch {
-        continue;
-      }
-      if (manifest.kind === "fake") continue;
-      return adapter;
+    const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
+    for (const status of statuses) {
+      if (status.manifest?.kind === "fake") continue;
+      if (!status.available || status.enabledIntents.length === 0) continue;
+      const adapter = this.registry.get(status.id);
+      if (adapter) return adapter;
     }
     throw new HarnessUnavailableError(
       "No available harness. Install codex/claude/cursor/opencode, or pass --harness fake-success.",
     );
   }
 
-  async availableReal(): Promise<string[]> {
-    const ids: string[] = [];
-    for (const adapter of this.registry.values()) {
-      try {
-        const manifest = await adapter.discover();
-        if (manifest.kind !== "fake") ids.push(adapter.id);
-      } catch {
-        /* unavailable */
-      }
-    }
-    return ids;
+  async availableReal(spec: DoctorSpec = { cwd: process.cwd() }): Promise<string[]> {
+    const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
+    return statuses
+      .filter((s) => s.manifest?.kind !== "fake" && s.available && s.enabledIntents.length > 0)
+      .map((s) => s.id);
   }
 }

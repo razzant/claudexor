@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
-import { runCapture } from "@claudexor/core";
+import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import type { ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
+import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
 
@@ -89,6 +90,22 @@ function noImplementAdapter(id: string, family: ProviderFamily = "openai"): Harn
 const reviewers = () => [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
 
 describe("Orchestrator", () => {
+  it("fails closed when review evidence cannot be copied into the candidate tree", () => {
+    const source = mkdtempSync(join(tmpdir(), "claudexor-review-source-"));
+    writeEvidencePacket(source, {
+      userIntent: "review this candidate",
+      diff: "diff --git a/a b/a\n",
+      tests: "not run",
+    });
+    const candidateFile = join(mkdtempSync(join(tmpdir(), "claudexor-review-candidate-")), "not-a-dir");
+    writeFileSync(candidateFile, "file blocks candidate evidence dir");
+    const orch = new Orchestrator({ registry: new Map() });
+
+    expect(() =>
+      (orch as unknown as { prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string }).prepareReviewEvidenceDir(source, candidateFile),
+    ).toThrow(/review evidence copy into candidate tree failed/);
+  });
+
   it("runs a best-of-n race end to end and emits a DecisionRecord", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
@@ -119,7 +136,7 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_clean", harnesses: ["fake-fail-tests"] });
-    expect(["not_converged", "exhausted"]).toContain(res.status);
+    expect(res.status).toBe("failed");
   }, 20000);
 
   it("plan mode produces a SpecPack without mutating", async () => {
@@ -331,7 +348,13 @@ describe("Orchestrator", () => {
     const throwing: HarnessAdapter = {
       id: "throwing",
       async discover() {
-        return HarnessManifest.parse({ id: "throwing", display_name: "throwing", kind: "local_cli", capabilities: { implement: true } });
+        return HarnessManifest.parse({
+          id: "throwing",
+          display_name: "throwing",
+          kind: "local_cli",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
       },
       async doctor() {
         return ConformanceReport.parse({ harness_id: "throwing", status: "ok" });
@@ -344,7 +367,9 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["throwing", throwing]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["throwing"], n: 1 });
-    expect(res.status).not.toBe("success");
+    expect(res.status).toBe("failed");
+    expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("attempts/a01/attempt.yaml");
     expect(existsSync(join(repo, ".claudexor", "workspaces", res.taskId, "a01"))).toBe(false);
   });
 
@@ -545,6 +570,10 @@ describe("Orchestrator", () => {
     expect(runEvents).toContain("run.created");
     expect(runEvents).toContain("run.completed");
     expect(harnessEvents).toContain("message");
+    const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(eventLog).toContain("\"type\":\"harness.event\"");
+    expect(eventLog).toContain("\"harness_id\":\"fake-success\"");
+    expect(eventLog).toContain("\"attempt_id\":\"a01\"");
   });
 
   it("honors a pre-aborted signal (agent -> cancelled, no harness work forwarded)", async () => {
@@ -565,6 +594,55 @@ describe("Orchestrator", () => {
     expect(res.status).toBe("cancelled");
     expect(harnessEvents.length).toBe(0);
   });
+
+  it("forwards abort into the harness process for silent active runs", async () => {
+    const repo = await initRepo();
+    const marker = join(repo, "survived.txt");
+    const adapter: HarnessAdapter = {
+      id: "silent-process",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "silent-process",
+          display_name: "silent-process",
+          kind: "local_cli",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "silent-process", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+        const script = [
+          "console.log('ready')",
+          "process.on('SIGINT', () => {})",
+          `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1500)`,
+          "setTimeout(() => {}, 5000)",
+        ].join(";");
+        for await (const ev of spawnProcess(process.execPath, ["-e", script], { abortSignal: signal, cancelKillDelayMs: 100 })) {
+          if (ev.type === "stdout" && ev.line === "ready") {
+            yield { type: "started", session_id: spec.session_id, ts: new Date().toISOString() };
+          }
+        }
+      },
+    };
+    const ac = new AbortController();
+    const orch = new Orchestrator({ registry: new Map([["silent-process", adapter]]) });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["silent-process"],
+      signal: ac.signal,
+      onHarnessEvent: (e) => {
+        if (e.type === "started") ac.abort();
+      },
+    });
+    expect(res.status).toBe("cancelled");
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    expect(existsSync(marker)).toBe(false);
+  }, 10000);
 
   it("isolates a throwing onHarnessEvent observer (agent stays terminal no-op)", async () => {
     const repo = await initRepo();

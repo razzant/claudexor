@@ -6,14 +6,59 @@ import ClaudexorKit
 
 struct BudgetScreen: View {
     @Environment(AppModel.self) private var model
+    @State private var maxUsdPerRun = ""
+    @State private var maxUsdPerDay = ""
     private var b: BudgetState { model.budget }
+    private var runCapValid: Bool { optionalUsd(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var dayCapValid: Bool { optionalUsd(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         ScreenScaffold(title: "Budget", subtitle: "Spend, leases, and the circuit breaker across your portfolio.") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.Spacing.md)], spacing: Theme.Spacing.md) {
-                Panel { MetricTile(title: "Spend", value: String(format: "$%.4f", b.spend), caption: "of $\(String(format: "%.2f", b.cap)) cap", tint: Theme.accent, systemImage: "dollarsign.circle") }
-                Panel { MetricTile(title: "Remaining", value: String(format: "$%.4f", max(0, b.cap - b.spend)), tint: Theme.status(.succeeded), systemImage: "creditcard") }
+                Panel { MetricTile(title: "Spend", value: b.spendLabel, caption: "cap \(b.capLabel)", tint: Theme.accent, systemImage: "dollarsign.circle") }
+                Panel { MetricTile(title: "Remaining", value: b.remainingLabel, tint: b.spendKnown && b.capKnown ? Theme.status(.succeeded) : .secondary, systemImage: "creditcard") }
                 Panel { MetricTile(title: "Circuit breaker", value: b.breakerLabel, tint: b.breakerColor, systemImage: "bolt.shield") }
+            }
+
+            Panel {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    SectionLabel("Budget defaults", systemImage: "slider.horizontal.2.square")
+                    HStack(spacing: Theme.Spacing.md) {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            Text("Max USD per run").font(.caption).foregroundStyle(.secondary)
+                            TextField("No default", text: $maxUsdPerRun)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.callout, design: .monospaced))
+                                .help("Default per-run cap. The New Task composer can override this for a single run.")
+                        }
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            Text("Max USD per day").font(.caption).foregroundStyle(.secondary)
+                            TextField("No default", text: $maxUsdPerDay)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.callout, design: .monospaced))
+                                .help("User-level per-day cap. Empty means no configured day cap.")
+                        }
+                    }
+                    if !runCapValid || !dayCapValid {
+                        Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.status(.failed))
+                    }
+                    HStack {
+                        Button {
+                            Task { await saveBudgetDefaults() }
+                        } label: {
+                            Label("Save budget defaults", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .disabled(!runCapValid || !dayCapValid)
+                        .help("Save budget defaults to the engine settings.")
+                        if let status = model.settingsStatus {
+                            Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                }
             }
 
             Panel {
@@ -21,7 +66,7 @@ struct BudgetScreen: View {
                     SectionLabel("Portfolio budget", systemImage: "gauge.with.dots.needle.67percent")
                     MeterBar(fraction: b.fraction, tint: b.fraction > 0.85 ? Theme.status(.failed) : Theme.accent, height: 14)
                     HStack {
-                        Text("\(Int(b.fraction * 100))% used").font(.caption).foregroundStyle(.secondary)
+                        Text(b.spendKnown && b.capKnown ? "\(Int(b.fraction * 100))% used" : "Usage unknown").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if b.fraction > 0.75 {
                             Label("Approaching cap — leases will throttle", systemImage: "exclamationmark.triangle.fill")
@@ -34,7 +79,13 @@ struct BudgetScreen: View {
             Panel {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     SectionLabel("Per-harness spend", systemImage: "chart.pie")
-                    ForEach(HarnessFamily.allCases.filter { b.perHarness[$0] != nil }) { family in
+                    let harnesses = HarnessFamily.allCases.filter { b.perHarness[$0] != nil }
+                    if harnesses.isEmpty {
+                        Text("Per-harness spend is unknown until the engine exposes verified per-harness ledger data.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(harnesses) { family in
                         let v = b.perHarness[family] ?? 0
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -52,11 +103,24 @@ struct BudgetScreen: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     SectionLabel("Circuit breaker tiers", systemImage: "bolt.shield")
                     HStack(spacing: Theme.Spacing.sm) { ForEach(0..<4) { breakerTier($0) } }
-                    Text("Pre-call lease reservation + prompt-fingerprint loop detection + recursion caps protect against runaway spend. Quota signals are best-effort (honest, not guaranteed).")
+                    if !b.nativeQuota.isEmpty {
+                        ForEach(b.nativeQuota, id: \.self) { quota in
+                            Text(quota).font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Native hourly/weekly quota is unknown until a verified provider signal is available.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Pre-call lease reservation + prompt-fingerprint loop detection + recursion caps protect against runaway spend. Quota signals are shown only when verified.")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
         }
+        .task {
+            await model.refreshSettings()
+            syncBudgetDefaults()
+        }
+        .onChange(of: model.settingsSnapshot) { _, _ in syncBudgetDefaults() }
     }
 
     private func breakerTier(_ tier: Int) -> some View {
@@ -68,6 +132,32 @@ struct BudgetScreen: View {
             Text(labels[tier]).font(.caption2).foregroundStyle(active ? colors[tier] : .secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func syncBudgetDefaults() {
+        guard let settings = model.settingsSnapshot else { return }
+        maxUsdPerRun = settings.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
+        maxUsdPerDay = settings.budget.maxUsdPerDay.map { String(format: "%.2f", $0) } ?? ""
+    }
+
+    private func saveBudgetDefaults() async {
+        guard runCapValid, dayCapValid else { return }
+        let clearRun = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let clearDay = maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let patch = SettingsUpdateRequest(
+            maxUsdPerRun: optionalUsd(maxUsdPerRun),
+            maxUsdPerDay: optionalUsd(maxUsdPerDay),
+            clearMaxUsdPerRun: clearRun,
+            clearMaxUsdPerDay: clearDay
+        )
+        _ = await model.saveSettings(patch)
+    }
+
+    private func optionalUsd(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "$", with: "")
+        if trimmed.isEmpty { return nil }
+        guard let value = Double(trimmed), value >= 0 else { return nil }
+        return value
     }
 }
 
@@ -161,6 +251,8 @@ struct SettingsScreen: View {
     @State private var maxUsdPerRun = ""
     @State private var maxUsdPerDay = ""
     @AppStorage("claudexor.reducedVisualEffects") private var reducedVisualEffects = false
+    private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var dayCapValid: Bool { parseOptionalDouble(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         @Bindable var model = model
@@ -206,12 +298,14 @@ struct SettingsScreen: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.callout, design: .monospaced))
                             .help("Stored in macOS app preferences. Engine config remains in ~/.claudexor/config.yaml and .claudexor/config.yaml.")
-                        Button { chooseProjectRoot() } label: { Label("Choose", systemImage: "folder") }
+                        Button { chooseProjectRoot() } label: { Label("Choose / Create", systemImage: "folder.badge.plus") }
                             .buttonStyle(.bordered)
+                            .help("Choose an existing project folder or create a new empty folder.")
                         Button {
                             model.projectRoot = projectRootDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                         } label: { Label("Use", systemImage: "checkmark") }
                             .buttonStyle(.borderedProminent).tint(Theme.accent)
+                            .help("Use this path as the Current Project for project-aware modes.")
                     }
                     Picker("Project context", selection: $model.projectContextMode) {
                         Text("Auto").tag("auto")
@@ -263,7 +357,7 @@ struct SettingsScreen: View {
                         }
                     }
                     HStack {
-                        Button { Task { await saveEngineDefaults() } } label: { Label("Save engine defaults", systemImage: "square.and.arrow.down") }
+                        Button { Task { await saveEngineDefaults() } } label: { Label("Save engine defaults", systemImage: "checkmark.circle") }
                             .buttonStyle(.borderedProminent).tint(Theme.accent)
                         if let status = model.settingsStatus {
                             Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
@@ -312,13 +406,20 @@ struct SettingsScreen: View {
                             .textFieldStyle(.roundedBorder)
                             .help("User-level per-day budget cap. Empty means no configured cap.")
                     }
-                    Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "square.and.arrow.down") }
+                    if !runCapValid || !dayCapValid {
+                        Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.status(.failed))
+                    }
+                    Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "checkmark.circle") }
                         .buttonStyle(.bordered)
+                        .disabled(!runCapValid || !dayCapValid)
+                        .help("Save validated budget defaults. Empty fields clear the corresponding cap.")
                     KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
                 }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
-                    KeyValueRow(key: "Version", value: "v0.5.0 beta")
+                    KeyValueRow(key: "Version", value: "v0.6.0 beta")
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Solid grid queue; apply/check server endpoints only")
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
@@ -367,10 +468,10 @@ struct SettingsScreen: View {
             }
             FlowLayout(spacing: Theme.Spacing.sm) {
                 Button { model.authSheetHarness = family } label: {
-                    Label("Setup", systemImage: "person.crop.circle.badge.checkmark")
+                    Label(health == .ok ? "Manage" : "Setup", systemImage: health == .ok ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
                 }
-                .buttonStyle(.borderedProminent).tint(Theme.accent)
-                .help("Open setup/auth actions for \(family.label).")
+                .buttonStyle(.bordered).tint(Theme.accent)
+                .help(health == .ok ? "Open \(family.label) auth details and fallback key management." : "Open setup/auth actions for \(family.label).")
                 Button { Task { await model.refreshHarnesses() } } label: {
                     Label("Recheck", systemImage: "arrow.clockwise")
                 }
@@ -384,6 +485,7 @@ struct SettingsScreen: View {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Use Project"
         if panel.runModal() == .OK, let url = panel.url {
@@ -413,6 +515,10 @@ struct SettingsScreen: View {
     }
 
     private func saveEngineDefaults() async {
+        guard runCapValid && dayCapValid else {
+            model.settingsStatus = "Budget defaults were not saved: enter non-negative USD numbers or leave fields empty."
+            return
+        }
         let runCap = parseOptionalDouble(maxUsdPerRun)
         let dayCap = parseOptionalDouble(maxUsdPerDay)
         let clearRunCap = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -433,8 +539,9 @@ struct SettingsScreen: View {
     }
 
     private func parseOptionalDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "$", with: "")
         if trimmed.isEmpty { return nil }
-        return Double(trimmed)
+        guard let value = Double(trimmed), value >= 0 else { return nil }
+        return value
     }
 }

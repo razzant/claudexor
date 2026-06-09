@@ -56,6 +56,16 @@ Harness setup commands are server allowlisted. Install/login/doctor execution
 uses setup jobs with risk flags and redacted logs; API-key fallback goes through
 `/secrets`, not inline setup payloads.
 
+`GET /runs/:id` includes `primaryOutput`, `timeline`, and `budget` projections
+for clients that need the main answer/report, streamed activity, and known spend
+state without scraping artifacts. Unknown quota or spend remains unknown; do not
+render missing values as `$0`.
+
+`POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
+`POST /runs/:id/input` is a typed beta endpoint, but v0.6.0 does not forward
+live user input into active runs by default. Integrations must treat
+`unsupported` as an honest state and disable input UI for that run.
+
 ## MCP
 
 Run:
@@ -84,9 +94,15 @@ building a hard dependency.
 
 External adapters can be implemented out of tree and driven over JSON-RPC stdio.
 The adapter protocol currently covers discovery, doctor/capability reporting,
-run, review, and cancel style operations. Do not assume resume, estimate, live
-steering, or structured output support unless the current protocol and adapter
-doctor output prove it.
+run, review, and cancel style operations. Native capabilities may expose richer
+surfaces, such as Codex app-server JSON-RPC or Claude stream-json stdin, but do
+not assume resume, estimate, live steering, or structured output support unless
+the current protocol, capability profile, and adapter doctor output prove it for
+the active run.
+
+Discovery/manifests describe static capabilities and possible auth sources.
+Doctor output is the readiness source: UI status, routing, reviewer selection,
+and live controls must rely on doctor status, enabled intents, and smoke checks.
 
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.

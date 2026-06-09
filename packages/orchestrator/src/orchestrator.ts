@@ -13,6 +13,7 @@ import type {
   RunEvent,
   RunStatus,
   TaskContract,
+  ProviderFamily,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
 import { HarnessRunSpec, ModeKind as ModeKindSchema, SCHEMA_VERSION, TaskContract as TaskContractSchema, isBlocking } from "@claudexor/schema";
@@ -59,10 +60,10 @@ export interface OrchestratorDeps {
   /**
    * Optional per-provider-family reviewer model override. No hardcoded versions: the caller supplies the
    * model id, default keeps each harness's own default reviewer model.
-   */
+  */
   reviewerModels?: Record<string, string>;
   /** Optional per-provider-family reviewer effort override where the harness supports it. */
-  reviewerEfforts?: Partial<Record<"anthropic", EffortHint>>;
+  reviewerEfforts?: Partial<Record<ProviderFamily, EffortHint>>;
 }
 
 export interface RunInput {
@@ -194,7 +195,7 @@ export class Orchestrator {
         adapter,
         providerFamily: m.provider_family,
         requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
-        requestedEffort: m.provider_family === "anthropic" ? (this.deps.reviewerEfforts?.anthropic ?? null) : null,
+        requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
       });
       if (specs.length >= 2) break;
     }
@@ -386,6 +387,7 @@ export class Orchestrator {
       effort_hint: effortHint ?? null,
       env: wsm.envFor(envelope),
     });
+    if (signal) spec.extra["abortSignal"] = signal;
 
     let cost = 0;
     let costEstimated = false;
@@ -401,17 +403,18 @@ export class Orchestrator {
     try {
       for await (const ev of adapter.run(spec)) {
         if (signal?.aborted) break;
-        safeInvoke(onHarnessEvent, ev);
-        if (ev.type === "usage" && ev.usage?.cost_usd) {
-          cost += ev.usage.cost_usd;
-          if (ev.usage.estimated) costEstimated = true;
+        const safeEv = redactHarnessEvent(ev);
+        safeInvoke(onHarnessEvent, safeEv);
+        if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+          cost += safeEv.usage.cost_usd;
+          if (safeEv.usage.estimated) costEstimated = true;
         }
-        if (ev.type === "error") {
+        if (safeEv.type === "error") {
           errored = true;
-          errors.push(redactSecrets(ev.error ?? ev.text ?? "harness emitted error"));
+          errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
         }
         // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
-        const obs = observationFromEvent(adapter.id, ev);
+        const obs = observationFromEvent(adapter.id, safeEv);
         if (obs) ledger.observe(obs);
       }
     } finally {
@@ -564,7 +567,26 @@ export class Orchestrator {
         log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
         envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
         const run = await this.runCandidateInEnvelope(
-          adapter, envelope, attemptId, label, contract, input.prompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, input.model, input.effort, this.candidateIntent(mode),
+          adapter,
+          envelope,
+          attemptId,
+          label,
+          contract,
+          input.prompt,
+          store,
+          paths,
+          wsm,
+          ledger,
+          "workspace_write",
+          (ev) => {
+            const safeEv = redactHarnessEvent(ev);
+            safeInvoke(input.onHarnessEvent, safeEv);
+            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+          },
+          input.signal,
+          input.model,
+          input.effort,
+          this.candidateIntent(mode),
         );
         ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
@@ -642,7 +664,26 @@ export class Orchestrator {
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
-            synthAdapter, envelope, "synth", "Synthesis", contract, synthPrompt, store, paths, wsm, ledger, "workspace_write", input.onHarnessEvent, input.signal, input.model, input.effort, "synthesize",
+            synthAdapter,
+            envelope,
+            "synth",
+            "Synthesis",
+            contract,
+            synthPrompt,
+            store,
+            paths,
+            wsm,
+            ledger,
+            "workspace_write",
+            (ev) => {
+              const safeEv = redactHarnessEvent(ev);
+              safeInvoke(input.onHarnessEvent, safeEv);
+              log.emit("harness.event", harnessEventPayload(synthAdapter.id, "synth", safeEv));
+            },
+            input.signal,
+            input.model,
+            input.effort,
+            "synthesize",
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
           const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
@@ -686,8 +727,11 @@ export class Orchestrator {
     if (result.decision.status !== "success" && !honestTerminal) {
       writeFailure(store, paths, {
         phase: "arbitration",
-        category: result.decision.status === "exhausted" ? "budget" : "internal",
+        category: winnerRun?.errored ? "harness_error" : result.decision.status === "exhausted" ? "budget" : "internal",
+        harnessId: winnerRun?.errored ? winnerRun.harnessId : undefined,
+        attemptId: winnerRun?.errored ? winnerRun.attemptId : undefined,
         safeMessage: result.decision.why_winner,
+        rawDetailRef: winnerRun?.errored ? `attempts/${winnerRun.attemptId}/attempt.yaml` : undefined,
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Inspect candidate artifacts", "Retry with a narrower prompt or different harness pool"],
       });
@@ -740,7 +784,15 @@ export class Orchestrator {
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
       const result =
         reviewers.length > 0
-          ? await reviewCandidate({ candidateLabel: run.label, diff: run.diff, evidenceDir: candidateEvidenceDir, cwd: candidateCwd, reviewers })
+          ? await reviewCandidate({
+              candidateLabel: run.label,
+              diff: run.diff,
+              evidenceDir: candidateEvidenceDir,
+              artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
+              cwd: candidateCwd,
+              reviewers,
+              onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+            })
           : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
       this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
       const revalidated = await revalidateFindings(result.findings);
@@ -766,16 +818,20 @@ export class Orchestrator {
 
   private prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string {
     const targetDir = join(candidateCwd, REVIEW_EVIDENCE_DIRNAME);
-    try {
-      if (sourceDir !== targetDir && existsSync(sourceDir)) {
-        rmSync(targetDir, { recursive: true, force: true });
-        cpSync(sourceDir, targetDir, { recursive: true });
-        return this.requireReviewEvidence(targetDir);
-      }
-    } catch {
-      // Review preflight will fail closed if the copied packet is incomplete.
+    if (sourceDir === targetDir) {
+      return this.requireReviewEvidence(targetDir);
     }
-    return this.requireReviewEvidence(sourceDir);
+    if (!existsSync(sourceDir)) {
+      throw new Error(`review evidence preflight failed for ${sourceDir}: source packet missing`);
+    }
+    try {
+      rmSync(targetDir, { recursive: true, force: true });
+      cpSync(sourceDir, targetDir, { recursive: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`review evidence copy into candidate tree failed: ${message}`);
+    }
+    return this.requireReviewEvidence(targetDir);
   }
 
   private requireReviewEvidence(dir: string): string {
@@ -877,7 +933,28 @@ export class Orchestrator {
 
         let run: CandidateRun;
         try {
-          run = await this.runCandidateInEnvelope(adapter, envelope, attemptId, `Attempt ${attempt}`, contract, prompt, store, paths, wsm, ledger, input.access ?? "workspace_write", input.onHarnessEvent, input.signal, input.model, input.effort, "repair");
+          run = await this.runCandidateInEnvelope(
+            adapter,
+            envelope,
+            attemptId,
+            `Attempt ${attempt}`,
+            contract,
+            prompt,
+            store,
+            paths,
+            wsm,
+            ledger,
+            input.access ?? "workspace_write",
+            (ev) => {
+              const safeEv = redactHarnessEvent(ev);
+              safeInvoke(input.onHarnessEvent, safeEv);
+              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+            },
+            input.signal,
+            input.model,
+            input.effort,
+            "repair",
+          );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
         } catch (err) {
           // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
@@ -895,8 +972,10 @@ export class Orchestrator {
                 candidateLabel: `Attempt ${attempt}`,
                 diff: run.diff,
                 evidenceDir: candidateReviewEvidenceDir,
+                artifactsDir: join(paths.reviewsDir, `${attemptId}-reviewers`),
                 cwd: candidateReviewCwd,
                 reviewers,
+                onReviewerEvent: (event) => log.emit(event.type, { ...event }),
               })
             : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
         this.cleanupReviewEvidenceDir(candidateReviewEvidenceDir, candidateReviewCwd);
@@ -978,7 +1057,11 @@ export class Orchestrator {
       });
       decision = arb.decision;
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
-      if (converged && decision.status !== "not_converged") status = decision.status;
+      if (converged && decision.status !== "not_converged") {
+        status = decision.status;
+      } else if (status === "not_converged" && decision.status !== "success") {
+        status = decision.status;
+      }
     }
 
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
@@ -1077,6 +1160,7 @@ export class Orchestrator {
         access: "readonly",
         model_hint: input.model ?? null,
       });
+      if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
       const onAbort = () => {
@@ -1090,10 +1174,12 @@ export class Orchestrator {
       try {
         for await (const ev of adapter.run(spec)) {
           if (input.signal?.aborted) break;
-          safeInvoke(input.onHarnessEvent, ev);
-          appendLine(attemptEventsPath, JSON.stringify(redactHarnessEvent(ev)));
-          if (ev.type === "message" && ev.text) parts.push(ev.text);
-          if (ev.type === "error") harnessError = ev.error ? redactSecrets(ev.error) : "harness emitted an error";
+          const safeEv = redactHarnessEvent(ev);
+          safeInvoke(input.onHarnessEvent, safeEv);
+          log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+          appendLine(attemptEventsPath, JSON.stringify(safeEv));
+          if (safeEv.type === "message" && safeEv.text) parts.push(safeEv.text);
+          if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
         }
       } catch (err) {
         harnessError = safeErrorMessage(err);
@@ -1150,8 +1236,10 @@ export class Orchestrator {
         candidateLabel: "Plan",
         diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
         evidenceDir: reviewDir,
+        artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
         cwd: input.repoRoot,
         reviewers,
+        onReviewerEvent: (event) => log.emit(event.type, { ...event }),
       });
       ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
       store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
@@ -1268,6 +1356,7 @@ export class Orchestrator {
         access: "readonly",
         model_hint: input.model ?? null,
       });
+      if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
       const onAbort = () => {
@@ -1281,10 +1370,12 @@ export class Orchestrator {
       try {
         for await (const ev of adapter.run(spec)) {
           if (input.signal?.aborted) break;
-          safeInvoke(input.onHarnessEvent, ev);
-          appendLine(attemptEventsPath, JSON.stringify(redactHarnessEvent(ev)));
-          if (ev.type === "message" && ev.text) parts.push(ev.text);
-          if (ev.type === "error") harnessError = ev.error ? redactSecrets(ev.error) : "harness emitted an error";
+          const safeEv = redactHarnessEvent(ev);
+          safeInvoke(input.onHarnessEvent, safeEv);
+          log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+          appendLine(attemptEventsPath, JSON.stringify(safeEv));
+          if (safeEv.type === "message" && safeEv.text) parts.push(safeEv.text);
+          if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
         }
       } catch (err) {
         harnessError = safeErrorMessage(err);
@@ -1456,6 +1547,28 @@ function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
       payload: ev.payload ? { redacted: true } : undefined,
     };
   }
+}
+
+function harnessEventPayload(harnessId: string, attemptId: string, ev: HarnessEvent): Record<string, unknown> {
+  const safe = redactHarnessEvent(ev);
+  const title =
+    safe.error ??
+    safe.text ??
+    (safe.usage
+      ? `usage: ${safe.usage.input_tokens ?? 0} in / ${safe.usage.output_tokens ?? 0} out`
+      : safe.type);
+  return {
+    harness_id: harnessId,
+    attempt_id: attemptId,
+    session_id: safe.session_id,
+    type: safe.type,
+    title: String(title).slice(0, 500),
+    text: safe.text,
+    error: safe.error,
+    usage: safe.usage,
+    observed_model: safe.observed_model,
+    payload: safe.payload,
+  };
 }
 
 function formatFindings(findings: ReviewFinding[]): string {

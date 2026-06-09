@@ -22,7 +22,15 @@ import Testing
     }
 
     @Test func startRunRequestEncodesPromptAndMode() throws {
-        let req = StartRunRequest(prompt: "fix bug", mode: "best_of_n", scope: .project(root: "/tmp/repo"), harnesses: ["codex", "claude"], n: 2)
+        let req = StartRunRequest(
+            prompt: "fix bug",
+            mode: "best_of_n",
+            scope: .project(root: "/tmp/repo"),
+            harnesses: ["codex", "claude"],
+            reviewerModels: ["openai": "gpt-5.5"],
+            reviewerEfforts: ["openai": "xhigh", "anthropic": "high"],
+            n: 2
+        )
         let data = try JSONEncoder().encode(req)
         let decoded = try JSONDecoder().decode(JSONValue.self, from: data)
         #expect(decoded["prompt"]?.stringValue == "fix bug")
@@ -30,6 +38,9 @@ import Testing
         #expect(decoded["scope"]?["kind"]?.stringValue == "project")
         #expect(decoded["scope"]?["root"]?.stringValue == "/tmp/repo")
         #expect(decoded["execution"]?["isolation"]?.stringValue == "envelope")
+        #expect(decoded["reviewerModels"]?["openai"]?.stringValue == "gpt-5.5")
+        #expect(decoded["reviewerEfforts"]?["openai"]?.stringValue == "xhigh")
+        #expect(decoded["reviewerEfforts"]?["anthropic"]?.stringValue == "high")
         #expect(decoded["n"]?.doubleValue == 2)
     }
 
@@ -42,6 +53,57 @@ import Testing
         #expect(obj?["maxUsdPerDay"] == nil)
         #expect(obj?["clearMaxUsdPerRun"] as? Bool == true)
         #expect(obj?["clearMaxUsdPerDay"] as? Bool == true)
+    }
+
+    @Test func harnessStatusDecodesChecksAndDefaultsMissingIntentArrays() throws {
+        let rich = """
+        {
+          "id": "codex",
+          "status": "degraded",
+          "manifest": null,
+          "enabledIntents": [],
+          "disabledIntents": ["review"],
+          "checks": [{"id":"isolated_api_smoke","status":"fail","detail":"401"}],
+          "reasons": ["isolated smoke failed"]
+        }
+        """
+        let status = try JSONDecoder().decode(HarnessStatus.self, from: Data(rich.utf8))
+        #expect(status.id == "codex")
+        #expect(status.enabledIntents.isEmpty)
+        #expect(status.disabledIntents == ["review"])
+        #expect(status.checks == [HarnessCheck(id: "isolated_api_smoke", status: "fail", detail: "401")])
+
+        let legacy = #"{"id":"claude","status":"ok","manifest":null}"#
+        let legacyStatus = try JSONDecoder().decode(HarnessStatus.self, from: Data(legacy.utf8))
+        #expect(legacyStatus.enabledIntents.isEmpty)
+        #expect(legacyStatus.disabledIntents.isEmpty)
+        #expect(legacyStatus.checks.isEmpty)
+    }
+
+    @Test func runDetailDecodesNewProjectionFieldsAndOldPayloadDefaults() throws {
+        let rich = """
+        {
+          "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true},
+          "primaryOutput": {"kind":"answer","path":"final/answer.md","text":"4","bytes":1},
+          "timeline": [{"type":"harness.event","title":"Codex answered","detail":"done","rawRef":"events.jsonl"}],
+          "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events","nativeQuota":[]},
+          "reviewFindings": []
+        }
+        """
+        let detail = try JSONDecoder().decode(RunDetail.self, from: Data(rich.utf8))
+        #expect(detail.summary.runId == "run-1")
+        #expect(detail.summary.spendUsd == 0.12)
+        #expect(detail.primaryOutput?.text == "4")
+        #expect(detail.timeline.first?.type == "harness.event")
+        #expect(detail.budget?.source == "events")
+
+        let legacy = #"{"summary":{"runId":"run-old","state":"succeeded"}}"#
+        let old = try JSONDecoder().decode(RunDetail.self, from: Data(legacy.utf8))
+        #expect(old.artifacts.isEmpty)
+        #expect(old.timeline.isEmpty)
+        #expect(old.reviewFindings.isEmpty)
+        #expect(old.primaryOutput == nil)
+        #expect(old.budget == nil)
     }
 
     @Test func controlApiDiscoveryLoadsEndpointAndToken() throws {

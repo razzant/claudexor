@@ -66,9 +66,14 @@ apps/macos/scripts/build-app.sh
 ```
 
 Unsigned artifacts are named `Claudexor-<version>-unsigned.zip` and
-`Claudexor-<version>-unsigned.dmg`. They are beta/local distribution artifacts:
+`Claudexor-<version>-unsigned.dmg`, with sibling `.sha256` checksum files. They
+are beta/local smoke artifacts:
 Gatekeeper can block them on other Macs until a signed/notarized build is
-produced. Release notes must also call out the macOS 26 minimum.
+produced. The public GitHub Release assets for v0.6.0 are built by
+`.github/workflows/release.yml` on a macOS runner from the pushed tag/sha, then
+attached to the draft release with `GITHUB_TOKEN`. Do not upload local
+`apps/macos/dist` artifacts as final release assets unless Anton explicitly
+re-approves that fallback. Release notes must also call out the macOS 26 minimum.
 
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not
@@ -77,9 +82,16 @@ enabled for that local control-plane model.
 ## Runtime Bridge
 
 The app connects to the loopback control API for health, run list/detail,
-artifacts, harness doctor, settings, secrets metadata, start/cancel, apply check,
-and SSE events. Ask can run without a Current Project and writes user-level
-artifacts; project-aware modes are gated until Current Project is selected.
+primary output, timeline, budget snapshot, artifacts, harness doctor, settings,
+secrets metadata, start/cancel, apply check, and SSE events. Ask can run without
+a Current Project and writes user-level artifacts; project-aware modes are gated
+until Current Project is selected.
+
+Run detail uses the server-projected `primaryOutput` first, then artifact
+fallbacks. Active runs default to Timeline, completed runs to Outcome, and
+failures without output to Diagnostics. Cancel/interrupt uses the server control
+endpoint; live input is disabled in v0.6.0 rather than inferred from native
+harness capabilities that are not wired to active runs.
 
 Sample data is off by default behind Settings. Surfaces the engine does not
 fully expose yet use honest empty states instead of pretending to be live.

@@ -129,12 +129,21 @@
         },
         "reviewerEfforts": {
           "type": "object",
-          "properties": {
-            "anthropic": {
-              "$ref": "#/definitions/ControlRunStartRequest/properties/effort"
-            }
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlRunStartRequest/properties/effort"
           },
-          "additionalProperties": false
+          "propertyNames": {
+            "enum": [
+              "openai",
+              "anthropic",
+              "google",
+              "cursor",
+              "opencode",
+              "xai",
+              "local",
+              "unknown"
+            ]
+          }
         },
         "n": {
           "type": "integer",

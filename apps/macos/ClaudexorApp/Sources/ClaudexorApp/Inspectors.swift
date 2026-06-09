@@ -22,7 +22,7 @@ struct TaskInspectorView: View {
 
                 section("Honesty", "checkmark.shield") {
                     HStack { Text("Route proof").font(.caption).foregroundStyle(.secondary); Spacer(); RouteProofBadge(proof: task.routeProof) }
-                    KeyValueRow(key: "Spend", value: String(format: "$%.4f / $%.2f", task.spendUsd, task.capUsd), mono: true)
+                    KeyValueRow(key: "Spend", value: task.budgetLabel, mono: true)
                     let gp = task.candidates.map(\.gatesPassed).max() ?? 0
                     let gt = task.candidates.map(\.gatesTotal).max() ?? 0
                     KeyValueRow(key: "Gates", value: gt > 0 ? "\(gp)/\(gt) passed" : "—",
@@ -90,7 +90,7 @@ struct ContextInspectorView: View {
                     KeyValueRow(key: "Runs", value: "\(model.tasks.count)")
                     KeyValueRow(key: "Active", value: "\(model.activeTasks.count)")
                     KeyValueRow(key: "Need you", value: "\(model.attentionTasks.count)")
-                    KeyValueRow(key: "Spend today", value: String(format: "$%.2f", model.budget.spend), mono: true)
+                    KeyValueRow(key: "Spend today", value: model.budget.spendLabel, mono: true)
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     Label("Tip", systemImage: "lightbulb").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)

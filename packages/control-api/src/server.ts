@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { newId } from "@claudexor/util";
+import { newId, redactSecrets } from "@claudexor/util";
 import { EventBus } from "./event-bus.js";
 
 /** Context handed to the runner so a run can be observed live and cancelled. */
@@ -172,7 +172,11 @@ export class ControlApiServer {
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
     void this.handle(req, res).catch((err) => {
-      if (!res.headersSent) this.json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      if (!res.headersSent) {
+        const status = typeof (err as { status?: unknown }).status === "number" ? Number((err as { status: number }).status) : 500;
+        const message = err instanceof Error ? err.message : String(err);
+        this.json(res, status, { error: redactSecrets(message) });
+      }
       else res.end();
     });
   }
@@ -253,10 +257,10 @@ export class ControlApiServer {
             respondOnce(info);
           },
           onEvent: (event) => {
-            if (ref.current) this.bus.publish(ref.current.runId, "run", event);
+            if (ref.current) this.bus.publish(ref.current.runId, "run", redactEvent(event));
           },
           onHarnessEvent: (event) => {
-            if (ref.current) this.bus.publish(ref.current.runId, "harness", event);
+            if (ref.current) this.bus.publish(ref.current.runId, "harness", redactEvent(event));
           },
         });
         if (ref.current) {
@@ -272,7 +276,7 @@ export class ControlApiServer {
           this.json(res, 500, { error: "run did not start: runner never called onRunStart" });
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
         if (ref.current) {
           const h = this.runs.get(ref.current.runId);
           if (h) {
@@ -347,5 +351,13 @@ export class ControlApiServer {
     };
     req.on("close", close);
     res.on("close", close);
+  }
+}
+
+function redactEvent(event: unknown): unknown {
+  try {
+    return JSON.parse(redactSecrets(JSON.stringify(event)));
+  } catch {
+    return typeof event === "string" ? redactSecrets(event) : event;
   }
 }

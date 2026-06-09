@@ -47,6 +47,11 @@ function providerKeyAvailable(): boolean {
   return providerKey() !== null;
 }
 
+function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
+  const signal = spec.extra["abortSignal"];
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
 export function createOpenCodeAdapter(): HarnessAdapter {
   return {
     id: "opencode",
@@ -62,7 +67,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.5.0",
+        adapter_version: "0.6.0",
         provider_family: "opencode",
         capabilities: {
           plan: authReady,
@@ -148,7 +153,7 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {

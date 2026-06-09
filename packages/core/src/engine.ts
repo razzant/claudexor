@@ -124,10 +124,11 @@ export class ExecutionEngine {
       access: input.access ?? "workspace_write",
       model_hint: input.model ?? null,
     });
+    if (input.signal) spec.extra["abortSignal"] = input.signal;
     log.emit("harness.started", { harness_id: adapter.id, session_id: sessionId });
 
     const messages: string[] = [];
-    const changedFiles: string[] = [];
+    const changedFiles = new Set<string>();
     let costUsd = 0;
     let status: RunStatus = "success";
     let errorText = "";
@@ -151,7 +152,7 @@ export class ExecutionEngine {
         if (ev.type === "message" && ev.text) messages.push(ev.text);
         if (ev.type === "file_change") {
           const p = ev.payload?.["path"];
-          if (p) changedFiles.push(String(p));
+          if (p) changedFiles.add(String(p));
         }
         if (ev.type === "usage" && ev.usage?.cost_usd) costUsd += ev.usage.cost_usd;
         if (ev.type === "error") {
@@ -180,7 +181,7 @@ export class ExecutionEngine {
       session_id: sessionId,
       status,
       cost_usd: costUsd,
-      changed_files: changedFiles,
+      changed_files: [...changedFiles],
       error: errorText || undefined,
     });
 
@@ -189,7 +190,7 @@ export class ExecutionEngine {
       kind: "patch",
       source_task_id: taskId,
       producer_attempt_id: "a01",
-      meta: { changed_files: changedFiles, harness_id: adapter.id, status },
+      meta: { changed_files: [...changedFiles], harness_id: adapter.id, status },
     });
     const workProductPath = join(paths.finalDir, "work_product.yaml");
     store.writeYaml(workProductPath, workProduct);
@@ -209,7 +210,7 @@ export class ExecutionEngine {
       runDir: paths.root,
       workProductPath,
       costUsd,
-      changedFiles,
+      changedFiles: [...changedFiles],
     };
   }
 }

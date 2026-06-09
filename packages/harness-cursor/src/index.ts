@@ -54,6 +54,11 @@ function cursorApiKey(): string | null {
   return process.env.CLAUDEXOR_CURSOR_API_KEY || resolveSecret("cursor") || process.env.CURSOR_API_KEY || null;
 }
 
+function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
+  const signal = spec.extra["abortSignal"];
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
 export function createCursorAdapter(): HarnessAdapter {
   return {
     id: "cursor",
@@ -71,7 +76,7 @@ export function createCursorAdapter(): HarnessAdapter {
         display_name: "Cursor CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.5.0",
+        adapter_version: "0.6.0",
         provider_family: "cursor",
         capabilities: {
           plan: true,
@@ -167,7 +172,7 @@ async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {

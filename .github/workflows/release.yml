@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to package, for example v0.6.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  package-macos:
+    name: Package unsigned macOS beta
+    runs-on: macos-26
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){2}([.-][A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::Release workflow requires a semver-ish v* tag, got '$tag'"
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag '$tag' is not present in this checkout."
+            exit 1
+          fi
+          version="${tag#v}"
+          build="$(git rev-list --count "${tag}^{commit}")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "CLAUDEXOR_VERSION=$version" >> "$GITHUB_ENV"
+          echo "CLAUDEXOR_BUILD=$build" >> "$GITHUB_ENV"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Capture Node binary path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CLAUDEXOR_NODE_BIN=$(node -p 'process.execPath')" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify generated schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm schema:gen
+          git diff --exit-code packages/schema/generated || {
+            echo "::error::Generated JSON Schema is stale; run pnpm schema:gen and commit the result."
+            exit 1
+          }
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Swift tests and debug build
+        run: pnpm release:verify:swift
+
+      - name: Secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -InE '(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})' -- . ':!pnpm-lock.yaml'; then
+            echo "::error::Potential token-like secret found in tracked files."
+            exit 1
+          fi
+
+      - name: Build unsigned DMG and ZIP
+        shell: bash
+        env:
+          MAKE_DMG: "1"
+          MAKE_ZIP: "1"
+        run: |
+          set -euo pipefail
+          apps/macos/scripts/build-app.sh
+          ls -lah apps/macos/dist
+
+      - name: Verify expected assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          for file in \
+            "apps/macos/dist/Claudexor-${version}-unsigned.dmg" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.zip" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256"
+          do
+            test -s "$file" || { echo "::error::Missing expected asset: $file"; exit 1; }
+          done
+          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256"
+          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claudexor-${{ steps.release.outputs.version }}-unsigned-macos
+          path: |
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.dmg
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.dmg.sha256
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.zip
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.zip.sha256
+          if-no-files-found: error
+
+      - name: Create or update draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release.outputs.tag }}"
+          version="${{ steps.release.outputs.version }}"
+          notes="$(mktemp)"
+          cat > "$notes" <<EOF
+          Claudexor ${version} unsigned beta build.
+
+          This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
+          The macOS app, DMG, and ZIP are unsigned and not notarized for v0.6.0.
+          Verify downloads with the attached SHA256 files.
+          EOF
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --prerelease
+          else
+            gh release create "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --prerelease --verify-tag
+          fi
+          gh release upload "$tag" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.dmg" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.zip" \
+            "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256" \
+            --clobber

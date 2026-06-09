@@ -13,7 +13,7 @@ struct ComposerView: View {
     @State private var portfolio = "subscription-first"
     @State private var modelHint = ""
     @State private var n = 2
-    @State private var capUsd: Double = 0.50
+    @State private var capUsdText = "0.50"
     @State private var access: AccessProfile = .workspaceWrite
     @State private var gateText = ""
 
@@ -59,8 +59,14 @@ struct ComposerView: View {
     private var canLaunch: Bool {
         model.health == .connected &&
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        parsedCapUsd != nil &&
         (!mode.requiresProject || model.hasCurrentProject) &&
         !availableSelectedHarnesses.isEmpty
+    }
+    private var parsedCapUsd: Double? {
+        let normalized = capUsdText.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "$", with: "")
+        guard let value = Double(normalized), value >= 0 else { return nil }
+        return value
     }
 
     var body: some View {
@@ -96,7 +102,9 @@ struct ComposerView: View {
                 Text("Compose a run for the engine-service").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+            Button { dismiss() } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Close New Task without launching.")
         }
         .padding(Theme.Spacing.lg)
     }
@@ -260,10 +268,20 @@ struct ComposerView: View {
     private var budgetSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             SectionLabel("Budget cap", systemImage: "dollarsign.circle",
-                         accessory: AnyView(Text(String(format: "$%.2f", capUsd)).font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.accent)))
-            Slider(value: $capUsd, in: 0.10...5.0, step: 0.10).tint(Theme.accent)
-                .help("Per-run spend cap sent to the engine for this launch.")
-                .padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.sm).cardSurface()
+                         accessory: AnyView(Text(parsedCapUsd.map { String(format: "$%.2f", $0) } ?? "Invalid").font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(parsedCapUsd == nil ? Theme.status(.failed) : Theme.accent)))
+            HStack(spacing: Theme.Spacing.sm) {
+                Text("$").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                TextField("0.50", text: $capUsdText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.callout, design: .monospaced))
+                    .help("Per-run spend cap in USD. Enter an exact amount; unknown native quotas are shown separately in Budget.")
+            }
+            .padding(Theme.Spacing.md).cardSurface()
+            if parsedCapUsd == nil {
+                Text("Enter a non-negative USD amount.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.status(.failed))
+            }
         }
     }
 
@@ -317,7 +335,7 @@ struct ComposerView: View {
                 Task { await model.startRun(prompt: prompt, mode: mode, harnesses: selected,
                                             primary: effectivePrimary, portfolio: portfolio,
                                             model: modelHint.trimmingCharacters(in: .whitespacesAndNewlines),
-                                            n: n, capUsd: capUsd,
+                                            n: n, capUsd: parsedCapUsd,
                                             access: mode.isReadOnly ? "readonly" : access.wire,
                                             tests: gateCommands) }
             } label: {

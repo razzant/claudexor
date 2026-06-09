@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/schema",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Single source of truth for all Claudexor data shapes (Zod + generated JSON Schema).",
   "type": "module",
   "main": "./dist/index.js",

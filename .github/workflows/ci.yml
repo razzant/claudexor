@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # No `version:` here — pnpm/action-setup reads the `packageManager` field in package.json
       # (pnpm@11.5.2). Specifying both causes ERR_PNPM_BAD_PM_VERSION.
@@ -22,11 +24,20 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -InE '(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})' -- . ':!pnpm-lock.yaml'; then
+            echo "::error::Potential token-like secret found in tracked files."
+            exit 1
+          fi
 
       - name: Build
         run: pnpm build

@@ -46,6 +46,8 @@ public struct StartRunRequest: Codable, Sendable {
     public var primaryHarness: String?
     public var portfolio: String?
     public var model: String?
+    public var reviewerModels: [String: String]?
+    public var reviewerEfforts: [String: String]?
     public var n: Int?
     public var maxUsd: Double?
     public var access: String?
@@ -54,6 +56,7 @@ public struct StartRunRequest: Codable, Sendable {
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
                 primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
+                reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
                 tests: [String]? = nil) {
         self.prompt = prompt
@@ -64,6 +67,8 @@ public struct StartRunRequest: Codable, Sendable {
         self.primaryHarness = primaryHarness
         self.portfolio = portfolio
         self.model = model
+        self.reviewerModels = reviewerModels
+        self.reviewerEfforts = reviewerEfforts
         self.n = n
         self.maxUsd = maxUsd
         self.access = access
@@ -145,6 +150,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let model: String?
     public let n: Int?
     public let maxUsd: Double?
+    public let spendUsd: Double?
+    public let spendEstimated: Bool?
     public let access: String?
     public let tests: [String]?
     public let specId: String?
@@ -166,9 +173,47 @@ public struct ArtifactInfo: Codable, Sendable, Identifiable, Equatable {
     public var id: String { path }
 }
 
+public struct PrimaryOutput: Codable, Sendable, Equatable {
+    public let kind: String
+    public let path: String
+    public let text: String?
+    public let bytes: Int?
+}
+
+public struct TimelineEvent: Codable, Sendable, Identifiable, Equatable {
+    public var id: String { "\(type)-\(ts ?? "")-\(title)-\(attemptId ?? "")" }
+    public let type: String
+    public let ts: String?
+    public let harnessId: String?
+    public let attemptId: String?
+    public let title: String
+    public let detail: String?
+    public let rawRef: String?
+}
+
+public struct BudgetSnapshot: Codable, Sendable, Equatable {
+    public let maxUsd: Double?
+    public let spendUsd: Double?
+    public let remainingUsd: Double?
+    public let estimated: Bool
+    public let source: String
+    public let nativeQuota: [NativeQuota]
+}
+
+public struct NativeQuota: Codable, Sendable, Equatable {
+    public let provider: String
+    public let label: String
+    public let remaining: String?
+    public let resetsAt: String?
+    public let source: String
+}
+
 public struct RunDetail: Codable, Sendable, Equatable {
     public let summary: RunSummary
     public let artifacts: [ArtifactInfo]
+    public let primaryOutput: PrimaryOutput?
+    public let timeline: [TimelineEvent]
+    public let budget: BudgetSnapshot?
     public let finalSummary: String?
     public let decision: JSONValue?
     public let workProduct: JSONValue?
@@ -176,13 +221,16 @@ public struct RunDetail: Codable, Sendable, Equatable {
     public let failure: RunFailureInfo?
 
     enum CodingKeys: String, CodingKey {
-        case summary, artifacts, finalSummary, decision, workProduct, reviewFindings, failure
+        case summary, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, failure
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         summary = try c.decode(RunSummary.self, forKey: .summary)
         artifacts = try c.decodeIfPresent([ArtifactInfo].self, forKey: .artifacts) ?? []
+        primaryOutput = try c.decodeIfPresent(PrimaryOutput.self, forKey: .primaryOutput)
+        timeline = try c.decodeIfPresent([TimelineEvent].self, forKey: .timeline) ?? []
+        budget = try c.decodeIfPresent(BudgetSnapshot.self, forKey: .budget)
         finalSummary = try c.decodeIfPresent(String.self, forKey: .finalSummary)
         decision = try c.decodeIfPresent(JSONValue.self, forKey: .decision)
         workProduct = try c.decodeIfPresent(JSONValue.self, forKey: .workProduct)
@@ -197,10 +245,11 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let manifest: JSONValue?
     public let enabledIntents: [String]
     public let disabledIntents: [String]
+    public let checks: [HarnessCheck]
     public let reasons: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, manifest, enabledIntents, disabledIntents, reasons
+        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons
     }
 
     public init(from decoder: Decoder) throws {
@@ -210,8 +259,15 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
         manifest = try c.decodeIfPresent(JSONValue.self, forKey: .manifest)
         enabledIntents = try c.decodeIfPresent([String].self, forKey: .enabledIntents) ?? []
         disabledIntents = try c.decodeIfPresent([String].self, forKey: .disabledIntents) ?? []
+        checks = try c.decodeIfPresent([HarnessCheck].self, forKey: .checks) ?? []
         reasons = try c.decodeIfPresent([String].self, forKey: .reasons)
     }
+}
+
+public struct HarnessCheck: Codable, Sendable, Equatable {
+    public let id: String
+    public let status: String
+    public let detail: String?
 }
 
 public struct HarnessListResponse: Codable, Sendable {

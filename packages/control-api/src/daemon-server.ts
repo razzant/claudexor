@@ -27,6 +27,9 @@ import {
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
+  ControlPrimaryOutput,
+  ControlTimelineEvent,
+  ControlBudgetSnapshot,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   DecisionRecord,
@@ -185,7 +188,11 @@ export class DaemonControlApiServer {
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
     void this.handle(req, res).catch((err) => {
-      if (!res.headersSent) this.json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      if (!res.headersSent) {
+        const status = typeof (err as { status?: unknown }).status === "number" ? Number((err as { status: number }).status) : 500;
+        const message = err instanceof Error ? err.message : String(err);
+        this.json(res, status, { error: redactSecrets(message) });
+      }
       else res.end();
     });
   }
@@ -504,7 +511,7 @@ export class DaemonControlApiServer {
       const value = await fn(arg);
       return this.json(res, 200, schema ? schema.parse(value) : value);
     } catch (err) {
-      return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      return this.json(res, 400, { error: redactSecrets(err instanceof Error ? err.message : String(err)) });
     }
   }
 
@@ -515,7 +522,7 @@ export class DaemonControlApiServer {
     try {
       job = ControlSetupJob.parse(await fn({ jobId }));
     } catch (err) {
-      return this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });
+      return this.json(res, 404, { error: redactSecrets(err instanceof Error ? err.message : String(err)) });
     }
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -600,7 +607,7 @@ export class DaemonControlApiServer {
         } catch {
           type = "malformed";
         }
-        res.write(`id: ${seq}\nevent: ${type}\ndata: ${raw}\n\n`);
+        res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
         if (type === "run.completed" || type === "run.failed") {
           res.write("event: end\ndata: {}\n\n");
           res.end();
@@ -620,6 +627,15 @@ export class DaemonControlApiServer {
     req.on("close", cleanup);
     res.on("close", cleanup);
     await writeAvailable();
+  }
+}
+
+function redactedSseLine(raw: string): string {
+  const redacted = redactSecrets(raw);
+  try {
+    return JSON.stringify(JSON.parse(redacted));
+  } catch {
+    return redacted;
   }
 }
 
@@ -714,6 +730,8 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const parsedMode = typeof p["mode"] === "string" ? ModeKind.parse(p["mode"]) : undefined;
   const parsedPortfolio = typeof p["portfolio"] === "string" ? Portfolio.parse(p["portfolio"]) : undefined;
   const parsedAccess = typeof p["access"] === "string" ? AccessProfile.parse(p["access"]) : undefined;
+  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  const budget = budgetSnapshot(rec, decision);
   return ControlRunSummary.parse({
     jobId: rec.id,
     runId: rec.runId ?? rec.id,
@@ -731,6 +749,8 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     model: typeof p["model"] === "string" ? p["model"] : undefined,
     n: typeof p["n"] === "number" ? p["n"] : undefined,
     maxUsd: typeof p["maxUsd"] === "number" || p["maxUsd"] === null ? (p["maxUsd"] as number | null) : undefined,
+    spendUsd: budget.spendUsd,
+    spendEstimated: budget.estimated,
     access: parsedAccess,
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
     specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
@@ -743,11 +763,15 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
 
 function detailFor(rec: DaemonRunRecord): ControlRunDetail {
   const failure = readFailure(rec);
+  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   return ControlRunDetail.parse({
     summary: summarizeRun(rec),
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
+    primaryOutput: primaryOutput(rec),
+    timeline: timelineEvents(rec),
+    budget: budgetSnapshot(rec, decision),
     finalSummary: readTextArtifact(rec, "final/summary.md"),
-    decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
+    decision,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     reviewFindings: readReviewFindings(rec),
     failure,
@@ -766,6 +790,128 @@ function readRawTextArtifact(rec: DaemonRunRecord, relPath: string): string | nu
   const st = lstatSync(path);
   if (st.isSymbolicLink() || st.isDirectory()) return null;
   return readFileSync(path, "utf8");
+}
+
+function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
+  const p = paramsRecord(rec);
+  const mode = typeof p["mode"] === "string" ? p["mode"] : "";
+  const candidates =
+    mode === "ask"
+      ? [{ kind: "answer" as const, path: "final/answer.md" }]
+      : mode === "plan"
+        ? [{ kind: "plan" as const, path: "final/plan.md" }]
+        : mode === "explore"
+          ? [{ kind: "report" as const, path: "final/explore.md" }, { kind: "summary" as const, path: "final/summary.md" }]
+          : mode === "readonly_audit"
+            ? [{ kind: "report" as const, path: "final/report.md" }, { kind: "summary" as const, path: "final/summary.md" }]
+            : [
+                { kind: "summary" as const, path: "final/summary.md" },
+                { kind: "patch" as const, path: "final/patch.diff" },
+              ];
+  for (const candidate of candidates) {
+    const text = readTextArtifact(rec, candidate.path);
+    if (text && text.trim()) {
+      const bytes = Buffer.byteLength(text, "utf8");
+      return ControlPrimaryOutput.parse({ ...candidate, text, bytes });
+    }
+  }
+  const failure = readFailure(rec);
+  if (failure) {
+    return ControlPrimaryOutput.parse({
+      kind: "diagnostic",
+      path: failure.rawDetailRef ?? "final/failure.yaml",
+      text: failure.safeMessage,
+      bytes: Buffer.byteLength(failure.safeMessage, "utf8"),
+    });
+  }
+  return null;
+}
+
+function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
+  const out: ControlTimelineEvent[] = [];
+  for (const ev of readRunEvents(rec)) {
+    const payload = eventPayload(ev);
+    const type = String(ev["type"] ?? "event");
+    const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
+    const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
+    const title = stringOrNull(payload["title"] ?? payload["message"] ?? payload["summary"] ?? payload["text"] ?? payload["error"]) ?? prettyEventType(type);
+    const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]);
+    out.push(ControlTimelineEvent.parse({
+      type,
+      ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
+      harnessId,
+      attemptId,
+      title,
+      detail,
+      rawRef: "events.jsonl",
+    }));
+  }
+  return out.slice(-250);
+}
+
+function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): ControlBudgetSnapshot {
+  const p = paramsRecord(rec);
+  const maxUsd = typeof p["maxUsd"] === "number" ? p["maxUsd"] : null;
+  let spendUsd = decision?.budget_summary?.spend_usd ?? null;
+  let estimated = decision?.budget_summary?.estimated ?? false;
+  let source: "decision" | "events" | "settings" | "unknown" = spendUsd === null ? "unknown" : "decision";
+  if (spendUsd === null) {
+    let eventSpend = 0;
+    let sawCost = false;
+    let sawUsage = false;
+    for (const ev of readRunEvents(rec)) {
+      if (ev["type"] !== "harness.event") continue;
+      const payload = eventPayload(ev);
+      const usage = payload["usage"];
+      if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+        sawUsage = true;
+        const cost = (usage as Record<string, unknown>)["cost_usd"];
+        if (typeof cost === "number" && Number.isFinite(cost)) {
+          eventSpend += cost;
+          sawCost = true;
+        }
+        if ((usage as Record<string, unknown>)["estimated"] === true) estimated = true;
+      }
+    }
+    if (sawCost) {
+      spendUsd = eventSpend;
+      source = "events";
+    } else if (sawUsage) {
+        source = "events";
+    }
+  }
+  const remainingUsd = maxUsd !== null && spendUsd !== null ? Math.max(0, maxUsd - spendUsd) : null;
+  return ControlBudgetSnapshot.parse({ maxUsd, spendUsd, remainingUsd, estimated, source });
+}
+
+function readRunEvents(rec: DaemonRunRecord): Record<string, unknown>[] {
+  const raw = readRawTextArtifact(rec, "events.jsonl");
+  if (!raw) return [];
+  const out: Record<string, unknown>[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) out.push(obj as Record<string, unknown>);
+    } catch {
+      /* malformed line remains in events.jsonl; omit from projections */
+    }
+  }
+  return out;
+}
+
+function eventPayload(ev: Record<string, unknown>): Record<string, unknown> {
+  return ev["payload"] && typeof ev["payload"] === "object" && !Array.isArray(ev["payload"])
+    ? (ev["payload"] as Record<string, unknown>)
+    : {};
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? redactSecrets(value) : null;
+}
+
+function prettyEventType(type: string): string {
+  return type.replace(/\./g, " · ").replace(/_/g, " ");
 }
 
 function readStructured<T>(text: string | null, ext: string, schema: { parse(value: unknown): T }): T | null {

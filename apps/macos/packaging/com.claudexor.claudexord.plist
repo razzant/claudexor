@@ -7,7 +7,7 @@
   whenever it is running — but a LaunchAgent keeps the durable engine alive across logins.
 
   Substitute the __PLACEHOLDERS__ for your install (the build script / installer does this):
-    __NODE_BIN__   absolute path to the notarized Node (e.g. ~/.claudexor/node/bin/node)
+    __NODE_BIN__   absolute path to the notarized Node (e.g. ~/.claudex/node/bin/node)
     __CLAUDEXORD_JS__ absolute path to packages/cli/dist/claudexord.js (or a bundled copy)
     __HOME__       the user's home directory
 

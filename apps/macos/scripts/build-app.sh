@@ -32,7 +32,7 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudexor.app"
 
-VERSION="${CLAUDEXOR_VERSION:-0.5.0}"
+VERSION="${CLAUDEXOR_VERSION:-0.6.0}"
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 
 # On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be
@@ -124,7 +124,9 @@ if [ "${MAKE_ZIP:-1}" = "1" ]; then
   echo "==> Building ZIP"
   rm -f "$ZIP"
   /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+  shasum -a 256 "$ZIP" > "$ZIP.sha256"
   echo "    ZIP: $ZIP"
+  echo "    SHA256: $ZIP.sha256"
 fi
 
 if [ "${MAKE_DMG:-0}" = "1" ]; then
@@ -147,7 +149,9 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
   else
     echo "    (unsigned DMG; for beta/local distribution only)"
   fi
+  shasum -a 256 "$DMG" > "$DMG.sha256"
   echo "    DMG: $DMG"
+  echo "    SHA256: $DMG.sha256"
 fi
 
 echo "==> Done: $APP"

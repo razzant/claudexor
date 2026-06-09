@@ -72,6 +72,22 @@ describe("arbitrate", () => {
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
+  it("does not mask harness failures as no_op when the diff is empty", () => {
+    const res = arbitrate([
+      candidate("A", {
+        diffBytes: 0,
+        diffSize: 0,
+        gates: [{ id: "harness", status: "failed", required: true, command: "codex", exit_code: 1, duration_ms: 1 }],
+        testsPassed: 0,
+        testsTotal: 1,
+        finalReviewClean: false,
+      }),
+    ]);
+    expect(res.decision.status).toBe("failed");
+    expect(res.decision.outcome).toBe("blocked");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
+  });
+
   it("marks missing gates as ungated instead of success", () => {
     const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);
     expect(res.decision.status).toBe("ungated");

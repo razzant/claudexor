@@ -1,4 +1,4 @@
-# Claudexor v0.5.0 Architecture Reference
+# Claudexor v0.6.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
@@ -96,6 +96,10 @@ Harness manifests include both compatibility booleans and a structured
 `capability_profile`: execution surface, session/resume support, output/event
 shape, auth sources, and access-control proof. UI and future RunControl behavior
 must prefer the structured profile and only derive flat booleans from it.
+Manifest `auth_modes` and `capability_profile.auth.preferred_source` describe
+possible source availability only. They are not readiness. UI, routing, and
+reviewer selection use doctor status, enabled intents, and smoke/conformance
+checks; a key/session source that fails doctor remains degraded or unavailable.
 
 ## 5. Auth And Secrets
 
@@ -203,9 +207,12 @@ Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead
 of local fake apply state.
 
-`POST /runs/:id/control` is capability-based. The safe implemented minimum is
-cancel/interrupt; live steering or input forwarding must be rejected unless the
-adapter proves a compatible state-preserving surface.
+`POST /runs/:id/control` is capability-based. The implemented minimum is
+cancel/interrupt: daemon abort closes the active harness stream and the process
+helper sends a cooperative interrupt with hard-kill fallback. Live steering or
+input forwarding through `POST /runs/:id/input` is not wired into active runs in
+v0.6.0; it must return `unsupported` unless a future route binds the request to a
+state-preserving surface such as Codex app-server or Claude stream-json stdin.
 
 ## 8. Artifact Layout
 
@@ -218,6 +225,15 @@ context/context_pack.yaml?
 attempts/aNN/attempt.yaml
 attempts/aNN/patch.diff
 reviews/*.yaml
+reviews/*-reviewers/reviewer-progress.jsonl
+reviews/*-reviewers/evidence/DIFF.patch
+reviews/*-reviewers/evidence/DIFF_SUMMARY.md
+reviews/*-reviewers/evidence/metadata.json
+reviews/*-reviewers/<reviewer>/metadata.json
+reviews/*-reviewers/<reviewer>/raw-normalized-stream.jsonl
+reviews/*-reviewers/<reviewer>/transcript.md
+reviews/*-reviewers/<reviewer>/parsed-json-blocks.json
+reviews/*-reviewers/<reviewer>/parse-error.json?
 arbitration/decision.yaml
 arbitration/pairwise.yaml
 arbitration/synthesis.yaml
@@ -233,7 +249,18 @@ final/report.md?
 final/plan.md?
 ```
 
-Files are the source of truth. UI and terminal output are projections.
+Review prompts are file-backed: the full candidate patch is written to the
+candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest
+sidecars. The process prompt is concise and points the reviewer to those files;
+it must not embed large full diffs in argv. Per-reviewer telemetry records
+requested model/effort, observed model/source, route proof, timing, raw
+normalized stream or transcript, parsed JSON blocks, and parse errors. These
+artifacts are local/redacted run evidence, not public documentation.
+
+Files are the source of truth. UI and terminal output are projections. The
+control API also projects `primaryOutput`, `timeline`, and `budget` from these
+files/events so clients do not have to guess which artifact is the main result or
+show fake zero spend/quota values.
 
 ## 9. macOS App
 
@@ -249,8 +276,14 @@ The macOS app is a native control surface over the control API:
   including appearance/motion, Current Project, routing/model defaults, budget,
   auth status, and secret refs;
 - sidebar Operations contains live Budget and Harness Doctor;
-- run detail has explicit `Answer` and `Diagnostics` tabs backed by artifacts;
-- Review Queue is table-first;
+- run detail has explicit `Outcome`, `Timeline`, `Plan`, `Candidates`, `Diff`,
+  `Review`, and `Diagnostics` tabs; completed runs open on Outcome, active runs
+  on Timeline, and failures without output on Diagnostics;
+- Review Queue uses an adaptive solid SwiftUI grid with stable row metrics; it
+  must not force the app window to a very wide minimum size;
+- budget cap editing uses validated currency text fields, never a money slider;
+- hover help is required on compact/non-obvious controls, modes, harness chips,
+  route proof, auth/setup actions, budget controls, and dangerous actions;
 - Settings uses flat grouped sections and avoids floating black cutout shadows;
 - onboarding is native-first auth plus optional API-key fallback and guided
   install/login/smoke-test actions.

@@ -37,8 +37,15 @@ describe("parseCodexEvent", () => {
     expect(msg?.text).toBe("Done.");
   });
 
-  it("ignores item.started / turn.started", () => {
-    expect(parseCodexEvent({ type: "turn.started" }, "s1")).toBeNull();
+  it("maps turn/item progress events instead of dropping live progress", () => {
+    expect(parseCodexEvent({ type: "turn.started", turn_id: "t1" }, "s1")?.type).toBe("thinking");
+    const cmd = parseCodexEvent(
+      { type: "item.started", item: { id: "i1", type: "command_execution", command: "ls", status: "in_progress" } },
+      "s1",
+    );
+    expect(cmd?.type).toBe("tool_call");
+    expect(cmd?.text).toBe("ls");
+    expect(cmd?.payload?.["status"]).toBe("in_progress");
     expect(parseCodexEvent({ type: "item.started", item: { type: "agent_message" } }, "s1")).toBeNull();
   });
 

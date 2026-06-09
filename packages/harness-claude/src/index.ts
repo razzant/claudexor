@@ -1,9 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseClaudeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
@@ -60,6 +62,35 @@ function anthropicApiKey(): string | null {
   return process.env.CLAUDEXOR_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
 }
 
+async function smokeIsolatedApiKey(): Promise<{ ok: boolean; detail: string }> {
+  const key = anthropicApiKey();
+  if (!key) return { ok: false, detail: "no API key fallback available" };
+  const dir = mkdtempSync(`${tmpdir()}/claudexor-claude-smoke-`);
+  try {
+    const env: Record<string, string | null | undefined> = Object.fromEntries(CLAUDE_PROVIDER_ENV_DENYLIST.map((name) => [name, null]));
+    env.HOME = dir;
+    env.XDG_CONFIG_HOME = `${dir}/.config`;
+    env.CLAUDE_CONFIG_DIR = dir;
+    env.ANTHROPIC_API_KEY = key;
+    const r = await runCapture(
+      BIN,
+      ["-p", "Reply exactly OK", "--output-format", "stream-json", "--verbose", "--permission-mode", "plan"],
+      { cwd: dir, env, timeoutMs: 60_000 },
+    );
+    const text = `${r.stdout}\n${r.stderr}`;
+    if (r.code === 0 && text.includes("OK")) return { ok: true, detail: "isolated CLAUDE_CONFIG_DIR smoke passed" };
+    return { ok: false, detail: redactClaudeDoctorDetail(text || `claude exited with code ${r.code}`) };
+  } catch (err) {
+    return { ok: false, detail: redactClaudeDoctorDetail(err instanceof Error ? err.message : String(err)) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function redactClaudeDoctorDetail(text: string): string {
+  return redactSecrets(text).slice(0, 500);
+}
+
 export function createClaudeAdapter(): HarnessAdapter {
   return {
     id: "claude",
@@ -73,12 +104,16 @@ export function createClaudeAdapter(): HarnessAdapter {
       }
       const apiKey = anthropicApiKey() !== null;
       const authed = await authStatusOk();
+      const authModes = [
+        ...(authed ? ["local_session"] : []),
+        ...(apiKey ? ["api_key"] : []),
+      ];
       return HarnessManifestSchema.parse({
         id: "claude",
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.5.0",
+        adapter_version: "0.6.0",
         provider_family: "anthropic",
         capabilities: {
           plan: true,
@@ -98,7 +133,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           structured_output: true,
           json_schema_output: false,
           resume: false,
-          cancel: false,
+          cancel: true,
           mcp: true,
           plugins: true,
           worktree_native: true,
@@ -106,13 +141,15 @@ export function createClaudeAdapter(): HarnessAdapter {
           usage_signal: "exact",
         },
         capability_profile: {
-          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
+          execution_surfaces: [
+            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
+          ],
           session: { resume_latest: false, resume_by_id: false },
           output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
           auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
         },
-        auth_modes: authed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
+        auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
         models: { discovery: "available" },
       });
@@ -130,23 +167,24 @@ export function createClaudeAdapter(): HarnessAdapter {
       }
       const apiKey = anthropicApiKey() !== null;
       const authed = await authStatusOk();
-      const ok = apiKey;
+      const smoke = apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: "no API key fallback available" };
+      const ok = smoke.ok;
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"];
       return ConformanceReportSchema.parse({
         harness_id: "claude",
-        status: ok ? "ok" : "degraded",
+        status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: authed ? "pass" : "fail" },
           { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "isolated Claudexor envelopes require an anthropic key fallback" },
+          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : "fail", detail: smoke.detail },
         ],
-        enabled_intents: ok
-          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"]
-          : [],
-        disabled_intents: ok ? [] : ["implement", "review", "arbitrate"],
+        enabled_intents: ok ? allIntents : [],
+        disabled_intents: ok ? [] : allIntents,
         reasons: ok
           ? []
-          : authed
-            ? ["native Claude login is present, but isolated Claudexor runs require a stored anthropic API key fallback"]
+          : authed || apiKey
+            ? [`isolated Claude API-key smoke failed: ${smoke.detail}`]
             : ["not authenticated (run `claude /login` for native use or store anthropic API key fallback for Claudexor runs)"],
       });
     },
@@ -191,7 +229,7 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let sawError = false;
   let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env })) {
+    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
       if (ev.type === "stdout") {
         let obj: unknown;
         try {
@@ -225,4 +263,13 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     };
   }
   yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+}
+
+function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
+  const signal = spec.extra?.["abortSignal"];
+  if (!signal || typeof signal !== "object") return undefined;
+  const candidate = signal as Partial<AbortSignal>;
+  return typeof candidate.aborted === "boolean" && typeof candidate.addEventListener === "function"
+    ? (signal as AbortSignal)
+    : undefined;
 }

@@ -4,6 +4,7 @@ import ClaudexorKit
 
 struct AuthSheet: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     let family: HarnessFamily
     @State private var secretValue = ""
     @State private var status = ""
@@ -21,9 +22,12 @@ struct AuthSheet: View {
         case .fake: return nil
         }
     }
+    private var currentInfo: HarnessInfo? { model.harnessInfo(for: family) }
+    private var isReady: Bool { currentInfo?.health == .ok }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             HStack(spacing: Theme.Spacing.md) {
                 HarnessLogo(family: family, size: 26)
                 VStack(alignment: .leading, spacing: 2) {
@@ -34,6 +38,38 @@ struct AuthSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Close \(family.label) Auth.")
+            }
+
+            Panel {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    HStack {
+                        SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                        Spacer()
+                        Label(currentInfo?.health.rawValue.capitalized ?? "Unknown", systemImage: currentInfo?.health.glyph ?? "questionmark.circle")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(currentInfo?.health.color ?? .secondary)
+                    }
+                    Text(currentInfo?.auth ?? "Harness Doctor has not loaded this harness yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let reasons = currentInfo?.reasons, !reasons.isEmpty {
+                        Text(reasons.joined(separator: "\n"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let checks = currentInfo?.checks, !checks.isEmpty {
+                        Text("Doctor checks: \(checks.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
             }
 
             Panel {
@@ -41,23 +77,26 @@ struct AuthSheet: View {
                     SectionLabel("Native setup", systemImage: "terminal")
                     HStack(spacing: Theme.Spacing.sm) {
                         Button { Task { await runLogin() } } label: {
-                            Label("Login", systemImage: "person.crop.circle.badge.checkmark")
+                            Label(isReady ? "Manage Login" : "Login", systemImage: "person.crop.circle.badge.checkmark")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
+                        .buttonStyle(.bordered)
                         .disabled(running)
+                        .help(isReady ? "Open the native \(family.label) login/setup flow for account management." : "Start the native \(family.label) login flow.")
 
                         Button { Task { await runInstall() } } label: {
                             Label(installReadyToConfirm ? "Confirm Install" : "Install", systemImage: installReadyToConfirm ? "checkmark.shield" : "arrow.down.circle")
                         }
                         .buttonStyle(.bordered)
                         .disabled(running)
+                        .help(installReadyToConfirm ? "Confirm the allowlisted install job after reviewing risk flags." : "Prepare an allowlisted \(family.label) install job.")
 
                         Button { Task { await recheck() } } label: {
                             Label("Recheck", systemImage: "arrow.clockwise")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
                         .disabled(running)
+                        .help("Refresh installed/authenticated/ready status with the harness doctor.")
                     }
                     Text("Install and login use daemon-owned allowlisted jobs. Install shows risk flags before execution; Claudexor does not prefix setup commands with sudo.")
                         .font(.caption2)
@@ -103,6 +142,7 @@ struct AuthSheet: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(secretValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || running)
+                        .help("Store this fallback API key in the local secret store, then run the harness doctor.")
                     }
                 }
             }
@@ -112,8 +152,24 @@ struct AuthSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            }
+            .padding(Theme.Spacing.xl)
+
+            Divider().overlay(Theme.separator)
+            HStack {
+                if running {
+                    Label("Setup job running", systemImage: "circle.dotted")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .help("Close this auth sheet.")
+            }
+            .padding(Theme.Spacing.lg)
         }
-        .padding(Theme.Spacing.xl)
         .frame(width: 560)
     }
 

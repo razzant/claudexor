@@ -218,6 +218,15 @@
                 "null"
               ]
             },
+            "spendUsd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "spendEstimated": {
+              "type": "boolean"
+            },
             "access": {
               "type": "string",
               "enum": [
@@ -285,6 +294,180 @@
             "additionalProperties": false
           },
           "default": []
+        },
+        "primaryOutput": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "answer",
+                    "report",
+                    "plan",
+                    "summary",
+                    "patch",
+                    "diagnostic"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "kind",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "string"
+              },
+              "harnessId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "attemptId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "title": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "rawRef": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "type",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "maxUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            },
+            "spendUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            },
+            "remainingUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null
+            },
+            "estimated": {
+              "type": "boolean",
+              "default": false
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "decision",
+                "events",
+                "settings",
+                "unknown"
+              ],
+              "default": "unknown"
+            },
+            "nativeQuota": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "remaining": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "resetsAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "label",
+                  "source"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
         },
         "finalSummary": {
           "type": [

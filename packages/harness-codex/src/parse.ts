@@ -6,7 +6,6 @@ type Json = any;
 
 /**
  * Map a single Codex `exec --json` JSONL object to a normalized HarnessEvent.
- * Returns null for events we intentionally ignore (e.g. item.started/updated).
  * Codex event names: thread.*, turn.*, item.started|updated|completed, error.
  */
 export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent | null {
@@ -32,6 +31,9 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent | nu
   if (type === "turn.failed") {
     return { type: "error", session_id: sessionId, ts, error: obj.error?.message ?? "turn failed" };
   }
+  if (type === "turn.started") {
+    return { type: "thinking", session_id: sessionId, ts, text: "turn started", payload: { turn_id: obj.turn_id } };
+  }
   if (type === "error") {
     return {
       type: "error",
@@ -40,6 +42,33 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent | nu
       error: typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error"),
       payload: obj,
     };
+  }
+  if (type === "item.started" || type === "item.updated") {
+    const item = obj.item ?? {};
+    switch (item.type) {
+      case "reasoning":
+        return { type: "thinking", session_id: sessionId, ts, text: String(item.text ?? item.summary ?? "reasoning"), payload: { status: type, item_id: item.id } };
+      case "command_execution":
+        return {
+          type: "tool_call",
+          session_id: sessionId,
+          ts,
+          text: String(item.command ?? "command execution"),
+          payload: { status: item.status ?? type, item_id: item.id },
+        };
+      case "mcp_tool_call":
+        return {
+          type: "tool_call",
+          session_id: sessionId,
+          ts,
+          text: String(item.tool ?? item.server ?? "mcp tool"),
+          payload: { server: item.server, tool: item.tool, status: item.status ?? type, item_id: item.id },
+        };
+      case "file_change":
+        return { type: "file_change", session_id: sessionId, ts, payload: { path: item.path, status: item.status ?? type, item_id: item.id } };
+      default:
+        return null;
+    }
   }
   if (type === "item.completed") {
     const item = obj.item ?? {};

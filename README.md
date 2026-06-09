@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.5.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.6.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -89,6 +89,10 @@ claudexor settings show
 claudexor settings set default_portfolio subscription-first
 ```
 
+`auth status` distinguishes source availability from readiness: manifest auth
+sources say what could be used, while doctor status/checks decide whether a
+harness is actually routable.
+
 ## Daemon And Control API
 
 The optional daemon owns durable local job queueing over a Unix socket. The
@@ -109,6 +113,13 @@ Harness setup is server-owned. `/harnesses/setup` is the typed prepare surface;
 `/setup/jobs` is the execution lifecycle for allowlisted install/login/doctor
 jobs with redacted logs and risk flags. UI surfaces must not invent harness
 setup commands or accept inline secrets.
+
+Run detail responses include `primaryOutput`, `timeline`, and `budget`
+projections. Clients should use those fields first instead of guessing artifact
+paths or displaying fake zero spend/quota values. `POST /runs/:id/control`
+supports cancel/interrupt for active daemon jobs. `POST /runs/:id/input` exists
+as a typed beta surface but returns `unsupported` in v0.6.0 because active runs
+do not yet bind to a state-preserving live input route.
 
 Start it:
 
@@ -147,8 +158,9 @@ context/context_error.md?
 ```
 
 Files are the source of truth. Terminal output and UI rows are projections. The
-macOS run detail screen surfaces `Answer` and `Diagnostics` directly from these
-artifacts, so failed runs are inspectable instead of disappearing into logs.
+macOS run detail screen surfaces `Outcome`, `Timeline`, and `Diagnostics`
+directly from these artifacts/events, so successful answers and failed runs are
+inspectable instead of disappearing into logs.
 
 ## Integrations
 
@@ -199,7 +211,9 @@ git diff --exit-code packages/schema/generated
 ```
 
 `pnpm release:verify` runs Node/schema checks, Swift tests/build, and unsigned
-app ZIP/DMG packaging before tagging or publishing artifacts.
+local app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by
+the `Release` GitHub Actions workflow from the pushed `v*` tag; do not upload
+stale local `apps/macos/dist` artifacts for v0.6.0.
 
 There is no root `pnpm lint` script.
 

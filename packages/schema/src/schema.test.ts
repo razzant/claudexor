@@ -105,10 +105,11 @@ describe("Control API schemas", () => {
       prompt: "review it",
       mode: "best_of_n",
       scope: { kind: "project", root: "/repo" },
-      reviewerEfforts: { anthropic: "max" },
+      reviewerEfforts: { anthropic: "max", openai: "xhigh" },
     });
     expect(req.scope).toEqual({ kind: "project", root: "/repo", context: "auto" });
     expect(req.reviewerEfforts?.anthropic).toBe("max");
+    expect(req.reviewerEfforts?.openai).toBe("xhigh");
     expect(() =>
       ControlRunStartRequest.parse({
         prompt: "legacy",
@@ -128,13 +129,6 @@ describe("Control API schemas", () => {
         prompt: "bad",
         mode: "ask",
         reviewerEfforts: { anthropic: "banana" },
-      }),
-    ).toThrow();
-    expect(() =>
-      ControlRunStartRequest.parse({
-        prompt: "bad",
-        mode: "ask",
-        reviewerEfforts: { openai: "high" },
       }),
     ).toThrow();
   });

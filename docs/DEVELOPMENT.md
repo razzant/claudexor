@@ -85,6 +85,10 @@ Do not fork contracts in UI code, CLI parsing, adapter output, or docs.
 - Adapters translate I/O only. They never orchestrate.
 - Surfaces call the engine/control plane. They do not create app-only semantics.
 - Routing and capability decisions come from Gateway/doctor/capability data.
+- Discovery can describe static capabilities and auth source availability, but
+  readiness comes from doctor status, enabled intents, and smoke/conformance
+  checks. Do not route, mark Auth UI ready, or select reviewers from source
+  availability alone.
 - Diffs come from git in the target workspace or envelope.
 - Files and typed artifacts are the source of truth; terminal text and UI rows
   are projections.
@@ -111,4 +115,6 @@ Use this split:
 
 Local operator guidance belongs in gitignored local files such as `AGENTS.md`.
 Temporary adversarial review packets and release scratch belong outside public
-docs.
+docs. Review gates must be file-backed and diagnosable: persist local/redacted
+per-reviewer artifacts and progress events, and point reviewers at evidence
+files instead of embedding large diffs in process argv.

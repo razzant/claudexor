@@ -44,6 +44,7 @@ struct HarnessChip: View {
         .overlay(Capsule().stroke(selected && available ? family.color.opacity(0.45) : Theme.separator, lineWidth: 1))
         .opacity(available ? 1 : 0.62)
         .accessibilityLabel("\(family.label) harness\(selected ? ", selected" : "")\(available ? "" : ", unavailable")")
+        .help(available ? "\(family.label) harness\(selected ? " is selected." : ".")" : "\(family.label) harness is unavailable for this route.")
     }
 }
 
@@ -267,6 +268,7 @@ struct SegmentedTabs<T: Hashable>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(active ? [.isSelected, .isButton] : .isButton)
+                .help(active ? "\(item.label) tab is selected." : "Show \(item.label).")
             }
         }
     }
@@ -302,6 +304,7 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
+        .help(isActive ? "\(label) filter is selected." : "Filter by \(label).")
     }
 }
 

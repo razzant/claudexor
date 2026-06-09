@@ -49,6 +49,26 @@ describe("parseClaudeEvent", () => {
     expect(failed.map((e) => e.type)).toEqual(["usage", "error"]);
   });
 
+  it("maps Claude tool_result messages without exposing raw tool output", () => {
+    const out = parseClaudeEvent(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "created /tmp/hello.txt" }] },
+          ],
+        },
+      },
+      "s1",
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.type).toBe("tool_call");
+    expect(out[0]?.text).toBe("tool_result");
+    expect(out[0]?.text).not.toContain("/tmp/hello.txt");
+    expect(out[0]?.payload?.["tool_use_id"]).toBe("toolu_1");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
   it("forwards model and effort hints to Claude Code", () => {
     const spec = HarnessRunSpec.parse({
       session_id: "ses-test",

@@ -6,6 +6,12 @@ export interface SpawnOptions {
   env?: Record<string, string | null | undefined>;
   input?: string;
   timeoutMs?: number;
+  /** Signal sent when the consumer closes the stream before process exit. */
+  cancelSignal?: NodeJS.Signals;
+  /** Hard-kill delay after cancelSignal when the child ignores cooperative stop. */
+  cancelKillDelayMs?: number;
+  /** Runtime abort signal for active daemon/orchestrator cancellation. */
+  abortSignal?: AbortSignal;
 }
 
 export type ProcEvent =
@@ -85,6 +91,34 @@ export async function* spawnProcess(
     }, opts.timeoutMs);
   }
 
+  let killTimer: NodeJS.Timeout | undefined;
+  const requestCancel = (): void => {
+    if (finished) return;
+    try {
+      child.kill(opts.cancelSignal ?? "SIGINT");
+    } catch {
+      /* already gone */
+    }
+    const killDelay = opts.cancelKillDelayMs ?? 1_000;
+    if (killDelay >= 0 && !killTimer) {
+      killTimer = setTimeout(() => {
+        if (!finished) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+      }, killDelay);
+      killTimer.unref();
+    }
+  };
+  const abortSignal = opts.abortSignal;
+  if (abortSignal) {
+    if (abortSignal.aborted) requestCancel();
+    else abortSignal.addEventListener("abort", requestCancel, { once: true });
+  }
+
   try {
     for (;;) {
       if (queue.length > 0) {
@@ -99,6 +133,11 @@ export async function* spawnProcess(
     }
   } finally {
     if (timer) clearTimeout(timer);
+    abortSignal?.removeEventListener("abort", requestCancel);
+    if (!finished) {
+      requestCancel();
+    }
+    if (finished && killTimer) clearTimeout(killTimer);
     rlOut.close();
     rlErr.close();
   }

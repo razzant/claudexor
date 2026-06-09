@@ -199,8 +199,10 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   - **Candidate cards**: per-harness chips colored by `harness/*`, showing gates, cost
     (with estimated-vs-exact badge), review state.
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
-  - **Activity feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
-    Summary; thinking/tool/file/message rendered distinctly; code on `surface/code`.
+    Money values are typed currency fields when editable; never use a slider for dollar input.
+  - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
+    Summary; thinking/tool/file/message rendered distinctly; compact bubbles are collapsed by
+    default, raw native details expand inline, and code/log text sits on `surface/code`.
   - **"What changed since you last looked"** marker + an **attention state** (working /
     blocked / needs-permission / done).
 - **Spec interview (quiz cards).** Hierarchical, AI-generated question cards: single/multi
@@ -223,11 +225,17 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   per-hunk apply controls until the backend exposes selected scope.
 - **Budget cockpit.** Spend, circuit breaker, portfolio weights, pre-exhaustion warnings.
 - **Harness Doctor.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
-- **Run detail diagnostics.** Every live run detail has explicit `Answer` and
-  `Diagnostics` tabs. `Answer` reads `final/answer.md`, `final/report.md`, or
-  `final/summary.md`. `Diagnostics` reads engine error, `context/context_error.md`,
-  `events.jsonl`, `arbitration/decision.yaml`, `final/work_product.yaml`, and
-  artifact paths. A failed run must never leave the user hunting for invisible logs.
+  Manifest auth modes are source availability only; installed/session/key-present
+  must not be rendered as ready unless doctor/smoke checks pass. Rows should
+  separate Installed, Auth source, Smoke-ready, and Routable states.
+- **Run detail diagnostics.** Every live run detail has explicit `Outcome`, `Timeline`,
+  and `Diagnostics` tabs. `Outcome` reads the control API `primaryOutput` first and then
+  falls back to `final/answer.md`, `final/explore.md`, `final/report.md`, `final/plan.md`, or
+  `final/summary.md`. Active runs default to `Timeline`; completed runs default to
+  `Outcome`; failures without output default to `Diagnostics`. `Diagnostics` reads engine
+  error, `context/context_error.md`, `events.jsonl`, `arbitration/decision.yaml`,
+  `final/work_product.yaml`, and artifact paths. A failed run must never leave the user
+  hunting for invisible logs.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
@@ -238,6 +246,11 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   separate adjacent info button just to explain a normal mode. Use a richer click popover
   only for risky controls where explanation affects cost, access, auth, routing, or data
   deletion. Future controls must document their consequence at the control, not only in docs.
+- **Modal exit and navigation.** Every sheet/popup that can outlive a single click has an
+  obvious close or Done affordance in a predictable corner/footer. Wizard-like sheets also
+  show Back/Continue where there is a sequence. A user must always know whether they are in
+  setup, a blocking task intervention, or a settings subflow, and how to leave without
+  guessing.
 - **Harness chips.** Chips reflect Gateway status for the active mode intent. A
   harness that is not installed, not authenticated, degraded without the required
   intent, or unable to enforce read-only is visible but disabled, with a hover
@@ -267,7 +280,9 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   width token: `Layout.contentMaxWidth` (1040) for dashboards/lists, `Layout.readableMaxWidth`
   (860) for forms/reading (interview, settings). Screen backgrounds use the
   shared solid/glow surface without window-edge extension effects. Do **not**
-  hardcode per-screen widths or margins.
+  hardcode per-screen widths or margins. No screen may force a very wide minimum window;
+  dense grids must adapt columns and/or scroll inside their content region instead of
+  resizing the whole app window.
 - **Segmented tabs.** In-content tab/segment rows use the shared `SegmentedTabs` (one font,
   `Radius.control` indicator via `matchedGeometryEffect`, optional per-tab count badge,
   `.isSelected` trait, Reduce-Motion-aware). Do not hand-roll a tab bar (TaskDetail wraps

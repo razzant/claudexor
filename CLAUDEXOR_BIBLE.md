@@ -44,7 +44,9 @@ compatibility aliases unless explicitly reintroduced in schema and docs.
 Every hard claim needs evidence: a file, diff, command, log line, event, doctor
 report, run artifact, or source reference. Diffs come from git in the isolated
 worktree or live in-place target, not from model edit narration. Reviews are not
-trusted unless reviewer output is parseable and route proof is observed.
+trusted unless reviewer output is parseable, route proof is observed, reviewer
+telemetry is persisted, and the reviewer read the candidate evidence files rather
+than a giant prompt-only diff.
 
 ## 6. Secrets Never Become Artifacts
 
@@ -72,8 +74,10 @@ owned, not a permanent top-level app identity.
 ## 9. macOS UX Must Be Native, Honest, And Familiar
 
 Users of Codex App, Claude Code, Cursor, and OpenCode should understand the app
-quickly: composer-first, visible modes, harness chips, live activity, task
-detail, diagnostics, review queue, and settings. Liquid Glass belongs to
+quickly: composer-first, visible modes, harness chips, live timeline, task
+outcome, diagnostics, review queue, and settings. Compact controls need hover
+help, blocking sheets need obvious exit affordances, and money input must be
+typed precisely rather than dragged on a slider. Liquid Glass belongs to
 navigation/chrome/floating composer; dense content uses solid surfaces. Glow and
 motion are welcome, but black/white cutout artifacts, janky transitions,
 glass-behind-code, and decorative UI that obscures state are bugs.

@@ -13,7 +13,7 @@ struct ReviewScreen: View {
             } else {
                 Panel(padding: 0) {
                     ReviewFindingsGrid(findings: findings)
-                        .frame(minWidth: ReviewGridMetrics.tableWidth, minHeight: 420)
+                        .frame(minHeight: 420)
                 }
                 .padding(Theme.Spacing.xxl)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -57,36 +57,62 @@ private enum ReviewGridMetrics {
     static let reviewer: CGFloat = 150
     static let evidence: CGFloat = 230
     static let state: CGFloat = 120
-    static let tableWidth: CGFloat = severity + finding + task + reviewer + evidence + state
     static let rowHeight: CGFloat = 78
+}
+
+private struct ReviewGridColumns {
+    let severity: CGFloat
+    let finding: CGFloat
+    let task: CGFloat
+    let reviewer: CGFloat
+    let evidence: CGFloat
+    let state: CGFloat
 }
 
 private struct ReviewFindingsGrid: View {
     let findings: [Finding]
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            VStack(spacing: 0) {
-                header
-                ForEach(Array(findings.enumerated()), id: \.element.id) { idx, finding in
-                    ReviewFindingRow(finding: finding, shaded: idx.isMultiple(of: 2))
-                    if idx < findings.count - 1 { Divider().overlay(Theme.hairline) }
+        GeometryReader { proxy in
+            let contentWidth = max(proxy.size.width, 620)
+            let columns = columns(for: contentWidth)
+            ScrollView([.horizontal, .vertical]) {
+                VStack(spacing: 0) {
+                    header(columns)
+                    ForEach(Array(findings.enumerated()), id: \.element.id) { idx, finding in
+                        ReviewFindingRow(finding: finding, shaded: idx.isMultiple(of: 2), columns: columns)
+                        if idx < findings.count - 1 { Divider().overlay(Theme.hairline) }
+                    }
                 }
+                .frame(width: contentWidth, alignment: .topLeading)
             }
-            .frame(width: ReviewGridMetrics.tableWidth, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
         .background(Theme.surfaceRaised)
     }
 
-    private var header: some View {
+    private func columns(for width: CGFloat) -> ReviewGridColumns {
+        let available = max(width, 620)
+        let fixed = ReviewGridMetrics.severity + ReviewGridMetrics.reviewer + ReviewGridMetrics.state
+        let flexible = max(available - fixed, 300)
+        return ReviewGridColumns(
+            severity: ReviewGridMetrics.severity,
+            finding: flexible * 0.38,
+            task: flexible * 0.30,
+            reviewer: ReviewGridMetrics.reviewer,
+            evidence: flexible * 0.32,
+            state: ReviewGridMetrics.state
+        )
+    }
+
+    private func header(_ columns: ReviewGridColumns) -> some View {
         HStack(spacing: 0) {
-            ReviewHeaderCell("Severity", width: ReviewGridMetrics.severity)
-            ReviewHeaderCell("Finding", width: ReviewGridMetrics.finding)
-            ReviewHeaderCell("Task", width: ReviewGridMetrics.task)
-            ReviewHeaderCell("Reviewer", width: ReviewGridMetrics.reviewer)
-            ReviewHeaderCell("Evidence", width: ReviewGridMetrics.evidence)
-            ReviewHeaderCell("State", width: ReviewGridMetrics.state)
+            ReviewHeaderCell("Severity", width: columns.severity)
+            ReviewHeaderCell("Finding", width: columns.finding)
+            ReviewHeaderCell("Task", width: columns.task)
+            ReviewHeaderCell("Reviewer", width: columns.reviewer)
+            ReviewHeaderCell("Evidence", width: columns.evidence)
+            ReviewHeaderCell("State", width: columns.state)
         }
         .frame(height: 44)
         .background(Theme.surfaceRaisedHi)
@@ -115,28 +141,29 @@ private struct ReviewHeaderCell: View {
 private struct ReviewFindingRow: View {
     let finding: Finding
     let shaded: Bool
+    let columns: ReviewGridColumns
 
     var body: some View {
         HStack(spacing: 0) {
             severity
-                .frame(width: ReviewGridMetrics.severity, alignment: .leading)
+                .frame(width: columns.severity, alignment: .leading)
             findingCell
-                .frame(width: ReviewGridMetrics.finding, alignment: .leading)
+                .frame(width: columns.finding, alignment: .leading)
             Text(finding.taskTitle.isEmpty ? "No task" : finding.taskTitle)
                 .font(.callout)
                 .foregroundStyle(finding.taskTitle.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
                 .padding(.horizontal, Theme.Spacing.md)
-                .frame(width: ReviewGridMetrics.task, alignment: .leading)
+                .frame(width: columns.task, alignment: .leading)
             reviewer
                 .padding(.horizontal, Theme.Spacing.md)
-                .frame(width: ReviewGridMetrics.reviewer, alignment: .leading)
+                .frame(width: columns.reviewer, alignment: .leading)
             ReviewEvidenceCell(finding: finding)
                 .padding(.horizontal, Theme.Spacing.md)
-                .frame(width: ReviewGridMetrics.evidence, alignment: .leading)
+                .frame(width: columns.evidence, alignment: .leading)
             ReviewStateBadge(finding: finding)
                 .padding(.horizontal, Theme.Spacing.md)
-                .frame(width: ReviewGridMetrics.state, alignment: .leading)
+                .frame(width: columns.state, alignment: .leading)
         }
         .frame(height: ReviewGridMetrics.rowHeight)
         .background(shaded ? Theme.surfaceRaised.opacity(0.58) : Theme.surfaceBase)

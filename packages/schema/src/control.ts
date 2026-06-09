@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { AccessProfile, ContentHash, Id, ModeKind } from "./primitives.js";
+import { AccessProfile, ContentHash, Id, ModeKind, ProviderFamily } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { AdapterStatus, EffortHint, HarnessManifest } from "./harness.js";
+import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
@@ -34,12 +34,7 @@ export const ControlRunStartRequest = z
     model: z.string().optional(),
     effort: EffortHint.optional(),
     reviewerModels: z.record(z.string(), z.string()).optional(),
-    reviewerEfforts: z
-      .object({
-        anthropic: EffortHint.optional(),
-      })
-      .strict()
-      .optional(),
+    reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),
     n: z.number().int().positive().optional(),
     attempts: z.number().int().positive().nullable().optional(),
     maxUsd: z.number().nonnegative().nullable().optional(),
@@ -241,6 +236,8 @@ export const ControlRunSummary = z.object({
   model: z.string().optional(),
   n: z.number().int().optional(),
   maxUsd: z.number().nullable().optional(),
+  spendUsd: z.number().nullable().optional(),
+  spendEstimated: z.boolean().optional(),
   access: AccessProfile.optional(),
   tests: z.array(z.string()).optional(),
   specId: z.string().optional(),
@@ -250,6 +247,43 @@ export const ControlRunSummary = z.object({
   finishedAt: z.string().optional(),
 });
 export type ControlRunSummary = z.infer<typeof ControlRunSummary>;
+
+export const ControlPrimaryOutput = z.object({
+  kind: z.enum(["answer", "report", "plan", "summary", "patch", "diagnostic"]),
+  path: z.string(),
+  text: z.string().nullable().default(null),
+  bytes: z.number().int().nonnegative().optional(),
+});
+export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;
+
+export const ControlTimelineEvent = z.object({
+  type: z.string(),
+  ts: z.string().optional(),
+  harnessId: z.string().nullable().default(null),
+  attemptId: z.string().nullable().default(null),
+  title: z.string(),
+  detail: z.string().nullable().default(null),
+  rawRef: z.string().nullable().default(null),
+});
+export type ControlTimelineEvent = z.infer<typeof ControlTimelineEvent>;
+
+export const ControlBudgetSnapshot = z.object({
+  maxUsd: z.number().nullable().default(null),
+  spendUsd: z.number().nullable().default(null),
+  remainingUsd: z.number().nullable().default(null),
+  estimated: z.boolean().default(false),
+  source: z.enum(["decision", "events", "settings", "unknown"]).default("unknown"),
+  nativeQuota: z
+    .array(z.object({
+      provider: z.string(),
+      label: z.string(),
+      remaining: z.string().nullable().default(null),
+      resetsAt: z.string().nullable().default(null),
+      source: z.string(),
+    }))
+    .default([]),
+});
+export type ControlBudgetSnapshot = z.infer<typeof ControlBudgetSnapshot>;
 
 export const ControlArtifactInfo = z.object({
   path: z.string(),
@@ -261,6 +295,9 @@ export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
 export const ControlRunDetail = z.object({
   summary: ControlRunSummary,
   artifacts: z.array(ControlArtifactInfo).default([]),
+  primaryOutput: ControlPrimaryOutput.nullable().default(null),
+  timeline: z.array(ControlTimelineEvent).default([]),
+  budget: ControlBudgetSnapshot.default({}),
   finalSummary: z.string().nullable().default(null),
   decision: DecisionRecord.nullable().default(null),
   workProduct: WorkProduct.nullable().default(null),
@@ -342,6 +379,7 @@ export const HarnessStatusDto = z.object({
   manifest: HarnessManifest.nullable().optional(),
   enabledIntents: z.array(z.string()).default([]),
   disabledIntents: z.array(z.string()).default([]),
+  checks: z.array(ConformanceCheck).default([]),
   reasons: z.array(z.string()).default([]),
 });
 export type HarnessStatusDto = z.infer<typeof HarnessStatusDto>;

@@ -75,6 +75,7 @@ final class AppModel {
 
     var liveTasks: [TaskRun] = []
     var liveHarnesses: [HarnessInfo] = []
+    var liveBudget: BudgetState = .empty
     var settingsSnapshot: SettingsSnapshot?
     var secretBackend = "unknown"
     var storedSecrets: [SecretInfo] = []
@@ -83,7 +84,7 @@ final class AppModel {
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
     var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : liveHarnesses }
-    var budget: BudgetState { demoMode ? DemoData.budget : .empty }
+    var budget: BudgetState { demoMode ? DemoData.budget : observedLiveBudget }
     var interviewQuestions: [InterviewQuestion] { demoMode ? DemoData.interviewQuestions : [] }
 
     /// Live runs grouped into a light project tree for the sidebar.
@@ -96,8 +97,37 @@ final class AppModel {
         }
     }
 
+    private var observedLiveBudget: BudgetState {
+        let spendSamples = liveTasks.filter(\.spendKnown)
+        let spend = spendSamples.reduce(0) { $0 + $1.spendUsd }
+        let spendEstimated = spendSamples.contains(where: \.spendEstimated)
+        let spendKnown = !spendSamples.isEmpty
+        let dayCap = settingsSnapshot?.budget.maxUsdPerDay
+        let capKnown = dayCap != nil
+        let cap = dayCap ?? 0
+        let breaker: Int
+        if spendKnown && capKnown && cap > 0 {
+            let fraction = min(spend / cap, 1)
+            breaker = fraction >= 1 ? 3 : fraction > 0.85 ? 2 : fraction > 0.75 ? 1 : 0
+        } else {
+            breaker = 0
+        }
+        return BudgetState(
+            spend: spend,
+            cap: cap,
+            spendKnown: spendKnown,
+            capKnown: capKnown,
+            spendEstimated: spendEstimated,
+            source: spendKnown || capKnown ? "runs/settings" : "unknown",
+            nativeQuota: liveBudget.nativeQuota,
+            breakerTier: breaker,
+            perHarness: [:]
+        )
+    }
+
     private var client: GatewayClient?
     private var streamTask: Task<Void, Never>?
+    private static let eventDateFormatter = ISO8601DateFormatter()
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: "claudexor.appearance"),
@@ -252,13 +282,45 @@ final class AppModel {
                 guard let family = HarnessFamily(rawValue: status.id) else { return nil }
                 let health = HarnessHealth(rawValue: status.status) ?? .unavailable
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
-                let auth = status.reasons?.joined(separator: ", ") ?? (health == .ok ? "ready" : "native / key fallback")
+                let auth = Self.harnessReadinessText(status: status, health: health)
+                let checks = status.checks.map { "\($0.id): \($0.status)" }
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
-                                   intents: status.enabledIntents, reasons: status.reasons ?? [])
+                                   intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks)
             }
         } catch {
             // Keep last-known harness rows.
         }
+    }
+
+    private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
+        let smokeReady = status.checks.contains { $0.id.contains("smoke") && $0.status == "pass" }
+        let sourceText = authSourceAvailability(manifest: status.manifest)
+        switch health {
+        case .ok:
+            return smokeReady ? "Ready: doctor smoke passed. Auth sources: \(sourceText)." : "Ready by doctor. Auth sources: \(sourceText)."
+        case .degraded:
+            return "Not ready: doctor degraded. Auth sources: \(sourceText)."
+        case .unavailable:
+            return "Unavailable: install/login/smoke check required. Auth sources: \(sourceText)."
+        }
+    }
+
+    private static func authSourceAvailability(manifest: JSONValue?) -> String {
+        let auth = manifest?["capability_profile"]?["auth"]
+        let supported = stringArray(auth?["supported_sources"])
+        let present = stringArray(manifest?["auth_modes"])
+        let presentLabel = present.isEmpty ? "present unknown" : "present \(present.joined(separator: ", "))"
+        if !supported.isEmpty {
+            let preferred = auth?["preferred_source"]?.stringValue
+            let supportedLabel = "supported \(supported.joined(separator: ", "))"
+            return preferred.map { "\(presentLabel); \(supportedLabel); preferred \($0)" } ?? "\(presentLabel); \(supportedLabel)"
+        }
+        return presentLabel
+    }
+
+    private static func stringArray(_ value: JSONValue?) -> [String] {
+        guard case .array(let values)? = value else { return [] }
+        return values.compactMap(\.stringValue)
     }
 
     func prepareHarnessSetup(family: HarnessFamily, action: String) async -> HarnessSetupResponse? {
@@ -331,7 +393,9 @@ final class AppModel {
         panel.title = "Choose Current Project"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
+        panel.prompt = "Choose / Create"
         panel.resolvesAliases = true
         if hasCurrentProject {
             panel.directoryURL = URL(fileURLWithPath: normalizedProjectRoot, isDirectory: true)
@@ -390,7 +454,9 @@ final class AppModel {
             n: s.n ?? max(1, families.count),
             createdAt: .now, updatedAt: .now,
             activePhase: .review,
-            spendUsd: 0, capUsd: s.maxUsd ?? 0,
+            spendUsd: s.spendUsd ?? 0, capUsd: s.maxUsd ?? 0,
+            spendKnown: s.spendUsd != nil, capKnown: s.maxUsd != nil,
+            spendEstimated: s.spendEstimated ?? false,
             routeProof: .unverified,
             attentionNote: nil,
             plan: [], activity: [], candidates: [], findings: [], diff: [],
@@ -413,7 +479,7 @@ final class AppModel {
     // MARK: Commands
 
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
-                  portfolio: String, model: String?, n: Int, capUsd: Double,
+                  portfolio: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", tests: [String] = [], repoRootOverride: String? = nil) async {
         composerPresented = false
         let launchRepoRoot = repoRootOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
@@ -423,6 +489,7 @@ final class AppModel {
         }
         let launchContextMode = launchRepoRoot.isEmpty ? "off" : (projectContextMode == "deep" ? "deep" : "auto")
         let launchProjectName = launchRepoRoot.isEmpty ? "No project" : URL(fileURLWithPath: launchRepoRoot).lastPathComponent
+        let hasExplicitCap = capUsd != nil
         var optimistic = TaskRun(
             id: "pending-\(UUID().uuidString.prefix(6))",
             title: String(prompt.prefix(64)),
@@ -435,7 +502,8 @@ final class AppModel {
             n: n,
             createdAt: .now, updatedAt: .now,
             activePhase: .contract,
-            spendUsd: 0, capUsd: capUsd,
+            spendUsd: 0, capUsd: capUsd ?? 0,
+            spendKnown: false, capKnown: hasExplicitCap,
             routeProof: .unverified,
             attentionNote: nil,
             plan: [], activity: [ActivityEvent(.system, "Queued · \(mode.label)")],
@@ -480,8 +548,11 @@ final class AppModel {
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .context,
-                        spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
-                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
+                        spendUsd: prev.spendUsd, capUsd: prev.capUsd,
+                        spendKnown: false, capKnown: prev.capKnown,
+                        routeProof: .unverified, attentionNote: nil,
+                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [],
+                        isLive: true)
                     started.runDir = info.runDir
                     started.repoRoot = prev.repoRoot
                     liveTasks[idx] = started
@@ -495,8 +566,11 @@ final class AppModel {
                         id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .queued, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .contract,
-                        spendUsd: 0, capUsd: prev.capUsd, routeProof: .unverified, attentionNote: nil,
-                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [], isLive: true)
+                        spendUsd: prev.spendUsd, capUsd: prev.capUsd,
+                        spendKnown: false, capKnown: prev.capKnown,
+                        routeProof: .unverified, attentionNote: nil,
+                        plan: [], activity: prev.activity, candidates: [], findings: [], diff: [],
+                        isLive: true)
                     row.activity.append(ActivityEvent(.system, "Queued in daemon · \(info.state)"))
                     if let error = info.error {
                         row.engineError = error
@@ -543,15 +617,49 @@ final class AppModel {
             task.repoRoot = detail.summary.project?.root ?? task.repoRoot
             task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
             task.capUsd = detail.summary.maxUsd ?? task.capUsd
+            task.capKnown = detail.summary.maxUsd != nil || task.capKnown
+            task.spendUsd = detail.summary.spendUsd ?? task.spendUsd
+            task.spendKnown = detail.summary.spendUsd != nil || task.spendKnown
+            task.spendEstimated = detail.summary.spendEstimated ?? task.spendEstimated
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.artifactPaths = detail.artifacts.map(\.path)
+            if let budget = detail.budget {
+                if let cap = budget.maxUsd { task.capUsd = cap }
+                if let spend = budget.spendUsd { task.spendUsd = spend }
+                task.capKnown = budget.maxUsd != nil
+                task.spendKnown = budget.spendUsd != nil
+                task.spendEstimated = budget.estimated
+                liveBudget = BudgetState(
+                    spend: budget.spendUsd ?? 0,
+                    cap: budget.maxUsd ?? 0,
+                    spendKnown: budget.spendUsd != nil,
+                    capKnown: budget.maxUsd != nil,
+                    spendEstimated: budget.estimated,
+                    source: budget.source,
+                    nativeQuota: budget.nativeQuota.map { "\($0.provider): \($0.label)\($0.remaining.map { " \($0)" } ?? "")" },
+                    breakerTier: 0,
+                    perHarness: [:]
+                )
+            }
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {
                 task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
             }
-            task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/report.md", "final/summary.md"])
+            if let primary = detail.primaryOutput, let text = primary.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if primary.kind == "diagnostic" {
+                    task.diagnosticText = text
+                    task.answerText = nil
+                } else {
+                    task.answerText = text
+                }
+            } else {
+                task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/explore.md", "final/report.md", "final/plan.md", "final/summary.md"])
+            }
+            if !detail.timeline.isEmpty {
+                task.activity = detail.timeline.map(Self.activityEvent(from:))
+            }
             task.diagnosticText = await diagnosticText(client: client, runId: id, detail: detail, error: task.engineError)
             let persistedFindings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: task.title) }
             if !persistedFindings.isEmpty {
@@ -592,6 +700,28 @@ final class AppModel {
             }
         }
         return nil
+    }
+
+    private static func activityEvent(from event: TimelineEvent) -> ActivityEvent {
+        let kind: ActivityKind
+        if event.type.contains("review") || event.type.contains("finding") {
+            kind = .review
+        } else if event.type.contains("gate") {
+            kind = .gate
+        } else if event.type.contains("harness") {
+            let lowered = (event.detail ?? event.title).lowercased()
+            kind = lowered.contains("file") ? .file : lowered.contains("tool") ? .tool : lowered.contains("think") ? .thinking : .message
+        } else {
+            kind = .system
+        }
+        return ActivityEvent(
+            kind,
+            harness: event.harnessId.flatMap { HarnessFamily(rawValue: $0) },
+            event.title,
+            detail: event.detail,
+            code: event.rawRef,
+            at: event.ts.flatMap { eventDateFormatter.date(from: $0) } ?? .now
+        )
     }
 
     private func hydrateReviewFindings() async {
@@ -749,9 +879,9 @@ final class AppModel {
                 : detail.contains("tool") ? .tool
                 : detail.contains("think") ? .thinking
                 : detail.contains("message") ? .message : .tool
-            let h = (payload["harness"]?.stringValue).flatMap { HarnessFamily(rawValue: $0) }
+            let h = (payload["harness_id"]?.stringValue ?? payload["harness"]?.stringValue).flatMap { HarnessFamily(rawValue: $0) }
             if let h, !t.harnesses.contains(h) { t.harnesses.append(h) }
-            t.activity.append(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), at: .now))
+            t.activity.append(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), detail: payload["text"]?.stringValue ?? payload["error"]?.stringValue, code: payload["rawRef"]?.stringValue, at: .now))
         } else if type.hasPrefix("gate.") {
             t.activity.append(ActivityEvent(.gate, Self.title(payload) ?? Self.pretty(type), at: .now))
         } else if type.hasPrefix("review.") || type.hasPrefix("finding.") {
@@ -760,8 +890,15 @@ final class AppModel {
                 t.findings.append(f)
             }
         } else if type.hasPrefix("budget.") {
-            if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue ?? payload["usd"]?.doubleValue { t.spendUsd = spend }
-            if let cap = payload["max_usd"]?.doubleValue, cap > 0 { t.capUsd = cap }
+            if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue ?? payload["usd"]?.doubleValue {
+                t.spendUsd = spend
+                t.spendKnown = true
+                t.spendEstimated = payload["estimated"]?.boolValue ?? t.spendEstimated
+            }
+            if let cap = payload["max_usd"]?.doubleValue, cap > 0 {
+                t.capUsd = cap
+                t.capKnown = true
+            }
         } else {
             t.activity.append(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }

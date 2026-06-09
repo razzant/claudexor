@@ -42,7 +42,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
         version: defaultModel,
-        adapter_version: "0.5.0",
+        adapter_version: "0.6.0",
         provider_family: providerFamily,
         capabilities: {
           plan: true,
@@ -114,6 +114,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
           body: JSON.stringify({ model, messages: [{ role: "user", content: spec.prompt }] }),
+          signal: abortSignalFromSpec(spec),
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
@@ -142,4 +143,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       }
     },
   };
+}
+
+function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
+  const signal = spec.extra["abortSignal"];
+  return signal instanceof AbortSignal ? signal : undefined;
 }
