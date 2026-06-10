@@ -1,0 +1,30 @@
+{
+  "$ref": "#/definitions/ControlInteractionAnswerResponse",
+  "definitions": {
+    "ControlInteractionAnswerResponse": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "delivered",
+            "not_found",
+            "already_resolved",
+            "rejected"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

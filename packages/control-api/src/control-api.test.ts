@@ -305,7 +305,9 @@ describe("DaemonControlApiServer", () => {
           harness: "claude",
           action: "login",
           status: "prepared",
-          command: "claude /login && claudexor doctor --harness claude",
+          // Native login only: verification runs in-process in the daemon —
+          // chaining a `claudexor doctor` shell form was the exit-127 class.
+          command: "claude /login",
         });
         expect(body.guideUrl).toBe("https://docs.anthropic.com/en/docs/claude-code");
         expect(seen).toEqual([{ harness: "claude", action: "login" }]);
@@ -348,7 +350,7 @@ describe("DaemonControlApiServer", () => {
             harness: p.harness,
             action: p.action,
             status: "prepared",
-            command: "claude /login && claudexor doctor --harness claude",
+            command: "claude /login",
             guideUrl: "https://docs.anthropic.com/en/docs/claude-code",
             logPath: "/tmp/claudexor-setup.log",
             message: "prepared",

@@ -1014,6 +1014,13 @@ export class Orchestrator {
       request: async (request: InteractionRequest): Promise<InteractionAnswerSet | null> => {
         const requestedAt = nowIso();
         const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
+        // Invoke the answer surface BEFORE announcing the event: handlers
+        // register the pending question synchronously (daemon
+        // InteractionRegistry), so any subscriber that reacts to
+        // interaction.requested — `claudexor follow` checks pendingInteractions
+        // before prompting — finds the registry already populated. The reverse
+        // order would make that guarantee depend on event-loop timing.
+        const answersPromise = handler({ runId, taskId, attemptId, harnessId, request, requestedAt, timeoutAt }).catch(() => null);
         log.emit("interaction.requested", {
           interaction_id: request.interaction_id,
           attempt_id: attemptId,
@@ -1027,7 +1034,7 @@ export class Orchestrator {
         let onAbort: (() => void) | undefined;
         const startedWaiting = Date.now();
         const answers = await Promise.race([
-          handler({ runId, taskId, attemptId, harnessId, request, requestedAt, timeoutAt }).catch(() => null),
+          answersPromise,
           new Promise<null>((resolve) => {
             timer = setTimeout(() => resolve(null), timeoutMs);
             timer.unref?.();

@@ -1,0 +1,108 @@
+{
+  "$ref": "#/definitions/ControlPendingInteraction",
+  "definitions": {
+    "ControlPendingInteraction": {
+      "type": "object",
+      "properties": {
+        "interactionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "$ref": "#/definitions/ControlPendingInteraction/properties/interactionId"
+        },
+        "attemptId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "harnessId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sourceTool": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ControlPendingInteraction/properties/interactionId"
+              },
+              "question": {
+                "type": "string"
+              },
+              "header": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "default": []
+              },
+              "multi_select": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "id",
+              "question"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "requestedAt": {
+          "type": "string"
+        },
+        "timeoutAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "interactionId",
+        "runId",
+        "requestedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

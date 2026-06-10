@@ -287,7 +287,13 @@ struct TaskRowView: View {
             }
             Spacer(minLength: Theme.Spacing.md)
             VStack(alignment: .trailing, spacing: 4) {
-                StatusPill(status: task.status, compact: false)
+                // Output-readiness contract holds in LISTS too: a terminal
+                // status is only presented with its content loaded.
+                if task.isFinalizing {
+                    FinalizingPill()
+                } else {
+                    StatusPill(status: task.status, compact: false)
+                }
                 Text(task.updatedAt, style: .relative).font(.caption2).foregroundStyle(.tertiary).fixedSize()
             }
         }
