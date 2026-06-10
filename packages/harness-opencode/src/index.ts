@@ -118,7 +118,8 @@ export function createOpenCodeAdapter(): HarnessAdapter {
       // smoke proving the route, the honest status is degraded (cursor parity).
       return ConformanceReportSchema.parse({
         harness_id: "opencode",
-        status: "degraded",
+        // No auth source at all = unavailable; key-present-but-unproven = degraded.
+        status: authReady ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "provider_auth", status: authReady ? "pass" : "fail", detail: authReady ? "provider key available (unproven without isolated smoke)" : undefined },

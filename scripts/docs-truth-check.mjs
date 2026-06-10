@@ -48,7 +48,7 @@ function implementedEndpoints(src) {
   }
   // Self-check: every declared regex route must have been bound to a method.
   for (const [name] of regexByName) {
-    if (![...out].some(() => src.includes(`&& ${name}`))) {
+    if (!src.includes(`&& ${name}`)) {
       throw new Error(`docs-truth extractor: regex route '${name}' is declared but never used with a method guard`);
     }
   }

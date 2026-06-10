@@ -112,8 +112,9 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
 
 async function stagePatchPaths(repoRoot: string, patch: string): Promise<void> {
   if (!patch.trim()) return;
-  // The worktree was required to be clean before apply, so all post-apply
-  // changes belong to this patch. `git add -A` is the only simple staging path
-  // that handles additions, edits, renames, and deletions consistently.
-  await git(repoRoot, ["add", "-A"]);
+  // The worktree was required to be clean before apply (with `.claudexor/`
+  // excluded), so all post-apply changes belong to this patch. The SAME
+  // exclusion must apply here, or untracked run/workspace artifacts would be
+  // silently staged into the user's commit.
+  await git(repoRoot, ["add", "-A", "--", ".", ":(exclude).claudexor"]);
 }

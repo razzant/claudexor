@@ -96,6 +96,11 @@ input stub was removed in v0.7.0), so the app shows no input UI for active runs.
 Sample data is off by default behind Settings. Surfaces the engine does not
 fully expose yet use honest empty states instead of pretending to be live.
 
+The Per-Harness Defaults editor saves enable/disable, model override, effort,
+and web policy. The remaining engine knobs (per-harness budget, turn/round
+caps, tool allow/deny lists, fallback model) are config-file/settings-API
+surfaces; this app's DTO intentionally does not send them.
+
 ## Design And Contributor Docs
 
 - [`../../CLAUDEXOR_BIBLE.md`](../../CLAUDEXOR_BIBLE.md) - product principles.

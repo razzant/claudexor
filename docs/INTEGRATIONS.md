@@ -120,6 +120,10 @@ the active run.
 Discovery/manifests describe static capabilities and possible auth sources.
 Doctor output is the readiness source: UI status, routing, reviewer selection,
 and live controls must rely on doctor status, enabled intents, and smoke checks.
+Auto-routing and reviewer pools take only doctor-OK harnesses. OpenCode and the
+raw-API adapter currently report `degraded` even with a key (no isolated smoke
+proves their routes yet), so they are skipped by auto-pools and selectable only
+explicitly; explicitly selecting an `unavailable` harness fails loudly.
 
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.

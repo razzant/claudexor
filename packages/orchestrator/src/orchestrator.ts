@@ -397,12 +397,20 @@ export class Orchestrator {
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }
-      // Doctor status is the readiness truth: explicitly selecting a degraded/
-      // unavailable harness fails loudly WITH the doctor's reasons.
-      if (status.status !== "ok") {
-        const why = `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
+      // Doctor status is the readiness truth: auto-pools take only doctor-OK
+      // routes, and explicitly selecting an UNAVAILABLE harness fails loudly
+      // with the doctor's reasons. A DEGRADED harness (e.g. key present but
+      // unproven by isolated smoke) is admitted only by explicit user
+      // selection — degraded means usable-with-caveats, and the caveats are
+      // visible in doctor output and run events.
+      if (status.status === "unavailable") {
+        const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
+        continue;
+      }
+      if (status.status !== "ok" && !explicitPool) {
+        dropped.push(`${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`);
         continue;
       }
       // Per-harness settings: a user-disabled harness never routes. Explicit

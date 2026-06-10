@@ -725,6 +725,14 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
       { status: 400 },
     );
   }
+  // Live (in-place) isolation is only honored by convergence modes; accepting
+  // it elsewhere would silently run an envelope while claiming live semantics.
+  if (parsed.execution?.isolation === "live" && mode !== "max_attempts" && mode !== "until_clean") {
+    throw Object.assign(
+      new Error(`execution.isolation='live' is only supported for convergence modes (max_attempts|until_clean), not '${mode}'`),
+      { status: 400 },
+    );
+  }
   if (parsed.scope.kind === "project") {
     const repoRoot = parsed.scope.root.trim();
     const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
@@ -1059,12 +1067,28 @@ function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): 
   let estimated = decision?.budget_summary?.estimated ?? false;
   let source: "decision" | "events" | "settings" | "unknown" = spendUsd === null ? "unknown" : "decision";
   if (spendUsd === null) {
+    // budget.observation is the engine's authoritative spend stream (it covers
+    // harness AND reviewer-panel spend, e.g. plan review which never writes a
+    // decision record). Fall back to raw usage events only for legacy runs
+    // that predate observations — never sum both (each usage cost is mirrored
+    // as one observation).
+    let observationSpend = 0;
+    let sawObservation = false;
     let eventSpend = 0;
     let sawCost = false;
     let sawUsage = false;
     for (const ev of readRunEvents(rec)) {
-      if (ev["type"] !== "harness.event") continue;
       const payload = eventPayload(ev);
+      if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
+        const usd = payload["usd"];
+        if (typeof usd === "number" && Number.isFinite(usd)) {
+          observationSpend += usd;
+          sawObservation = true;
+        }
+        if (payload["estimated"] === true) estimated = true;
+        continue;
+      }
+      if (ev["type"] !== "harness.event") continue;
       const usage = payload["usage"];
       if (usage && typeof usage === "object" && !Array.isArray(usage)) {
         sawUsage = true;
@@ -1076,11 +1100,14 @@ function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): 
         if ((usage as Record<string, unknown>)["estimated"] === true) estimated = true;
       }
     }
-    if (sawCost) {
+    if (sawObservation) {
+      spendUsd = observationSpend;
+      source = "events";
+    } else if (sawCost) {
       spendUsd = eventSpend;
       source = "events";
     } else if (sawUsage) {
-        source = "events";
+      source = "events";
     }
   }
   const remainingUsd = maxUsd !== null && spendUsd !== null ? Math.max(0, maxUsd - spendUsd) : null;

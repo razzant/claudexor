@@ -557,6 +557,12 @@ async function main() {
     console.error(`REVIEW_BLOCKED: only ${responsive.length} of ${TRIAD_MODELS.length} review models responded successfully (minimum 2 required).`);
     process.exit(1);
   }
+  // The scope reviewer is part of the release gate: an erroring, unparseable,
+  // or item-incomplete scope review blocks too (not ceremonial).
+  if (scope && (scope.status !== "responded" || (scope.missing_items?.length ?? 0) > 0)) {
+    console.error(`REVIEW_BLOCKED: scope review ${scope.status}${scope.missing_items?.length ? ` (missing items: ${scope.missing_items.join(", ")})` : ""}.`);
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

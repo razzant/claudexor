@@ -41,6 +41,10 @@ struct TaskDetailView: View {
         if task.status.isActive {
             return .activity
         }
+        // A blocked run's deliverable IS the findings that need a human.
+        if task.status == .blocked {
+            return task.findings.isEmpty ? .diagnostics : .review
+        }
         if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .exhausted {
             return task.answerText == nil ? .diagnostics : .answer
         }
