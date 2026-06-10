@@ -229,18 +229,18 @@ struct HomeScreen: View {
             if tasks.isEmpty {
                 Panel { Text("Nothing here yet.").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
             } else {
-                Panel(padding: 0) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(tasks.enumerated()), id: \.element.id) { idx, task in
-                            Button { model.route = .task(task.id) } label: {
-                                TaskRowView(task: task)
-                                    .padding(.horizontal, Theme.Spacing.md)
-                            }
-                            .buttonStyle(.plain)
-                            if idx < tasks.count - 1 { Divider().overlay(Theme.hairline).padding(.leading, Theme.Metrics.rowDividerInset) }
+                // Floating row-cards (user-locked v0.8 design): each run is its
+                // own frosted card with a hover lift — the "floating" feel of
+                // light mode, now in both themes — instead of one flat slab.
+                VStack(spacing: Theme.Spacing.sm) {
+                    ForEach(tasks) { task in
+                        Button { model.route = .task(task.id) } label: {
+                            TaskRowView(task: task)
+                                .padding(.horizontal, Theme.Spacing.md)
                         }
+                        .buttonStyle(.plain)
+                        .cardSurface(hover: true)
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
                 }
             }
         }

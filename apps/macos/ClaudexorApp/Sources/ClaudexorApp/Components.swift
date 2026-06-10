@@ -22,6 +22,27 @@ struct StatusPill: View {
     }
 }
 
+/// Terminal-state-machine honesty: the run IS terminal but its final snapshot
+/// has not landed yet — never show a green Succeeded next to an empty Outcome.
+struct FinalizingPill: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .imageScale(.small)
+                .symbolEffect(.rotate, options: .repeating, isActive: !reduceMotion)
+            Text("Finalizing…")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Theme.status(.running))
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.xs)
+        .background(Theme.status(.running).opacity(0.15), in: Capsule())
+        .accessibilityLabel("Status finalizing")
+        .help("The run reached a terminal state; the output snapshot is loading.")
+    }
+}
+
 // MARK: - Harness chip / dot
 
 struct HarnessChip: View {

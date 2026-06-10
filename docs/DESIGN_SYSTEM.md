@@ -22,11 +22,16 @@ to Claudexor and instantly familiar to users of Codex App and Claude Code.
 
 Three design commitments:
 
-1. **Content-first, glass on the navigation layer only.** Liquid Glass lives on the
+1. **Content-first; Liquid Glass on the navigation layer; frosted materials on
+   content cards (v0.8, user-locked).** `glassEffect` Liquid Glass lives on the
    chrome (sidebar, toolbars, inspector, floating composer/action controls,
-   sheets, menus). Ordinary cards, settings groups, code, diffs, transcripts,
-   and tables sit on solid, high-contrast surfaces. Never put glass behind code
-   text or dense content.
+   sheets, menus). Ordinary content cards use **frosted system materials with a
+   tuned surface tint** so the ambient glow shows through in BOTH themes — one
+   visual language with the floating composer, the "floating card" feel that
+   previously existed only in Light Mode. Code, diffs, transcripts, settings
+   groups, and any dense small text still sit on SOLID, high-contrast surfaces
+   (`surface/code`): never put glass OR translucency behind code text. Reduce
+   Transparency falls back to solid raised fills everywhere.
 2. **Honesty is visible.** Evidence, route-diversity proof, estimated-vs-exact cost,
    and gate status are surfaced as quiet always-on badges with deep evidence one click
    away. The UI never implies more certainty (or more multi-model rigor) than the data
@@ -45,8 +50,9 @@ Three design commitments:
 - **Signature default is a deep-graphite Dark** ("command center"), never pure black.
   Pure black + saturated text is the exact readability trap competitors fell into;
   we use layered graphite surfaces and desaturated accents. Dark cards use the
-  **crisp graphite** recipe: slightly lighter raised fills, clearer strokes,
-  stronger text contrast, restrained shadow/glow, and no muddy low-contrast gray.
+  **frosted floating** recipe (see 2.4): system material + graphite tint, a
+  top-lit gradient hairline, and a VISIBLE separation shadow — never a flat
+  charcoal slab with a uniform white outline (the v0.7 "cheap dark card" trap).
 - A user-facing **Appearance** control (Light / Dark / System) is required from day one.
   Do not ship a single forced theme with no toggle.
 
@@ -120,11 +126,22 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
   a tracked beta refinement.)
-- Elevation: glass + material layering for chrome; a solid content card may carry **one**
-  soft separation shadow (centralized in `cardSurface`) for dark-mode contrast
-  against the glow. Crisp graphite cards should prefer stronger stroke/elevation
-  over a muddy fill. Settings groups are flat and use no shadow. No heavy,
-  stacked, or black cutout shadows.
+- Elevation — the ONE card recipe (centralized in `cardSurface`, v0.8):
+  - **Fill:** system `.regularMaterial` + a tuned `surface/raised` tint veil
+    (dark ≈ 40%, light ≈ 55%) so the ambient glow shows through without
+    hurting text contrast. Reduce Transparency → solid `surface/raised`.
+  - **Edge:** a **top-lit gradient hairline** (light falls from above: dark
+    white 22%→5%, light black 10%→4%) instead of a uniform outline; emphasis
+    strokes (winner candidate, pending question) override it in their color.
+  - **Depth:** one scheme-aware separation shadow cast by the card SHAPE —
+    visible in Dark Mode too (dark: black 40%, radius 13, y 5; light: black
+    13%, radius 8, y 3). The old dark shadow (black 14%) was mathematically
+    invisible on graphite — that bug class is what this recipe replaces.
+  - **Hover:** clickable rows opt into a lift (deeper shadow + brighter veil);
+    static panels never twitch.
+  - Settings groups are flat and use no shadow. No heavy, stacked, or black
+    cutout shadows. Row lists (Home, Tasks) are **individual floating
+    row-cards with gaps**, not one slab with hairline dividers.
 
 ### 2.5 Density
 
@@ -151,12 +168,17 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 ---
 
-## 3. Liquid Glass rules
+## 3. Liquid Glass & materials rules
 
-- **Where glass goes:** sidebar, toolbars, the inspector/review panel, the
-  floating composer, action controls, sheets, popovers, and menus.
-- **Where glass NEVER goes:** behind code, diffs, terminal/transcript output, tables,
-  or any dense small text. Those use `surface/code` / `surface/raised` solids.
+- **Where Liquid Glass (`glassEffect`) goes:** sidebar, toolbars, the
+  inspector/review panel, the floating composer, action controls, sheets,
+  popovers, and menus.
+- **Where frosted materials go (v0.8):** content cards and row-cards — the
+  `cardSurface` recipe (`.regularMaterial` + tint veil, top-lit hairline,
+  scheme-aware shadow). Materials are NOT `glassEffect`; cards never lens or
+  morph.
+- **Where neither goes:** behind code, diffs, terminal/transcript output,
+  tables, or any dense small text. Those use `surface/code` solids.
 - Use standard structure (`NavigationSplitView` + `.inspector`, `Toolbar`, `Sheet`) to
   get the material for free; avoid custom backgrounds behind bars/sheets.
 - When a view intentionally uses custom morphing glass, group those elements in a
@@ -183,8 +205,8 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   - **Sidebar (glass):** Projects, each expanding to its Specs/Runs; a top-level
     **Portfolio** item (cross-project mission control) and status filter (running /
     needs-review / blocked / done).
-  - **Content (solid):** the active surface — spec interview, run composer, the
-    mission-control dashboard, diff/review, etc.
+  - **Content (frosted cards over the glow; code solid):** the active surface —
+    spec interview, run composer, the mission-control dashboard, diff/review, etc.
   - **Inspector (`.inspector`, glass):** context for the selection — findings, route
     proof, evidence, budget, run metadata.
 - Detachable pop-out windows are out of scope for v1 (single-window decision).
@@ -342,12 +364,16 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   must use `.spec(id)`, not the first run's `.task(id)`) — shared tags make one click select
   multiple rows.
 - **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
-  content uses `TaskRowView`/`FindingCard`. Inter-row dividers inset `.leading 56` (icon
-  column). Rows live inside a `Panel(padding: 0)`.
-- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8, `cardStroke`, one soft
-  shadow) on a solid `surfaceRaised`. `Panel`, `FindingCard` (`clip: true` for its leading
-  severity bar), and `CandidateCard` (`strokeColor`/`lineWidth` for the winner emphasis) all
-  call it; do not duplicate ad-hoc background+stroke+shadow stacks.
+  content uses `TaskRowView`/`FindingCard`. Run lists (Home sections, Tasks) render each
+  row as its OWN floating row-card — `cardSurface(hover: true)` with `Spacing.sm` gaps —
+  not one slab with inset dividers (v0.8 floating-rows decision).
+- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8): frosted
+  `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one
+  scheme-aware separation shadow cast by the shape, optional `hover` lift, and a
+  Reduce Transparency solid fallback. `Panel`, `FindingCard` (`clip: true` for its leading
+  severity bar), `CandidateCard` (`strokeColor` for the winner emphasis), and
+  `InteractionCard` (pending-question emphasis stroke) all call it; do not duplicate
+  ad-hoc background+stroke+shadow stacks.
 
 **Known gaps:** colors are a programmatic `Color(dark:light:)` projection rather than an asset
 catalog, and there is no Increased-Contrast variant yet (`§2.2`/`§6` aspiration); density is
@@ -367,9 +393,11 @@ tiny count/label pills still carry per-call padding pending a shared `CountBadge
 
 ## 7. Do / Don't
 
-- Do: use system structure for free Liquid Glass; color = meaning; solid surfaces for code.
+- Do: use system structure for free Liquid Glass; color = meaning; solid surfaces for code;
+  frosted `cardSurface` for content cards (both themes).
 - Do: keep core actions one-click; persist layout/density; ship a theme toggle.
-- Don't: pure-black dark mode; saturated text on dark; glass behind code; color-only status;
+- Don't: pure-black dark mode; saturated text on dark; glass behind code; flat opaque
+  card slabs with uniform white outlines; invisible dark-mode shadows; color-only status;
   per-command permission nags (use pre-authorized scopes); silent quota lockouts.
 
 ---

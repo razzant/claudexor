@@ -248,7 +248,7 @@ struct CandidateCard: View {
         }
         .padding(Theme.Spacing.md)
         .frame(width: 240, alignment: .leading)
-        .cardSurface(strokeColor: candidate.reviewState == .winner ? Theme.accent.opacity(0.7) : Theme.cardStroke,
+        .cardSurface(strokeColor: candidate.reviewState == .winner ? Theme.accent.opacity(0.7) : nil,
                      lineWidth: candidate.reviewState == .winner ? 1.5 : 1)
     }
 }
@@ -267,6 +267,13 @@ struct TaskRowView: View {
                 HStack(spacing: Theme.Spacing.sm) {
                     Text(task.title).font(.callout.weight(.medium)).lineLimit(1)
                     ProvenanceTag(isLive: task.isLive)
+                    if task.waitingOnUser {
+                        Label("Answer", systemImage: "questionmark.bubble.fill")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Theme.status(.needsReview))
+                            .labelStyle(.titleAndIcon)
+                            .help("This run is waiting for your answer.")
+                    }
                 }
                 HStack(spacing: Theme.Spacing.xs) {
                     Text(task.project).font(.caption2).foregroundStyle(.secondary)

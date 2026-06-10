@@ -221,13 +221,38 @@ public final class GatewayClient: Sendable {
         }
     }
 
+    /// Deliver the user's answers for a pending interactive question.
+    public func answerInteraction(runId: String, interactionId: String, answers: [InteractionAnswerPayload]) async throws -> InteractionAnswerResponse {
+        var req = request("runs/\(runId)/interactions/\(interactionId)/answer", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(["answers": answers])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(InteractionAnswerResponse.self, from: data)
+    }
+
     /// Live SSE event stream for a run, resuming after `lastEventId` if given. The
     /// stream finishes when the server sends the terminal `end` event or closes.
     public func events(runId: String, lastEventId: Int? = nil) -> AsyncThrowingStream<BusEnvelope, Error> {
+        sseStream(path: "runs/\(runId)/events", lastEventId: lastEventId)
+    }
+
+    /// Global LIVE-ONLY run-event multiplex (`GET /events`, no replay): every
+    /// run's events tagged with run_id. Reconnect = re-snapshot `/runs` first.
+    public func globalEvents() -> AsyncThrowingStream<BusEnvelope, Error> {
+        sseStream(path: "events", lastEventId: nil)
+    }
+
+    /// Byte-level SSE consumption (SSEParser). `bytes.lines` is NEVER used here:
+    /// it swallows the empty delimiter lines and silently drops every event.
+    private func sseStream(path: String, lastEventId: Int?) -> AsyncThrowingStream<BusEnvelope, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var req = self.request("runs/\(runId)/events", method: "GET")
+                    var req = self.request(path, method: "GET")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     if let last = lastEventId { req.setValue(String(last), forHTTPHeaderField: "Last-Event-ID") }
 
@@ -237,30 +262,27 @@ public final class GatewayClient: Sendable {
                         throw GatewayError.http(status: status, body: "events stream failed")
                     }
 
-                    var id: Int?
-                    var eventName = "message"
-                    var dataLine = ""
-                    for try await line in bytes.lines {
-                        if line.isEmpty {
-                            // dispatch the accumulated event block
-                            if eventName == "end" { continuation.finish(); return }
-                            if !dataLine.isEmpty, let payload = Self.parseJSON(dataLine) {
-                                continuation.yield(BusEnvelope(seq: id ?? 0, kind: eventName, event: payload))
+                    var parser = SSEParser()
+                    var chunk: [UInt8] = []
+                    chunk.reserveCapacity(1024)
+                    func flush() -> Bool {
+                        for frame in parser.feed(chunk) {
+                            if frame.event == "end" { return true }
+                            if let payload = Self.parseJSON(frame.data) {
+                                continuation.yield(BusEnvelope(seq: frame.id ?? 0, kind: frame.event, event: payload))
                             }
-                            id = nil
-                            eventName = "message"
-                            dataLine = ""
-                            continue
                         }
-                        if line.hasPrefix(":") { continue } // comment / heartbeat
-                        if line.hasPrefix("id:") { id = Int(line.dropFirst(3).trimmingCharacters(in: .whitespaces)) }
-                        else if line.hasPrefix("event:") { eventName = String(line.dropFirst(6).trimmingCharacters(in: .whitespaces)) }
-                        else if line.hasPrefix("data:") {
-                            // Per the SSE spec, multiple data: lines are joined with "\n".
-                            let chunk = String(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
-                            dataLine = dataLine.isEmpty ? chunk : dataLine + "\n" + chunk
+                        chunk.removeAll(keepingCapacity: true)
+                        return false
+                    }
+                    for try await byte in bytes {
+                        chunk.append(byte)
+                        if byte == 0x0A, flush() {
+                            continuation.finish()
+                            return
                         }
                     }
+                    _ = flush()
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

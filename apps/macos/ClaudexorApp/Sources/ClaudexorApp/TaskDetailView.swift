@@ -63,10 +63,17 @@ struct TaskDetailView: View {
                 tabBar(task)
                 Divider().overlay(Theme.separator)
                 ScrollView {
-                    content(task)
-                        .padding(Theme.Spacing.xxl)
-                        .frame(maxWidth: Theme.Layout.contentMaxWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                        // Pending questions outrank every tab: the run is parked
+                        // on the user, so the answer surface is always visible.
+                        ForEach(task.pendingInteractions) { interaction in
+                            InteractionCard(runId: task.id, interaction: interaction)
+                        }
+                        content(task)
+                    }
+                    .padding(Theme.Spacing.xxl)
+                    .frame(maxWidth: Theme.Layout.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollContentBackground(.hidden)
             }
@@ -92,7 +99,11 @@ struct TaskDetailView: View {
             ScreenHeader(title: task.title,
                          subtitle: task.prompt.isEmpty ? nil : task.prompt,
                          subtitleLineLimit: 2,
-                         accessory: AnyView(StatusPill(status: task.status)))
+                         // Terminal status is only PRESENTED with its content;
+                         // until the final snapshot lands the run is Finalizing.
+                         accessory: AnyView(Group {
+                             if task.isFinalizing { FinalizingPill() } else { StatusPill(status: task.status) }
+                         }))
 
             FlowLayout(spacing: Theme.Spacing.md) {
                 ProvenanceTag(isLive: task.isLive)
@@ -101,6 +112,13 @@ struct TaskDetailView: View {
                     Label(spec, systemImage: "doc.text.fill").font(.caption).foregroundStyle(Theme.accent)
                 }
                 RouteProofBadge(proof: task.routeProof)
+                    .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
+                if task.waitingOnUser {
+                    Label("Needs your answer", systemImage: "questionmark.bubble.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.status(.needsReview))
+                        .help("The harness asked a question; the run is waiting for you (it declines benignly on timeout).")
+                }
                 if let access = task.accessLabel {
                     Label(access, systemImage: "lock.shield")
                         .font(.caption).foregroundStyle(.secondary)

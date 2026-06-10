@@ -1,3 +1,4 @@
+import ClaudexorKit
 import Foundation
 import SwiftUI
 
@@ -121,6 +122,7 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
     }
     var color: Color { Theme.status(self) }
     var isActive: Bool { self == .running || self == .queued }
+    var isTerminal: Bool { !isActive && self != .unknown }
     var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .exhausted || self == .notConverged || self == .unknown }
 }
 
@@ -558,6 +560,11 @@ struct TaskRun: Identifiable, Hashable {
     var effectiveAccess: String?
     /** Run-level external web policy (off|auto|cached|live), for honest Retry. */
     var externalContextPolicy: String?
+    /// Model identity the harness stream actually reported (route evidence).
+    var observedModel: String?
+    /// Live harness questions awaiting the user (waiting_on_user).
+    var pendingInteractions: [PendingInteraction] = []
+    var waitingOnUser: Bool = false
 
     /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
     var accessLabel: String? {
@@ -573,6 +580,19 @@ struct TaskRun: Identifiable, Hashable {
         let spend = spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spendUsd))" : "Unknown"
         let cap = capKnown ? String(format: "$%.2f", capUsd) : "Unknown"
         return "\(spend) / \(cap)"
+    }
+
+    /// State-machine invariant: a terminal status may only be PRESENTED with
+    /// its final content. Until the snapshot lands, the run is "Finalizing" —
+    /// never a green Succeeded badge next to an empty Outcome.
+    var isFinalizing: Bool {
+        guard isLive, status.isTerminal, status != .cancelled else { return false }
+        let hasContent =
+            !(answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !diff.isEmpty
+            || diagnosticText != nil
+            || engineError != nil
+        return !hasContent
     }
 }
 

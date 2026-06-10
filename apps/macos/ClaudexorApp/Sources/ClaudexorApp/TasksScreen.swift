@@ -34,17 +34,15 @@ struct TasksScreen: View {
                 EmptyStateView(title: "No tasks here", message: "Start a run with ⌘N, or change the filter.", systemImage: "checklist", actionTitle: "New Task") { model.composerPresented = true }
             } else {
                 ScrollView {
-                    Panel(padding: 0) {
-                        VStack(spacing: 0) {
-                            ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, task in
-                                Button { model.route = .task(task.id) } label: {
-                                    TaskRowView(task: task).padding(.horizontal, Theme.Spacing.md)
-                                }
-                                .buttonStyle(.plain)
-                                if idx < filtered.count - 1 { Divider().overlay(Theme.hairline).padding(.leading, Theme.Metrics.rowDividerInset) }
+                    // Floating row-cards: same recipe as Home (one design language).
+                    VStack(spacing: Theme.Spacing.sm) {
+                        ForEach(filtered) { task in
+                            Button { model.route = .task(task.id) } label: {
+                                TaskRowView(task: task).padding(.horizontal, Theme.Spacing.md)
                             }
+                            .buttonStyle(.plain)
+                            .cardSurface(hover: true)
                         }
-                        .padding(.vertical, Theme.Spacing.xs)
                     }
                     .padding(Theme.Spacing.xxl)
                     .frame(maxWidth: Theme.Layout.contentMaxWidth, alignment: .leading)

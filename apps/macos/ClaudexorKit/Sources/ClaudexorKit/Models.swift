@@ -137,6 +137,15 @@ public struct RunProjectInfo: Codable, Sendable, Equatable {
     public let context: String
 }
 
+/// Run-level route evidence: requested vs STREAM-OBSERVED model. `verified`
+/// is true only when the harness stream itself disclosed a model identity.
+public struct RouteInfo: Codable, Sendable, Equatable {
+    public let requestedModel: String?
+    public let observedModel: String?
+    public let harnessId: String?
+    public let verified: Bool?
+}
+
 public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let jobId: String?
     public let runId: String
@@ -164,6 +173,9 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let webMode: String?
     public let webEvidence: WebEvidence?
     public let outputReadyState: String?
+    /// True while at least one harness question awaits the user's answer.
+    public let waitingOnUser: Bool?
+    public let route: RouteInfo?
     public let tests: [String]?
     public let specId: String?
     public let specHash: String?
@@ -239,8 +251,96 @@ public struct NativeQuota: Codable, Sendable, Equatable {
     public let source: String
 }
 
+/// One option of a pending interactive question.
+public struct InteractionOption: Codable, Sendable, Equatable, Hashable {
+    public let label: String
+    public let description: String?
+
+    public init(label: String, description: String?) {
+        self.label = label
+        self.description = description
+    }
+}
+
+public struct InteractionQuestion: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public let id: String
+    public let question: String
+    public let header: String?
+    public let options: [InteractionOption]
+    public let multiSelect: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, question, header, options
+        case multiSelect = "multi_select"
+    }
+
+    public init(id: String, question: String, header: String?, options: [InteractionOption], multiSelect: Bool) {
+        self.id = id
+        self.question = question
+        self.header = header
+        self.options = options
+        self.multiSelect = multiSelect
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        question = try c.decode(String.self, forKey: .question)
+        header = try c.decodeIfPresent(String.self, forKey: .header)
+        options = try c.decodeIfPresent([InteractionOption].self, forKey: .options) ?? []
+        multiSelect = try c.decodeIfPresent(Bool.self, forKey: .multiSelect) ?? false
+    }
+}
+
+/// A live harness question awaiting the user's answer (waiting_on_user).
+public struct PendingInteraction: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public let interactionId: String
+    public let runId: String
+    public let attemptId: String?
+    public let harnessId: String?
+    public let sourceTool: String?
+    public let questions: [InteractionQuestion]
+    public let requestedAt: String
+    public let timeoutAt: String?
+    public var id: String { interactionId }
+
+    public init(interactionId: String, runId: String, attemptId: String?, harnessId: String?,
+                sourceTool: String?, questions: [InteractionQuestion], requestedAt: String, timeoutAt: String?) {
+        self.interactionId = interactionId
+        self.runId = runId
+        self.attemptId = attemptId
+        self.harnessId = harnessId
+        self.sourceTool = sourceTool
+        self.questions = questions
+        self.requestedAt = requestedAt
+        self.timeoutAt = timeoutAt
+    }
+}
+
+/// One answer in POST /runs/:id/interactions/:id/answer.
+public struct InteractionAnswerPayload: Codable, Sendable, Equatable {
+    public let questionId: String
+    public let selectedLabels: [String]
+    public let freeText: String?
+
+    public init(questionId: String, selectedLabels: [String], freeText: String? = nil) {
+        self.questionId = questionId
+        self.selectedLabels = selectedLabels
+        self.freeText = freeText
+    }
+}
+
+public struct InteractionAnswerResponse: Codable, Sendable, Equatable {
+    public let accepted: Bool
+    public let status: String
+    public let message: String?
+}
+
 public struct RunDetail: Codable, Sendable, Equatable {
     public let summary: RunSummary
+    /// Highest event seq reflected in this snapshot — subscribe to the event
+    /// stream from this cursor (snapshot-then-subscribe, no gaps, no dupes).
+    public let lastSeq: Int
     public let artifacts: [ArtifactInfo]
     public let primaryOutput: PrimaryOutput?
     public let timeline: [TimelineEvent]
@@ -249,15 +349,17 @@ public struct RunDetail: Codable, Sendable, Equatable {
     public let decision: JSONValue?
     public let workProduct: JSONValue?
     public let reviewFindings: [JSONValue]
+    public let pendingInteractions: [PendingInteraction]
     public let failure: RunFailureInfo?
 
     enum CodingKeys: String, CodingKey {
-        case summary, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, failure
+        case summary, lastSeq, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, pendingInteractions, failure
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         summary = try c.decode(RunSummary.self, forKey: .summary)
+        lastSeq = try c.decodeIfPresent(Int.self, forKey: .lastSeq) ?? 0
         artifacts = try c.decodeIfPresent([ArtifactInfo].self, forKey: .artifacts) ?? []
         primaryOutput = try c.decodeIfPresent(PrimaryOutput.self, forKey: .primaryOutput)
         timeline = try c.decodeIfPresent([TimelineEvent].self, forKey: .timeline) ?? []
@@ -266,6 +368,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
         decision = try c.decodeIfPresent(JSONValue.self, forKey: .decision)
         workProduct = try c.decodeIfPresent(JSONValue.self, forKey: .workProduct)
         reviewFindings = try c.decodeIfPresent([JSONValue].self, forKey: .reviewFindings) ?? []
+        pendingInteractions = try c.decodeIfPresent([PendingInteraction].self, forKey: .pendingInteractions) ?? []
         failure = try c.decodeIfPresent(RunFailureInfo.self, forKey: .failure)
     }
 }

@@ -1,15 +1,20 @@
 import SwiftUI
 
-/// Design tokens — the Swift projection of `docs/DESIGN_SYSTEM.md`, corrected to Apple's
-/// Liquid Glass rules (WWDC25 "Build a SwiftUI app with the new design" + "Adopting
+/// Design tokens — the Swift projection of `docs/DESIGN_SYSTEM.md`, aligned with Apple's
+/// Liquid Glass era rules (WWDC25 "Build a SwiftUI app with the new design" + "Adopting
 /// Liquid Glass"):
 ///
-/// 1. Liquid Glass lives on the **navigation layer only** (sidebar, toolbar, inspector,
-///    sheets, floating actions). NEVER behind content (lists, cards, tables, code).
-/// 2. **Never glass-on-glass.** Content cards use solid surfaces.
-/// 3. **Never put custom backgrounds on split views / sidebars / toolbars** — that
+/// 1. Liquid Glass (`glassEffect`) lives on the **navigation/chrome layer only**
+///    (sidebar, toolbar, inspector, sheets, the floating composer). Never behind code.
+/// 2. Content cards are **frosted system materials** with a tuned surface tint
+///    (v0.8, user-locked): the ambient glow shows through cards in BOTH themes,
+///    one visual language with the floating composer. Reduce Transparency falls
+///    back to solid raised fills.
+/// 3. Code/diff/transcript surfaces stay SOLID (`codeSurface`) — dense text
+///    never sits on translucency.
+/// 4. **Never put custom backgrounds on split views / sidebars / toolbars** — that
 ///    overrides the system glass. Let the system provide it.
-/// 4. Make glass feel alive by placing colorful content near native chrome, but do not
+/// 5. Make glass feel alive by placing colorful content near native chrome, but do not
 ///    stretch a custom full-window glow into rounded window chrome with
 ///    `backgroundExtensionEffect()`; that produced hard side cutouts in dark/light mode.
 enum Theme {
@@ -126,31 +131,102 @@ extension Color {
     }
 }
 
-// MARK: - Surface helpers (content layer: SOLID, never glass)
+// MARK: - Surface helpers (content layer: frosted materials; code stays solid)
+
+/// The ONE elevated-content-card recipe (v0.8 "frosted floating card", user-locked):
+///
+/// - fill: a SYSTEM material + a tuned surface tint, so the ambient glow shows
+///   through content cards in both themes (one visual language with the
+///   floating glass composer) without hurting text contrast;
+/// - edge: a top-lit gradient hairline (light falls from above) instead of the
+///   old flat white border that read as a cheap outline in Dark Mode;
+/// - depth: a scheme-aware separation shadow cast by the card SHAPE (visible
+///   in Dark Mode too — the old black 14% shadow was invisible on graphite);
+/// - hover: an opt-in lift (deeper shadow + brighter veil) for clickable rows;
+/// - accessibility: Reduce Transparency falls back to the solid raised fill.
+///
+/// Liquid Glass itself stays chrome-only (composer/actions); code/diff/dense
+/// text stays on `codeSurface` (solid, maximum legibility).
+private struct CardSurfaceModifier: ViewModifier {
+    let radius: CGFloat
+    let stroke: Bool
+    /// nil = the standard top-lit hairline; non-nil = emphasis stroke
+    /// (winner candidate, pending question) in the caller's color.
+    let strokeColor: Color?
+    let lineWidth: CGFloat
+    let clip: Bool
+    let hover: Bool
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let dark = scheme == .dark
+        let lifted = hover && hovering
+        let shadowColor = Color.black.opacity(dark ? (lifted ? 0.55 : 0.40) : (lifted ? 0.22 : 0.13))
+        let shadowRadius: CGFloat = dark ? (lifted ? 18 : 13) : (lifted ? 12 : 8)
+        let shadowY: CGFloat = dark ? (lifted ? 8 : 5) : (lifted ? 5 : 3)
+
+        let base = content
+            .background {
+                if reduceTransparency {
+                    shape.fill(Theme.surfaceRaised)
+                        .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
+                } else {
+                    // The shadow is cast by the card SHAPE (not the composite
+                    // view) so translucent fills never double-shadow the text.
+                    shape.fill(.regularMaterial)
+                        .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
+                    shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.30 : 0.40) : 0.55))
+                }
+            }
+
+        return Group {
+            if clip { base.clipShape(shape) } else { base }
+        }
+        .overlay(stroke ? AnyView(edge(shape, dark: dark)) : AnyView(EmptyView()))
+        .onHover { inside in
+            guard hover else { return }
+            hovering = inside
+        }
+        .animation(.easeOut(duration: 0.16), value: hovering)
+    }
+
+    @ViewBuilder
+    private func edge(_ shape: RoundedRectangle, dark: Bool) -> some View {
+        if let strokeColor {
+            shape.strokeBorder(strokeColor, lineWidth: lineWidth)
+        } else {
+            shape.strokeBorder(
+                LinearGradient(
+                    stops: [
+                        .init(color: dark ? .white.opacity(0.22) : .black.opacity(0.10), location: 0),
+                        .init(color: dark ? .white.opacity(0.05) : .black.opacity(0.04), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom,
+                ),
+                lineWidth: lineWidth,
+            )
+        }
+    }
+}
 
 extension View {
-    /// The ONE elevated-content-card recipe (HIG dark-mode separation: lighter fill + hairline
-    /// border + one soft separation shadow). Content lives on solid surfaces for
-    /// legibility/contrast; glass is reserved for the navigation/chrome layer. `clip` rounds
-    /// inner content (e.g. a leading accent bar); `strokeColor`/`lineWidth` support the
-    /// winner-candidate emphasis without a second recipe.
-    @ViewBuilder
+    /// See `CardSurfaceModifier` — the single content-card recipe. `clip`
+    /// rounds inner content (e.g. a leading accent bar); `strokeColor`
+    /// switches the hairline to an emphasis stroke; `hover` opts a clickable
+    /// row into the lift effect.
     func cardSurface(_ radius: CGFloat = Theme.Radius.card,
                      stroke: Bool = true,
-                     strokeColor: Color = Theme.cardStroke,
+                     strokeColor: Color? = nil,
                      lineWidth: CGFloat = 1,
-                     clip: Bool = false) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        if clip {
-            self.background(Theme.surfaceRaised, in: shape)
-                .clipShape(shape)
-                .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
-        } else {
-            self.background(Theme.surfaceRaised, in: shape)
-                .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
-        }
+                     clip: Bool = false,
+                     hover: Bool = false) -> some View {
+        modifier(CardSurfaceModifier(radius: radius, stroke: stroke, strokeColor: strokeColor,
+                                     lineWidth: lineWidth, clip: clip, hover: hover))
     }
 
     /// A solid code/diff/transcript surface — maximum legibility, never glass behind it.

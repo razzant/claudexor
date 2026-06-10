@@ -131,6 +131,8 @@ final class AppModel {
 
     private var client: GatewayClient?
     private var streamTasks: [String: Task<Void, Never>] = [:]
+    /// Global live-only multiplex subscription (list liveness).
+    private var globalStreamTask: Task<Void, Never>?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
     /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
@@ -208,8 +210,10 @@ final class AppModel {
         projects.first { $0.specs.contains { $0.id == specId } }
     }
 
-    var attentionTasks: [TaskRun] { tasks.filter { $0.status.needsAttention } }
-    var activeTasks: [TaskRun] { tasks.filter { $0.status.isActive } }
+    // A run parked on a pending question NEEDS the user even though its daemon
+    // state is still "running".
+    var attentionTasks: [TaskRun] { tasks.filter { $0.status.needsAttention || $0.waitingOnUser } }
+    var activeTasks: [TaskRun] { tasks.filter { $0.status.isActive && !$0.waitingOnUser } }
     var allFindings: [Finding] {
         tasks.flatMap { $0.findings }.sorted { $0.severity.rank < $1.severity.rank }
     }
@@ -283,6 +287,7 @@ final class AppModel {
                 await refreshHarnesses()
                 await refreshSettings()
                 await refreshSecrets()
+                startGlobalStream()
                 return true
             }
         } catch {
@@ -311,6 +316,9 @@ final class AppModel {
                         task.answerText = existing.answerText ?? task.answerText
                         task.diagnosticText = existing.diagnosticText ?? task.diagnosticText
                         if task.artifactPaths.isEmpty { task.artifactPaths = existing.artifactPaths }
+                        if task.pendingInteractions.isEmpty { task.pendingInteractions = existing.pendingInteractions }
+                        task.observedModel = task.observedModel ?? existing.observedModel
+                        if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
                     }
                     return task
                 }
@@ -528,6 +536,11 @@ final class AppModel {
         task.engineError = s.failure?.safeMessage ?? s.error
         task.runDir = s.runDir ?? s.failure?.runDir
         task.outputReadyState = s.outputReadyState
+        task.waitingOnUser = s.waitingOnUser ?? false
+        if let route = s.route {
+            task.observedModel = route.observedModel
+            task.routeProof = route.verified == true ? .verified : .unverified
+        }
         task.requestedAccess = s.requestedAccess
         task.effectiveAccess = s.effectiveAccess
         task.externalContextPolicy = s.externalContextPolicy
@@ -693,10 +706,33 @@ final class AppModel {
         }
     }
 
+    /// Deliver the user's answers for a pending interactive question. Returns
+    /// an error message on failure (the question card surfaces it verbatim).
+    func answerInteraction(runId: String, interactionId: String, answers: [InteractionAnswerPayload]) async -> String? {
+        guard let client else { return "Engine offline: reconnect before answering." }
+        do {
+            let response = try await client.answerInteraction(runId: runId, interactionId: interactionId, answers: answers)
+            guard response.accepted else {
+                return response.message ?? "Answer was not accepted (\(response.status))."
+            }
+            if let idx = liveTasks.firstIndex(where: { $0.id == runId }) {
+                liveTasks[idx].pendingInteractions.removeAll { $0.interactionId == interactionId }
+                liveTasks[idx].waitingOnUser = !liveTasks[idx].pendingInteractions.isEmpty
+                liveTasks[idx].updatedAt = .now
+            }
+            return nil
+        } catch {
+            return "Could not deliver the answer: \(error)"
+        }
+    }
+
     func loadRunDetail(_ id: String) async {
         guard let client, let idx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
         do {
             let detail = try await client.runDetail(runId: id)
+            // Snapshot fence: everything with seq <= lastSeq is reflected in this
+            // snapshot, so the stream resumes from here without gaps or dupes.
+            lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
             var task = liveTasks[idx]
             task.status = RunStatus(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode)
@@ -714,6 +750,12 @@ final class AppModel {
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.outputReadyState = detail.summary.outputReadyState
+            task.pendingInteractions = detail.pendingInteractions
+            task.waitingOnUser = detail.summary.waitingOnUser ?? !detail.pendingInteractions.isEmpty
+            if let route = detail.summary.route {
+                task.observedModel = route.observedModel
+                task.routeProof = route.verified == true ? .verified : .unverified
+            }
             task.requestedAccess = detail.summary.requestedAccess
             task.effectiveAccess = detail.summary.effectiveAccess
             task.externalContextPolicy = detail.summary.externalContextPolicy
@@ -983,11 +1025,15 @@ final class AppModel {
         guard streamTasks[runId] == nil else { return } // already attached; never restart a live stream
         streamTasks[runId] = Task { [weak self] in
             var attempt = 0
+            var lostStream = false
             while !Task.isCancelled {
                 guard let self, let client = self.client else { break }
                 let resumeFrom = self.lastEventIds[runId]
                 do {
                     for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
+                        // Snapshot fence: a concurrent detail load may already
+                        // reflect this event; never re-apply older sequence ids.
+                        if env.seq > 0, env.seq <= (self.lastEventIds[runId] ?? 0) { continue }
                         if env.seq > 0 { self.lastEventIds[runId] = env.seq }
                         self.apply(env, to: runId)
                     }
@@ -995,13 +1041,17 @@ final class AppModel {
                 } catch {
                     if Task.isCancelled { break }
                     attempt += 1
-                    if attempt > 5 { break }
+                    if attempt > 5 {
+                        lostStream = true
+                        break
+                    }
                     try? await Task.sleep(for: .seconds(min(Double(attempt) * 2.0, 10.0)))
                 }
             }
-            // Reconcile the row's final status from the canonical run list so a
-            // completed run never stays stuck on "Running".
-            await self?.reconcile(runId: runId)
+            // One reducer path for terminal reconciliation: re-snapshot the FULL
+            // detail (status + content together). A status-only patch is exactly
+            // the "Succeeded with no answer" bug class this replaced.
+            await self?.finalizeStream(runId: runId, lostStream: lostStream)
             self?.streamTasks[runId] = nil
             self?.lastEventIds[runId] = nil
         }
@@ -1009,25 +1059,59 @@ final class AppModel {
 
     /// Cancel every live stream (daemon/client about to be replaced).
     private func cancelAllStreams() {
+        globalStreamTask?.cancel()
+        globalStreamTask = nil
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
         lastEventIds.removeAll()
     }
 
-    private func reconcile(runId: String) async {
-        guard let client else { return }
-        let summary = try? await client.listRuns().first(where: { $0.runId == runId })
-        // Re-resolve the row index AFTER the await: the list may have changed.
+    /// Stream ended (terminal end frame or repeated failures): load the full
+    /// snapshot so status and content land atomically, then notify.
+    private func finalizeStream(runId: String, lostStream: Bool) async {
+        let before = liveTasks.first(where: { $0.id == runId })?.status
+        await loadRunDetail(runId)
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
-        let before = liveTasks[idx].status
-        if let summary {
-            liveTasks[idx].status = RunStatus(api: summary.state)
-        } else if liveTasks[idx].status.isActive {
+        if lostStream, liveTasks[idx].status.isActive {
             liveTasks[idx].status = .unknown
             liveTasks[idx].activity.append(ActivityEvent(.system, "Lost engine stream before a terminal status. Reconnect to refresh this run."))
         }
         liveTasks[idx].updatedAt = .now
-        Self.notifyTransition(from: before, to: liveTasks[idx].status, title: liveTasks[idx].title)
+        if let before {
+            Self.notifyTransition(from: before, to: liveTasks[idx].status, title: liveTasks[idx].title)
+        }
+    }
+
+    /// Global live-only multiplex: keeps the run LIST alive (new runs from the
+    /// CLI, terminal flips for rows without an attached detail stream). Per-run
+    /// streams remain the gap-free source for open rows.
+    private func startGlobalStream() {
+        globalStreamTask?.cancel()
+        globalStreamTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, let client = self.client else { break }
+                do {
+                    for try await env in client.globalEvents() {
+                        let runId = env.event["run_id"]?.stringValue ?? ""
+                        guard !runId.isEmpty else { continue }
+                        if !self.liveTasks.contains(where: { $0.id == runId }) {
+                            // A run this app has never seen (e.g. CLI-started).
+                            await self.refreshRuns()
+                            continue
+                        }
+                        let type = env.event["type"]?.stringValue ?? ""
+                        let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
+                        if self.streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" {
+                            await self.loadRunDetail(runId)
+                        }
+                    }
+                } catch {
+                    if Task.isCancelled { break }
+                }
+                guard !Task.isCancelled else { break }
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
     }
 
     /// Native notification when a live run reaches a state that wants the user's attention.
@@ -1129,9 +1213,60 @@ final class AppModel {
         } else if type == "output.ready" {
             t.outputReadyState = payload["state"]?.stringValue ?? "ready"
             shouldLoadDetail = true
+        } else if type == "interaction.requested" {
+            if let pending = Self.pendingInteraction(from: payload, runId: runId) {
+                t.pendingInteractions.removeAll { $0.interactionId == pending.interactionId }
+                t.pendingInteractions.append(pending)
+                t.waitingOnUser = true
+                let summary = pending.questions.map(\.question).joined(separator: " | ")
+                t.activity.append(ActivityEvent(.system, "Question: \(String(summary.prefix(200)))", at: .now))
+                Notifier.post(title: "Claudexor needs your answer", body: String(summary.prefix(120)))
+            }
+        } else if type == "interaction.answered" || type == "interaction.timeout" {
+            if let interactionId = payload["interaction_id"]?.stringValue {
+                t.pendingInteractions.removeAll { $0.interactionId == interactionId }
+            }
+            t.waitingOnUser = !t.pendingInteractions.isEmpty
+            t.activity.append(ActivityEvent(.system, type == "interaction.answered" ? "Answer delivered" : "Question timed out — continuing with assumptions", at: .now))
         } else {
             t.activity.append(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }
+    }
+
+    /// Decode a pending interaction from the interaction.requested event payload.
+    private static func pendingInteraction(from payload: JSONValue, runId: String) -> PendingInteraction? {
+        guard let interactionId = payload["interaction_id"]?.stringValue else { return nil }
+        var questions: [InteractionQuestion] = []
+        if case .array(let raw)? = payload["questions"] {
+            for q in raw {
+                guard let text = q["question"]?.stringValue, !text.isEmpty else { continue }
+                var options: [InteractionOption] = []
+                if case .array(let rawOptions)? = q["options"] {
+                    for o in rawOptions {
+                        guard let label = o["label"]?.stringValue, !label.isEmpty else { continue }
+                        options.append(InteractionOption(label: label, description: o["description"]?.stringValue))
+                    }
+                }
+                questions.append(InteractionQuestion(
+                    id: q["id"]?.stringValue ?? "q\(questions.count + 1)",
+                    question: text,
+                    header: q["header"]?.stringValue,
+                    options: options,
+                    multiSelect: q["multi_select"]?.boolValue ?? false
+                ))
+            }
+        }
+        guard !questions.isEmpty else { return nil }
+        return PendingInteraction(
+            interactionId: interactionId,
+            runId: runId,
+            attemptId: payload["attempt_id"]?.stringValue,
+            harnessId: payload["harness_id"]?.stringValue,
+            sourceTool: payload["source_tool"]?.stringValue,
+            questions: questions,
+            requestedAt: payload["requested_at"]?.stringValue ?? "",
+            timeoutAt: payload["timeout_at"]?.stringValue
+        )
     }
 
     private static func phase(for type: String) -> Phase? {

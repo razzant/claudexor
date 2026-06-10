@@ -118,4 +118,78 @@ import Testing
         #expect(discovery.baseURL.absoluteString == "http://127.0.0.1:12345")
         #expect(try discovery.readToken() == "secret-token")
     }
+
+    // MARK: SSE parser (the bytes.lines pitfall regression suite)
+
+    @Test func sseParserDispatchesFramesOnEmptyLines() {
+        var parser = SSEParser()
+        let wire = "id: 7\nevent: run.created\ndata: {\"a\":1}\n\nid: 8\nevent: output.ready\ndata: {\"b\":2}\n\n"
+        let frames = parser.feed(Array(wire.utf8))
+        #expect(frames.count == 2)
+        #expect(frames[0] == SSEFrame(id: 7, event: "run.created", data: "{\"a\":1}"))
+        #expect(frames[1] == SSEFrame(id: 8, event: "output.ready", data: "{\"b\":2}"))
+    }
+
+    @Test func sseParserHandlesChunkBoundariesMidLine() {
+        var parser = SSEParser()
+        var frames: [SSEFrame] = []
+        // Split a single frame across pathological chunk boundaries.
+        for chunk in ["id: 4", "2\nev", "ent: harness.event\nda", "ta: {\"x\":", "true}\n", "\n"] {
+            frames.append(contentsOf: parser.feed(Array(chunk.utf8)))
+        }
+        #expect(frames == [SSEFrame(id: 42, event: "harness.event", data: "{\"x\":true}")])
+    }
+
+    @Test func sseParserHandlesCRLFAndComments() {
+        var parser = SSEParser()
+        let wire = ": ping 123\r\nid: 1\r\nevent: end\r\ndata: {}\r\n\r\n"
+        let frames = parser.feed(Array(wire.utf8))
+        #expect(frames == [SSEFrame(id: 1, event: "end", data: "{}")])
+    }
+
+    @Test func sseParserJoinsMultiLineDataAndSkipsEmptyEvents() {
+        var parser = SSEParser()
+        // A comment-only block dispatches nothing; multi-line data joins with \n.
+        let frames = parser.feed(Array(": heartbeat\n\ndata: line1\ndata: line2\n\n".utf8))
+        #expect(frames.count == 1)
+        #expect(frames[0].data == "line1\nline2")
+        #expect(frames[0].event == "message")
+    }
+
+    @Test func sseParserCarriesLastSeenIdForward() {
+        var parser = SSEParser()
+        let frames = parser.feed(Array("id: 5\ndata: {\"a\":1}\n\ndata: {\"b\":2}\n\n".utf8))
+        #expect(frames.count == 2)
+        #expect(frames[0].id == 5)
+        // Per WHATWG, the last seen id persists for subsequent frames.
+        #expect(frames[1].id == 5)
+    }
+
+    // MARK: Interactive DTOs
+
+    @Test func runDetailDecodesLastSeqAndPendingInteractions() throws {
+        let json = """
+        {"summary":{"runId":"run-1","state":"running","waitingOnUser":true,
+          "route":{"requestedModel":null,"observedModel":"claude-opus-4-8","harnessId":"claude","verified":true}},
+         "lastSeq":17,
+         "pendingInteractions":[{"interactionId":"int-1","runId":"run-1","attemptId":"a01","harnessId":"claude",
+           "sourceTool":"AskUserQuestion","requestedAt":"t","timeoutAt":null,
+           "questions":[{"id":"q1","question":"Which?","header":"Pick","multi_select":true,
+             "options":[{"label":"A","description":"first"},{"label":"B","description":null}]}]}]}
+        """
+        let detail = try JSONDecoder().decode(RunDetail.self, from: Data(json.utf8))
+        #expect(detail.lastSeq == 17)
+        #expect(detail.summary.waitingOnUser == true)
+        #expect(detail.summary.route?.observedModel == "claude-opus-4-8")
+        #expect(detail.summary.route?.verified == true)
+        #expect(detail.pendingInteractions.count == 1)
+        let interaction = try #require(detail.pendingInteractions.first)
+        #expect(interaction.questions.first?.multiSelect == true)
+        #expect(interaction.questions.first?.options.map(\.label) == ["A", "B"])
+        // Legacy detail without the new fields stays decodable.
+        let legacy = #"{"summary":{"runId":"run-old","state":"succeeded"}}"#
+        let old = try JSONDecoder().decode(RunDetail.self, from: Data(legacy.utf8))
+        #expect(old.lastSeq == 0)
+        #expect(old.pendingInteractions.isEmpty)
+    }
 }
