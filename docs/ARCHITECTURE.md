@@ -279,6 +279,20 @@ forwarding into a running harness is not a v0.7 surface; the former
 `/runs/:id/input` endpoint and `RunInput` DTO were removed rather than left as
 an always-`unsupported` stub.
 
+A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
+change, critical-risk diff) is a terminal `blocked` state whose findings appear
+in the Review Queue. In v0.7 the queue is a read-only projection: there is no
+server endpoint yet to accept/override a NEEDS_HUMAN finding and unblock the
+run, so the human decision path is "review the findings, then re-run with the
+decision reflected" (for example narrower scope or explicit gates). A typed
+decision endpoint is future work; UI must not fake local accept/unblock state.
+
+Budget caps: the engine enforces `max_usd` per run (explicit run input, then
+surface defaults, then the global `budget.max_usd_per_run`). The configured
+`budget.max_usd_per_day` is a display/threshold value for budget UI (engine-side
+day ledgers require persistent cross-run spend tracking, which does not exist
+yet); it must not be presented as an enforced engine cap.
+
 Run detail includes terminal state and output-ready state. `summary.state` is the
 daemon terminal/lifecycle state. `summary.outputReadyState` is
 `pending | finalizing | ready | diagnostic` and is derived from primary output

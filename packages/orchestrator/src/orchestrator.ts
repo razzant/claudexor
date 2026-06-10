@@ -405,7 +405,9 @@ export class Orchestrator {
         continue;
       }
       const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
-      const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? "workspace_write";
+      // Mirror buildContract: the trust-config default decides write-mode access
+      // when the run does not request a profile explicitly.
+      const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? this.config(input.repoRoot).trust.access_default;
       const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
       const webSupport = manifest.capabilities.web_policy;
       // Web policy is a capability: `off` needs an enforceable off switch and a
@@ -665,7 +667,11 @@ export class Orchestrator {
       },
       budget: {
         portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
-        max_usd: input.maxUsd ?? this.deps.maxUsd ?? null,
+        // Run cap precedence: explicit run input > surface deps > the user's
+        // configured global per-run default. (max_usd_per_day is a UI budget
+        // display threshold; engine-side day ledgers need persistent spend
+        // tracking and are documented as such.)
+        max_usd: input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
       },
     });
   }
@@ -1560,13 +1566,17 @@ export class Orchestrator {
     let lastDiffStable = true;
 
     try {
+      // The contract's ENGINE-COMPUTED effective profile drives the envelope and
+      // every attempt spec (parity with runRace); telemetry must never claim an
+      // access level the envelope did not actually run with.
+      const convergenceAccess = contract.access.effective_profile;
       envelope = await wsm.create({
         taskId,
         attemptId: "converge",
         baseRef: contract.repo.base_ref,
         dirtyPolicy: "snapshot",
         inPlace: input.inPlace ?? false,
-        accessProfile: input.access,
+        accessProfile: convergenceAccess,
       });
       for (;;) {
         if (input.signal?.aborted) break;
@@ -1622,7 +1632,7 @@ export class Orchestrator {
             paths,
             wsm,
             ledger,
-            input.access ?? "workspace_write",
+            convergenceAccess,
             (ev) => {
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);

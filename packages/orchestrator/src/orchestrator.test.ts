@@ -880,4 +880,25 @@ describe("Orchestrator", () => {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
     }
   });
+
+  it("applies the configured global max_usd_per_run as the default run cap", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-budgetcfg-"));
+    writeFileSync(join(configDir, "config.yaml"), "budget:\n  max_usd_per_run: 0.005\n");
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const orch = new Orchestrator({ registry, reviewers: reviewers() });
+      // No explicit --max-usd: the configured default cap must bind (each fake
+      // candidate costs 0.01 > 0.005, so the wave settles into the hard tier
+      // and queued slots are denied — same shape as the explicit-cap test).
+      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 6 });
+      const contract = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+      expect(contract).toContain("max_usd: 0.005");
+      const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+      expect(primary.length).toBeLessThan(6);
+    } finally {
+      delete process.env.CLAUDEXOR_CONFIG_DIR;
+    }
+  });
 });
