@@ -154,7 +154,13 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const args = ["run", "--format", "json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   args.push(spec.prompt);
-  const env: Record<string, string | null | undefined> = { ...spec.env };
+  const env: Record<string, string | null | undefined> = {
+    ...spec.env,
+    // Inherited base-URL overrides could redirect traffic carrying the provider keys below.
+    OPENAI_BASE_URL: null,
+    ANTHROPIC_BASE_URL: null,
+    OPENROUTER_BASE_URL: null,
+  };
   // Doctor/run symmetry: resolve the key from the same sources doctor credits
   // (spec env first, then process env, then stored secrets) so a doctor "ok"
   // cannot precede a guaranteed-unauthenticated run.

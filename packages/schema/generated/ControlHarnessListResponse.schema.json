@@ -404,6 +404,14 @@
                             ],
                             "default": "none"
                           },
+                          "max_turns": {
+                            "type": "boolean",
+                            "default": false
+                          },
+                          "tool_lists": {
+                            "type": "boolean",
+                            "default": false
+                          },
                           "quota_signal": {
                             "$ref": "#/definitions/ControlHarnessListResponse/properties/harnesses/items/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
                             "default": "unknown"

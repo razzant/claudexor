@@ -69,11 +69,11 @@ Unsigned artifacts are named `Claudexor-<version>-unsigned.zip` and
 `Claudexor-<version>-unsigned.dmg`, with sibling `.sha256` checksum files. They
 are beta/local smoke artifacts:
 Gatekeeper can block them on other Macs until a signed/notarized build is
-produced. The public GitHub Release assets for v0.6.0 are built by
+produced. The public GitHub Release assets are built by
 `.github/workflows/release.yml` on a macOS runner from the pushed tag/sha, then
 attached to the draft release with `GITHUB_TOKEN`. Do not upload local
-`apps/macos/dist` artifacts as final release assets unless Anton explicitly
-re-approves that fallback. Release notes must also call out the macOS 26 minimum.
+`apps/macos/dist` artifacts as final release assets. Release notes must also
+call out the macOS 26 minimum.
 
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not

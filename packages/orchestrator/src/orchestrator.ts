@@ -23,6 +23,7 @@ import type {
 import {
   HarnessRunSpec,
   ModeKind as ModeKindSchema,
+  ReviewFinding as ReviewFindingSchema,
   RunTelemetry as RunTelemetrySchema,
   SCHEMA_VERSION,
   TaskContract as TaskContractSchema,
@@ -49,7 +50,8 @@ import {
 } from "@claudexor/review";
 import { type CandidateEvidence, arbitrate } from "@claudexor/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudexor/synthesis";
-import { BudgetLedger, observationFromEvent } from "@claudexor/budget";
+import { BudgetLedger, type RouterCandidate, observationFromEvent, promptFingerprint, selectHarness } from "@claudexor/budget";
+import { classifyRisk, requireHuman, reviewDepthForRisk } from "@claudexor/policy";
 import {
   appendLine,
   containsSecretLikeToken,
@@ -187,10 +189,27 @@ interface AttemptTelemetry {
   web: WebEvidenceState;
 }
 
-/** A routed candidate adapter plus its manifest-declared web policy support. */
+/** User-level per-harness defaults (from the global config) applied at route time. */
+interface HarnessRouteSettings {
+  defaultModel: string | null;
+  effort: EffortHint | null;
+  web: ExternalContextPolicy | null;
+  maxUsd: number | null;
+  maxTurns: number | null;
+  maxRounds: number | null;
+  toolsAllow: string[];
+  toolsDeny: string[];
+  fallbackModel: string | null;
+}
+
+/** A routed candidate adapter plus its manifest capabilities and user settings. */
 interface RoutedAdapter {
   adapter: HarnessAdapter;
   webSupport: WebPolicySupport;
+  providerFamily: ProviderFamily;
+  supportsMaxTurns: boolean;
+  supportsToolLists: boolean;
+  settings: HarnessRouteSettings | null;
 }
 
 const LABELS = "ABCDEFGHIJ".split("");
@@ -198,6 +217,21 @@ const NO_PROJECT_ROOT = noProjectRepoRoot();
 const REVIEW_EVIDENCE_DIRNAME = ".claudexor-review-evidence";
 /** Concurrency cap for parallel candidates/explorers (locked decision: min(n, 4)). */
 const MAX_PARALLEL_CANDIDATES = 4;
+
+/** Changed paths and +/- line counts parsed from a unified git diff. */
+function diffStats(diff: string): { paths: string[]; additions: number; deletions: number } {
+  const paths: string[] = [];
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const m = / b\/(.+)$/.exec(line);
+      if (m?.[1]) paths.push(m[1]);
+    } else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+  }
+  return { paths, additions, deletions };
+}
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
 async function runBounded<T>(items: T[], limit: number, work: (item: T, index: number) => Promise<void>): Promise<void> {
@@ -329,11 +363,12 @@ export class Orchestrator {
     };
   }
 
-  private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<RoutedAdapter[]> {
+  private async resolveCandidateAdapters(input: RunInput, intent: Intent, ledger?: BudgetLedger): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
     const statuses = await this.gateway.statusAll({ cwd: input.repoRoot });
     const statusById = new Map(statuses.map((s) => [s.id, s]));
+    const harnessSettings = this.config(input.repoRoot)?.global.harnesses ?? {};
     if (!ids || ids.length === 0) {
       ids = statuses
         .filter((s) => s.manifest?.kind !== "fake" && s.enabledIntents.includes(intent))
@@ -343,9 +378,6 @@ export class Orchestrator {
           "no available harness for this mode; install codex/claude/cursor/opencode, or pass --harness",
         );
       }
-    }
-    if (input.primaryHarness) {
-      ids = [input.primaryHarness, ...ids.filter((id) => id !== input.primaryHarness)];
     }
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
     const webRequired = policy === "cached" || policy === "live";
@@ -357,6 +389,15 @@ export class Orchestrator {
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }
+      // Per-harness settings: a user-disabled harness never routes. Explicit
+      // selection of a disabled harness fails loudly instead of silently running.
+      const cfgEntry = harnessSettings[id];
+      if (cfgEntry && cfgEntry.enabled === false) {
+        const why = `${id} is disabled in settings (harnesses.${id}.enabled=false)`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
       const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
       const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? "workspace_write";
       const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
@@ -374,18 +415,142 @@ export class Orchestrator {
         continue;
       }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
-      if (status.enabledIntents.includes(intent) && accessSupported) pool.push({ adapter, webSupport });
-      else dropped.push(`${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`);
+      if (status.enabledIntents.includes(intent) && accessSupported) {
+        pool.push({
+          adapter,
+          webSupport,
+          providerFamily: manifest.provider_family,
+          supportsMaxTurns: manifest.capabilities.max_turns,
+          supportsToolLists: manifest.capabilities.tool_lists,
+          settings: cfgEntry
+            ? {
+                defaultModel: cfgEntry.default_model,
+                effort: cfgEntry.effort,
+                web: cfgEntry.web === "auto" ? null : cfgEntry.web,
+                maxUsd: cfgEntry.max_usd,
+                maxTurns: cfgEntry.max_turns,
+                maxRounds: cfgEntry.max_rounds,
+                toolsAllow: cfgEntry.tools_allow,
+                toolsDeny: cfgEntry.tools_deny,
+                fallbackModel: cfgEntry.fallback_model,
+              }
+            : null,
+        });
+      } else dropped.push(`${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`);
     }
     if (pool.length === 0) {
       throw new HarnessUnavailableError(
         `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
       );
     }
-    const n = input.n ?? pool.length;
+    const ordered = this.orderPool(pool, input, statusById, ledger);
+    const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
-    for (let i = 0; i < n; i++) out.push(pool[i % pool.length] as RoutedAdapter);
+    for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
     return out;
+  }
+
+  /**
+   * Order the eligible pool by portfolio routing utility (budget router): an
+   * explicit user pool keeps the user's order; an explicit primary harness is
+   * always pinned first. Cross-family diversity is encouraged for later slots.
+   */
+  private orderPool(
+    pool: RoutedAdapter[],
+    input: RunInput,
+    statusById: Map<string, { manifest?: { auth_modes?: string[] } | null }>,
+    ledger?: BudgetLedger,
+  ): RoutedAdapter[] {
+    let ordered = pool;
+    const explicitPool = Boolean(input.harnesses && input.harnesses.length > 0);
+    if (!explicitPool && pool.length > 1) {
+      const routeLedger = ledger ?? new BudgetLedger();
+      const portfolio = input.portfolio ?? this.deps.portfolio ?? "subscription-first";
+      const byId = new Map(pool.map((r) => [r.adapter.id, r]));
+      const remaining: RouterCandidate[] = pool.map((r) => {
+        const authModes = statusById.get(r.adapter.id)?.manifest?.auth_modes ?? [];
+        return {
+          harnessId: r.adapter.id,
+          providerFamily: r.providerFamily,
+          available: true,
+          authMode: authModes.includes("local_session") ? "local_session" : authModes.includes("api_key") ? "api_key" : "unknown",
+        };
+      });
+      const ranked: RoutedAdapter[] = [];
+      while (remaining.length > 0) {
+        const best = selectHarness(remaining, {
+          portfolio,
+          ledger: routeLedger,
+          diversityAgainst: ranked.map((r) => r.providerFamily),
+        });
+        if (!best) break; // cooldowns/zero-utility: keep residual pool order
+        const idx = remaining.findIndex((c) => c.harnessId === best.harnessId);
+        remaining.splice(idx, 1);
+        const routed = byId.get(best.harnessId);
+        if (routed) ranked.push(routed);
+      }
+      for (const c of remaining) {
+        const routed = byId.get(c.harnessId);
+        if (routed) ranked.push(routed);
+      }
+      ordered = ranked;
+    }
+    if (input.primaryHarness) {
+      const primary = ordered.find((r) => r.adapter.id === input.primaryHarness);
+      if (primary) ordered = [primary, ...ordered.filter((r) => r !== primary)];
+    }
+    return ordered;
+  }
+
+  /**
+   * Lazy ContextPack (Q13): built ONLY for the read-only report modes
+   * (explore/plan/readonly_audit) that consume it. Persisted to
+   * context/context_pack.yaml, announced via `context.pack.created`, and
+   * rendered as a compact scope-atlas prompt section. Agent modes skip it —
+   * candidates explore the live tree inside their own envelopes.
+   */
+  private async lazyContextSection(
+    input: RunInput,
+    contract: TaskContract,
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+    log: EventLog,
+  ): Promise<string> {
+    if (input.repoRoot === NO_PROJECT_ROOT || input.contextMode === "off") return "";
+    const pack = await buildContextPack(input.repoRoot, contract);
+    store.writeYaml(join(paths.contextDir, "context_pack.yaml"), pack);
+    log.emit("context.pack.created", {
+      hash: pack.hash,
+      files: pack.atlas.length,
+      estimated_tokens: pack.token_budget?.estimated_used ?? null,
+    });
+    const readable = pack.atlas.filter((e) => e.disposition === "full" || e.disposition === "included");
+    const omitted = pack.atlas.length - readable.length;
+    const lines = readable.slice(0, 200).map((e) => `- ${e.path}${e.bytes !== undefined ? ` (${e.bytes}B)` : ""}`);
+    if (readable.length > 200) lines.push(`- … ${readable.length - 200} more readable paths (see context/context_pack.yaml)`);
+    return [
+      "",
+      "## Repository scope atlas (compact)",
+      `Tracked paths: ${pack.atlas.length} (${omitted} omitted/excluded are listed in context/context_pack.yaml). Read files directly for content; this atlas is the navigation map.`,
+      ...lines,
+      "",
+    ].join("\n");
+  }
+
+  /**
+   * Ledger a routed harness reserves from: harnesses with a configured
+   * `max_usd` get a child sub-ledger (spend rolls up to the run cap), so one
+   * harness exhausting its own budget cannot drain the whole run.
+   */
+  private harnessLedger(map: Map<string, BudgetLedger>, parent: BudgetLedger, routed: RoutedAdapter): BudgetLedger {
+    const cap = routed.settings?.maxUsd;
+    if (!cap || cap <= 0) return parent;
+    let child = map.get(routed.adapter.id);
+    if (!child) {
+      child = parent.child({ maxUsd: cap });
+      map.set(routed.adapter.id, child);
+    }
+    return child;
   }
 
   /**
@@ -431,7 +596,8 @@ export class Orchestrator {
   }
 
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
-    const cfg = this.projectConfig(input.repoRoot);
+    const resolvedCfg = this.config(input.repoRoot);
+    const cfg = resolvedCfg.project;
     // Deterministic gate commands come from explicit run input first, then the
     // versioned project config. Without these, gateSpecs is empty and convergence
     // is review-only; with them, convergence is test-driven.
@@ -443,7 +609,15 @@ export class Orchestrator {
         return { id: `gate-${i + 1}`, command, required: true };
       });
     const readOnlyMode = mode === "ask" || mode === "explore" || mode === "plan" || mode === "readonly_audit";
-    const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : "workspace_write");
+    const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
+    // TrustConfig is USER-LEVEL only (versioned repo config must never
+    // self-grant sensitive powers): unsandboxed full access requires an
+    // explicit allow in ~/.claudexor trust settings — loud error, no downgrade.
+    if (requestedAccess === "full" && !resolvedCfg.trust.allow_full_access) {
+      throw new Error(
+        "access profile 'full' requires allow_full_access=true in the user-level trust config (~/.claudexor/config.yaml trust section); refusing to run unsandboxed",
+      );
+    }
     // Effective access is COMPUTED by the engine, never echoed from a client:
     // read-only modes clamp to readonly regardless of the request.
     const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
@@ -507,9 +681,59 @@ export class Orchestrator {
     return { runId, taskId, mode, status: "cancelled", winner: null, runDir, summary: "run cancelled", candidates };
   }
 
+  /**
+   * Per-harness settings applied to one route's run spec (model/effort/web
+   * defaults, max_turns, tool lists). Knobs the manifest does not support are
+   * RETURNED as ignored reasons (disclosed by the caller), never silently sent.
+   */
+  private routeSpecKnobs(
+    routed: RoutedAdapter,
+    contractPolicy: ExternalContextPolicy,
+    modelHint?: string,
+    effortHint?: EffortHint,
+  ): {
+    model: string | null;
+    effort: EffortHint | null;
+    webPolicy: ExternalContextPolicy;
+    maxTurns: number | null;
+    toolsAllow: string[];
+    toolsDeny: string[];
+    ignored: string[];
+  } {
+    const s = routed.settings;
+    const ignored: string[] = [];
+    let maxTurns: number | null = null;
+    let toolsAllow: string[] = [];
+    let toolsDeny: string[] = [];
+    if (s?.maxTurns) {
+      if (routed.supportsMaxTurns) maxTurns = s.maxTurns;
+      else ignored.push(`max_turns=${s.maxTurns} (manifest capabilities.max_turns=false for ${routed.adapter.id})`);
+    }
+    if ((s?.toolsAllow.length ?? 0) > 0 || (s?.toolsDeny.length ?? 0) > 0) {
+      if (routed.supportsToolLists) {
+        toolsAllow = s?.toolsAllow ?? [];
+        toolsDeny = s?.toolsDeny ?? [];
+      } else {
+        ignored.push(`tools_allow/tools_deny (manifest capabilities.tool_lists=false for ${routed.adapter.id})`);
+      }
+    }
+    // The per-harness web default applies only when the run-level policy is the
+    // default "auto"; an explicit run policy always wins.
+    const webPolicy = contractPolicy === "auto" && s?.web ? s.web : contractPolicy;
+    return {
+      model: modelHint ?? s?.defaultModel ?? null,
+      effort: effortHint ?? s?.effort ?? null,
+      webPolicy,
+      maxTurns,
+      toolsAllow,
+      toolsDeny,
+      ignored,
+    };
+  }
+
   /** Run one candidate inside an already-created envelope. Never creates/disposes the envelope. */
   private async runCandidateInEnvelope(
-    adapter: HarnessAdapter,
+    routed: RoutedAdapter,
     envelope: WorkspaceEnvelope,
     attemptId: string,
     label: string,
@@ -528,16 +752,24 @@ export class Orchestrator {
     log?: EventLog,
     effectiveWebMode?: ExternalContextPolicy,
   ): Promise<CandidateRun> {
+    const adapter = routed.adapter;
+    const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelHint, effortHint);
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
       prompt,
       cwd: envelope.worktree_path,
       access,
-      external_context_policy: contract.external_context.policy,
-      tool_permission_policy: contract.tool_permission_policy,
-      model_hint: modelHint ?? null,
-      effort_hint: effortHint ?? null,
+      external_context_policy: knobs.webPolicy,
+      tool_permission_policy: {
+        web: knobs.webPolicy,
+        allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
+        deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
+      },
+      model_hint: knobs.model,
+      effort_hint: knobs.effort,
+      max_turns: knobs.maxTurns,
+      max_usd: routed.settings?.maxUsd ?? null,
       env: wsm.envFor(envelope),
     });
     if (signal) spec.extra["abortSignal"] = signal;
@@ -547,9 +779,9 @@ export class Orchestrator {
     let harnessErrored = false;
     const errors: string[] = [];
     const telemetry = createAttemptTelemetry(
-      contract.external_context.policy,
-      contract.external_context.web_required,
-      effectiveWebMode ?? contract.external_context.policy,
+      knobs.webPolicy,
+      contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live",
+      effectiveWebMode ?? knobs.webPolicy,
     );
     const onAbort = () => {
       void adapter.cancel?.(spec.session_id)?.catch(() => {});
@@ -696,25 +928,9 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    try {
-      const contextPack = await buildContextPack(input.repoRoot, contract);
-      store.writeYaml(join(paths.contextDir, "context_pack.yaml"), contextPack);
-    } catch (err) {
-      const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "context", category: "project", safeMessage: message, runDir: paths.root });
-      log.emit("run.failed", { status: "failed", phase: "context", error: message, failure_ref: "final/failure.yaml" });
-      return {
-        runId,
-        taskId,
-        mode,
-        status: "failed",
-        winner: null,
-        runDir: paths.root,
-        summary: `context failed: ${message}`,
-        candidates: [],
-      };
-    }
+    // ContextPack is LAZY (Q13): agent/race candidates explore the live tree
+    // themselves inside their envelopes; only the read-only report modes
+    // (explore/plan/readonly_audit) build and attach the compact atlas.
 
     const reviewDir = join(paths.root, "review-evidence");
     writeEvidencePacket(reviewDir, {
@@ -725,7 +941,7 @@ export class Orchestrator {
 
     let adapters: RoutedAdapter[];
     try {
-      adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode));
+      adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode), ledger);
     } catch (err) {
       const message = safeErrorMessage(err);
       store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
@@ -745,6 +961,7 @@ export class Orchestrator {
     }
     const reviewers = await this.resolveReviewers(input.repoRoot);
     const reviewVerified = this.routeVerified(reviewers);
+    const harnessLedgers = new Map<string, BudgetLedger>();
 
     const reviewEnvelopes: WorkspaceEnvelope[] = [];
     const disposeReviewEnvelopes = async () => {
@@ -767,7 +984,8 @@ export class Orchestrator {
     for (let i = 0; i < adapters.length; i++) {
       const routed = adapters[i] as RoutedAdapter;
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
-      const lease = ledger.reserve({ taskId, attemptId, intent: this.candidateIntent(mode), harnessId: routed.adapter.id });
+      // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
+      const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({ taskId, attemptId, intent: this.candidateIntent(mode), harnessId: routed.adapter.id });
       log.emit("budget.lease.created", { granted: lease.granted, reason: lease.reason, attempt_id: attemptId, harness_id: routed.adapter.id });
       if (!lease.granted) {
         budgetStopped = true;
@@ -777,25 +995,32 @@ export class Orchestrator {
     }
 
     const runsBySlot = new Array<CandidateRun | undefined>(slots.length);
+    const slotLedger = (slot: CandidateSlot) => this.harnessLedger(harnessLedgers, ledger, slot.routed);
     const runSlot = async (slot: CandidateSlot, slotIdx: number): Promise<void> => {
       if (input.signal?.aborted) {
-        ledger.cancel(slot.leaseId);
+        slotLedger(slot).cancel(slot.leaseId);
         return;
       }
       // Leases are granted upfront (before spend exists); a worker still
       // re-checks the circuit breaker so queued slots beyond the parallel wave
       // do not start after earlier candidates already blew the hard cap.
-      if (ledger.tier() === "hard") {
-        ledger.cancel(slot.leaseId);
+      if (slotLedger(slot).tier() === "hard") {
+        slotLedger(slot).cancel(slot.leaseId);
         log.emit("budget.lease.created", { granted: false, reason: "budget exhausted (hard cap reached)", attempt_id: slot.attemptId, harness_id: slot.routed.adapter.id, cancelled_after_grant: true });
         budgetStopped = true;
         return;
       }
       const adapter = slot.routed.adapter;
-      const effectiveWeb = this.discloseWebUpgrade(log, slot.routed, contract.external_context.policy, slot.attemptId);
+      const knobs = this.routeSpecKnobs(slot.routed, contract.external_context.policy, input.model, input.effort);
+      const effectiveWeb = this.discloseWebUpgrade(log, slot.routed, knobs.webPolicy, slot.attemptId);
       let envelope: WorkspaceEnvelope | undefined;
       try {
-        log.emit("harness.started", { harness_id: adapter.id, attempt_id: slot.attemptId, external_context_policy: contract.external_context.policy });
+        log.emit("harness.started", {
+          harness_id: adapter.id,
+          attempt_id: slot.attemptId,
+          external_context_policy: knobs.webPolicy,
+          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+        });
         envelope = await wsm.create({
           taskId,
           attemptId: slot.attemptId,
@@ -804,7 +1029,7 @@ export class Orchestrator {
           accessProfile: candidateAccess,
         });
         const run = await this.runCandidateInEnvelope(
-          adapter,
+          slot.routed,
           envelope,
           slot.attemptId,
           slot.label,
@@ -827,7 +1052,7 @@ export class Orchestrator {
           log,
           effectiveWeb,
         );
-        ledger.settle(slot.leaseId, run.cost);
+        slotLedger(slot).settle(slot.leaseId, run.cost);
         log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: slot.attemptId,
@@ -841,7 +1066,7 @@ export class Orchestrator {
       } catch (err) {
         // Envelope creation (or another pre-stream step) failed; stream errors
         // are absorbed inside runCandidateInEnvelope with their real cost.
-        ledger.settle(slot.leaseId, 0);
+        slotLedger(slot).settle(slot.leaseId, 0);
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: slot.attemptId, status: "failed", error: safeErrorMessage(err) });
         runsBySlot[slotIdx] = {
           attemptId: slot.attemptId,
@@ -853,7 +1078,7 @@ export class Orchestrator {
           errored: true,
           costEstimated: false,
           errors: [safeErrorMessage(err)],
-          telemetry: createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb),
+          telemetry: createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required, effectiveWeb),
         };
       } finally {
         if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
@@ -931,7 +1156,7 @@ export class Orchestrator {
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot", accessProfile: candidateAccess });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
-            synthAdapter,
+            synthRouted,
             envelope,
             "synth",
             "Synthesis",
@@ -1101,6 +1326,60 @@ export class Orchestrator {
   }
 
   /** Review a set of runs and return their evidence (with finalReviewClean + review_verified caveat). */
+  /**
+   * Deterministic policy findings from the typed diff (no LLM, no regex over
+   * prose): protected-path changes and critical-risk diffs escalate NEEDS_HUMAN;
+   * a high-risk diff without a cross-family panel escalates as well. Each
+   * finding cites the matched files as evidence (BIBLE: evidence beats summaries).
+   */
+  private policyFindings(
+    run: CandidateRun,
+    reviewVerified: boolean,
+  ): { findings: ReviewFinding[]; risk: { level: string; reasons: string[]; changedFiles: number } } {
+    const stats = diffStats(run.diff);
+    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions });
+    const findings: ReviewFinding[] = [];
+    const reviewer = { harness_id: "policy", requested_model: null, requested_effort: null, observed_model: null, route_proof_status: "verified" as const };
+    const evidenceFor = (reasons: string[]) => ({
+      files: stats.paths.filter((p) => reasons.some((r) => r.includes(p))).map((path) => ({ path, lines: null })),
+    });
+    const human = requireHuman(stats.paths);
+    if (human.required) {
+      findings.push(ReviewFindingSchema.parse({
+        id: newId("find"),
+        severity: "NEEDS_HUMAN",
+        category: "security",
+        claim: `protected-path change requires human approval: ${human.reasons.join("; ")}`,
+        evidence: evidenceFor(human.reasons),
+        reviewer,
+        status: "accepted",
+      }));
+    }
+    const depth = reviewDepthForRisk(risk.level as never);
+    if (depth.humanApproval) {
+      findings.push(ReviewFindingSchema.parse({
+        id: newId("find"),
+        severity: "NEEDS_HUMAN",
+        category: "security",
+        claim: `critical-risk diff requires human approval: ${risk.reasons.join("; ")}`,
+        evidence: evidenceFor(risk.reasons),
+        reviewer,
+        status: "accepted",
+      }));
+    } else if (depth.crossFamily && !reviewVerified) {
+      findings.push(ReviewFindingSchema.parse({
+        id: newId("find"),
+        severity: "NEEDS_HUMAN",
+        category: "architecture",
+        claim: `high-risk diff requires a cross-family review panel (>=2 provider families), which is not available: ${risk.reasons.join("; ")}`,
+        evidence: evidenceFor(risk.reasons),
+        reviewer,
+        status: "accepted",
+      }));
+    }
+    return { findings, risk: { level: risk.level, reasons: risk.reasons, changedFiles: stats.paths.length } };
+  }
+
   private async reviewRuns(
     runs: CandidateRun[],
     reviewers: ReviewerSpec[],
@@ -1142,8 +1421,11 @@ export class Orchestrator {
       }
       this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
       const revalidated = await revalidateFindings(result.findings);
-      const inconclusive = revalidated.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
-      const noBlockers = !revalidated.some((f) => isBlocking(f));
+      // Typed policy gate (risk + protected paths) merges with reviewer findings.
+      const policy = this.policyFindings(run, reviewVerified);
+      const allFindings = [...policy.findings, ...revalidated];
+      const inconclusive = allFindings.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
+      const noBlockers = !allFindings.some((f) => isBlocking(f));
       const reviewClean = result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
       store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
         attempt_id: run.attemptId,
@@ -1153,11 +1435,12 @@ export class Orchestrator {
         healthy_providers: result.healthyProviders,
         verified_providers: result.distinctProviders,
         reviewer_requests: result.reviewerRequests,
-        findings: revalidated,
+        risk: policy.risk,
+        findings: allFindings,
         route_proofs: result.routeProofs,
       });
-      for (const f of revalidated) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
-      evidences.push(this.toEvidence(run, contract, revalidated, reviewClean, reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified));
+      for (const f of allFindings) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
+      evidences.push(this.toEvidence(run, contract, allFindings, reviewClean, reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified));
     }
     return evidences;
   }
@@ -1267,6 +1550,7 @@ export class Orchestrator {
     const stallThreshold = mode === "until_clean" ? 4 : 2;
     const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.adapter.id));
     const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    const harnessLedgers = new Map<string, BudgetLedger>();
     let lastDiffStable = true;
 
     try {
@@ -1282,11 +1566,6 @@ export class Orchestrator {
         if (input.signal?.aborted) break;
         attempt += 1;
         const attemptId = `a${String(attempt).padStart(2, "0")}`;
-        const lease = ledger.reserve({ taskId, attemptId, intent: "repair", harnessId: adapter.id });
-        if (!lease.granted) {
-          exhausted = true;
-          break;
-        }
 
         // Repair prompts must include the RUNTIME errors that actually failed the
         // previous attempt (tool/web errors), not only the review findings —
@@ -1299,12 +1578,35 @@ export class Orchestrator {
             ? input.prompt
             : `${input.prompt}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}${runtimeErrors}`;
 
-        const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
+        // Loop detection (budget router): the 3rd identical repair prompt means
+        // findings/errors are not changing — stop burning paid attempts.
+        const fingerprint = promptFingerprint(prompt);
+        ledger.recordPrompt(fingerprint);
+        if (ledger.isLoop(fingerprint)) {
+          log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "loop_detected", fingerprint });
+          exhausted = true;
+          break;
+        }
+
+        // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
+        const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({ taskId, attemptId, intent: "repair", harnessId: adapter.id });
+        if (!lease.granted) {
+          exhausted = true;
+          break;
+        }
+
+        const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, input.model, input.effort);
+        const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
         let run: CandidateRun;
         try {
-          log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
+          log.emit("harness.started", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            external_context_policy: knobs.webPolicy,
+            ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+          });
           run = await this.runCandidateInEnvelope(
-            adapter,
+            routed,
             envelope,
             attemptId,
             `Attempt ${attempt}`,
@@ -1327,7 +1629,7 @@ export class Orchestrator {
             log,
             effectiveWeb,
           );
-          ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+          this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", run.cost);
           log.emit("harness.completed", {
             harness_id: adapter.id,
             attempt_id: attemptId,
@@ -1338,7 +1640,7 @@ export class Orchestrator {
         } catch (err) {
           // Envelope/setup failure before the stream; stream errors are absorbed
           // inside runCandidateInEnvelope with their real accumulated cost.
-          ledger.settle(lease.lease?.lease_id ?? "", 0);
+          this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", 0);
           log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "failed", error: safeErrorMessage(err) });
           run = {
             attemptId,
@@ -1350,7 +1652,7 @@ export class Orchestrator {
             errored: true,
             costEstimated: false,
             errors: [safeErrorMessage(err)],
-            telemetry: createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb),
+            telemetry: createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required, effectiveWeb),
           };
         }
         lastRun = run;
@@ -1373,7 +1675,10 @@ export class Orchestrator {
         this.cleanupReviewEvidenceDir(candidateReviewEvidenceDir, candidateReviewCwd);
         actualReviewVerified = reviewVerified && reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified;
         const revalidated = await revalidateFindings(reviewResult.findings);
-        lastFindings = revalidated;
+        // Typed policy gate (risk + protected paths) merges with reviewer findings.
+        const policy = this.policyFindings(run, actualReviewVerified);
+        const allFindings = [...policy.findings, ...revalidated];
+        lastFindings = allFindings;
         store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
           attempt_id: attemptId,
           review_verified: actualReviewVerified,
@@ -1382,11 +1687,12 @@ export class Orchestrator {
           healthy_providers: reviewResult.healthyProviders,
           verified_providers: reviewResult.distinctProviders,
           reviewer_requests: reviewResult.reviewerRequests,
-          findings: revalidated,
+          risk: policy.risk,
+          findings: allFindings,
           route_proofs: reviewResult.routeProofs,
         });
-        const inconclusive = revalidated.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
-        const finalReviewClean = reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified && !inconclusive && !revalidated.some((f) => isBlocking(f));
+        const inconclusive = allFindings.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
+        const finalReviewClean = reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified && !inconclusive && !allFindings.some((f) => isBlocking(f));
         lastFinalReviewClean = finalReviewClean;
 
         // Measure diff stability instead of asserting it: the tree must not have
@@ -1398,7 +1704,7 @@ export class Orchestrator {
         const conv = evaluateConvergence({
           predicate: contract.convergence,
           gates: run.errored ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed", duration_ms: 0, required: true }] : run.gates,
-          findings: revalidated,
+          findings: allFindings,
           finalReviewClean,
           diffStableAfterReview,
         });
@@ -1425,7 +1731,10 @@ export class Orchestrator {
           exhausted = true; // quota exhausted across all harnesses
           break;
         }
-        if (maxAttempts !== null && attempt >= maxAttempts) break;
+        // until_clean honors a user-configured per-harness round cap; an explicit
+        // --attempts cap (max_attempts mode) always wins when set.
+        const roundCap = maxAttempts ?? routed.settings?.maxRounds ?? null;
+        if (roundCap !== null && attempt >= roundCap) break;
         if (readiness.isStalled(sig, stallThreshold)) {
           if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
             adapterIdx = (adapterIdx + 1) % adapterPool.length;
@@ -1564,6 +1873,18 @@ export class Orchestrator {
         candidates: [],
       };
     }
+    // Lazy ContextPack: planners get the compact scope atlas (read-only modes only).
+    let contextSection = "";
+    try {
+      contextSection = await this.lazyContextSection(input, contract, store, paths, log);
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
+      writeFailure(store, paths, { phase: "context", category: "project", safeMessage: message, runDir: paths.root });
+      log.emit("run.failed", { status: "failed", phase: "context", error: message, failure_ref: "final/failure.yaml" });
+      return { runId, taskId, mode: "plan", status: "failed", winner: null, runDir: paths.root, summary: `context failed: ${message}`, candidates: [] };
+    }
+
     const plans: { id: string; text: string }[] = [];
     const planAttempts: { attemptId: string; harnessId: string; status: "success" | "failed" | "blocked"; error: string | null }[] = [];
     const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
@@ -1576,21 +1897,28 @@ export class Orchestrator {
         log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
         break;
       }
-      const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
+      const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, input.model, input.effort);
+      const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: "plan",
-        prompt: input.prompt,
+        prompt: input.prompt + contextSection,
         cwd: input.repoRoot,
         access: "readonly",
-        external_context_policy: contract.external_context.policy,
-        tool_permission_policy: contract.tool_permission_policy,
-        model_hint: input.model ?? null,
+        external_context_policy: knobs.webPolicy,
+        tool_permission_policy: {
+          web: knobs.webPolicy,
+          allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
+          deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
+        },
+        model_hint: knobs.model,
+        effort_hint: knobs.effort,
+        max_turns: knobs.maxTurns,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
-      const telemetry = createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb);
+      const telemetry = createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live", effectiveWeb);
       const onAbort = () => {
         void adapter.cancel?.(spec.session_id)?.catch(() => {});
       };
@@ -1601,7 +1929,12 @@ export class Orchestrator {
       let cost = 0;
       let harnessError: string | null = null;
       try {
-        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
+        log.emit("harness.started", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          external_context_policy: knobs.webPolicy,
+          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+        });
         if (!input.signal?.aborted) {
           for await (const ev of adapter.run(spec)) {
             if (input.signal?.aborted) break;
@@ -1792,6 +2125,20 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
+    // Lazy ContextPack: explore/audit attach the compact scope atlas; ask stays bare.
+    let contextSection = "";
+    if (opts.mode !== "ask") {
+      try {
+        contextSection = await this.lazyContextSection(input, contract, store, paths, log);
+      } catch (err) {
+        const message = safeErrorMessage(err);
+        store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
+        writeFailure(store, paths, { phase: "context", category: "project", safeMessage: message, runDir: paths.root });
+        log.emit("run.failed", { status: "failed", phase: "context", error: message, failure_ref: "final/failure.yaml" });
+        return { runId, taskId, mode: opts.mode, status: "failed", winner: null, runDir: paths.root, summary: `context failed: ${message}`, candidates: [] };
+      }
+    }
+
     const externalContextPolicy = contract.external_context.policy;
     const width = opts.mode === "explore"
       ? Math.min(Math.max(input.n ?? 4, 1), 8)
@@ -1840,33 +2187,40 @@ export class Orchestrator {
     let fallbackOpen = false;
     let budgetStopped = false;
 
-    const runReadonlyAttempt = async (routed: RoutedAdapter, idx: number): Promise<void> => {
+    const runReadonlyAttempt = async (routed: RoutedAdapter, idx: number, modelOverride?: string): Promise<void> => {
       const adapter = routed.adapter;
-      const attemptId = `a${String(idx + 1).padStart(2, "0")}`;
+      const attemptId = modelOverride ? `a${String(idx + 1).padStart(2, "0")}-fb` : `a${String(idx + 1).padStart(2, "0")}`;
       const lease = ledger.reserve({ taskId, attemptId, intent: opts.intent, harnessId: adapter.id });
       if (!lease.granted) {
         log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
         budgetStopped = true;
         return;
       }
-      const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
-      const explorerPrompt = opts.mode === "explore"
+      const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelOverride ?? input.model, input.effort);
+      const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
+      const explorerPrompt = (opts.mode === "explore"
         ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
-        : prompt;
+        : prompt) + contextSection;
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: opts.intent,
         prompt: explorerPrompt,
         cwd: input.repoRoot,
         access: "readonly",
-        external_context_policy: contract.external_context.policy,
-        tool_permission_policy: contract.tool_permission_policy,
-        model_hint: input.model ?? null,
+        external_context_policy: knobs.webPolicy,
+        tool_permission_policy: {
+          web: knobs.webPolicy,
+          allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
+          deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
+        },
+        model_hint: knobs.model,
+        effort_hint: knobs.effort,
+        max_turns: knobs.maxTurns,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
-      const telemetry = createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb);
+      const telemetry = createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live", effectiveWeb);
       const onAbort = () => {
         void adapter.cancel?.(spec.session_id)?.catch(() => {});
       };
@@ -1877,7 +2231,13 @@ export class Orchestrator {
       let cost = 0;
       let harnessError: string | null = null;
       try {
-        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
+        log.emit("harness.started", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          external_context_policy: knobs.webPolicy,
+          ...(modelOverride ? { fallback_model: modelOverride } : {}),
+          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+        });
         if (!input.signal?.aborted) {
           for await (const ev of adapter.run(spec)) {
             if (input.signal?.aborted) break;
@@ -1935,7 +2295,27 @@ export class Orchestrator {
       for (const [idx, routed] of adapters.entries()) {
         if (input.signal?.aborted) break;
         await runReadonlyAttempt(routed, idx);
-        const last = attempts[attempts.length - 1];
+        let last = attempts[attempts.length - 1];
+        // Per-harness fallback_model: one same-harness retry on FAILURE (not
+        // policy blocks) before falling through to the next harness.
+        const fallbackModel = routed.settings?.fallbackModel;
+        const firstModel = input.model ?? routed.settings?.defaultModel ?? null;
+        if (last && last.status === "failed" && fallbackModel && fallbackModel !== firstModel && !budgetStopped && !input.signal?.aborted) {
+          log.emit("route.fallback.started", {
+            from_harness: last.harnessId,
+            to_harness: last.harnessId,
+            attempt_id: last.attemptId,
+            reason: "fallback_model",
+            fallback_model: fallbackModel,
+          });
+          await runReadonlyAttempt(routed, idx, fallbackModel);
+          last = attempts[attempts.length - 1];
+          if (last?.status === "success") {
+            log.emit("route.fallback.completed", { harness_id: last.harnessId, attempt_id: last.attemptId, status: "success", reason: "fallback_model" });
+          } else {
+            log.emit("route.fallback.exhausted", { harness_id: last?.harnessId ?? routed.adapter.id, attempt_id: last?.attemptId ?? null, reason: "fallback_model" });
+          }
+        }
         if (!last) continue; // budget-denied slot
         if (last.status === "success") {
           if (fallbackOpen) {

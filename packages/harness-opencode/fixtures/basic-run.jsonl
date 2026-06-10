@@ -1,0 +1,7 @@
+{"type":"session","model":"big-pickle"}
+{"type":"message","text":"Starting work."}
+{"type":"tool","tool":"bash","id":"t1","args":{"command":"pnpm test"}}
+{"type":"tool","tool":"bash","id":"t1","status":"completed","output":"tests passed"}
+{"type":"tool","tool":"edit","id":"t2","path":"src/a.ts","status":"completed"}
+{"type":"tool","tool":"webfetch","id":"t3","status":"error","error":"connection refused"}
+{"type":"usage","cost":0.03,"tokens":{"input":500,"output":80,"cache":100}}

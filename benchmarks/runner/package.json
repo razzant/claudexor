@@ -1,6 +1,6 @@
 {
   "name": "claudexor-benchmark-runner",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "BenchmarkRunner + SWE-bench Verified (predictions/report) with ablations; scaffolds for Terminal-Bench/OSWorld/ProgramBench.",
   "private": true,
   "type": "module",
@@ -12,7 +12,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

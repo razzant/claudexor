@@ -134,8 +134,14 @@ export function noProjectRepoRoot(): string {
 const SECRET_PATTERNS: RegExp[] = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   /\bghp_[A-Za-z0-9]{20,}\b/g,
+  /\bgho_[A-Za-z0-9]{20,}\b/g,
+  /\bghs_[A-Za-z0-9]{20,}\b/g,
+  /\bghu_[A-Za-z0-9]{20,}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
+  /\bAIza[A-Za-z0-9_-]{30,}\b/g,
+  /\bxai-[A-Za-z0-9_-]{20,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
 ];

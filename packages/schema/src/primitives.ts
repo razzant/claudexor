@@ -80,5 +80,12 @@ export const Intent = z.enum([
 ]);
 export type Intent = z.infer<typeof Intent>;
 
+/**
+ * How a dirty working tree is handled when creating an envelope.
+ * `include` and `stash` are ALIASES of `snapshot` in the current
+ * WorkspaceManager (a stash-create snapshot becomes the base SHA without
+ * touching the live tree); `copy` additionally copies dirty files into the
+ * worktree; `refuse` fails loudly.
+ */
 export const DirtyPolicy = z.enum(["refuse", "include", "stash", "copy", "snapshot"]);
 export type DirtyPolicy = z.infer<typeof DirtyPolicy>;

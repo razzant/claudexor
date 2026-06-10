@@ -158,7 +158,11 @@ async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (spec.model_hint) args.push("--model", spec.model_hint);
   args.push(spec.prompt);
   const key = cursorApiKey();
-  const env: Record<string, string | null | undefined> = { ...spec.env };
+  const env: Record<string, string | null | undefined> = {
+    ...spec.env,
+    // An inherited endpoint override could redirect traffic carrying credentials.
+    CURSOR_API_URL: null,
+  };
   // Envelope runs use a scoped HOME where the native cursor session is
   // unreachable, so the native-auth probe (which runs against the REAL home)
   // must not be trusted for them: inside an envelope a key is required.

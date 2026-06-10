@@ -45,9 +45,24 @@ export class WorkspaceManager {
     return join(this.repoRoot, ".claudexor", "workspaces");
   }
 
-  /** The scoped envelope base for a task/attempt. The sole on-disk root we delete on dispose. */
+  /**
+   * The scoped envelope base for a task/attempt. The sole on-disk root we
+   * delete on dispose — so the ids MUST be path-safe segments and the resolved
+   * base MUST stay inside the workspaces dir (a crafted `../` id could
+   * otherwise turn dispose() into an arbitrary recursive delete).
+   */
   private envelopeBase(taskId: string, attemptId: string): string {
-    return join(this.workspacesDir(), taskId, attemptId);
+    const idPattern = /^[A-Za-z0-9._-]+$/;
+    for (const [label, id] of [["taskId", taskId], ["attemptId", attemptId]] as const) {
+      if (!idPattern.test(id) || id === "." || id === "..") {
+        throw new WorkspaceError(`${label} '${id}' is not a safe path segment`);
+      }
+    }
+    const base = join(this.workspacesDir(), taskId, attemptId);
+    if (!base.startsWith(this.workspacesDir() + "/")) {
+      throw new WorkspaceError(`envelope base escapes the workspaces dir: ${base}`);
+    }
+    return base;
   }
 
   async create(opts: CreateEnvelopeOptions): Promise<WorkspaceEnvelope> {
@@ -180,8 +195,17 @@ export class WorkspaceManager {
 
   private copyDirtyFiles(porcelain: string, destRoot: string): void {
     for (const line of porcelain.split("\n")) {
-      const rel = line.slice(3).trim();
+      let rel = line.slice(3).trim();
       if (!rel || rel.includes(" -> ")) continue; // skip renames (handled by base)
+      // git quotes unusual paths C-style ("with space\twith tab"); unquote them
+      // or the copy silently targets a literal `"name"` path.
+      if (rel.startsWith('"') && rel.endsWith('"')) {
+        try {
+          rel = JSON.parse(rel) as string;
+        } catch {
+          rel = rel.slice(1, -1);
+        }
+      }
       try {
         cpSync(join(this.repoRoot, rel), join(destRoot, rel), { recursive: true });
       } catch {

@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.6.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.7.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -18,15 +18,25 @@ intentionally not supported.
 pnpm install --frozen-lockfile
 pnpm build
 
+# Run the CLI from the repo (or add an alias/PATH entry for it):
+node packages/cli/dist/cli.js doctor
+alias claudexor="node $(pwd)/packages/cli/dist/cli.js"
+
 claudexor ask "2+2?"
+claudexor ask "google the latest release notes" --web auto
 claudexor explore "map this repo's auth and run storage"
 claudexor run "fix the failing auth refresh test" --harness codex
+claudexor race "fix add() and keep the patch minimal" --harness codex,claude --n 2
 claudexor inspect <run_id>
 claudexor apply <run_id> --dry-run
+claudexor doctor
+claudexor secrets list
+claudexor daemon start
 ```
 
 `apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
-not mutate the repo.
+not mutate the repo. Unknown flags and invalid `--access`/`--web`/`--effort`
+values fail loudly with exit code 2 — a typo never silently runs with defaults.
 
 ## Modes
 
@@ -52,6 +62,7 @@ Examples:
 
 ```bash
 claudexor ask "2+2?"
+claudexor ask "google the latest release notes" --web auto
 claudexor explore "map this repo's auth and run storage"
 claudexor run "fix the failing auth refresh test" --harness codex
 claudexor race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
@@ -60,6 +71,30 @@ claudexor run "fix the bug and keep repairing until clean" --mode until-clean
 claudexor plan "design a config-to-gates implementation"
 claudexor run "map artifact writers and secret risk" --mode readonly_audit
 ```
+
+## Web, Tool Evidence, And Output Readiness
+
+External web context is a typed run policy, separate from shell/network
+sandboxing. The CLI-first contract is:
+
+```bash
+claudexor ask "google this library's current release" --web auto
+claudexor ask "use cached web context only" --web cached
+claudexor ask "force live search where supported" --web live
+claudexor ask "answer from local/project context only" --web off
+```
+
+The policy values are `off | auto | cached | live`. `auto` allows web-capable
+harness tools where supported and records whether the harness actually attempted
+`WebSearch`/`WebFetch`. A run that attempts a web tool and gets a tool error
+cannot be plain green success unless a later successful web result proves
+recovery. Read-only Ask/Audit can fall back to another eligible route and emits
+`route.fallback.*` events.
+
+Run terminal state is separate from output readiness. Control API, CLI, and app
+expose `outputReadyState` (`pending | finalizing | ready | diagnostic`),
+`webEvidence`, tool errors, budget, and artifact paths. `claudexor inspect
+<run_id>` is the CLI projection of the same run detail the macOS app renders.
 
 ## Routing, Auth, And Secrets
 
@@ -102,24 +137,27 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`, `POST /runs/:id/input`
+- `POST /runs/:id/control`
 - `GET /harnesses`, `POST /harnesses/setup`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
+  `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
 Harness setup is server-owned. `/harnesses/setup` is the typed prepare surface;
 `/setup/jobs` is the execution lifecycle for allowlisted install/login/doctor
-jobs with redacted logs and risk flags. UI surfaces must not invent harness
+jobs with redacted logs, risk flags, persistence across restarts, watchdog
+timeouts, and an SSE lifecycle stream. UI surfaces must not invent harness
 setup commands or accept inline secrets.
 
 Run detail responses include `primaryOutput`, `timeline`, and `budget`
-projections. Clients should use those fields first instead of guessing artifact
-paths or displaying fake zero spend/quota values. `POST /runs/:id/control`
-supports cancel/interrupt for active daemon jobs. `POST /runs/:id/input` exists
-as a typed beta surface but returns `unsupported` in v0.6.0 because active runs
-do not yet bind to a state-preserving live input route.
+projections. Web/tool evidence is projected from the engine-owned
+`final/telemetry.yaml`. Clients should use those fields first instead of
+guessing artifact paths or displaying fake zero spend/quota values.
+`POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
+Live input forwarding is not part of the surface; the former `/runs/:id/input`
+stub was removed in v0.7.0.
 
 Start it:
 
@@ -140,10 +178,12 @@ Ask without a project uses an empty synthetic cwd at
 ```text
 events.jsonl
 context/task.yaml
+context/context_pack.yaml?
 attempts/a01/attempt.yaml
 attempts/a01/patch.diff
 reviews/a01.yaml
 arbitration/decision.yaml
+final/telemetry.yaml
 final/patch.diff
 final/work_product.yaml
 final/summary.md
@@ -161,6 +201,14 @@ Files are the source of truth. Terminal output and UI rows are projections. The
 macOS run detail screen surfaces `Outcome`, `Timeline`, and `Diagnostics`
 directly from these artifacts/events, so successful answers and failed runs are
 inspectable instead of disappearing into logs.
+
+Project runs execute in isolated envelopes under
+`.claudexor/workspaces/.../tree`; harness `cwd` is that envelope worktree.
+Proven work product means a git diff in the envelope, a declared run artifact,
+or an explicitly verified host side-effect. Absolute `/tmp/...` writes are host
+side effects and do not count as project success. A project prompt asking for a
+tmp file should resolve to project-local `tmp/...` or a run artifact unless a
+future verified host-side-effect mode is explicitly selected.
 
 ## Integrations
 
@@ -193,6 +241,8 @@ Read next:
 - [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) - external integration
   surfaces.
 - [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) - macOS UI/UX contract.
+- [`docs/WHITEPAPER.md`](docs/WHITEPAPER.md) - public rationale and conceptual
+  model.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) - contributor workflow for
   changing Claudexor itself.
 - [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) - human gates for docs, schema,
@@ -208,12 +258,14 @@ pnpm typecheck
 pnpm test
 pnpm schema:gen
 git diff --exit-code packages/schema/generated
+pnpm docs:check   # docs-truth gate: endpoints, mode ids, CLI flags vs source
+pnpm knip         # dead exports/files gate
 ```
 
 `pnpm release:verify` runs Node/schema checks, Swift tests/build, and unsigned
 local app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by
 the `Release` GitHub Actions workflow from the pushed `v*` tag; do not upload
-stale local `apps/macos/dist` artifacts for v0.6.0.
+stale local `apps/macos/dist` artifacts.
 
 There is no root `pnpm lint` script.
 
@@ -223,6 +275,20 @@ macOS:
 cd apps/macos/ClaudexorKit && swift test
 cd ../ClaudexorApp && swift build
 ```
+
+## Version History
+
+- **v0.7.0** — engine truth pass: typed `tool_call`/`tool_result` events with a
+  shared adapter run loop, engine-owned `final/telemetry.yaml` evidence, web
+  policy as a manifest capability with disclosed upgrades, parallel
+  race/explore, user-level trust gating for full access, per-harness settings
+  (enabled/model/effort/web/budget) wired end to end, typed risk/protected-path
+  review gates, honest control-api/daemon lifecycles, macOS live streams +
+  diff tab + per-harness settings editor, knip/docs-truth/conformance CI gates,
+  dead subsystem deletions (ExecutionEngine, legacy in-proc control server,
+  `/runs/:id/input` stub).
+- **v0.6.0** — first public beta: canonical modes, daemon + control API, macOS
+  app, review/arbitration pipeline, secret store, release automation.
 
 ## License
 

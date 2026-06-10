@@ -44,7 +44,9 @@ Three design commitments:
 - Support **Light, Dark, and system** following `NSApp.effectiveAppearance`.
 - **Signature default is a deep-graphite Dark** ("command center"), never pure black.
   Pure black + saturated text is the exact readability trap competitors fell into;
-  we use layered graphite surfaces and desaturated accents.
+  we use layered graphite surfaces and desaturated accents. Dark cards use the
+  **crisp graphite** recipe: slightly lighter raised fills, clearer strokes,
+  stronger text contrast, restrained shadow/glow, and no muddy low-contrast gray.
 - A user-facing **Appearance** control (Light / Dark / System) is required from day one.
   Do not ship a single forced theme with no toggle.
 
@@ -56,7 +58,8 @@ Contrast variants. Never hardcode hex in views.
 Surfaces (Dark default shown; Light mirrors with inverted luminance):
 
 - `surface/base` — window background, deep graphite (e.g. ~ `#1A1B1E`), not `#000`.
-- `surface/raised` — cards, lists (~ `#212327`).
+- `surface/raised` — cards, lists; in dark mode this must be visibly lifted from
+  base, closer to crisp graphite than flat charcoal.
 - `surface/overlay` — popovers/sheets content backing (above glass).
 - `surface/code` — editor/diff/transcript background, solid, max legibility (~ `#16171A`).
 - `separator` — hairline dividers; respects Increase Contrast.
@@ -118,8 +121,9 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
   a tracked beta refinement.)
 - Elevation: glass + material layering for chrome; a solid content card may carry **one**
-  soft separation shadow (`black 8%, radius 6, y 2`, centralized in `cardSurface`) for
-  dark-mode contrast against the glow. Settings groups are flat and use no shadow. No heavy,
+  soft separation shadow (centralized in `cardSurface`) for dark-mode contrast
+  against the glow. Crisp graphite cards should prefer stronger stroke/elevation
+  over a muddy fill. Settings groups are flat and use no shadow. No heavy,
   stacked, or black cutout shadows.
 
 ### 2.5 Density
@@ -215,6 +219,32 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   (family-colored), Primary harness, Portfolio, model hint, N, budget cap, access profile,
   gates/tests. Default mode is `Ask`. Project-aware modes are disabled until Current
   Project is selected; Ask can run without a project.
+- **Markdown output surfaces.** Outcome, reports, plans, summaries, and diagnostics
+  render native markdown with BLOCK structure: headings get heading type
+  styles, paragraphs stay separated (never collapsed into one run-on line),
+  list items render as bulleted rows, and fenced code renders on solid
+  `surface/code`. Text is selectable. Patch/diff work products are never
+  markdown-rendered as Outcome; they belong to the Diff tab parsed from
+  `final/patch.diff`. Dense output uses solid `surface/raised`; never put
+  Liquid Glass behind dense output.
+- **Evidence badges.** Header/timeline badges show output readiness
+  (`pending/finalizing/ready/diagnostic`), requested/effective access, web policy,
+  web evidence (`none/attempted/satisfied/failed/unverified`), tool errors,
+  budget source, artifact path, and route fallback. Badges are projections of
+  Control API fields, not UI-invented state. Raw wire strings are humanized
+  ("Web verified", not `satisfied`); `unverified` web evidence gets a distinct
+  warning treatment from a benign `attempted`; telemetry-unavailable runs say
+  so instead of guessing. Engine-typed event severity (info/warning/error)
+  tints timeline rows.
+- **Read-only report surfaces.** Ask/Explore/Audit primary output appears in
+  Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
+  stay in Diagnostics/artifact lists and must not be transformed into Plan rows.
+- **Setup job states.** Auth/setup sheets show queued/running/waiting/succeeded/
+  failed/cancelled, command preview, risk flags, started time, first output,
+  latest output, terminal result, retry count, doctor result, and log path.
+  Sheets POLL the job to its terminal state (or consume the job SSE stream) and
+  then re-run the harness doctor; a job stuck on "running" forever in the UI is
+  a defect, not a state.
 - **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
 - **Cross-family review.** Solid-grid Review Queue: severity, finding, task, reviewer,
   evidence, and state columns. Cards can still appear in task detail, but local accept/rebut
@@ -239,8 +269,12 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
-  Appearance, Projects, Agent & Routing, Harness Doctor & Auth, Secrets, Budget, Review, Delivery,
-  Advanced & About. Settings groups are flat, solid, and shadowless.
+  Appearance, Projects, Agent & Routing, Harness Doctor & Auth, Per-Harness
+  Defaults, Secrets, Budget, Review, Delivery, Advanced & About. Settings
+  groups are flat, solid, and shadowless. The Per-Harness Defaults editor
+  (enable/disable, model override, effort, web policy) saves PARTIAL patches to
+  the engine config via `/settings`; quick-launch and Retry honor saved engine
+  defaults instead of hardcoded portfolio/cap values.
 - **Help and tooltips.** Every compact/non-obvious control gets `.help(...)` hover help.
   Mode menus and harness chips expose descriptions on hover directly; do not add a
   separate adjacent info button just to explain a normal mode. Use a richer click popover
@@ -340,7 +374,22 @@ tiny count/label pills still carry per-call padding pending a shared `CountBadge
 
 ---
 
-## 8. References
+## 8. Design Review Gate
+
+UI diffs require screenshot evidence for the affected surface in Light and Dark
+unless the change is non-visual. Dark screenshots must be checked against the
+crisp graphite token direction: lifted cards, clear strokes, strong text
+contrast, restrained glow, and no muddy gray fills.
+
+Block a UI change on clipped or overlapping text, hidden terminal/output-ready
+state, glass behind dense output, hardcoded colors outside tokens, weak contrast,
+fixed-width overflow, technical artifacts shown as user plans/outcomes, or UI
+semantics that disagree with CLI/Control API projections for output, web
+evidence, tool errors, budget, access, fallback, setup jobs, or artifacts.
+
+---
+
+## 9. References
 
 - Apple: Adopting Liquid Glass; "Build a SwiftUI app with the new design" (WWDC25);
   macOS Tahoe HIG. APIs: `glassEffect(_:in:)`, `GlassEffectContainer`, `glassEffectID`,

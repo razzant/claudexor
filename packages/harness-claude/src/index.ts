@@ -140,6 +140,8 @@ export function createClaudeAdapter(): HarnessAdapter {
           plugins: true,
           worktree_native: true,
           web_policy: "tools",
+          max_turns: true,
+          tool_lists: true,
           quota_signal: "observed",
           usage_signal: "exact",
         },

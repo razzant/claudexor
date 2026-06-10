@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -160,7 +161,11 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_clean", harnesses: ["fake-fail-tests"] });
-    expect(res.status).toBe("failed");
+    // The identical-repair-prompt loop detector stops the run as exhausted
+    // (3rd identical prompt) before the slower stall detector can mark it failed.
+    expect(res.status).toBe("exhausted");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain("loop_detected");
   }, 20000);
 
   it("plan mode produces a SpecPack without mutating", async () => {
@@ -831,23 +836,48 @@ describe("Orchestrator", () => {
     // A plain (non-git) directory standing in for a stateful external environment.
     const dir = mkdtempSync(join(tmpdir(), "claudexor-orch-inplace-"));
     writeFileSync(join(dir, "task.txt"), "do the thing\n");
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
-    // Two clean cross-family reviewers -> review-only convergence succeeds on attempt 1.
-    const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({
-      repoRoot: dir,
-      prompt: "x",
-      mode: "max_attempts",
-      harnesses: ["fake-success"],
-      attempts: 2,
-      inPlace: true,
-      access: "full",
-    });
-    expect(res.status).toBe("no_op");
-    // The live dir and its file survive (dispose must not delete the tree in-place).
-    expect(existsSync(dir)).toBe(true);
-    expect(existsSync(join(dir, "task.txt"))).toBe(true);
-    // No scoped envelope leaks after dispose.
-    expect(existsSync(join(dir, ".claudexor", "workspaces", res.taskId, "converge"))).toBe(false);
+    // access=full requires a USER-LEVEL trust allow (TrustConfig wire-in); the
+    // test scopes the config dir so it never touches the developer's real home.
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-trust-"));
+    mkdirSync(join(configDir, "trust"), { recursive: true });
+    writeFileSync(join(configDir, "trust", `${repoHash(dir)}.yaml`), "allow_full_access: true\n");
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      // Two clean cross-family reviewers -> review-only convergence succeeds on attempt 1.
+      const orch = new Orchestrator({ registry, reviewers: reviewers() });
+      const res = await orch.run({
+        repoRoot: dir,
+        prompt: "x",
+        mode: "max_attempts",
+        harnesses: ["fake-success"],
+        attempts: 2,
+        inPlace: true,
+        access: "full",
+      });
+      expect(res.status).toBe("no_op");
+      // The live dir and its file survive (dispose must not delete the tree in-place).
+      expect(existsSync(dir)).toBe(true);
+      expect(existsSync(join(dir, "task.txt"))).toBe(true);
+      // No scoped envelope leaks after dispose.
+      expect(existsSync(join(dir, ".claudexor", "workspaces", res.taskId, "converge"))).toBe(false);
+    } finally {
+      delete process.env.CLAUDEXOR_CONFIG_DIR;
+    }
+  });
+
+  it("refuses access=full without a user-level trust allow (loud, no silent downgrade)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-notrust-"));
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const orch = new Orchestrator({ registry, reviewers: reviewers() });
+      await expect(
+        orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, access: "full" }),
+      ).rejects.toThrow(/allow_full_access/);
+    } finally {
+      delete process.env.CLAUDEXOR_CONFIG_DIR;
+    }
   });
 });

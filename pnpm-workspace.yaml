@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "benchmarks/runner"
 
 # esbuild is our only dependency with a build script and its JS API resolves the
 # platform binary at runtime without a postinstall. Allow dependency build
@@ -7,10 +8,7 @@ packages:
 # ERR_PNPM_IGNORED_BUILDS). Our dependency set is controlled.
 onlyBuiltDependencies:
   - esbuild
-dangerouslyAllowAllBuilds: true
 
 # pnpm 11 runs an implicit deps-status check before every `pnpm run` that
 # auto-installs; disable it and rely on explicit installs.
 verifyDepsBeforeRun: false
-allowBuilds:
-  esbuild: set this to true or false

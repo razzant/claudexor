@@ -49,3 +49,9 @@ jobs:
         run: |
           pnpm schema:gen
           git diff --exit-code packages/schema/generated || (echo "::error::JSON Schema is stale; run 'pnpm schema:gen' and commit." && exit 1)
+
+      - name: Docs truth (endpoints, mode ids, CLI flags)
+        run: node scripts/docs-truth-check.mjs
+
+      - name: Dead exports (knip)
+        run: pnpm knip

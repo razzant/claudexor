@@ -9,6 +9,9 @@ Read these together before changing shared behavior:
 - `CLAUDEXOR_BIBLE.md` - product and engineering invariants.
 - `docs/ARCHITECTURE.md` - current package map, run flow, artifacts, and
   control API.
+- `docs/WHITEPAPER.md` - public rationale and architecture narrative; keep it
+  current when runtime, harness, auth/setup, observability, budget, orchestration,
+  or permission behavior changes.
 - `docs/DESIGN_SYSTEM.md` - macOS visual and interaction contract.
 - `docs/CHECKLISTS.md` - human gates for reviews, releases, docs, visual QA,
   and security.
@@ -17,22 +20,35 @@ Read these together before changing shared behavior:
 
 - `packages/schema` owns Zod schemas, TypeScript types, and generated JSON
   Schema. Change data contracts here first.
-- `packages/core` owns adapter contracts, process helpers, typed errors, and
-  the minimal single-harness execution path.
+- `packages/util` owns shared helpers (ids, hashing, redaction, config dirs).
+- `packages/core` owns adapter contracts, the shared CLI run loop, process
+  helpers, typed errors, the doctor runner, and the stream conformance
+  validator.
 - `packages/orchestrator` owns higher-level modes such as Ask, Explore, Agent,
-  Best-of-N, convergence, Plan, Create, and Read-only Audit.
+  Best-of-N, convergence, Plan, Create, and Read-only Audit, plus run
+  telemetry and policy gates.
 - `packages/gateway` owns harness discovery, doctor output, and capability
   gating.
 - `packages/harness-*` translate native CLI/API streams into typed events. They
-  do not select winners, manage budgets, or decide review policy.
+  do not select winners, manage budgets, or decide review policy. Each has a
+  `fixtures/` dir backing its conformance parity test.
 - `packages/workspace` owns worktree envelopes, scoped harness homes, diff
   capture, and cleanup.
+- `packages/policy` owns typed risk classification, protected-path rules, and
+  the workspace path guard.
+- `packages/context` owns the scope atlas and lazy ContextPack.
+- `packages/config` owns layered config loading (global, project, user trust).
 - `packages/review`, `packages/arbitration`, `packages/synthesis`,
   `packages/budget`, `packages/secrets`, and `packages/delivery` own their
   named control-plane subsystems.
+- `packages/artifact-store` and `packages/event-log` own run artifact trees and
+  the append-only event log.
+- `packages/interview` owns the spec interview engine.
 - `packages/cli`, `packages/daemon`, `packages/control-api`,
   `packages/mcp-server`, `packages/acp-server`, and `apps/macos` are surfaces.
   Keep them thin.
+- `benchmarks/runner` holds benchmark scaffolds and is part of the pnpm
+  workspace.
 
 ## Development Commands
 
@@ -45,6 +61,8 @@ pnpm typecheck
 pnpm test
 pnpm schema:gen
 git diff --exit-code packages/schema/generated
+pnpm docs:check   # docs-truth gate (endpoints / mode ids / CLI flags vs source)
+pnpm knip         # dead exports / unused files / unused dependencies gate
 ```
 
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
@@ -64,6 +82,19 @@ pnpm release:verify
 ```
 
 It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
+
+### Local toolchain notes
+
+The build scripts prefer machine-local toolchains when present and fall back to
+the system ones, so CI and other machines work unchanged:
+
+- `apps/macos/scripts/build-app.sh` prepends `~/.claudex/node/bin` to `PATH`
+  when that directory exists (some macOS setups kill ad-hoc-signed Homebrew
+  Node during bundling) and accepts `CLAUDEXOR_NODE_BIN` to point at the Node
+  binary to bundle.
+- If the Xcode Command Line Tools `swift-package` crashes with a dyld llbuild
+  symbol error, use a Swiftly-managed toolchain
+  (`PATH="$HOME/.swiftly/bin:$PATH" swift build`).
 
 ## Schema-First Workflow
 
@@ -109,6 +140,7 @@ Use this split:
 - `docs/ARCHITECTURE.md`: current runtime and package map.
 - `docs/INTEGRATIONS.md`: current external integration surfaces and limitations.
 - `docs/DESIGN_SYSTEM.md`: macOS UI/UX contract.
+- `docs/WHITEPAPER.md`: public rationale and conceptual model.
 - `docs/DEVELOPMENT.md`: developing Claudexor itself.
 - `docs/CHECKLISTS.md`: human gates for changes and releases.
 - `apps/macos/README.md`: macOS app contributor notes.
@@ -118,3 +150,14 @@ Temporary adversarial review packets and release scratch belong outside public
 docs. Review gates must be file-backed and diagnosable: persist local/redacted
 per-reviewer artifacts and progress events, and point reviewers at evidence
 files instead of embedding large diffs in process argv.
+
+## Governance Rules
+
+Do not implement risk, permission, tool success, web-required detection,
+winner selection, or tests-passed decisions with regex checks over model prose.
+Use typed schema fields, settings/profiles, normalized events, run artifacts,
+deterministic gates, and reviewer evidence.
+
+Runtime/harness/auth/setup/observability/budget/orchestration changes must update
+the public docs that describe them, including `docs/WHITEPAPER.md` when the
+conceptual model or product guarantees change.

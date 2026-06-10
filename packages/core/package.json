@@ -11,16 +11,14 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudexor/artifact-store": "workspace:*",
-    "@claudexor/config": "workspace:*",
-    "@claudexor/event-log": "workspace:*",
-    "@claudexor/schema": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/schema": "workspace:*"
   }
 }

@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"th-fixture"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"pnpm test","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"pnpm test","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"i2","type":"web_search","query":"claudexor release notes"}}
+{"type":"item.completed","item":{"id":"i2","type":"web_search","query":"claudexor release notes","status":"completed"}}
+{"type":"item.completed","item":{"id":"i3","type":"command_execution","command":"pnpm build","exit_code":1,"status":"failed","aggregated_output":"build failed: 1 error"}}
+{"type":"item.completed","item":{"id":"i4","type":"file_change","path":"src/a.ts"}}
+{"type":"item.completed","item":{"id":"i5","type":"agent_message","text":"Done."}}
+{"type":"turn.completed","usage":{"input_tokens":900,"cached_input_tokens":700,"output_tokens":150,"reasoning_output_tokens":0}}

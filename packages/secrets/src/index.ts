@@ -44,7 +44,11 @@ export class SecretStore {
     return keychainAvailable() ? "keychain" : "file";
   }
 
+  /** Why the last `set` landed in the file store despite a keychain backend. */
+  lastFallbackReason: string | null = null;
+
   set(name: string, value: string): "keychain" | "file" {
+    this.lastFallbackReason = null;
     if (this.resolvedBackend() === "keychain") {
       try {
         execFileSync(
@@ -53,8 +57,9 @@ export class SecretStore {
           { input: `${value}\n${value}\n`, stdio: ["pipe", "ignore", "ignore"] },
         );
         return "keychain";
-      } catch {
-        /* fall through to file */
+      } catch (err) {
+        // SURFACED degradation (not silent): callers report this to the UI/CLI.
+        this.lastFallbackReason = `keychain write failed (${err instanceof Error ? err.message.split("\n")[0] : "error"}); stored in 0600 file instead`;
       }
     }
     this.fileSet(name, value);
@@ -191,17 +196,26 @@ export interface ResolveOptions {
   store?: SecretStore;
 }
 
-/** Resolve a secret: explicit env var -> helper command -> stored value. */
+/**
+ * Resolve a secret: explicit env var -> helper command -> stored value.
+ * A FAILING helper command throws (fail loudly): the user explicitly configured
+ * it, so silently falling through to a possibly-stale stored value would route
+ * requests with the wrong credential.
+ */
 export function resolveSecret(name: string, opts: ResolveOptions = {}): string | null {
   if (opts.envVar && process.env[opts.envVar]) return process.env[opts.envVar] as string;
   if (opts.helperCommand) {
+    let out: string;
     try {
-      const out = execFileSync("sh", ["-c", opts.helperCommand], { encoding: "utf8" });
-      const v = out.trim();
-      if (v) return v;
-    } catch {
-      /* helper failed; fall through */
+      out = execFileSync("sh", ["-c", opts.helperCommand], { encoding: "utf8" });
+    } catch (err) {
+      throw new Error(
+        `secret helper command for '${name}' failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+      );
     }
+    const v = out.trim();
+    if (v) return v;
+    throw new Error(`secret helper command for '${name}' printed nothing`);
   }
   return (opts.store ?? new SecretStore()).get(name);
 }

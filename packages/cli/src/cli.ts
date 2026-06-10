@@ -27,7 +27,7 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
-import { type PluginHost, installPlugin } from "./plugins.js";
+import { PLUGIN_HOSTS, type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
 import {
   extractQuestionsFromPlan,
@@ -659,8 +659,12 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       return 2;
     }
     const backend = store.set(name, value);
-    if (json) printJson({ name, backend, stored: true });
-    else print(`stored ${name} in ${backend}`);
+    const warning = store.lastFallbackReason;
+    if (json) printJson({ name, backend, stored: true, ...(warning ? { warning } : {}) });
+    else {
+      print(`stored ${name} in ${backend}`);
+      if (warning) print(`warning: ${warning}`);
+    }
     return 0;
   }
   if (sub === "delete" || sub === "rm") {
@@ -968,9 +972,13 @@ async function main(): Promise<number> {
 
     case "plugin": {
       const sub = args._[1];
-      const host = args._[2] as PluginHost | undefined;
+      const host = args._[2];
+      if (sub === "install" && host && !PLUGIN_HOSTS.includes(host as PluginHost)) {
+        process.stderr.write(`claudexor: unknown plugin host '${host}' (expected ${PLUGIN_HOSTS.join("|")})\n`);
+        return 2;
+      }
       if (sub === "install" && host) {
-        const r = installPlugin(host);
+        const r = installPlugin(host as PluginHost);
         if (json) printJson(r);
         else {
           print(`installed claudexor plugin for ${host}: ${r.path}`);

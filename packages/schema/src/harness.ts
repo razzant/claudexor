@@ -51,6 +51,10 @@ export const HarnessCapabilities = z.object({
   plugins: z.boolean().default(false),
   worktree_native: z.boolean().default(false),
   web_policy: WebPolicySupport.default("none"),
+  /** Honors HarnessRunSpec.max_turns (e.g. claude --max-turns). */
+  max_turns: z.boolean().default(false),
+  /** Honors tool_permission_policy allow/deny lists (e.g. claude --allowedTools). */
+  tool_lists: z.boolean().default(false),
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
 });

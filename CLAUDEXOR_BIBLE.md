@@ -48,6 +48,15 @@ trusted unless reviewer output is parseable, route proof is observed, reviewer
 telemetry is persisted, and the reviewer read the candidate evidence files rather
 than a giant prompt-only diff.
 
+Tool success is evidence, not prose. A `tool_result.is_error === true` is a hard
+warning and blocks claimed success unless later verified recovery exists. Web
+answers are web-backed only when `WebSearch`/`WebFetch` or equivalent evidence
+was observed; a memory answer after a failed web tool is partial/unverified.
+
+No regex governance: risk, permissions, web-required detection, tool success,
+winners, and tests-passed must be determined by typed contracts, settings,
+events, gates, or reviewer evidence, not ad hoc string matching over model text.
+
 ## 6. Secrets Never Become Artifacts
 
 Native harness auth is preferred. API keys are fallback secret refs stored in
@@ -63,6 +72,12 @@ project a run will use. `Ask` may answer general questions without a project,
 using a non-sensitive synthetic cwd and storing artifacts in the user-level
 Claudexor store. Project-aware modes require an
 explicit Current Project and must not silently fall back to a process cwd.
+
+Project runs execute in isolated envelopes under `.claudexor/workspaces/.../tree`.
+The harness cwd is the envelope worktree. Absolute host paths such as `/tmp/...`
+are not project diffs and do not prove project success. Project tmp requests
+default to project-local `tmp/...` or run artifacts unless the user explicitly
+selects a verified host-side-effect mode.
 
 ## 8. Spec-Driven Work Is First-Class
 
@@ -96,6 +111,12 @@ invent local accept/rebut/apply state. Read-only modes do not expose patch apply
 controls. Apply is allowed only for successful runs with a successful decision
 record and a patch WorkProduct for the original verified repo root.
 
+Terminal run state and output readiness are separate. A terminal daemon job can
+be `succeeded`, `blocked`, `failed`, or `not_converged` while
+`outputReadyState` is still `pending`, `finalizing`, `ready`, or `diagnostic`.
+CLI and UI must show that distinction instead of treating terminal state as a
+loaded answer artifact.
+
 ## 12. Keep The Codebase Small And Direct
 
 Prefer simple, typed, local solutions over speculative abstractions. Keep
@@ -106,6 +127,14 @@ refactors unrelated to the user-visible problem. Follow SSOT, DRY, and SOLID as
 pragmatic engineering constraints: one owner per contract, no duplicated
 business rules across surfaces, and no config path that lets a project self-grant
 sensitive powers.
+
+Dead code is deleted, not allowlisted: a schema field ships with a real
+producer and consumer in the same change (staged-field rule), unused exports
+fail CI (`pnpm knip`), and adapter stream parsing is pinned by recorded
+fixtures with a conformance parity test. Docs claims about endpoints, mode
+ids, and CLI flags are checked against the source by the docs-truth gate, and
+release tags additionally pass an external triad + scope review gate
+(`docs/CHECKLISTS.md` → Release).
 
 ## 13. Documentation Must Stay Current
 

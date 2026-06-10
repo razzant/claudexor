@@ -1,0 +1,41 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "workspaces": {
+    "packages/cli": {
+      "entry": ["src/cli.ts", "src/claudexord.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "packages/schema": {
+      "entry": ["src/index.ts", "scripts/gen-jsonschema.ts"],
+      "project": ["src/**/*.ts", "scripts/**/*.ts"]
+    },
+    "packages/*": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "benchmarks/runner": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    ".": {
+      "entry": ["scripts/*.mjs"],
+      "project": ["scripts/**/*.mjs"]
+    }
+  },
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "exports": "error",
+    "types": "error",
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "off",
+    "optionalPeerDependencies": "off",
+    "unlisted": "warn",
+    "binaries": "off",
+    "unresolved": "off",
+    "duplicates": "warn",
+    "enumMembers": "off",
+    "nsExports": "off",
+    "nsTypes": "off"
+  }
+}

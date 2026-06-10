@@ -16,6 +16,8 @@ Use this before committing documentation changes.
   deleted or historical plans/specs.
 - `docs/INTEGRATIONS.md` states current support and beta limitations instead of
   promising every future integration surface.
+- `docs/WHITEPAPER.md` is current when runtime, harness, auth/setup,
+  observability, budget, orchestration, or permission behavior changes.
 - `docs/DEVELOPMENT.md` and this file cover contributor process; product docs do
   not explain private review rituals.
 - Local operator notes and temporary review packet directories remain local-only
@@ -31,6 +33,9 @@ Use this before committing documentation changes.
 - Update TypeScript consumers.
 - Update Swift DTOs if control API payloads changed.
 - Update public docs that describe the changed contract.
+- Staged-field rule: a schema field ships in the same change as at least one
+  real producer and one real consumer. Do not land speculative fields that
+  nothing writes or reads — delete them or finish the wiring.
 - Run:
 
 ```bash
@@ -48,6 +53,9 @@ pnpm test
 - Add focused tests at the package boundary that owns the behavior.
 - Update `docs/ARCHITECTURE.md` when the run flow, artifact layout, storage,
   auth, routing, settings, or control API changes.
+- Update `docs/WHITEPAPER.md` when behavior changes affect the public rationale,
+  trust model, orchestration semantics, observability, setup/auth, budget, or
+  harness policy model.
 - Harness setup/login actions must be owned by the Control API. UI code may
   bridge returned allowlisted commands to Terminal/clipboard, but must not
   construct harness login/install commands locally.
@@ -55,11 +63,23 @@ pnpm test
   job as cancelled in UI/daemon state.
 - Run success/no-op semantics must be evidence-based: auth/API/harness failures
   are failed diagnostics, not empty-diff `no_op`.
+- Tool success, web evidence, and tmp/workspace claims must be evidence-based:
+  preserve redacted tool error detail; `tool_result.is_error === true` blocks
+  claimed success unless verified recovery exists; absolute `/tmp/...` is not
+  project diff evidence.
+- No regex governance for risk, permissions, tool success, web-required
+  detection, winners, or tests-passed.
 - If a native surface is discovered but not wired to active runs, expose it as a
   capability note only; do not enable live input/steering controls.
 - Treat manifest auth sources as source availability only. Readiness, run
   routing, Auth UI status, and reviewer eligibility must come from doctor status,
   enabled intents, and smoke/conformance checks.
+- Fixture rule: when an adapter's native stream parsing changes, refresh or add
+  a recorded fixture under `packages/harness-<id>/fixtures/` and keep the
+  conformance parity test green (typed tool_call/tool_result with status,
+  usage, schema-valid events). Fixtures come from real CLI streams when
+  available; synthetic fixtures must match the documented native shape and be
+  replaced by recorded ones at the next paid smoke.
 
 ## macOS Visual QA
 
@@ -79,6 +99,13 @@ pnpm test
   and failures without output show Diagnostics.
 - Keep dense content on solid surfaces; use Liquid Glass on navigation/chrome and
   floating controls.
+- Check markdown Outcome/report/plan rendering in light/dark, including code
+  blocks on `surface/code`.
+- Check web/tool evidence badges, output-ready state, fallback events, setup job
+  states, and budget source match CLI/Control API projections.
+- Block on clipped text, hidden terminal state, glass behind dense output,
+  hardcoded colors, weak dark-card contrast, fixed-width overflow, or technical
+  artifacts shown as user plans/outcomes.
 
 ## Security And Secrets
 
@@ -97,13 +124,20 @@ pnpm test
 - Public docs and app README are aligned with current behavior.
 - `pnpm release:verify` passes.
 - Schema generated diff is clean.
+- `node scripts/docs-truth-check.mjs` passes (endpoints, mode ids, CLI flags
+  match docs).
+- `pnpm knip` passes (no unused exports/files; dead code is deleted, not
+  allowlisted, unless a justified baseline entry explains why).
 - Swift tests/build pass.
+- Triad + scope review gate: before a release tag, run
+  `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each
+  finding against the code, and record the decision table. Unresolved accepted
+  findings block the release.
 - Local app package artifacts are labeled honestly as signed/notarized or
-  unsigned, but they are smoke artifacts only for v0.6.0.
+  unsigned; they are smoke artifacts only.
 - Final DMG/ZIP release assets are produced by GitHub Actions from the committed
   `v*` tag/sha and uploaded to the GitHub Release by the workflow. Do not upload
-  stale local `apps/macos/dist` artifacts unless Anton explicitly re-approves
-  that fallback.
+  stale local `apps/macos/dist` artifacts.
 - GitHub release notes summarize shipped behavior; they do not publish private
   planning notes or review scratch.
 

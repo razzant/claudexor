@@ -1,4 +1,4 @@
-# Claudexor v0.6.0 Architecture Reference
+# Claudexor v0.7.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
@@ -8,7 +8,8 @@ Read this with [`../CLAUDEXOR_BIBLE.md`](../CLAUDEXOR_BIBLE.md). The Bible is th
 compact constitution; this file is the operational map. Contributor workflow,
 release gates, and integration notes live in
 [`DEVELOPMENT.md`](DEVELOPMENT.md), [`CHECKLISTS.md`](CHECKLISTS.md), and
-[`INTEGRATIONS.md`](INTEGRATIONS.md).
+[`INTEGRATIONS.md`](INTEGRATIONS.md). Public rationale lives in
+[`WHITEPAPER.md`](WHITEPAPER.md).
 
 ## 1. System Shape
 
@@ -46,25 +47,40 @@ Old mode ids (`daily`, `until_convergence`, `readonly_swarm`) are not aliases.
 ## 3. Package Map
 
 - `packages/schema`: Zod schemas, TypeScript types, generated JSON Schema,
-  control DTOs, mode ids, config shapes.
-- `packages/core`: adapter interface, process helpers, typed errors, and legacy
-  single-harness utility code. Default write modes are orchestrator/envelope
+  control DTOs, mode ids, config shapes, `RunTelemetry`.
+- `packages/util`: shared helpers (ids, time, hashing, redaction, config dirs,
+  safe file IO).
+- `packages/core`: adapter interface, shared CLI run loop, process helpers,
+  doctor runner, typed errors. Default write modes are orchestrator/envelope
   paths, not direct live-tree execution.
 - `packages/orchestrator`: Ask, Explore, Agent, Best-of-N, convergence, Plan,
-  Create, and Read-only Audit orchestration.
+  Create, and Read-only Audit orchestration; owns run telemetry and policy
+  gates (trust, risk, protected paths).
 - `packages/gateway`: harness discovery, capability gating, default available
   harness resolution.
+- `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
+  translate native CLI/API streams into typed `HarnessEvent`s.
 - `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs,
-  diff capture, cleanup.
+  diff capture, cleanup with path-safe dispose.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
 - `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
-  ranking, synthesis decision/prompting, spend/quota routing.
+  ranking, synthesis decision/prompting, spend/quota ledger + portfolio router
+  with loop detection.
+- `packages/policy`: typed risk classification, protected-path/human-approval
+  rules, workspace path guard.
+- `packages/context`: scope atlas + lazy ContextPack for read-only modes.
+- `packages/config`: layered config loading (global, project, user-level trust).
 - `packages/secrets`: OS Keychain/file-backed secret store and secret resolution.
-- `packages/delivery`: patch check/apply/commit/branch/PR delivery.
+- `packages/delivery`: patch check/apply/commit/branch/PR delivery and the
+  single-owner apply gate.
+- `packages/artifact-store`, `packages/event-log`: run artifact tree and
+  append-only event log writers.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
 - `packages/daemon`: durable local Unix-socket queue and job registry.
+- `packages/interview`: spec interview engine for Plan/draft flows.
 - `packages/cli`, `packages/mcp-server`, `packages/acp-server`: thin surfaces.
+- `benchmarks/runner`: benchmark scaffolds (SWE-bench Verified et al.).
 - `apps/macos`: native app; displays/edits what the engine exposes.
 
 Adapters translate native I/O into `HarnessEvent`s. They do not select winners,
@@ -101,6 +117,37 @@ possible source availability only. They are not readiness. UI, routing, and
 reviewer selection use doctor status, enabled intents, and smoke/conformance
 checks; a key/session source that fails doctor remains degraded or unavailable.
 
+External context is a typed policy, not a prompt heuristic. `TaskContract`
+records `requested_profile` and `effective_profile` under `access`, plus
+`external_context.policy` (`off | auto | cached | live`), `web_required`,
+`effective_mode`, and `tool_permission_policy`. CLI passes `--web` into the same
+contract that Control API and macOS use. Web policy is a manifest capability
+(`web_policy: native | tools | none`): harnesses that cannot enforce the
+requested policy are excluded from the pool, and explicitly selecting one fails
+loudly. Per-route upgrades (Claude has no cached web index, so `cached` runs as
+`live`) are disclosed via `policy.web.upgraded` events and recorded in
+telemetry. Adapters map the policy to native surface controls: Claude Code gets
+explicit `WebSearch`/`WebFetch` allow/deny arguments, while Codex gets
+`web_search` config. Command/network sandboxing remains separate.
+
+`access=full` (unsandboxed) additionally requires `allow_full_access: true` in
+the USER-LEVEL trust config (`~/.claudexor/trust/<repo-hash>.yaml`); versioned
+repo config can never self-grant it, and the violation is a loud routing error,
+not a silent downgrade. Per-harness engine defaults
+(`harnesses.<id>.enabled/default_model/effort/web/max_usd/max_turns/max_rounds/
+tools_allow/tools_deny/fallback_model` in the global config) gate pool
+membership and seed per-route run specs; knobs a manifest does not support are
+disclosed as `ignored_settings` on `harness.started`, never silently dropped.
+Candidate diffs additionally pass a typed policy gate: protected-path changes
+and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run.
+
+`auto` is evidence-driven: it permits web tools where the harness supports them
+and records whether the harness actually attempted web. If a web tool is
+attempted and its `tool_result` errors, the attempt is `web-unsatisfied` until a
+later successful web result proves recovery. Read-only Ask/Audit can route
+fallback to another eligible harness and emits `route.fallback.started`,
+`route.fallback.completed`, or `route.fallback.exhausted`.
+
 ## 5. Auth And Secrets
 
 Native harness auth is preferred. API-key fallback uses `packages/secrets`:
@@ -132,6 +179,13 @@ fails, the run still writes inspectable failure artifacts
 (`context/context_error.md`, `final/failure.yaml`, `final/summary.md`) and emits
 `run.failed`.
 
+Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
+preserves redacted detail in the event payload and blocks claimed success unless
+verified recovery exists. When web evidence is unsatisfied and another eligible
+read-only route exists, Ask falls back before terminal failure. If no fallback
+can satisfy the policy, the run is `blocked` with a partial unverified output
+artifact when one exists.
+
 ### Explore
 
 Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8). Each
@@ -147,6 +201,13 @@ when at least one explorer succeeds; if all explorers fail, the run emits
 run: the harness works in an isolated workspace, Claudexor captures the git diff,
 emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
+
+Envelope semantics are strict. Project runs execute under
+`.claudexor/workspaces/<task>/<attempt>/tree`, and the harness `cwd` is the
+envelope worktree. Proven work product is the git diff in that worktree, a
+declared run artifact, or an explicitly verified host side-effect. Absolute
+`/tmp/...` writes are host side effects and are not project diffs; project tmp
+requests default to `tmp/...` inside the project/envelope or to run artifacts.
 
 Convergence modes also default to isolated envelopes. The CLI-only `--in-place`
 is reserved for explicit stateful external adapters, such as Terminal-Bench
@@ -187,13 +248,17 @@ artifact/delivery facade:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`, `POST /runs/:id/input`
+- `POST /runs/:id/control`
 - `GET /harnesses`, `POST /harnesses/setup`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
+  `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
+
+`GET /healthz` is the only unauthenticated route; it is loopback-host guarded
+and returns liveness only.
 
 `POST /harnesses/setup` owns setup preparation. It validates typed setup
 actions, rejects inline secrets, and returns only server-side allowlisted
@@ -209,10 +274,20 @@ of local fake apply state.
 
 `POST /runs/:id/control` is capability-based. The implemented minimum is
 cancel/interrupt: daemon abort closes the active harness stream and the process
-helper sends a cooperative interrupt with hard-kill fallback. Live steering or
-input forwarding through `POST /runs/:id/input` is not wired into active runs in
-v0.6.0; it must return `unsupported` unless a future route binds the request to a
-state-preserving surface such as Codex app-server or Claude stream-json stdin.
+helper sends a cooperative interrupt with hard-kill fallback. Live input
+forwarding into a running harness is not a v0.7 surface; the former
+`/runs/:id/input` endpoint and `RunInput` DTO were removed rather than left as
+an always-`unsupported` stub.
+
+Run detail includes terminal state and output-ready state. `summary.state` is the
+daemon terminal/lifecycle state. `summary.outputReadyState` is
+`pending | finalizing | ready | diagnostic` and is derived from primary output
+and failure artifacts. `summary.webEvidence` and tool-error rollups are
+projections of the engine-owned `final/telemetry.yaml` (the orchestrator is the
+single evidence owner); runs that predate that artifact report
+`available: false` instead of recomputed guesses. Timeline projections include
+tool name, target/domain/path, error summary, severity, harness, attempt, and
+raw event reference, and are capped with an explicit truncation marker.
 
 ## 8. Artifact Layout
 
@@ -237,6 +312,7 @@ reviews/*-reviewers/<reviewer>/parse-error.json?
 arbitration/decision.yaml
 arbitration/pairwise.yaml
 arbitration/synthesis.yaml
+final/telemetry.yaml
 final/patch.diff?
 final/work_product.yaml
 final/summary.md
@@ -247,7 +323,15 @@ final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?
 final/plan.md?
+plans/<harness>.md?           (plan mode)
+attempts/aNN/events.jsonl?    (read-only modes)
 ```
+
+`final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
+record of per-attempt web evidence (requested/effective mode, attempted,
+satisfied, status), unrecovered tool errors, statusless results, and dropped
+native events. Surfaces project it; they never recompute evidence from raw
+events or model prose.
 
 Review prompts are file-backed: the full candidate patch is written to the
 candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest

@@ -101,6 +101,8 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       plugins: false,
       worktree_native: false,
       web_policy: "none",
+      max_turns: false,
+      tool_lists: false,
       quota_signal: id === "fake-rate-limit" ? "observed" : "unknown",
       usage_signal: "exact",
     },
@@ -128,23 +130,31 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
       yield ev(s, "message", { text: "Output from the (silently) same model." });
       yield ev(s, "completed", { observed_model: observedModel });
       return;
+    // Error kinds still END with `completed`: the shared CLI run loop guarantees
+    // a terminal completed for every real adapter, and the fakes are the
+    // conformance fixtures for that contract (failure truth lives in `error`
+    // events + gates, not in a missing terminal event).
     case "fake-fail-tests":
       yield ev(s, "message", { text: "Attempted a fix." });
       yield ev(s, "file_change", { payload: { path: "BROKEN.txt", action: "modify" } });
       yield ev(s, "error", { error: "tests failed: 2 failing" });
+      yield ev(s, "completed", { observed_model: observedModel });
       return;
     case "fake-invalid-json":
       yield ev(s, "error", { error: "AdapterParseError: harness emitted unparseable output" });
+      yield ev(s, "completed", { observed_model: observedModel });
       return;
     case "fake-timeout":
       yield ev(s, "thinking", { text: "..." });
       yield ev(s, "error", { error: "timeout after 0ms (simulated)" });
+      yield ev(s, "completed", { observed_model: observedModel });
       return;
     case "fake-rate-limit":
       yield ev(s, "error", {
         error: "rate limited",
         payload: { resets_at: new Date(Date.now() + 3600_000).toISOString() },
       });
+      yield ev(s, "completed", { observed_model: observedModel });
       return;
   }
 }

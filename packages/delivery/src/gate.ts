@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import type { DecisionRecord, WorkProduct } from "@claudexor/schema";
+import { pathGuard } from "@claudexor/policy";
 import { sha256 } from "@claudexor/util";
 
 /**
@@ -40,5 +41,24 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   } catch {
     return "run original project cannot be verified; refusing apply";
   }
+  // Workspace confinement (defense-in-depth on top of `git apply`): every
+  // patched path must resolve INSIDE the target repo root.
+  for (const path of patchPaths(input.patch)) {
+    const guard = pathGuard(input.targetRepoRoot, path);
+    if (!guard.allowed) return `patch path escapes the target repo: ${guard.reason}`;
+  }
   return null;
+}
+
+/** Paths touched by a unified git diff (both old and new sides, excluding /dev/null). */
+function patchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+      const raw = line.slice(4).trim();
+      if (raw === "/dev/null") continue;
+      paths.add(raw.startsWith("a/") || raw.startsWith("b/") ? raw.slice(2) : raw);
+    }
+  }
+  return [...paths];
 }

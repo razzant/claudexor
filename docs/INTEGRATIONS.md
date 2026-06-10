@@ -21,6 +21,7 @@ artifact directory.
 
 ```bash
 claudexor ask "explain the auth flow" --json
+claudexor ask "google the latest release notes" --web auto --json
 claudexor explore "map this repo's run storage" --json
 claudexor run "fix the failing parser test" --json
 claudexor race "fix add() in src/math.js" --harness codex,claude --n 2 --json
@@ -30,6 +31,12 @@ claudexor inspect <run_id> --json
 Not every subcommand has stable JSON output. Integrations should prefer the
 daemon/control API for long-running interactive use and use CLI JSON only where
 the command documents or returns machine-readable output.
+
+`--web off|auto|cached|live` is the CLI-first external context policy. It is
+separate from process/network sandboxing. `claudexor inspect <run_id> --json`
+returns the same core facts the app renders: terminal/output-ready state,
+primary output, web evidence, tool errors, budget, fallback events, and artifact
+paths.
 
 ## Daemon And Control API
 
@@ -42,29 +49,37 @@ Core endpoints:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`, `POST /runs/:id/input`
+- `POST /runs/:id/control`
 - `GET /harnesses`, `POST /harnesses/setup`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/cancel`
+  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
+  `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`
 - `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
-The API is loopback-only and bearer-token guarded. Artifact files remain the
-source of truth; API responses are projections over daemon state and run files.
-Harness setup commands are server allowlisted. Install/login/doctor execution
-uses setup jobs with risk flags and redacted logs; API-key fallback goes through
-`/secrets`, not inline setup payloads.
+The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
+unauthenticated, loopback-host-guarded liveness route). Artifact files remain
+the source of truth; API responses are projections over daemon state and run
+files. Harness setup commands are server allowlisted. Install/login/doctor
+execution uses setup jobs with risk flags, redacted logs, persistence across
+daemon restarts, watchdog timeouts, and a polling-backed SSE lifecycle stream
+(`/setup/jobs/:id/events`) that heartbeats and closes on terminal states.
+API-key fallback goes through `/secrets`, not inline setup payloads.
 
-`GET /runs/:id` includes `primaryOutput`, `timeline`, and `budget` projections
-for clients that need the main answer/report, streamed activity, and known spend
-state without scraping artifacts. Unknown quota or spend remains unknown; do not
-render missing values as `$0`.
+`GET /runs/:id` includes `primaryOutput`, `timeline`, `budget`,
+`summary.outputReadyState`, requested/effective access, external context policy,
+and `summary.webEvidence` projections for clients that need the main
+answer/report, streamed activity, known spend state, and tool/web status without
+scraping artifacts. Web/tool evidence is projected from the engine-owned
+`final/telemetry.yaml`; runs that predate it report `available: false`. Unknown
+quota or spend remains unknown; do not render missing values as `$0`. Large
+artifacts are size-capped (HTTP 413 names the on-disk path) and timelines are
+capped with an explicit truncation marker.
 
 `POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
-`POST /runs/:id/input` is a typed beta endpoint, but v0.6.0 does not forward
-live user input into active runs by default. Integrations must treat
-`unsupported` as an honest state and disable input UI for that run.
+Live input forwarding into a running harness is not part of the surface; the
+former `/runs/:id/input` stub was removed in v0.7.0.
 
 ## MCP
 
@@ -107,6 +122,14 @@ and live controls must rely on doctor status, enabled intents, and smoke checks.
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.
 
+Comparator notes for current adapters: Claude Code exposes permissioned
+`WebSearch`/`WebFetch` tools and native flags such as `--model`, `--effort`,
+`--max-turns`, `--allowedTools`, and `--disallowedTools`. Codex exposes web
+search as `cached`, `live`, or `disabled`, with live search controlled by
+`--search`/config and command network access controlled separately. Claudexor
+maps its typed policy onto those native surfaces and records observed tool
+evidence rather than relying on final-answer claims.
+
 ## Storage
 
 Project runs write under the target repository's `.claudexor/runs/<run_id>/`.
@@ -118,5 +141,8 @@ Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
 - Schema and generated JSON Schema are the data-shape source of truth.
 - Unknown modes and unavailable harnesses fail loudly.
 - Raw secrets never become run artifacts or docs.
+- No regex governance for risk, permissions, tool success, web-required
+  detection, winners, or tests-passed. Use typed contracts, settings, events,
+  gates, artifacts, and reviewer evidence.
 - Integrations should display beta limitations instead of silently falling back
   to another harness or another mode.

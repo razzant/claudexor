@@ -219,7 +219,8 @@ function controlServices() {
       const value = typeof p["value"] === "string" ? p["value"] : "";
       if (!name || !value) throw new Error("name and value are required");
       const backend = secretStore.set(name, value);
-      return { name, backend, stored: true };
+      // Keychain->file degradation is disclosed, not silent (UI shows it).
+      return { name, backend, stored: true, ...(secretStore.lastFallbackReason ? { warning: secretStore.lastFallbackReason } : {}) };
     },
     deleteSecret: async (name: string) => {
       secretStore.delete(name);

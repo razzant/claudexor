@@ -1,7 +1,7 @@
 {
   "name": "@claudexor/cli",
   "version": "0.6.0",
-  "description": "Claudexor CLI (claudexor). Thin surface over the ExecutionEngine.",
+  "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",

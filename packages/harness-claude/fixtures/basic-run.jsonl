@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-5","tools":["Bash","Edit","WebSearch"]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Implementing the fix."},{"type":"tool_use","id":"tu_bash1","name":"Bash","input":{"command":"pnpm test"}},{"type":"tool_use","id":"tu_edit1","name":"Edit","input":{"file_path":"src/a.ts"}},{"type":"tool_use","id":"tu_web1","name":"WebSearch","input":{"query":"claudexor docs"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_bash1","content":"All tests passed"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_web1","content":"3 results"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_edit1","is_error":true,"content":"file not found"}]}}
+{"type":"result","subtype":"success","result":"Done.","total_cost_usd":0.12,"usage":{"input_tokens":1000,"cache_read_input_tokens":400,"output_tokens":200}}
