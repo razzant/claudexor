@@ -16,8 +16,11 @@ type Json = any;
  *
  * For AskUserQuestion the answers ride in `updatedInput.answers` as a record of
  * question text -> selected label(s) (docs: "Handle approvals and user input").
- * Frame shapes are additionally verified against a live CLI fixture captured
- * during the paid smoke (fixtures/).
+ * Frame shapes are LIVE-VERIFIED against Claude Code 2.1.165: the full
+ * bidirectional exchange (initialize -> can_use_tool -> allow -> ok
+ * tool_result -> result) is recorded in fixtures/protocol/control-handshake.jsonl.
+ * The control channel only activates with `--permission-prompt-tool stdio`;
+ * without it the headless CLI auto-denies interactive tools itself.
  */
 
 export function isControlRequestFrame(obj: Json): boolean {
@@ -36,6 +39,22 @@ export function initialUserMessageFrame(prompt: string): string {
       message: { role: "user", content: [{ type: "text", text: prompt }] },
     }) + "\n"
   );
+}
+
+/**
+ * Initial stdin block for an interactive session: the initialize handshake
+ * (announces a live control-protocol client) followed by the user message.
+ * Live-verified against Claude Code 2.1.165: both frames may be written in
+ * one block without waiting for the initialize response
+ * (fixtures/protocol/control-handshake.jsonl).
+ */
+export function initialSessionFrames(prompt: string): string {
+  const initialize = JSON.stringify({
+    type: "control_request",
+    request_id: "req_claudexor_init",
+    request: { subtype: "initialize" },
+  });
+  return initialize + "\n" + initialUserMessageFrame(prompt);
 }
 
 /** Map the native AskUserQuestion input into the typed InteractionRequest. */

@@ -211,7 +211,7 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
-  it("builds interactive args with stream-json input and the prompt on stdin", () => {
+  it("builds interactive args with stream-json input, stdio permission prompts, and the prompt on stdin", () => {
     const spec = HarnessRunSpec.parse({
       session_id: "ses-test",
       intent: "plan",
@@ -222,11 +222,22 @@ describe("parseClaudeEvent", () => {
     const args = claudeArgsForSpec(spec, true);
     expect(args).toContain("--input-format");
     expect(args).toContain("stream-json");
+    // Live-verified switch: without it the CLI auto-denies AskUserQuestion
+    // instead of raising a control_request (fixtures/protocol/control-handshake.jsonl).
+    const promptToolIdx = args.indexOf("--permission-prompt-tool");
+    expect(promptToolIdx).toBeGreaterThan(-1);
+    expect(args[promptToolIdx + 1]).toBe("stdio");
     // The prompt must NOT travel as an argv prompt in interactive mode.
     expect(args).not.toContain("make a plan");
-    // One-shot mode keeps the prompt arg and no input-format flag.
+    // One-shot mode keeps the prompt arg and no control-channel flags.
     const oneShot = claudeArgsForSpec(spec);
     expect(oneShot).toContain("make a plan");
     expect(oneShot).not.toContain("--input-format");
+    expect(oneShot).not.toContain("--permission-prompt-tool");
+  });
+
+  it("recognizes control-protocol plumbing frames without counting them as dropped", () => {
+    expect(parseClaudeEvent({ type: "control_response", response: { subtype: "success", request_id: "req_claudexor_init" } }, "s1")).toEqual([]);
+    expect(parseClaudeEvent({ type: "control_cancel_request" }, "s1")).toEqual([]);
   });
 });

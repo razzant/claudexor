@@ -6,6 +6,7 @@ import {
   allowResponseFrame,
   denyResponseFrame,
   handleControlRequestFrame,
+  initialSessionFrames,
   initialUserMessageFrame,
   interactionRequestFromNative,
   isControlRequestFrame,
@@ -61,6 +62,15 @@ describe("claude interactive control protocol", () => {
     const frame = JSON.parse(initialUserMessageFrame("hello")) as Record<string, any>;
     expect(frame["type"]).toBe("user");
     expect(frame["message"]["content"][0]["text"]).toBe("hello");
+  });
+
+  it("opens interactive sessions with the initialize handshake before the prompt", () => {
+    const lines = initialSessionFrames("hello").trim().split("\n").map((l) => JSON.parse(l) as Record<string, any>);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.["type"]).toBe("control_request");
+    expect(lines[0]?.["request"]["subtype"]).toBe("initialize");
+    expect(lines[1]?.["type"]).toBe("user");
+    expect(lines[1]?.["message"]["content"][0]["text"]).toBe("hello");
   });
 
   it("maps native questions into the typed InteractionRequest", () => {

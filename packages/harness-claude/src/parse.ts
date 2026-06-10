@@ -186,6 +186,12 @@ function parseClaudeEventStateful(
 
   if (type === "system") return []; // recognized but uninteresting system subtypes
 
+  // Control-protocol plumbing frames. Incoming control_requests are consumed
+  // by the interactive session handler BEFORE this parser; responses to OUR
+  // initialize handshake (and cancel acks) are recognized plumbing, never
+  // counted as dropped events.
+  if (type === "control_response" || type === "control_cancel_request") return [];
+
   return null;
 }
 

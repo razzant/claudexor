@@ -7,7 +7,7 @@ import { HarnessUnavailableError, interactionChannelFromSpec, runCapture, runCli
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
-import { handleControlRequestFrame, initialUserMessageFrame, isControlRequestFrame, isResultFrame } from "./interactive.js";
+import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame, isResultFrame } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = [
@@ -213,8 +213,11 @@ const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
 export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false): string[] {
   // Interactive sessions deliver the prompt as a stream-json user message on
   // stdin (the control protocol's transport); one-shot runs keep the prompt arg.
+  // `--permission-prompt-tool stdio` is the live-verified switch that routes
+  // permission prompts (AskUserQuestion included) onto the control channel as
+  // control_request frames instead of headless auto-denial.
   const args = interactive
-    ? ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", ...permissionArgs(spec.access)]
+    ? ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio", ...permissionArgs(spec.access)]
     : ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   if (spec.effort_hint) args.push("--effort", spec.effort_hint);
@@ -283,7 +286,7 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     ...(interactive
       ? {
           session: {
-            initialStdin: initialUserMessageFrame(spec.prompt),
+            initialStdin: initialSessionFrames(spec.prompt),
             matches: isControlRequestFrame,
             handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
             closeStdinOn: isResultFrame,
