@@ -102,9 +102,12 @@ quickly: composer-first, visible modes, harness chips, live timeline, task
 outcome, diagnostics, review queue, and settings. Compact controls need hover
 help, blocking sheets need obvious exit affordances, and money input must be
 typed precisely rather than dragged on a slider. Liquid Glass belongs to
-navigation/chrome/floating composer; dense content uses solid surfaces. Glow and
-motion are welcome, but black/white cutout artifacts, janky transitions,
-glass-behind-code, and decorative UI that obscures state are bugs.
+navigation/chrome/floating composer; ordinary content cards float on frosted
+system materials (the `cardSurface` recipe — never `glassEffect` lensing);
+code, diffs, transcripts, tables, and dense small text keep solid
+high-contrast surfaces, and Reduce Transparency falls back to solid fills.
+Glow and motion are welcome, but black/white cutout artifacts, janky
+transitions, glass-behind-code, and decorative UI that obscures state are bugs.
 
 ## 10. Settings Are Preferences, Not Brochures
 

@@ -69,7 +69,9 @@ struct TasksScreen: View {
         switch f {
         case .all: return model.tasks
         case .active: return model.tasks.filter { $0.status.isActive }
-        case .needsYou: return model.tasks.filter { $0.status.needsAttention }
+        // Same definition as Home's attentionTasks: a running run parked on an
+        // interactive question needs the user even though its status is active.
+        case .needsYou: return model.tasks.filter { $0.status.needsAttention || $0.waitingOnUser }
         // "Done" = every terminal outcome (incl. failed/interrupted/no-op): runs
         // must never vanish from all filters.
         case .done: return model.tasks.filter { !$0.status.isActive }

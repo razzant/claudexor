@@ -475,6 +475,9 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
     public let routing: RoutingSettings
     public let budget: BudgetSettings
     public let harnesses: [String: HarnessSettings]?
+    /// Wait before an unanswered interactive question declines benignly (ms).
+    /// Optional: pre-v0.8 daemons do not report it.
+    public let interactionTimeoutMs: Int?
 }
 
 public struct RoutingSettings: Codable, Sendable, Equatable {
@@ -541,6 +544,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var maxUsdPerDay: Double?
     public var clearMaxUsdPerRun: Bool
     public var clearMaxUsdPerDay: Bool
+    public var interactionTimeoutMs: Int?
     public var harnesses: [String: HarnessSettingsPatch]?
 
     public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
@@ -548,6 +552,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
                 clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false,
+                interactionTimeoutMs: Int? = nil,
                 harnesses: [String: HarnessSettingsPatch]? = nil) {
         self.defaultPortfolio = defaultPortfolio
         self.routingPolicy = routingPolicy
@@ -559,6 +564,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.maxUsdPerDay = maxUsdPerDay
         self.clearMaxUsdPerRun = clearMaxUsdPerRun
         self.clearMaxUsdPerDay = clearMaxUsdPerDay
+        self.interactionTimeoutMs = interactionTimeoutMs
         self.harnesses = harnesses
     }
 

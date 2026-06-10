@@ -587,10 +587,18 @@ struct TaskRun: Identifiable, Hashable {
     /// never a green Succeeded badge next to an empty Outcome.
     var isFinalizing: Bool {
         guard isLive, status.isTerminal, status != .cancelled else { return false }
+        // loadRunDetail ALWAYS fills diagnosticText with at least a
+        // placeholder, so for a GREEN badge (succeeded) diagnostics only
+        // count as content when the engine explicitly marked the output as
+        // diagnostic — otherwise "Succeeded" could sit next to an empty
+        // Outcome, exactly the bug this state exists to prevent. For
+        // failure-shaped terminals (failed/blocked/exhausted/no-op/...) the
+        // diagnostics blob IS the legitimate final content.
+        let diagnosticIsContent = status != .succeeded || outputReadyState == "diagnostic"
         let hasContent =
             !(answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !diff.isEmpty
-            || diagnosticText != nil
+            || (diagnosticIsContent && !(diagnosticText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             || engineError != nil
         return !hasContent
     }

@@ -10,6 +10,8 @@ export interface RunnerHooks {
   onEvent?: (event: any) => void;
   /** Interactive question surface; resolve with answers or null to decline. */
   onInteraction?: (ctx: any) => Promise<any | null>;
+  /** Cooperative cancellation (session/cancel aborts the underlying run). */
+  signal?: AbortSignal;
 }
 
 export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
@@ -32,6 +34,8 @@ export class AcpServer {
   private sessions = new Set<string>();
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<string, (result: any) => void>();
+  /** Active run per session: lets session/cancel abort and keeps prompts serial. */
+  private readonly activeRuns = new Map<string, AbortController>();
 
   constructor(private readonly opts: AcpServerOptions) {}
 
@@ -56,7 +60,13 @@ export class AcpServer {
         continue;
       }
       if (msg.id === undefined || msg.id === null) continue;
-      await this.handle(msg);
+      // NEVER block the read loop on a handler: session/prompt runs for
+      // minutes and the loop must keep consuming session/request_permission
+      // responses and session/cancel while the run is active. Handler errors
+      // are reported per-request, not thrown into the loop.
+      void this.handle(msg).catch((err) => {
+        this.write({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } });
+      });
     }
   }
 
@@ -100,13 +110,24 @@ export class AcpServer {
       case "session/prompt": {
         const sessionId = params?.sessionId as string | undefined;
         const text = extractPromptText(params?.prompt);
+        // One active run per session: a second prompt while one is running is
+        // a protocol misuse and must fail loudly, not interleave run events.
+        if (sessionId && this.activeRuns.has(sessionId)) {
+          this.reply(id, { stopReason: "error", error: `session ${sessionId} already has an active prompt` });
+          return;
+        }
+        const controller = new AbortController();
+        if (sessionId) this.activeRuns.set(sessionId, controller);
         try {
-          const hooks: RunnerHooks | undefined = sessionId
-            ? {
-                onEvent: (event) => this.forwardRunEvent(sessionId, event),
-                onInteraction: (ctx) => this.requestAnswers(sessionId, ctx),
-              }
-            : undefined;
+          const hooks: RunnerHooks = {
+            signal: controller.signal,
+            ...(sessionId
+              ? {
+                  onEvent: (event: any) => this.forwardRunEvent(sessionId, event),
+                  onInteraction: (ctx: any) => this.requestAnswers(sessionId, ctx),
+                }
+              : {}),
+          };
           const result = await this.opts.runner({ prompt: text, mode: params?.mode ?? "agent" }, hooks);
           if (sessionId) {
             this.notify("session/update", {
@@ -114,15 +135,26 @@ export class AcpServer {
               update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(result) } },
             });
           }
-          this.reply(id, { stopReason: "end_turn" });
+          this.reply(id, { stopReason: controller.signal.aborted ? "cancelled" : "end_turn" });
         } catch (err) {
-          this.reply(id, { stopReason: "error", error: err instanceof Error ? err.message : String(err) });
+          if (controller.signal.aborted) {
+            this.reply(id, { stopReason: "cancelled" });
+          } else {
+            this.reply(id, { stopReason: "error", error: err instanceof Error ? err.message : String(err) });
+          }
+        } finally {
+          if (sessionId && this.activeRuns.get(sessionId) === controller) this.activeRuns.delete(sessionId);
         }
         return;
       }
-      case "session/cancel":
-        this.reply(id, {});
+      case "session/cancel": {
+        const sessionId = params?.sessionId as string | undefined;
+        const active = sessionId ? this.activeRuns.get(sessionId) : undefined;
+        if (active) active.abort();
+        // Honest reply: report whether there was anything to cancel.
+        this.reply(id, { cancelled: Boolean(active) });
         return;
+      }
       default:
         this.write({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });
     }

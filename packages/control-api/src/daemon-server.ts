@@ -262,7 +262,10 @@ export class DaemonControlApiServer {
     if (method === "GET" && runDetailMatch) {
       const rec = await this.findRun(decodeURIComponent(runDetailMatch[1] as string));
       if (!rec) return this.json(res, 404, { error: "no such run" });
-      return this.json(res, 200, detailFor(rec, this.pendingInteractionsFor(rec)));
+      // Fence order: cursor FIRST, every projection (pending interactions
+      // included) after it — see the detailFor doc comment.
+      const lastSeq = rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0;
+      return this.json(res, 200, detailFor(rec, this.pendingInteractionsFor(rec), lastSeq));
     }
 
     const interactionAnswerMatch = /^\/runs\/([^/]+)\/interactions\/([^/]+)\/answer$/.exec(path);
@@ -1077,15 +1080,21 @@ function controlRoute(telemetry: RunTelemetry | null, p: Record<string, unknown>
   };
 }
 
-function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInteraction[] = []): ControlRunDetail {
+function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInteraction[] = [], cursor?: number): ControlRunDetail {
+  // Snapshot fence: capture the event cursor BEFORE building any projection.
+  // The fence promise is "every event with seq <= lastSeq is reflected" — a
+  // cursor read AFTER the projections could skip an event that landed in
+  // between (the projections would not reflect it, and a client resuming from
+  // that cursor would never see it). A pre-projection cursor errs the other
+  // way: an in-between event is both reflected AND replayed, which clients
+  // absorb (event application is reconciled against the newer snapshot).
+  const lastSeq = cursor ?? (rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const summary = summarizeRun(rec);
   return ControlRunDetail.parse({
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
-    // Snapshot fence: every event with seq <= lastSeq is reflected above, so a
-    // client subscribing from this cursor gets gap-free, duplicate-free state.
-    lastSeq: rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0,
+    lastSeq,
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     primaryOutput: primaryOutput(rec),
     timeline: timelineEvents(rec),

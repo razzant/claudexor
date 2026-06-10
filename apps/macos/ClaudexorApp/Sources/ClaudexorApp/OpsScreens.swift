@@ -253,9 +253,15 @@ struct SettingsScreen: View {
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
     @State private var maxUsdPerRun = ""
     @State private var maxUsdPerDay = ""
+    @State private var interactionTimeoutMinutes = ""
     @AppStorage("claudexor.reducedVisualEffects") private var reducedVisualEffects = false
     private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var dayCapValid: Bool { parseOptionalDouble(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var interactionTimeoutValid: Bool {
+        let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        return (Int(trimmed) ?? 0) > 0
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -428,6 +434,22 @@ struct SettingsScreen: View {
                         .help("Save validated budget defaults. Empty fields clear the corresponding cap.")
                     KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
                 }
+                settingsGroup("Interactive questions", "questionmark.bubble") {
+                    HStack(spacing: Theme.Spacing.md) {
+                        TextField("Answer timeout (minutes)", text: $interactionTimeoutMinutes)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 220)
+                            .help("How long a run waits for your answer to a harness question before continuing with assumptions. Empty keeps the engine default (15 minutes).")
+                        Button { Task { await saveInteractionTimeout() } } label: { Label("Save", systemImage: "checkmark.circle") }
+                            .buttonStyle(.bordered)
+                            .disabled(!interactionTimeoutValid)
+                    }
+                    if !interactionTimeoutValid {
+                        Label("Use a positive whole number of minutes, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.status(.failed))
+                    }
+                }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
                     // Single source: the bundle version stamped at packaging time
@@ -525,6 +547,13 @@ struct SettingsScreen: View {
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
         maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
         maxUsdPerDay = s.budget.maxUsdPerDay.map { String(format: "%.2f", $0) } ?? ""
+        interactionTimeoutMinutes = s.interactionTimeoutMs.map { String(max(1, $0 / 60_000)) } ?? ""
+    }
+
+    private func saveInteractionTimeout() async {
+        let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard interactionTimeoutValid, !trimmed.isEmpty, let minutes = Int(trimmed) else { return }
+        _ = await model.saveSettings(SettingsUpdateRequest(interactionTimeoutMs: minutes * 60_000))
     }
 
     private func saveEngineDefaults() async {

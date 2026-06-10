@@ -43,7 +43,7 @@ import { parseReviewerEffortMap } from "./reviewer-options.js";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
   const orch = new Orchestrator({ registry: buildRegistry() });
-  return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null> }) => {
+  return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null>; signal?: AbortSignal }) => {
     if (p?.mode === "__status") return { harnesses: [...buildRegistry().keys()] };
     return orch.run({
       repoRoot: process.cwd(),
@@ -58,6 +58,7 @@ function orchestratorRunner() {
       n: typeof p?.n === "number" ? p.n : undefined,
       onEvent: hooks?.onEvent,
       onInteraction: hooks?.onInteraction,
+      signal: hooks?.signal,
     });
   };
 }
@@ -543,6 +544,7 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
       print(`budget.max_usd_per_day: ${cfg.global.budget.max_usd_per_day ?? "(none)"}`);
+      print(`interaction_timeout_ms: ${cfg.global.interaction_timeout_ms}`);
       const harnessIds = Object.keys(cfg.global.harnesses);
       if (harnessIds.length) {
         print("harnesses:");
@@ -558,7 +560,7 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
     const key = args._[2];
     const value = args._[3];
     if (!key || value === undefined) {
-      print("usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|budget_max_usd_per_day <value>");
+      print("usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|budget_max_usd_per_day|interaction_timeout_ms <value>");
       return 2;
     }
     try {
@@ -596,6 +598,11 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
               [key === "budget_max_usd_per_run" ? "max_usd_per_run" : "max_usd_per_day"]: parsed,
             },
           };
+        }
+        if (key === "interaction_timeout_ms") {
+          const parsed = Number(value.trim());
+          if (!Number.isInteger(parsed) || parsed <= 0) throw new Error("interaction_timeout_ms must be a positive integer (milliseconds)");
+          return { ...cfg, interaction_timeout_ms: parsed };
         }
         throw new Error(`unknown setting: ${key}`);
       });

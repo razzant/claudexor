@@ -1114,9 +1114,16 @@ final class AppModel {
     private func startGlobalStream() {
         globalStreamTask?.cancel()
         globalStreamTask = Task { [weak self] in
+            var firstAttach = true
             while !Task.isCancelled {
                 guard let self, let client = self.client else { break }
                 do {
+                    // The global stream is LIVE-ONLY (documented contract): runs
+                    // started and terminal flips that happened while this stream
+                    // was down are invisible to it, so every (re)attach repairs
+                    // the gap with a list snapshot first.
+                    if !firstAttach { await self.refreshRuns() }
+                    firstAttach = false
                     for try await env in client.globalEvents() {
                         let runId = env.event["run_id"]?.stringValue ?? ""
                         guard !runId.isEmpty else { continue }

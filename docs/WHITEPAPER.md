@@ -95,22 +95,50 @@ mode before it can count as success.
 Scoped harness homes/config directories stay outside the worktree so auth files,
 plugin downloads, sqlite logs, and transcripts are not captured in patches.
 
+Write-access modes need a git boundary for worktree isolation and honest
+diffs. A project folder that is not a git repository is initialized
+automatically instead of refused: `.claudexor/` is seeded into `.gitignore`
+first, then `git init` plus a deterministic Claudexor-authored baseline commit
+make diffs truthful from the very first run. The mutation is announced in the
+run timeline (`project.git.initialized`) — never silent.
+
 ## Observability
 
 Runs are append-only event streams plus artifacts. `events.jsonl` is canonical;
-SSE streams hydrate/reconnect from it. Timeline and Diagnostics expose tool
-calls, targets, permission policy, error summaries, harness/attempt ids,
-fallback routes, first output, last event, budget observations, and artifact
-paths.
+every event carries a monotonic per-run `seq` stamped at emit time. Live
+clients follow a snapshot-then-subscribe contract: fetch the run detail (whose
+`lastSeq` fences everything the snapshot already reflects), then subscribe to
+the per-run SSE stream from that cursor (`Last-Event-ID`); reconnects resume
+without gaps or duplicates instead of replaying or guessing. A global
+live-only `/events` multiplex keeps run lists fresh; it is explicitly not
+gap-free, so clients re-snapshot the list after a drop. Timeline and
+Diagnostics expose tool calls, targets, permission policy, error summaries,
+harness/attempt ids, fallback routes, first output, last event, budget
+observations, and artifact paths.
 
 Terminal state and output readiness are separate. A daemon job can be terminal
 while the primary answer/report is still `finalizing`. `outputReadyState` is
 `pending | finalizing | ready | diagnostic`, and clients must display it instead
 of assuming terminal success means a loaded answer.
 
+Interactive runs are part of the same event contract. When a harness raises a
+flow-control question (e.g. Claude's `AskUserQuestion` over its bidirectional
+control protocol), the run emits `interaction.requested`, surfaces the typed
+question set as a pending interaction with a `waiting_on_user` state, and
+resumes on a typed answer (`interaction.answered`) or a benign decline after a
+configurable timeout (`interaction.timeout`). Answers ride the control plane
+(API/CLI/app), never an inferred prose channel.
+
+Routing claims are evidence, not configuration echoes: run telemetry records
+the model the harness stream actually disclosed (`observed_model`), and UI
+route-proof badges key off that observation, not the requested route.
+
 Setup jobs are also observable: queued/running/waiting/succeeded/failed/
 cancelled, command preview, risk flags, started time, first output, latest
-output, terminal result, retry count, doctor result, and log path.
+output, terminal result, retry count, doctor result, and log path. Doctor and
+key-verification phases run in-process inside the daemon (no shell-out to a
+CLI that may not be on PATH), so a missing binary cannot masquerade as a
+failed key.
 
 ## Budget And Settings
 
@@ -126,10 +154,13 @@ must render disabled with reasons in UI and remain visible in CLI/API state.
 ## macOS Design
 
 The app is a native projection over the engine. Liquid Glass belongs on chrome:
-sidebar, toolbar, sheets, and floating controls. Dense output, reports, code,
-diffs, transcripts, tables, and diagnostics use solid surfaces. Dark theme uses
-crisp graphite: lifted cards, clear strokes, strong text contrast, restrained
-glow, and no muddy gray fill.
+sidebar, toolbar, sheets, and floating controls. Ordinary content cards float
+on frosted system materials — material fill plus tint veil, a top-lit hairline,
+and a scheme-aware shadow — in both themes (never `glassEffect` lensing over
+content). Code, diffs, transcripts, tables, and any dense small text keep
+solid, high-contrast surfaces, and Reduce Transparency falls back to solid
+raised fills. Dark theme stays crisp graphite: clear strokes, strong text
+contrast, restrained glow, and no muddy gray fill.
 
 Outcome/report/plan surfaces render markdown with selectable text and solid code
 blocks. Technical artifacts stay in Diagnostics. The UI must not transform
