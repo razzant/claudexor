@@ -839,7 +839,9 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     portfolio: parsedPortfolio.success ? parsedPortfolio.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
     n: typeof p["n"] === "number" ? p["n"] : undefined,
-    maxUsd: typeof p["maxUsd"] === "number" || p["maxUsd"] === null ? (p["maxUsd"] as number | null) : undefined,
+    // Engine-effective cap: the contract carries config-defaulted caps that
+    // request params never knew about.
+    maxUsd: typeof p["maxUsd"] === "number" ? p["maxUsd"] : task?.budget.max_usd ?? (p["maxUsd"] === null ? null : undefined),
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
     access: effectiveAccess ?? parsedAccess,
@@ -1034,7 +1036,11 @@ function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
 
 function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): ControlBudgetSnapshot {
   const p = paramsRecord(rec);
-  const maxUsd = typeof p["maxUsd"] === "number" ? p["maxUsd"] : null;
+  // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
+  // surface default, or the configured global per-run default); request params
+  // alone under-report a config-defaulted cap as "no cap".
+  const contractCap = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract)?.budget.max_usd ?? null;
+  const maxUsd = typeof p["maxUsd"] === "number" ? p["maxUsd"] : contractCap;
   let spendUsd = decision?.budget_summary?.spend_usd ?? null;
   let estimated = decision?.budget_summary?.estimated ?? false;
   let source: "decision" | "events" | "settings" | "unknown" = spendUsd === null ? "unknown" : "decision";

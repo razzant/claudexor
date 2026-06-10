@@ -1564,6 +1564,7 @@ export class Orchestrator {
     const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
     const harnessLedgers = new Map<string, BudgetLedger>();
     let lastDiffStable = true;
+    let reviewSpendEstimated = false;
 
     try {
       // The contract's ENGINE-COMPUTED effective profile drives the envelope and
@@ -1676,8 +1677,12 @@ export class Orchestrator {
 
         const candidateReviewCwd = run.reviewCwd ?? input.repoRoot;
         const candidateReviewEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateReviewCwd);
+        // Reviewer panels spend real money in convergence too: reserve before,
+        // settle the observed cost, and surface it as a budget observation
+        // (parity with the race path's reviewRuns metering).
+        const reviewLease = reviewers.length > 0 ? ledger.reserve({ taskId, attemptId, intent: "review", harnessId: "review-panel" }) : null;
         const reviewResult =
-          reviewers.length > 0
+          reviewers.length > 0 && (reviewLease?.granted ?? false)
             ? await reviewCandidate({
                 candidateLabel: `Attempt ${attempt}`,
                 diff: run.diff,
@@ -1687,7 +1692,16 @@ export class Orchestrator {
                 reviewers,
                 onReviewerEvent: (event) => log.emit(event.type, { ...event }),
               })
-            : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
+            : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
+        if (reviewLease?.granted) {
+          ledger.settle(reviewLease.lease?.lease_id ?? "", reviewResult.reviewSpendUsd ?? 0);
+          if ((reviewResult.reviewSpendUsd ?? 0) > 0) {
+            log.emit("budget.observation", { harness_id: "review-panel", attempt_id: attemptId, kind: "spend", usd: reviewResult.reviewSpendUsd, estimated: reviewResult.reviewSpendEstimated === true });
+            if (reviewResult.reviewSpendEstimated === true) reviewSpendEstimated = true;
+          }
+        } else if (reviewLease && !reviewLease.granted) {
+          log.emit("budget.lease.created", { granted: false, reason: reviewLease.reason, attempt_id: attemptId, harness_id: "review-panel" });
+        }
         this.cleanupReviewEvidenceDir(candidateReviewEvidenceDir, candidateReviewCwd);
         actualReviewVerified = reviewVerified && reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified;
         const revalidated = await revalidateFindings(reviewResult.findings);
@@ -1777,7 +1791,7 @@ export class Orchestrator {
     if (lastRun) {
       const arb = arbitrate([this.toEvidence(lastRun, contract, lastFindings, lastFinalReviewClean, actualReviewVerified)], {
         spendUsd: ledger.spend(),
-        estimatedSpend: lastRun.costEstimated,
+        estimatedSpend: lastRun.costEstimated || reviewSpendEstimated,
       });
       decision = arb.decision;
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
@@ -2041,21 +2055,27 @@ export class Orchestrator {
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
       writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(plan review — no code diff)\n" });
-      const res = await reviewCandidate({
-        candidateLabel: "Plan",
-        diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
-        evidenceDir: reviewDir,
-        artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
-        cwd: input.repoRoot,
-        reviewers,
-        onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-      });
-      ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
-      store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
-      if (res.reviewSpendUsd > 0) {
-        const lease = ledger.reserve({ taskId, attemptId: "plan-review", intent: "review", harnessId: "review-panel" });
-        if (lease.granted) ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd);
-        log.emit("budget.observation", { harness_id: "review-panel", kind: "spend", usd: res.reviewSpendUsd, estimated: res.reviewSpendEstimated });
+      // Reserve BEFORE spending: a hard budget tier must stop the paid plan
+      // review from starting, not account for it after the fact.
+      const lease = ledger.reserve({ taskId, attemptId: "plan-review", intent: "review", harnessId: "review-panel" });
+      if (lease.granted) {
+        const res = await reviewCandidate({
+          candidateLabel: "Plan",
+          diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
+          evidenceDir: reviewDir,
+          artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
+          cwd: input.repoRoot,
+          reviewers,
+          onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+        });
+        ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
+        store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
+        ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd ?? 0);
+        if ((res.reviewSpendUsd ?? 0) > 0) {
+          log.emit("budget.observation", { harness_id: "review-panel", kind: "spend", usd: res.reviewSpendUsd, estimated: res.reviewSpendEstimated });
+        }
+      } else {
+        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: "plan-review", harness_id: "review-panel" });
       }
     }
 
