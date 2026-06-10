@@ -28,6 +28,16 @@ export class EventLog {
     private readonly onEmit?: (event: RunEvent) => void,
   ) {
     this.nextSeq = lastSeqInFile(path) + 1;
+    activeEventLogs.set(path, this);
+  }
+
+  /**
+   * Unregister this log as the live writer for its path. Out-of-band
+   * appenders fall back to file-tail stamping afterwards, which is safe once
+   * the owning run is terminal (nobody else holds an in-memory counter).
+   */
+  dispose(): void {
+    if (activeEventLogs.get(this.path) === this) activeEventLogs.delete(this.path);
   }
 
   /** Append a typed run event. Validates against the schema before writing. */
@@ -48,6 +58,11 @@ export class EventLog {
         /* sink errors must never break the canonical run */
       }
     }
+    // Terminal events are emitted exactly once, last (output.ready invariant
+    // tests pin this). Self-disposing here hands the seq space back to
+    // file-tail appenders without requiring every orchestrator mode to
+    // remember a finally block.
+    if (type === "run.completed" || type === "run.failed" || type === "run.blocked") this.dispose();
     return event;
   }
 
@@ -68,6 +83,41 @@ export class EventLog {
     }
     return { events, malformed };
   }
+}
+
+/**
+ * Live writers by events.jsonl path (one daemon process hosts the
+ * orchestrator AND the control API). While a run is active its EventLog owns
+ * the in-memory seq counter; any other same-process appender stamping from
+ * the file tail would duplicate ids the moment the live counter is ahead.
+ */
+const activeEventLogs = new Map<string, EventLog>();
+
+/**
+ * Append an out-of-band event (e.g. a control-api audit record) into a run's
+ * canonical log WITHOUT corrupting the seq space: routes through the live
+ * EventLog when the run is still active (same counter, same onEmit sink), and
+ * falls back to file-tail stamping for terminal runs.
+ */
+export function appendRunEvent(
+  path: string,
+  runId: string,
+  taskId: string,
+  type: RunEventType,
+  payload: Record<string, unknown> = {},
+): RunEvent {
+  const live = activeEventLogs.get(path);
+  if (live) return live.emit(type, payload);
+  const event = RunEventSchema.parse({
+    seq: lastSeqInFile(path) + 1,
+    ts: nowIso(),
+    run_id: runId,
+    task_id: taskId,
+    type,
+    payload: redactEventValue(payload),
+  });
+  appendLine(path, JSON.stringify(event));
+  return event;
 }
 
 /**

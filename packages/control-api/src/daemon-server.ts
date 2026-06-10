@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { lastSeqInFile } from "@claudexor/event-log";
+import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import {
   AccessProfile,
   ControlWebEvidence,
@@ -42,6 +42,7 @@ import {
   Portfolio,
   ReviewFinding,
   RunEvent,
+  RunEventType,
   RunFailure,
   RunTelemetry,
   TaskContract,
@@ -927,22 +928,14 @@ function readFailure(rec: DaemonRunRecord): RunFailure | null {
   });
 }
 
-function appendRunAuditEvent(rec: DaemonRunRecord, type: string, payload: Record<string, unknown>): void {
+function appendRunAuditEvent(rec: DaemonRunRecord, type: RunEventType, payload: Record<string, unknown>): void {
   if (!rec.runDir) return;
   try {
-    const eventsPath = join(rec.runDir, "events.jsonl");
-    const redactedPayload = JSON.parse(redactSecrets(JSON.stringify(payload))) as Record<string, unknown>;
-    const event = RunEvent.parse({
-      // Continue the run's monotonic sequence: audit events share the same
-      // durable cursor space as orchestrator events (SSE resume correctness).
-      seq: lastSeqInFile(eventsPath) + 1,
-      ts: nowIso(),
-      run_id: rec.runId ?? rec.id,
-      task_id: rec.taskId ?? "unknown",
-      type,
-      payload: redactedPayload,
-    });
-    appendFileSync(eventsPath, JSON.stringify(event) + "\n", { mode: 0o600 });
+    // Single-counter invariant: while the run is active its EventLog owns the
+    // seq space, so audit records MUST route through it (appendRunEvent does;
+    // file-tail stamping only applies once the run is terminal). A tail-read
+    // here would duplicate ids and break SSE Last-Event-ID resume.
+    appendRunEvent(join(rec.runDir, "events.jsonl"), rec.runId ?? rec.id, rec.taskId ?? "unknown", type, payload);
   } catch {
     /* audit append must not change control behavior */
   }

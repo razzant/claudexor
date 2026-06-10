@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -128,5 +128,22 @@ describe("ensureGitRepository", () => {
     expect(result.gitignoreSeeded).toBe(false);
     expect(result.headSha).toBe(before);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(".claudexor/\nnode_modules/\n");
+  });
+
+  it("seeds .claudexor/ on its own line when .gitignore lacks a trailing newline (artifacts stay out of the baseline)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    // Run artifacts already exist BEFORE init (the artifact store creates the
+    // run dir before the git boundary is ensured), and the user's .gitignore
+    // ends without a newline — naive append would produce "node_modules.claudexor/".
+    mkdirSync(join(dir, ".claudexor", "runs", "run-x"), { recursive: true });
+    writeFileSync(join(dir, ".claudexor", "runs", "run-x", "events.jsonl"), "{}\n");
+    writeFileSync(join(dir, ".gitignore"), "node_modules");
+    writeFileSync(join(dir, "data.txt"), "hello\n");
+    const result = await ensureGitRepository(dir);
+    expect(result.gitignoreSeeded).toBe(true);
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules\n.claudexor/\n");
+    const tracked = await git(dir, ["ls-files"]);
+    expect(tracked.stdout).toContain("data.txt");
+    expect(tracked.stdout).not.toContain(".claudexor/");
   });
 });

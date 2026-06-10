@@ -135,6 +135,10 @@ final class AppModel {
     private var globalStreamTask: Task<Void, Never>?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
+    /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
+    private var snapshotLoadDepth: [String: Int] = [:]
+    /// Stream envelopes deferred while a snapshot load is in flight.
+    private var deferredEnvelopes: [String: [BusEnvelope]] = [:]
     /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
     /// plain ISO8601DateFormatter parses none of them. Try fractional first.
     private static let eventDateFormatterFractional: ISO8601DateFormatter = {
@@ -316,7 +320,10 @@ final class AppModel {
                         task.answerText = existing.answerText ?? task.answerText
                         task.diagnosticText = existing.diagnosticText ?? task.diagnosticText
                         if task.artifactPaths.isEmpty { task.artifactPaths = existing.artifactPaths }
-                        if task.pendingInteractions.isEmpty { task.pendingInteractions = existing.pendingInteractions }
+                        // Carry hydrated questions only while the daemon still says the
+                        // run waits on the user; otherwise an answered/timed-out
+                        // interaction would resurrect on every list refresh.
+                        if task.pendingInteractions.isEmpty, task.waitingOnUser { task.pendingInteractions = existing.pendingInteractions }
                         task.observedModel = task.observedModel ?? existing.observedModel
                         if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
                     }
@@ -728,6 +735,21 @@ final class AppModel {
 
     func loadRunDetail(_ id: String) async {
         guard let client, let idx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
+        // Snapshot fence, write side: stream events arriving DURING this load
+        // are deferred and re-applied after the snapshot lands. Without this,
+        // the final `liveTasks[writeIdx] = task` write (built from a pre-await
+        // copy) would erase them — and lastEventIds has already advanced past
+        // their seq, so they would never be replayed.
+        snapshotLoadDepth[id, default: 0] += 1
+        defer {
+            snapshotLoadDepth[id, default: 1] -= 1
+            if snapshotLoadDepth[id] ?? 0 <= 0 {
+                snapshotLoadDepth[id] = nil
+                let deferred = deferredEnvelopes[id] ?? []
+                deferredEnvelopes[id] = nil
+                for env in deferred { apply(env, to: id) }
+            }
+        }
         do {
             let detail = try await client.runDetail(runId: id)
             // Snapshot fence: everything with seq <= lastSeq is reflected in this
@@ -1137,6 +1159,12 @@ final class AppModel {
     /// the in-proc bus uses a normalized kind. We classify off the record's own `type`,
     /// falling back to the SSE kind — so it works against both servers.
     private func apply(_ env: BusEnvelope, to runId: String) {
+        // Snapshot fence, write side: never interleave with an in-flight
+        // detail load; the load's defer re-applies these in arrival order.
+        if snapshotLoadDepth[runId] ?? 0 > 0 {
+            deferredEnvelopes[runId, default: []].append(env)
+            return
+        }
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let type = env.event["type"]?.stringValue ?? env.kind
         let payload = env.event["payload"] ?? env.event

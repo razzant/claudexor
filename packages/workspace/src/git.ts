@@ -57,9 +57,14 @@ export async function ensureGitRepository(repo: string): Promise<EnsureGitReposi
     writeFileSync(gitignorePath, `${GITIGNORE_SEED}\n`, "utf8");
     gitignoreSeeded = true;
   } else {
-    const lines = readFileSync(gitignorePath, "utf8").split("\n").map((l) => l.trim());
+    const raw = readFileSync(gitignorePath, "utf8");
+    const lines = raw.split("\n").map((l) => l.trim());
     if (!lines.includes(GITIGNORE_SEED) && !lines.includes(".claudexor")) {
-      appendFileSync(gitignorePath, `${GITIGNORE_SEED}\n`, "utf8");
+      // A missing trailing newline would concatenate the seed onto the last
+      // pattern (e.g. "node_modules.claudexor/"), silently un-ignoring run
+      // artifacts right before the baseline `git add -A`.
+      const separator = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
+      appendFileSync(gitignorePath, `${separator}${GITIGNORE_SEED}\n`, "utf8");
       gitignoreSeeded = true;
     }
   }
