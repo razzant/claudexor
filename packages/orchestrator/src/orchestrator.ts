@@ -292,6 +292,7 @@ export class Orchestrator {
     for (const status of statuses) {
       const m = status.manifest;
       if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
+      if (status.status !== "ok") continue; // reviewer eligibility needs doctor-OK, not key presence
       if (!status.enabledIntents.includes("review")) continue;
       if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
       // Per-harness settings gate reviewers too (a disabled harness never reviews).
@@ -376,12 +377,14 @@ export class Orchestrator {
     const statusById = new Map(statuses.map((s) => [s.id, s]));
     const harnessSettings = this.config(input.repoRoot)?.global.harnesses ?? {};
     if (!ids || ids.length === 0) {
+      // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
+      // readiness; a key string or degraded route is visible but not routable).
       ids = statuses
-        .filter((s) => s.manifest?.kind !== "fake" && s.enabledIntents.includes(intent))
+        .filter((s) => s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.includes(intent))
         .map((s) => s.id);
       if (ids.length === 0) {
         throw new HarnessUnavailableError(
-          "no available harness for this mode; install codex/claude/cursor/opencode, or pass --harness",
+          "no doctor-ok harness for this mode; install/login codex/claude/cursor/opencode (see `claudexor doctor`), or pass --harness explicitly",
         );
       }
     }
@@ -394,6 +397,14 @@ export class Orchestrator {
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }
+      // Doctor status is the readiness truth: explicitly selecting a degraded/
+      // unavailable harness fails loudly WITH the doctor's reasons.
+      if (status.status !== "ok") {
+        const why = `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
       // Per-harness settings: a user-disabled harness never routes. Explicit
       // selection of a disabled harness fails loudly instead of silently running.
       const cfgEntry = harnessSettings[id];
@@ -937,6 +948,10 @@ export class Orchestrator {
   private async runRace(input: RunInput, mode: ModeKind): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
+    // Contract validation (trust gates, secret scans) runs BEFORE the run is
+    // announced: a refused run must fail the request loudly, not 200 a runId
+    // and leave an orphaned run dir without a terminal event.
+    const contract = this.buildContract(input, taskId, mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
@@ -944,7 +959,6 @@ export class Orchestrator {
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    const contract = this.buildContract(input, taskId, mode);
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -1504,12 +1518,13 @@ export class Orchestrator {
   private async runConvergence(input: RunInput, mode: ModeKind, maxAttempts: number | null): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
+    // Contract validation BEFORE the run is announced (see runRace).
+    const contract = this.buildContract(input, taskId, mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     const wsm = new WorkspaceManager(input.repoRoot);
     const readiness = new ReadinessLedger();
-    const contract = this.buildContract(input, taskId, mode);
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
@@ -1883,14 +1898,15 @@ export class Orchestrator {
   private async runPlan(input: RunInput): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
+    // Plan runs get the same immutable contract truth as every other mode;
+    // contract validation runs BEFORE the run is announced (see runRace).
+    const contract = this.buildContract(input, taskId, "plan");
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    // Plan runs get the same immutable contract truth as every other mode.
-    const contract = this.buildContract(input, taskId, "plan");
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
@@ -2162,14 +2178,15 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
+    const prompt = input.prompt || opts.defaultPrompt;
+    // Contract validation BEFORE the run is announced (see runRace).
+    const contract = this.buildContract({ ...input, prompt }, taskId, opts.mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-    const prompt = input.prompt || opts.defaultPrompt;
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
 
-    const contract = this.buildContract({ ...input, prompt }, taskId, opts.mode);
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
