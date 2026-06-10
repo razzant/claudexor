@@ -1154,13 +1154,18 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       },
     };
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 100);
     const startedAt = Date.now();
     const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
       repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
       interactionTimeoutMs: 60_000, // the wait must NOT sit this out
       signal: controller.signal,
-      onInteraction: () => new Promise(() => {}), // never answers
+      // Abort only once the question is actually parked (a wall-clock timer
+      // can fire before the run even reaches the harness on a cold CI host,
+      // cancelling everything before interaction.requested exists).
+      onInteraction: () => {
+        setTimeout(() => controller.abort(), 25);
+        return new Promise(() => {}); // never answers
+      },
     });
     expect(Date.now() - startedAt).toBeLessThan(20_000);
     const events = readRunEvents(res.runDir);
