@@ -34,9 +34,11 @@ the command documents or returns machine-readable output.
 
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
 separate from process/network sandboxing. `claudexor inspect <run_id> --json`
-returns the same core facts the app renders: terminal/output-ready state,
-primary output, web evidence, tool errors, budget, fallback events, and artifact
-paths.
+projects the run artifacts: output-ready state, the task contract, the
+engine-owned telemetry (web evidence and unrecovered tool errors), primary
+output, decision record, work product, and artifact paths. Terminal daemon
+state, live budget, and event streams come from the daemon/control API, not
+from `inspect`.
 
 ## Daemon And Control API
 

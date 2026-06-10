@@ -323,6 +323,9 @@ struct TaskDetailView: View {
                 .help("Open ~/.claudexor/daemon/claudexord.log.")
                 Button {
                     Task {
+                        // Retry preserves the ORIGINAL run's policy contract
+                        // (access + web); silently resetting to defaults would
+                        // change privacy/safety semantics between attempts.
                         await model.startRun(
                             prompt: task.prompt,
                             mode: task.mode,
@@ -332,7 +335,8 @@ struct TaskDetailView: View {
                             model: nil,
                             n: task.n,
                             capUsd: task.capKnown ? task.capUsd : model.defaultMaxUsdPerRun,
-                            access: task.mode.isReadOnly ? "readonly" : "workspace_write",
+                            access: task.requestedAccess ?? (task.mode.isReadOnly ? "readonly" : "workspace_write"),
+                            web: task.externalContextPolicy ?? "auto",
                             repoRootOverride: task.repoRoot
                         )
                     }
@@ -341,7 +345,7 @@ struct TaskDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .help("Start a new run with the same prompt, mode, harness pool, and budget.")
+                .help("Start a new run with the same prompt, mode, harness pool, budget, access, and web policy.")
             }
             if let error = task.engineError, !error.isEmpty {
                 Panel(padding: Theme.Spacing.md) {

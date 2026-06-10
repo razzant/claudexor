@@ -448,6 +448,12 @@ export class DaemonControlApiServer {
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       appendRunAuditEvent(rec, "control.requested", { control: body.control });
+      // Honesty: a control action on a TERMINAL job has no process to stop;
+      // claiming "applied" would fabricate an effect that never happened.
+      if (rec.state !== "queued" && rec.state !== "running") {
+        appendRunAuditEvent(rec, "control.rejected", { control: body.control, reason: `run is terminal (${rec.state})` });
+        return this.json(res, 409, { error: `run is ${rec.state}; ${body.control.kind} has nothing to stop` });
+      }
       await this.opts.daemon.cancel(rec.id);
       appendRunAuditEvent(rec, "control.applied", { control: body.control });
       return this.json(res, 200, ControlRunControlResponse.parse({

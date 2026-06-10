@@ -617,7 +617,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
-    const { daemon, cancelled } = fakeDaemon();
+    const { daemon, cancelled, record } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
       const start = await fetch(`${base}/runs`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: startAgentBody() });
       expect(start.status).toBe(200);
@@ -644,6 +644,16 @@ describe("DaemonControlApiServer", () => {
       expect(text).toContain("run.completed");
       expect(text).toContain("event: end");
 
+      // Control on a TERMINAL run is rejected honestly (nothing to stop)…
+      const cancelTerminal = await fetch(`${base}/runs/run-d1/control`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ control: { kind: "cancel" } }),
+      });
+      expect(cancelTerminal.status).toBe(409);
+      expect(cancelled).toEqual([]);
+      // …and applied only while the job is actually active.
+      record.state = "running";
       const cancel = await fetch(`${base}/runs/run-d1/control`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },

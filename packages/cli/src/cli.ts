@@ -155,8 +155,9 @@ function intFlag(args: ParsedArgs, key: string): number | undefined {
 function floatFlag(args: ParsedArgs, key: string): number | undefined {
   const v = flagStr(args, key);
   if (v === undefined) return undefined;
-  const n = Number.parseFloat(v);
-  if (!Number.isFinite(n) || n < 0) throw new Error(`invalid --${key} '${v}' (expected a non-negative number)`);
+  // Number() parses the WHOLE string ('1abc' -> NaN), unlike parseFloat.
+  const n = Number(v.trim());
+  if (!Number.isFinite(n) || n < 0 || v.trim() === "") throw new Error(`invalid --${key} '${v}' (expected a non-negative number)`);
   return n;
 }
 
@@ -251,6 +252,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
+  let resolvedEffort: EffortHint | undefined;
   let maxUsd: number | undefined;
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
@@ -258,6 +260,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
+    resolvedEffort = effortHint(args);
     maxUsd = floatFlag(args, "max-usd");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
@@ -290,7 +293,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
       model: flagStr(args, "model"),
-      effort: effortHint(args),
+      effort: resolvedEffort,
       specId: spec?.id,
       specHash: spec ? hashJson(spec) : undefined,
       specPath: specPath ? realpathSync(specPath) : undefined,

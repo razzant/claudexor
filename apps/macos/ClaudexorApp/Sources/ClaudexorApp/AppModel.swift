@@ -530,6 +530,7 @@ final class AppModel {
         task.outputReadyState = s.outputReadyState
         task.requestedAccess = s.requestedAccess
         task.effectiveAccess = s.effectiveAccess
+        task.externalContextPolicy = s.externalContextPolicy
         // Surfaces project engine telemetry only: when the artifact is absent
         // (legacy / mid-run) the UI says "telemetry unavailable", never a guess.
         if s.webEvidence?.available == false {
@@ -715,6 +716,7 @@ final class AppModel {
             task.outputReadyState = detail.summary.outputReadyState
             task.requestedAccess = detail.summary.requestedAccess
             task.effectiveAccess = detail.summary.effectiveAccess
+            task.externalContextPolicy = detail.summary.externalContextPolicy
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
                 task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."

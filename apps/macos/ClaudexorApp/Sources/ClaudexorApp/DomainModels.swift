@@ -194,7 +194,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .ask: return "Read-only answer. No edit, run, or apply controls."
         case .explore: return "Bounded read-only research swarm with verified synthesis and omissions."
-        case .agent: return "Single primary-biased route. Direct edit path."
+        case .agent: return "Single primary-biased envelope route; apply explicitly after review."
         case .bestOfN: return "N candidates in isolated envelopes, cross-reviewed, best wins."
         case .maxAttempts: return "Repair loop with a hard attempt cap and gates."
         case .untilClean: return "One envelope repaired until gates/review are clean."
@@ -556,6 +556,8 @@ struct TaskRun: Identifiable, Hashable {
     var webEvidenceDetail: String?
     var requestedAccess: String?
     var effectiveAccess: String?
+    /** Run-level external web policy (off|auto|cached|live), for honest Retry. */
+    var externalContextPolicy: String?
 
     /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
     var accessLabel: String? {
