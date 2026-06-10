@@ -734,7 +734,7 @@ final class AppModel {
     }
 
     func loadRunDetail(_ id: String) async {
-        guard let client, let idx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
+        guard let client, liveTasks.contains(where: { $0.id == id }) else { return }
         // Snapshot fence, write side: stream events arriving DURING this load
         // are deferred and re-applied after the snapshot lands. Without this,
         // the final `liveTasks[writeIdx] = task` write (built from a pre-await
@@ -752,10 +752,14 @@ final class AppModel {
         }
         do {
             let detail = try await client.runDetail(runId: id)
+            // Re-resolve the row BY ID after the await: refreshes/inserts may
+            // have reordered liveTasks, and a stale index would merge this
+            // snapshot into (and copy hydrated fields from) a DIFFERENT run.
+            guard let baseIdx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
             // Snapshot fence: everything with seq <= lastSeq is reflected in this
             // snapshot, so the stream resumes from here without gaps or dupes.
             lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
-            var task = liveTasks[idx]
+            var task = liveTasks[baseIdx]
             task.status = RunStatus(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode)
             task.prompt = detail.summary.prompt ?? task.prompt

@@ -41,7 +41,6 @@ import {
   ModeKind,
   Portfolio,
   ReviewFinding,
-  RunEvent,
   RunEventType,
   RunFailure,
   RunTelemetry,
