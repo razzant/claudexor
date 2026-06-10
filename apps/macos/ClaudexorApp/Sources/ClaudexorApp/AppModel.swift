@@ -227,6 +227,13 @@ final class AppModel {
                                        reason: "Harness Doctor has not loaded \(family.label). Reconnect the engine, then recheck.",
                                        intent: intent, info: nil)
         }
+        // Engine-level per-harness settings gate routing; the composer must
+        // mirror that truth instead of offering a chip the engine will reject.
+        if settingsSnapshot?.harnesses?[family.rawValue]?.enabled == false {
+            return HarnessAvailability(family: family, available: false,
+                                       reason: "\(family.label) is disabled in Settings (Per-Harness Defaults).",
+                                       intent: intent, info: info)
+        }
         guard info.health == .ok else {
             return HarnessAvailability(family: family, available: false,
                                        reason: info.reasons.first ?? info.auth,

@@ -88,7 +88,7 @@ function noImplementAdapter(id: string, family: ProviderFamily = "openai"): Harn
   };
 }
 
-function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unknown> | Iterable<unknown>, family: ProviderFamily = "openai"): HarnessAdapter {
+function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unknown> | Iterable<unknown>, family: ProviderFamily = "openai", webPolicy: "native" | "tools" | "uncontrolled" | "none" = "tools"): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -97,7 +97,7 @@ function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unk
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { plan: true, review: true, read_files: true, structured_events: true, web_policy: "tools" },
+        capabilities: { plan: true, review: true, read_files: true, structured_events: true, web_policy: webPolicy },
         access_profiles_supported: ["readonly"],
       });
     },
@@ -879,6 +879,28 @@ describe("Orchestrator", () => {
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
     }
+  });
+
+  it("web off routes a no-web harness but excludes an uncontrolled-web harness loudly", async () => {
+    const repo = await initRepo();
+    const answer = (sessionId: string) => [
+      { type: "started", session_id: sessionId, ts: new Date().toISOString() },
+      { type: "message", session_id: sessionId, ts: new Date().toISOString(), text: "local answer" },
+      { type: "completed", session_id: sessionId, ts: new Date().toISOString() },
+    ];
+    // `none` (no web at ALL) trivially satisfies --web off.
+    const noWeb = new Map<string, HarnessAdapter>([["no-web", askAdapter("no-web", answer, "openai", "none")]]);
+    const ok = await new Orchestrator({ registry: noWeb, reviewers: [] }).run({
+      repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["no-web"], web: "off",
+    });
+    expect(ok.status).toBe("success");
+    // `uncontrolled` (web exists, no switch) cannot enforce off: explicit selection fails loudly.
+    const uncontrolled = new Map<string, HarnessAdapter>([["wild-web", askAdapter("wild-web", answer, "openai", "uncontrolled")]]);
+    const blocked = await new Orchestrator({ registry: uncontrolled, reviewers: [] }).run({
+      repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["wild-web"], web: "off",
+    });
+    expect(blocked.status).toBe("failed");
+    expect(blocked.summary).toContain("cannot enforce web policy 'off'");
   });
 
   it("applies the configured global max_usd_per_run as the default run cap", async () => {

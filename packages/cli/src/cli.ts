@@ -431,19 +431,6 @@ function listCliArtifacts(root: string): string[] {
   return out.sort();
 }
 
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function targetFromCliInput(input: unknown): string | undefined {
-  const rec = objectRecord(input);
-  return str(rec["query"]) ?? str(rec["url"]) ?? str(rec["file_path"]) ?? str(rec["path"]);
-}
-
 function statusGlyph(status: string): string {
   return status === "ok" ? "[ok]" : status === "degraded" ? "[degraded]" : "[unavailable]";
 }

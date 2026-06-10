@@ -449,19 +449,24 @@ export const ControlSettingsSnapshot = z.object({
 });
 export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 
-/** Partial per-harness settings patch; absent fields keep their stored value. */
-export const ControlHarnessSettingsPatch = z.object({
-  enabled: z.boolean().optional(),
-  defaultModel: z.string().nullable().optional(),
-  effort: EffortHint.nullable().optional(),
-  maxTurns: z.number().int().positive().nullable().optional(),
-  maxRounds: z.number().int().positive().nullable().optional(),
-  maxUsd: z.number().nonnegative().nullable().optional(),
-  toolsAllow: z.array(z.string()).optional(),
-  toolsDeny: z.array(z.string()).optional(),
-  fallbackModel: z.string().nullable().optional(),
-  web: ExternalContextPolicy.optional(),
-});
+/**
+ * Partial per-harness settings patch; absent fields keep their stored value.
+ * STRICT: a typoed key must 400, not silently no-op (fail-loudly contract).
+ */
+export const ControlHarnessSettingsPatch = z
+  .object({
+    enabled: z.boolean().optional(),
+    defaultModel: z.string().nullable().optional(),
+    effort: EffortHint.nullable().optional(),
+    maxTurns: z.number().int().positive().nullable().optional(),
+    maxRounds: z.number().int().positive().nullable().optional(),
+    maxUsd: z.number().nonnegative().nullable().optional(),
+    toolsAllow: z.array(z.string()).optional(),
+    toolsDeny: z.array(z.string()).optional(),
+    fallbackModel: z.string().nullable().optional(),
+    web: ExternalContextPolicy.optional(),
+  })
+  .strict();
 export type ControlHarnessSettingsPatch = z.infer<typeof ControlHarnessSettingsPatch>;
 
 export const ControlSettingsUpdateRequest = z
@@ -478,6 +483,7 @@ export const ControlSettingsUpdateRequest = z
     clearMaxUsdPerDay: z.boolean().optional(),
     harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
   })
+  .strict()
   .superRefine((value, ctx) => {
     if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerRun"], message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive" });

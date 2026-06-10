@@ -27,7 +27,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const TRIAD_MODELS = ["openai/gpt-5.5", "google/gemini-3.5-flash", "anthropic/claude-opus-4.8"];
@@ -320,6 +320,7 @@ ${diffText(base)}
 
 async function callModel(model, prompt) {
   const started = Date.now();
+  const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -338,16 +339,16 @@ async function callModel(model, prompt) {
     });
     const bodyText = await res.text();
     if (!res.ok) {
-      return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started };
+      return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
     }
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
     const usage = body.usage ?? {};
     const observedModel = body.model ?? model;
-    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started };
-    return { model, observedModel, status: "responded", raw, usage, ms: Date.now() - started };
+    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
+    return { model, observedModel, status: "responded", raw, usage, ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
   } catch (err) {
-    return { model, status: "error", raw: "", error: String(err), ms: Date.now() - started };
+    return { model, status: "error", raw: "", error: String(err), ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
   } finally {
     clearTimeout(timer);
   }
@@ -424,6 +425,11 @@ async function main() {
   writeFileSync(join(outDir, "triad-prompt.md"), triadPrompt);
   console.error(`triad prompt: ${triadPrompt.length} chars; models: ${TRIAD_MODELS.join(", ")}`);
 
+  // Reviewer progress telemetry (CHECKLISTS Review Protocol): a sequential or
+  // hung panel must be diagnosable from disk, not indistinguishable from a hang.
+  const progressPath = join(outDir, "reviewer-progress.jsonl");
+  const progress = (entry) => appendFileSync(progressPath, JSON.stringify(entry) + "\n");
+  for (const model of TRIAD_MODELS) progress({ ts: new Date().toISOString(), type: "reviewer.started", model });
   const triadResults = await Promise.all(TRIAD_MODELS.map((m) => callModel(m, triadPrompt)));
 
   const actorRecords = [];
@@ -438,16 +444,28 @@ async function main() {
       if (arr === null) status = "parse_failure";
       else parsed = normalizeFindings(arr, result.model);
     }
-    actorRecords.push({
+    const record = {
       model_id: result.model,
       observed_model: result.observedModel ?? null,
       status,
       slot: idx + 1,
       parsed_count: parsed.length,
       usage: result.usage ?? null,
+      started_at: result.startedAt ?? null,
+      completed_at: result.completedAt ?? null,
       duration_ms: result.ms,
       error: result.error ?? null,
       raw_file: `triad-${slug}.raw.txt`,
+    };
+    actorRecords.push(record);
+    writeFileSync(join(outDir, `triad-${slug}.metadata.json`), JSON.stringify(record, null, 2) + "\n");
+    progress({
+      ts: record.completed_at ?? new Date().toISOString(),
+      type: status === "responded" ? "reviewer.completed" : result.error?.includes("abort") ? "reviewer.timed_out" : "reviewer.failed",
+      model: result.model,
+      observed_model: record.observed_model,
+      status,
+      duration_ms: result.ms,
     });
     findings.push(...parsed);
   }
@@ -460,7 +478,15 @@ async function main() {
     const scopePrompt = buildScopePrompt(base);
     writeFileSync(join(outDir, "scope-prompt.md"), scopePrompt);
     console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
+    progress({ ts: new Date().toISOString(), type: "reviewer.started", model: SCOPE_MODEL, role: "scope" });
     const scopeResult = await callModel(SCOPE_MODEL, scopePrompt);
+    progress({
+      ts: scopeResult.completedAt ?? new Date().toISOString(),
+      type: scopeResult.status === "responded" ? "reviewer.completed" : "reviewer.failed",
+      model: SCOPE_MODEL,
+      role: "scope",
+      duration_ms: scopeResult.ms,
+    });
     writeFileSync(join(outDir, "scope.raw.txt"), scopeResult.raw ?? "");
     let scopeStatus = scopeResult.status;
     let scopeFindings = [];

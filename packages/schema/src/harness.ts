@@ -25,7 +25,17 @@ export type HarnessKind = z.infer<typeof HarnessKind>;
  * - "none": the adapter cannot enforce the policy; routing must treat web policy as an
  *   unsupported capability (exclude from `off`/web-required runs, error on explicit selection).
  */
-export const WebPolicySupport = z.enum(["native", "tools", "none"]);
+/**
+ * How a harness can honor the external web policy:
+ * - `native`: web modes are a native config surface (codex web_search).
+ * - `tools`: web runs through permissioned tools the adapter can allow/deny (claude).
+ * - `uncontrolled`: the harness CAN reach the web but exposes no enforceable
+ *   switch — incompatible with `off` (cannot be enforced) AND with
+ *   `cached`/`live` (cannot produce required evidence). cursor/opencode today.
+ * - `none`: the harness has NO web access at all — trivially satisfies `off`,
+ *   incompatible with web-required policies. raw-api/fake.
+ */
+export const WebPolicySupport = z.enum(["native", "tools", "uncontrolled", "none"]);
 export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 export const HarnessCapabilities = z.object({

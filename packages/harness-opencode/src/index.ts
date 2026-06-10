@@ -86,7 +86,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           mcp: true,
           plugins: true,
           worktree_native: false,
-          web_policy: "none",
+          web_policy: "uncontrolled",
           quota_signal: "observed",
           usage_signal: "observed",
         },

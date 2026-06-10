@@ -410,12 +410,15 @@ export class Orchestrator {
       const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? this.config(input.repoRoot).trust.access_default;
       const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
       const webSupport = manifest.capabilities.web_policy;
-      // Web policy is a capability: `off` needs an enforceable off switch and a
-      // web-required run needs a route that can produce web evidence. A harness
-      // that cannot honor the policy is excluded — or, when the user explicitly
-      // selected it, the run fails loudly instead of silently downgrading.
+      // Web policy is a capability: `off` needs an enforceable off state and a
+      // web-required run needs a route that can produce web evidence.
+      // `none` (no web at ALL) trivially satisfies `off`; `uncontrolled` (web
+      // exists but no switch) satisfies neither. A harness that cannot honor
+      // the policy is excluded — or, when the user explicitly selected it, the
+      // run fails loudly instead of silently downgrading.
       const webIncompatible =
-        (policy === "off" && webSupport === "none") || (webRequired && webSupport === "none");
+        (policy === "off" && webSupport === "uncontrolled") ||
+        (webRequired && (webSupport === "none" || webSupport === "uncontrolled"));
       if (webIncompatible) {
         const why = `${id} cannot enforce web policy '${policy}' (manifest web_policy=${webSupport})`;
         if (explicitPool) throw new HarnessUnavailableError(why);

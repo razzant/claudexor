@@ -282,9 +282,11 @@ cd ../ClaudexorApp && swift build
   shared adapter run loop, engine-owned `final/telemetry.yaml` evidence, web
   policy as a manifest capability with disclosed upgrades, parallel
   race/explore, user-level trust gating for full access, per-harness settings
-  (enabled/model/effort/web/budget) wired end to end, typed risk/protected-path
-  review gates, honest control-api/daemon lifecycles, macOS live streams +
-  diff tab + per-harness settings editor, knip/docs-truth/conformance CI gates,
+  enforced engine-wide (enabled/model/effort/web in the macOS editor; budget,
+  turn/round caps, and tool lists via config and the settings API), typed
+  risk/protected-path review gates, honest control-api/daemon lifecycles,
+  macOS live streams + diff tab + per-harness settings editor,
+  knip/docs-truth/conformance CI gates,
   dead subsystem deletions (ExecutionEngine, legacy in-proc control server,
   `/runs/:id/input` stub).
 - **v0.6.0** — first public beta: canonical modes, daemon + control API, macOS

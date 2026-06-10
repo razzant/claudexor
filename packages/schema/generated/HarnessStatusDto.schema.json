@@ -395,6 +395,7 @@
                       "enum": [
                         "native",
                         "tools",
+                        "uncontrolled",
                         "none"
                       ],
                       "default": "none"

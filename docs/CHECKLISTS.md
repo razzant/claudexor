@@ -159,6 +159,10 @@ pnpm test
 - Reviewers must read file-backed evidence (`DIFF.patch`, `DIFF_SUMMARY.md`,
   user intent, decided tradeoffs, tests) from the candidate tree. Do not pass the
   full diff through the process argv or a giant prompt as the normal review path.
+  (Exception by construction: `scripts/triad-scope-review.mjs` reviews via
+  remote OpenRouter chat models that cannot read local files, so its prompt IS
+  the evidence transport — mirroring the upstream Ouroboros protocol it
+  replicates. Its prompts and raw outputs are persisted untruncated per round.)
 - Persist local/redacted per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse
