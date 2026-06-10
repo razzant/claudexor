@@ -72,7 +72,9 @@ struct TasksScreen: View {
         case .all: return model.tasks
         case .active: return model.tasks.filter { $0.status.isActive }
         case .needsYou: return model.tasks.filter { $0.status.needsAttention }
-        case .done: return model.tasks.filter { [.succeeded, .cancelled].contains($0.status) }
+        // "Done" = every terminal outcome (incl. failed/interrupted/no-op): runs
+        // must never vanish from all filters.
+        case .done: return model.tasks.filter { !$0.status.isActive }
         }
     }
 

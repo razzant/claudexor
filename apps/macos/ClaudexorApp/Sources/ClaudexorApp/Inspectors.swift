@@ -17,7 +17,7 @@ struct TaskInspectorView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(Theme.Spacing.md)
-                    .background(Theme.status(.needsReview).opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+                    .background(Theme.status(.needsReview).opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
                 }
 
                 section("Honesty", "checkmark.shield") {
@@ -90,7 +90,8 @@ struct ContextInspectorView: View {
                     KeyValueRow(key: "Runs", value: "\(model.tasks.count)")
                     KeyValueRow(key: "Active", value: "\(model.activeTasks.count)")
                     KeyValueRow(key: "Need you", value: "\(model.attentionTasks.count)")
-                    KeyValueRow(key: "Spend today", value: model.budget.spendLabel, mono: true)
+                    // Sum across currently listed runs — not a calendar-day ledger.
+                    KeyValueRow(key: "Spend (listed runs)", value: model.budget.spendLabel, mono: true)
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     Label("Tip", systemImage: "lightbulb").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
@@ -98,7 +99,7 @@ struct ContextInspectorView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(Theme.Spacing.md)
-                .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+                .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             }
             .padding(Theme.Spacing.lg)
         }
@@ -115,6 +116,6 @@ private func section<Content: View>(_ title: String, _ glyph: String, @ViewBuild
     }
     .padding(Theme.Spacing.md)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Theme.surfaceRaised.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).stroke(Theme.separator, lineWidth: 1))
+    .background(Theme.surfaceRaised.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).stroke(Theme.separator, lineWidth: 1))
 }

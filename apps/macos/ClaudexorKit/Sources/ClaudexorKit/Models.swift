@@ -51,6 +51,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var n: Int?
     public var maxUsd: Double?
     public var access: String?
+    public var web: String?
     public var tests: [String]?
 
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
@@ -58,6 +59,7 @@ public struct StartRunRequest: Codable, Sendable {
                 primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
+                web: String? = nil,
                 tests: [String]? = nil) {
         self.prompt = prompt
         self.mode = mode
@@ -72,6 +74,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.n = n
         self.maxUsd = maxUsd
         self.access = access
+        self.web = web
         self.tests = tests
     }
 }
@@ -80,7 +83,8 @@ public struct StartRunRequest: Codable, Sendable {
 public struct RunStartInfo: Codable, Sendable, Equatable {
     public let jobId: String?
     public let runId: String
-    public let taskId: String
+    /// Optional in the wire contract; a response without it must not decode-fail a started run.
+    public let taskId: String?
     public let runDir: String
 }
 
@@ -153,6 +157,13 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let spendUsd: Double?
     public let spendEstimated: Bool?
     public let access: String?
+    public let requestedAccess: String?
+    public let effectiveAccess: String?
+    public let externalContextPolicy: String?
+    public let webRequired: Bool?
+    public let webMode: String?
+    public let webEvidence: WebEvidence?
+    public let outputReadyState: String?
     public let tests: [String]?
     public let specId: String?
     public let specHash: String?
@@ -180,6 +191,22 @@ public struct PrimaryOutput: Codable, Sendable, Equatable {
     public let bytes: Int?
 }
 
+public struct WebEvidence: Codable, Sendable, Equatable {
+    public let required: Bool
+    public let mode: String
+    /// Mode the selected route actually executed (disclosed upgrades, e.g. claude cached->live).
+    public let effectiveMode: String?
+    public let attempted: Bool
+    public let satisfied: Bool
+    public let status: String
+    public let tool: String?
+    public let target: String?
+    public let errorSummary: String?
+    public let rawDetailRef: String?
+    /// False when the run predates telemetry.yaml: render "telemetry unavailable", never a guess.
+    public let available: Bool?
+}
+
 public struct TimelineEvent: Codable, Sendable, Identifiable, Equatable {
     public var id: String { "\(type)-\(ts ?? "")-\(title)-\(attemptId ?? "")" }
     public let type: String
@@ -188,6 +215,10 @@ public struct TimelineEvent: Codable, Sendable, Identifiable, Equatable {
     public let attemptId: String?
     public let title: String
     public let detail: String?
+    public let severity: String?
+    public let toolName: String?
+    public let target: String?
+    public let errorSummary: String?
     public let rawRef: String?
 }
 
@@ -317,7 +348,10 @@ public struct SetupJob: Codable, Sendable, Equatable {
     public let requiresConfirmation: Bool
     public let createdAt: String
     public let startedAt: String?
+    public let firstOutputAt: String?
+    public let lastOutputAt: String?
     public let finishedAt: String?
+    public let retryCount: Int?
 }
 
 public struct SetupJobListResponse: Codable, Sendable, Equatable {
@@ -337,6 +371,7 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
     public let defaultPortfolio: String
     public let routing: RoutingSettings
     public let budget: BudgetSettings
+    public let harnesses: [String: HarnessSettings]?
 }
 
 public struct RoutingSettings: Codable, Sendable, Equatable {
@@ -352,6 +387,46 @@ public struct BudgetSettings: Codable, Sendable, Equatable {
     public let maxUsdPerDay: Double?
 }
 
+public struct HarnessSettings: Codable, Sendable, Equatable {
+    public let enabled: Bool
+    public let defaultModel: String?
+    public let effort: String?
+    public let maxTurns: Int?
+    public let maxRounds: Int?
+    public let maxUsd: Double?
+    public let toolsAllow: [String]
+    public let toolsDeny: [String]
+    public let fallbackModel: String?
+    public let web: String
+    public let nativeOptions: [String: JSONValue]
+}
+
+/// Partial per-harness settings patch; absent fields keep their stored value.
+public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
+    public var enabled: Bool?
+    public var defaultModel: String??
+    public var effort: String??
+    public var web: String?
+
+    public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil) {
+        self.enabled = enabled
+        self.defaultModel = defaultModel
+        self.effort = effort
+        self.web = web
+    }
+
+    enum CodingKeys: String, CodingKey { case enabled, defaultModel, effort, web }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(enabled, forKey: .enabled)
+        // Double-optional: .some(nil) encodes an explicit JSON null (= clear override).
+        if let defaultModel { try c.encode(defaultModel, forKey: .defaultModel) }
+        if let effort { try c.encode(effort, forKey: .effort) }
+        try c.encodeIfPresent(web, forKey: .web)
+    }
+}
+
 public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var defaultPortfolio: String?
     public var routingPolicy: String?
@@ -363,12 +438,14 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var maxUsdPerDay: Double?
     public var clearMaxUsdPerRun: Bool
     public var clearMaxUsdPerDay: Bool
+    public var harnesses: [String: HarnessSettingsPatch]?
 
     public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
                 primaryHarness: String? = nil, defaultModel: String? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
-                clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false) {
+                clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false,
+                harnesses: [String: HarnessSettingsPatch]? = nil) {
         self.defaultPortfolio = defaultPortfolio
         self.routingPolicy = routingPolicy
         self.primaryHarness = primaryHarness
@@ -379,10 +456,11 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.maxUsdPerDay = maxUsdPerDay
         self.clearMaxUsdPerRun = clearMaxUsdPerRun
         self.clearMaxUsdPerDay = clearMaxUsdPerDay
+        self.harnesses = harnesses
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -397,6 +475,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
         if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
         if clearMaxUsdPerDay { try c.encode(true, forKey: .clearMaxUsdPerDay) }
+        try c.encodeIfPresent(harnesses, forKey: .harnesses)
     }
 }
 

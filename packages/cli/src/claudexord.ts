@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { DaemonClient, DaemonServer, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudexor/daemon";
-import { DaemonControlApiServer } from "@claudexor/control-api";
+import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
-import { appendLine, assertNoInlineSecretValues, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
-import { ControlRunStartRequest, type ControlRunStartRequest as ControlRunStartRequestDto, type ControlSetupJob } from "@claudexor/schema";
+import { appendLine, noProjectRepoRoot, readJsonSafe, readTextSafe, redactSecrets } from "@claudexor/util";
+import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, ControlSetupJob as ControlSetupJobSchema, type ControlSetupJob, GlobalConfig } from "@claudexor/schema";
 import { buildGateway, buildRegistry } from "./registry.js";
 import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
 
@@ -18,7 +18,10 @@ import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 async function main(): Promise<void> {
-  mkdirSync(daemonDir(), { recursive: true });
+  // The daemon dir holds the auth token, jobs registry, and setup logs: it must
+  // never be group/world readable (mkdir mode only applies on creation).
+  mkdirSync(daemonDir(), { recursive: true, mode: 0o700 });
+  chmodSync(daemonDir(), 0o700);
   const token = ensureToken();
   const socketPath = defaultSocketPath();
 
@@ -96,23 +99,9 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-function normalizeDaemonRunStart(raw: unknown): ControlRunStartRequestDto {
-  assertNoInlineSecretValues(raw);
-  const parsed = ControlRunStartRequest.parse(raw ?? {});
-  const mode = parsed.mode;
-  if (parsed.scope.kind === "project") {
-    const repoRoot = parsed.scope.root.trim();
-    if (!isAbsolute(repoRoot)) {
-      throw Object.assign(new Error("project root must be an absolute path"), { status: 400 });
-    }
-    return { ...parsed, scope: { kind: "project", root: repoRoot, context: parsed.scope.context ?? "auto" } };
-  }
-  if (mode === "ask") {
-    mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-    return parsed;
-  }
-  throw new Error(`project scope is required for mode '${mode}'`);
-}
+// Run-start normalization has exactly one owner (control-api); the socket
+// runner path delegates so scope/secret/absolute-root rules cannot drift.
+const normalizeDaemonRunStart = (raw: unknown): ControlRunStartRequestDto => normalizeRunStartRequest(raw);
 
 function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string): string {
   if ("repoRoot" in p) throw new Error("legacy repoRoot field is not accepted; use scope.kind=project with scope.root");
@@ -124,6 +113,32 @@ function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string)
   if (!root) throw new Error(`project scope root is required for ${purpose}`);
   if (!isAbsolute(root)) throw new Error("project root must be an absolute path");
   return root;
+}
+
+/** Merge camelCase per-harness patches into the snake_case GlobalConfig shape. */
+function applyHarnessSettingsPatches(
+  current: GlobalConfig["harnesses"],
+  patches: ControlSettingsUpdateRequest["harnesses"],
+): GlobalConfig["harnesses"] {
+  if (!patches) return current;
+  const next = { ...current };
+  for (const [id, patch] of Object.entries(patches)) {
+    const base = next[id] ?? GlobalConfig.shape.harnesses.removeDefault().valueSchema.parse({});
+    next[id] = {
+      ...base,
+      enabled: patch.enabled ?? base.enabled,
+      default_model: patch.defaultModel === undefined ? base.default_model : patch.defaultModel,
+      effort: patch.effort === undefined ? base.effort : patch.effort,
+      max_turns: patch.maxTurns === undefined ? base.max_turns : patch.maxTurns,
+      max_rounds: patch.maxRounds === undefined ? base.max_rounds : patch.maxRounds,
+      max_usd: patch.maxUsd === undefined ? base.max_usd : patch.maxUsd,
+      tools_allow: patch.toolsAllow ?? base.tools_allow,
+      tools_deny: patch.toolsDeny ?? base.tools_deny,
+      fallback_model: patch.fallbackModel === undefined ? base.fallback_model : patch.fallbackModel,
+      web: patch.web ?? base.web,
+    };
+  }
+  return next;
 }
 
 function controlServices() {
@@ -170,58 +185,33 @@ function controlServices() {
       };
     },
     updateSettings: async (patch: unknown) => {
-      const p = (patch ?? {}) as Record<string, unknown>;
+      // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
+      // surface as a 4xx, never be silently dropped.
+      const p = ControlSettingsUpdateRequest.parse(patch ?? {});
+      const nullableName = (value: string | null | undefined, current: string | null): string | null => {
+        if (value === undefined) return current;
+        if (value === null || value === "none" || value === "__none") return null;
+        return value;
+      };
       return updateGlobalConfig((cfg) => ({
         ...cfg,
-        default_portfolio: typeof p["defaultPortfolio"] === "string" ? (p["defaultPortfolio"] as never) : cfg.default_portfolio,
+        default_portfolio: p.defaultPortfolio ?? cfg.default_portfolio,
         routing: {
           ...cfg.routing,
-          primary_harness:
-            typeof p["primaryHarness"] === "string"
-              ? p["primaryHarness"] === "none" || p["primaryHarness"] === "__none"
-                ? null
-                : p["primaryHarness"]
-              : p["primaryHarness"] === null
-                ? null
-                : cfg.routing.primary_harness,
-          default_model:
-            typeof p["defaultModel"] === "string"
-              ? p["defaultModel"] === "none" || p["defaultModel"] === "__none"
-                ? null
-                : p["defaultModel"]
-              : p["defaultModel"] === null
-                ? null
-                : cfg.routing.default_model,
-          default_policy:
-            typeof p["routingPolicy"] === "string"
-              ? (p["routingPolicy"] as never)
-              : cfg.routing.default_policy,
-          env_inheritance:
-            typeof p["envInheritance"] === "string"
-              ? (p["envInheritance"] as never)
-              : cfg.routing.env_inheritance,
-          eligible_harnesses: Array.isArray(p["eligibleHarnesses"])
-            ? p["eligibleHarnesses"].filter((x): x is string => typeof x === "string")
-            : cfg.routing.eligible_harnesses,
+          primary_harness: nullableName(p.primaryHarness, cfg.routing.primary_harness),
+          default_model: nullableName(p.defaultModel, cfg.routing.default_model),
+          default_policy: p.routingPolicy ?? cfg.routing.default_policy,
+          env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
+          eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
         },
         budget: {
           ...cfg.budget,
-          max_usd_per_run:
-            typeof p["maxUsdPerRun"] === "number"
-              ? p["maxUsdPerRun"]
-              : p["maxUsdPerRun"] === null || p["clearMaxUsdPerRun"] === true
-                ? null
-                : cfg.budget.max_usd_per_run,
-          max_usd_per_day:
-            typeof p["maxUsdPerDay"] === "number"
-              ? p["maxUsdPerDay"]
-              : p["maxUsdPerDay"] === null || p["clearMaxUsdPerDay"] === true
-                ? null
-                : cfg.budget.max_usd_per_day,
+          max_usd_per_run: p.clearMaxUsdPerRun === true ? null : p.maxUsdPerRun ?? cfg.budget.max_usd_per_run,
+          max_usd_per_day: p.clearMaxUsdPerDay === true ? null : p.maxUsdPerDay ?? cfg.budget.max_usd_per_day,
         },
+        harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));
     },
-    auth: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),
     listSecrets: async () => ({ backend: secretStore.resolvedBackend(), secrets: secretStore.list() }),
     setSecret: async (input: unknown) => {
       const p = (input ?? {}) as Record<string, unknown>;
@@ -366,19 +356,55 @@ function setupHarness(input: unknown) {
 }
 
 const SETUP_JOBS_DIR = join(daemonDir(), "setup-jobs");
+const SETUP_JOBS_REGISTRY = join(SETUP_JOBS_DIR, "jobs.json");
+/** A hung installer must reach a visible terminal state, not run forever. */
+const SETUP_JOB_TIMEOUT_MS = 15 * 60_000;
 
 function createSetupJobManager() {
   const jobs = new Map<string, ControlSetupJob>();
   const children = new Map<string, ChildProcess>();
+  const timeouts = new Map<string, NodeJS.Timeout>();
+
+  // Durable registry: a daemon restart must not erase job history. Jobs that
+  // were mid-flight when the daemon died are marked failed (honest terminal),
+  // except Terminal logins, which legitimately outlive the daemon process.
+  mkdirSync(SETUP_JOBS_DIR, { recursive: true, mode: 0o700 });
+  const persisted = readJsonSafe<unknown[]>(SETUP_JOBS_REGISTRY);
+  if (Array.isArray(persisted)) {
+    for (const raw of persisted) {
+      const parsed = ControlSetupJobSchema.safeParse(raw);
+      if (!parsed.success) continue;
+      const job = parsed.data;
+      if (job.state === "running" || job.state === "queued") {
+        jobs.set(job.jobId, {
+          ...job,
+          state: "failed",
+          finishedAt: new Date().toISOString(),
+          message: `${job.harness} ${job.action} job was interrupted by a daemon restart.`,
+        });
+      } else {
+        jobs.set(job.jobId, job);
+      }
+    }
+  }
+
+  const persist = (): void => {
+    try {
+      writeFileSync(SETUP_JOBS_REGISTRY, JSON.stringify([...jobs.values()], null, 2) + "\n", { mode: 0o600 });
+    } catch {
+      /* registry persistence is best-effort; state stays authoritative in memory */
+    }
+  };
 
   const save = (job: ControlSetupJob): ControlSetupJob => {
     jobs.set(job.jobId, job);
+    persist();
     return job;
   };
 
   const update = (jobId: string, patch: Partial<ControlSetupJob>): ControlSetupJob => {
     const prev = jobs.get(jobId);
-    if (!prev) throw new Error("setup job not found");
+    if (!prev) throw Object.assign(new Error("setup job not found"), { status: 404 });
     return save({ ...prev, ...patch });
   };
 
@@ -409,17 +435,37 @@ function createSetupJobManager() {
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.set(job.jobId, child);
+    // Watchdog: a wedged install/doctor must surface as a failed terminal state.
+    const watchdog = setTimeout(() => {
+      const current = jobs.get(job.jobId);
+      if (!current || current.state !== "running") return;
+      writeJobLog(current, `watchdog: job exceeded ${SETUP_JOB_TIMEOUT_MS / 60000} minutes; terminating`);
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      const failed = update(job.jobId, {
+        state: "failed",
+        finishedAt: nowForDto(),
+        message: `${job.harness} ${job.action} job timed out after ${SETUP_JOB_TIMEOUT_MS / 60000} minutes and was terminated.`,
+      });
+      writeJobLog(failed, failed.message);
+    }, SETUP_JOB_TIMEOUT_MS);
+    watchdog.unref();
+    timeouts.set(job.jobId, watchdog);
     child.stdout.on("data", (chunk) => { noteJobOutput(job.jobId); writeJobLog(jobs.get(job.jobId) ?? started, String(chunk)); });
     child.stderr.on("data", (chunk) => { noteJobOutput(job.jobId); writeJobLog(jobs.get(job.jobId) ?? started, String(chunk)); });
     child.on("error", (err) => {
       children.delete(job.jobId);
+      clearTimeout(timeouts.get(job.jobId));
+      timeouts.delete(job.jobId);
       const failed = update(job.jobId, { state: "failed", finishedAt: nowForDto(), message: `Setup job failed to start: ${err.message}` });
       writeJobLog(failed, failed.message);
     });
     child.on("exit", (code, signal) => {
       children.delete(job.jobId);
+      clearTimeout(timeouts.get(job.jobId));
+      timeouts.delete(job.jobId);
       const current = jobs.get(job.jobId);
-      if (!current || current.state === "cancelled") return;
+      if (!current || current.state === "cancelled" || current.state === "failed") return;
       const ok = code === 0;
       const message = ok
         ? `${job.harness} ${job.action} job finished. Post-action doctor command was included when supported.`
@@ -463,6 +509,11 @@ IFS= read -r _
 
       const jobId = `setup-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
       const logPath = join(SETUP_JOBS_DIR, `${jobId}.log`);
+      // Honest retry accounting: a new job for the same harness+action after a
+      // failed one IS the user retrying.
+      const priorFailures = [...jobs.values()].filter(
+        (j) => j.harness === harness && j.action === action && (j.state === "failed" || j.state === "cancelled"),
+      ).length;
       const base: ControlSetupJob = {
         jobId,
         harness: harness as ControlSetupJob["harness"],
@@ -479,9 +530,9 @@ IFS= read -r _
         firstOutputAt: null,
         lastOutputAt: null,
         finishedAt: null,
-        retryCount: 0,
+        retryCount: priorFailures,
       };
-      writeJobLog(base, `created ${harness} ${action}`);
+      writeJobLog(base, `created ${harness} ${action}${priorFailures > 0 ? ` (retry #${priorFailures})` : ""}`);
 
       if (action === "login") {
         if (!profile.loginCommand) {
@@ -502,10 +553,12 @@ IFS= read -r _
       }
 
       if (action === "store_key") {
+        // Honest message: this job only verifies via doctor. The key itself is
+        // stored by the separate Settings store-secret call, never by this job.
         const job = save({
           ...base,
           command: profile.doctorCommand,
-          message: `Stored fallback secret ref for ${harness}; running post-action doctor.`,
+          message: `Running post-store doctor for ${harness}. (The key itself is saved via Settings > secrets, not by this job.)`,
         });
         return startShellJob(job, profile.doctorCommand);
       }
@@ -533,7 +586,7 @@ IFS= read -r _
       const jobId = typeof p["jobId"] === "string" ? p["jobId"] : "";
       const confirmed = p["confirmed"] !== false;
       const job = jobs.get(jobId);
-      if (!job) throw new Error("setup job not found");
+      if (!job) throw Object.assign(new Error("setup job not found"), { status: 404 });
       if (!confirmed) return job;
       if (!job.requiresConfirmation || job.action !== "install" || !job.command) {
         throw new Error("setup job does not require confirmation");
@@ -553,7 +606,7 @@ IFS= read -r _
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p["jobId"] === "string" ? p["jobId"] : "";
       const job = jobs.get(jobId);
-      if (!job) throw new Error("setup job not found");
+      if (!job) throw Object.assign(new Error("setup job not found"), { status: 404 });
       return job;
     },
 
@@ -561,12 +614,14 @@ IFS= read -r _
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p["jobId"] === "string" ? p["jobId"] : "";
       const job = jobs.get(jobId);
-      if (!job) throw new Error("setup job not found");
+      if (!job) throw Object.assign(new Error("setup job not found"), { status: 404 });
       const child = children.get(jobId);
       if (child) {
         child.kill("SIGTERM");
         children.delete(jobId);
       }
+      clearTimeout(timeouts.get(jobId));
+      timeouts.delete(jobId);
       const cancelled = update(jobId, { state: "cancelled", finishedAt: nowForDto(), message: `Cancelled ${job.harness} ${job.action} setup job.` });
       writeJobLog(cancelled, cancelled.message);
       return cancelled;

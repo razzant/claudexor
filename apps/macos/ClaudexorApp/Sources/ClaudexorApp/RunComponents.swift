@@ -153,11 +153,20 @@ private struct ActivityRow: View {
         (event.detail?.isEmpty == false) || (event.code?.isEmpty == false)
     }
 
+    /// Engine-typed severity overrides the kind tint: warnings amber, errors red.
+    private var tint: Color {
+        switch event.severity {
+        case "error": return Theme.status(.failed)
+        case "warning": return Theme.status(.needsReview)
+        default: return event.kind.tint
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.md) {
             ZStack {
-                Circle().fill(event.kind.tint.opacity(0.16)).frame(width: 28, height: 28)
-                Image(systemName: event.kind.glyph).imageScale(.small).foregroundStyle(event.kind.tint)
+                Circle().fill(tint.opacity(0.16)).frame(width: 28, height: 28)
+                Image(systemName: event.kind.glyph).imageScale(.small).foregroundStyle(tint)
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 HStack(spacing: Theme.Spacing.sm) {
@@ -166,6 +175,11 @@ private struct ActivityRow: View {
                         Text(h.label).font(.caption.weight(.medium)).foregroundStyle(h.color)
                     }
                     Text(event.title).font(.callout.weight(.medium))
+                    if event.severity == "error" {
+                        Text("error").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                    } else if event.severity == "warning" {
+                        Text("warning").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.needsReview))
+                    }
                     Spacer(minLength: Theme.Spacing.sm)
                     Text(event.timestamp, style: .relative).font(.caption2).foregroundStyle(.tertiary).fixedSize()
                 }

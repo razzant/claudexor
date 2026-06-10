@@ -1,6 +1,8 @@
 import { runCapture } from "@claudexor/core";
 import { newId } from "@claudexor/util";
 
+export * from "./gate.js";
+
 async function git(repo: string, args: string[], input?: string) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
 }
@@ -55,14 +57,21 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
   if (before.stdout.trim()) return { mode: opts.mode, applied: false, detail: "working tree is dirty; refusing delivery mutation" };
 
   let branch = opts.branch;
+  let previousRef: string | null = null;
   if (opts.mode === "branch" || opts.mode === "pr") {
+    previousRef = (await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim() || null;
     branch = branch ?? `claudexor/${newId("wp")}`;
     const cb = await git(repoRoot, ["checkout", "-b", branch]);
     if (cb.code !== 0) return { mode: opts.mode, applied: false, detail: `branch failed: ${cb.stderr.trim()}` };
   }
 
   const ap = await applyPatch(repoRoot, patch);
-  if (!ap.ok) return { mode: opts.mode, applied: false, branch, detail: `apply failed: ${ap.stderr.trim()}` };
+  if (!ap.ok) {
+    // Do not strand the repo on a fresh branch after a failed apply.
+    if (previousRef) await git(repoRoot, ["checkout", previousRef]);
+    if (previousRef && branch) await git(repoRoot, ["branch", "-D", branch]);
+    return { mode: opts.mode, applied: false, branch, detail: `apply failed: ${ap.stderr.trim()}` };
+  }
   if (opts.mode === "apply") return { mode: "apply", applied: true };
 
   await stagePatchPaths(repoRoot, patch);
@@ -90,7 +99,9 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
   if (push.code !== 0) {
     return { mode: "pr", applied: false, branch, commit, detail: `push failed: ${push.stderr.trim()}` };
   }
-  const ghArgs = ["pr", "create", "--head", branch as string, "--title", message, "--body", "Created by Claudexor."];
+  const ghArgs = ["pr", "create", "--head", branch as string, "--title", message];
+  if (opts.prBodyFile) ghArgs.push("--body-file", opts.prBodyFile);
+  else ghArgs.push("--body", "Created by Claudexor.");
   const pr = await runCapture("gh", ghArgs, { cwd: repoRoot, timeoutMs: 60_000 }).catch(() => null);
   const prUrl = pr && pr.code === 0 ? pr.stdout.trim() : undefined;
   return { mode: "pr", applied: Boolean(prUrl), branch, commit, prUrl, detail: prUrl ? undefined : "gh pr create unavailable" };

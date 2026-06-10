@@ -202,6 +202,9 @@ importers:
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core
+      '@claudexor/schema':
+        specifier: workspace:*
+        version: link:../schema
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util

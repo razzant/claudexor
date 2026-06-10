@@ -397,6 +397,14 @@ struct SettingsScreen: View {
                         }
                     }
                 }
+                settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
+                    Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/config.yaml.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                        HarnessDefaultsRow(family: family,
+                                           settings: model.settingsSnapshot?.harnesses?[family.rawValue])
+                    }
+                }
                 settingsGroup("Budget", "dollarsign.circle") {
                     HStack(spacing: Theme.Spacing.md) {
                         TextField("Max USD per run", text: $maxUsdPerRun)
@@ -543,5 +551,85 @@ struct SettingsScreen: View {
         if trimmed.isEmpty { return nil }
         guard let value = Double(trimmed), value >= 0 else { return nil }
         return value
+    }
+}
+
+/// One harness's engine defaults (enabled / model / effort / web), saved as a
+/// partial patch so untouched fields keep their stored values.
+private struct HarnessDefaultsRow: View {
+    @Environment(AppModel.self) private var model
+    let family: HarnessFamily
+    let settings: HarnessSettings?
+    @State private var enabled = true
+    @State private var modelDraft = ""
+    @State private var effort = "__default"
+    @State private var web = "auto"
+    @State private var saving = false
+
+    private static let efforts = ["__default", "low", "medium", "high", "xhigh", "max"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(spacing: Theme.Spacing.sm) {
+                HarnessChip(family: family, selected: enabled, available: true)
+                Spacer(minLength: Theme.Spacing.md)
+                Toggle("Enabled", isOn: $enabled)
+                    .toggleStyle(.switch).tint(Theme.accent)
+                    .labelsHidden()
+                    .help("Disabled harnesses are excluded from routing and pools.")
+            }
+            HStack(spacing: Theme.Spacing.sm) {
+                TextField("Model override", text: $modelDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .help("Optional model forwarded to \(family.label). Empty keeps the harness default.")
+                Picker("Effort", selection: $effort) {
+                    Text("Default").tag("__default")
+                    ForEach(Self.efforts.dropFirst(), id: \.self) { Text($0).tag($0) }
+                }
+                .fixedSize()
+                .help("Reasoning effort hint, where the harness supports one.")
+                Picker("Web", selection: $web) {
+                    Text("Auto").tag("auto")
+                    Text("Off").tag("off")
+                    Text("Cached").tag("cached")
+                    Text("Live").tag("live")
+                }
+                .fixedSize()
+                .help("Default external web/search policy for this harness.")
+                Button {
+                    Task { await save() }
+                } label: {
+                    Label("Save", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(saving)
+                .help("Save \(family.label) defaults to the engine config.")
+            }
+        }
+        .padding(Theme.Spacing.sm)
+        .background(Theme.surfaceRaisedHi.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .onAppear { sync() }
+        .onChange(of: settings) { _, _ in sync() }
+    }
+
+    private func sync() {
+        enabled = settings?.enabled ?? true
+        modelDraft = settings?.defaultModel ?? ""
+        effort = settings?.effort ?? "__default"
+        web = settings?.web ?? "auto"
+    }
+
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        let trimmedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patch = HarnessSettingsPatch(
+            enabled: enabled,
+            defaultModel: .some(trimmedModel.isEmpty ? nil : trimmedModel),
+            effort: .some(effort == "__default" ? nil : effort),
+            web: web
+        )
+        _ = await model.saveSettings(SettingsUpdateRequest(harnesses: [family.rawValue: patch]))
     }
 }

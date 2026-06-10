@@ -65,6 +65,103 @@
         },
         "clearMaxUsdPerDay": {
           "type": "boolean"
+        },
+        "harnesses": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "defaultModel": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effort": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "maxTurns": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "maxRounds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "maxUsd": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "toolsAllow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "toolsDeny": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "fallbackModel": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "web": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "auto",
+                  "cached",
+                  "live"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

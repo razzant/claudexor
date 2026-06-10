@@ -20,7 +20,7 @@ describe("daemon", () => {
       token,
       runner: async (params) => {
         ran += 1;
-        return { echoed: (params as { x: number }).x * 2 };
+        return { status: "success", echoed: (params as { x: number }).x * 2 };
       },
     });
     await server.start();
@@ -112,7 +112,7 @@ describe("daemon", () => {
         socketPath,
         token,
         persistPath,
-        runner: async (params) => ({ echoed: (params as { x: number }).x }),
+        runner: async (params) => ({ status: "success", echoed: (params as { x: number }).x }),
       });
 
     const a = mk();
@@ -156,7 +156,7 @@ describe("daemon", () => {
       persistPath,
       runner: async (_params, ctx) => {
         ctx.onRunStart({ runId: "run-redact-1", taskId: "t", runDir: "/tmp/run-redact-1" });
-        return { summary: SECRET_SUMMARY };
+        return { status: "success", summary: SECRET_SUMMARY };
       },
     });
     await server.start();

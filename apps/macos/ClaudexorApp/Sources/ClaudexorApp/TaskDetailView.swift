@@ -97,6 +97,24 @@ struct TaskDetailView: View {
                     Label(spec, systemImage: "doc.text.fill").font(.caption).foregroundStyle(Theme.accent)
                 }
                 RouteProofBadge(proof: task.routeProof)
+                if let access = task.accessLabel {
+                    Label(access, systemImage: "lock.shield")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help("Access profile the engine enforced (requested vs effective).")
+                }
+                if let outputReady = task.outputReadyState, outputReady != "ready" {
+                    // Honest output state; the "ready" case is the norm and stays quiet.
+                    Label(Self.outputReadyLabel(outputReady), systemImage: outputReady == "diagnostic" ? "exclamationmark.triangle" : "clock")
+                        .font(.caption)
+                        .foregroundStyle(outputReady == "diagnostic" ? Theme.status(.failed) : .secondary)
+                        .help("Output ready state from Control API.")
+                }
+                if let web = task.webEvidenceStatus, web != "none" {
+                    Label(Self.webEvidenceLabel(web), systemImage: Self.webEvidenceGlyph(web))
+                        .font(.caption)
+                        .foregroundStyle(Self.webEvidenceColor(web))
+                        .help(task.webEvidenceDetail ?? "Web evidence status.")
+                }
                 ForEach(task.harnesses) { HarnessChip(family: $0) }
                 BudgetMini(spend: task.spendUsd, cap: task.capUsd, spendKnown: task.spendKnown, capKnown: task.capKnown, spendEstimated: task.spendEstimated)
                 if task.isLive && task.status.isActive {
@@ -178,16 +196,53 @@ struct TaskDetailView: View {
             SectionLabel(task.mode == .ask ? "Answer" : "Outcome", systemImage: "text.bubble")
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(answer)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    MarkdownOutputView(markdown: answer)
                 } else {
-                    Text("No answer artifact yet. Open Diagnostics for engine state, events, and artifact paths.")
+                    Text(task.outputReadyState == "finalizing" ? "Run is terminal; output is still finalizing. Open Diagnostics for events and artifact paths." : "No answer artifact yet. Open Diagnostics for engine state, events, and artifact paths.")
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+        }
+    }
+
+    // MARK: Badge label/glyph mappers (no raw wire strings in the UI)
+
+    static func outputReadyLabel(_ state: String) -> String {
+        switch state {
+        case "pending": return "Output pending"
+        case "finalizing": return "Output finalizing"
+        case "diagnostic": return "Diagnostic output"
+        case "ready": return "Output ready"
+        default: return state
+        }
+    }
+
+    static func webEvidenceLabel(_ status: String) -> String {
+        switch status {
+        case "satisfied": return "Web verified"
+        case "failed": return "Web failed"
+        case "attempted": return "Web attempted"
+        case "unverified": return "Web unverified"
+        default: return status
+        }
+    }
+
+    static func webEvidenceGlyph(_ status: String) -> String {
+        switch status {
+        case "satisfied": return "network"
+        case "failed": return "exclamationmark.icloud"
+        case "unverified": return "questionmark.diamond" // a policy gap, not a benign attempt
+        default: return "icloud"
+        }
+    }
+
+    static func webEvidenceColor(_ status: String) -> Color {
+        switch status {
+        case "satisfied": return Theme.status(.succeeded)
+        case "failed": return Theme.status(.failed)
+        case "unverified": return Theme.status(.blocked)
+        default: return .secondary
         }
     }
 
@@ -273,10 +328,10 @@ struct TaskDetailView: View {
                             mode: task.mode,
                             harnesses: task.harnesses,
                             primary: task.harnesses.first,
-                            portfolio: "subscription-first",
+                            portfolio: model.defaultPortfolio,
                             model: nil,
                             n: task.n,
-                            capUsd: task.capKnown ? task.capUsd : nil,
+                            capUsd: task.capKnown ? task.capUsd : model.defaultMaxUsdPerRun,
                             access: task.mode.isReadOnly ? "readonly" : "workspace_write",
                             repoRootOverride: task.repoRoot
                         )
@@ -330,5 +385,130 @@ struct TaskDetailView: View {
         if let diagnostics = task.diagnosticText { text += "\n\n# Diagnostics\n\(diagnostics)" }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+/// Block-aware markdown rendering: headings, paragraphs, list items, and fenced
+/// code render as separate views. `AttributedString(markdown:)` alone collapses
+/// every newline into one run-on line, which made multi-paragraph answers unreadable.
+private struct MarkdownOutputView: View {
+    let markdown: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            ForEach(blocks) { block in
+                switch block.kind {
+                case .heading(let level):
+                    inline(block.text, font: level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
+                case .paragraph:
+                    inline(block.text, font: .callout)
+                case .list:
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, item in
+                            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
+                                Text("•").font(.callout).foregroundStyle(.secondary)
+                                inline(String(item.dropFirst(2)), font: .callout)
+                            }
+                        }
+                    }
+                case .code:
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        Text(block.text)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(Theme.Spacing.md)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .codeSurface(Theme.Radius.control)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func inline(_ raw: String, font: Font) -> some View {
+        Text((try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw))
+            .font(font)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var blocks: [MarkdownBlock] {
+        var out: [MarkdownBlock] = []
+        var paragraph: [String] = []
+        var list: [String] = []
+        var code: [String] = []
+        var inCode = false
+
+        func flushParagraph() {
+            let text = paragraph.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .paragraph, text: text)) }
+            paragraph.removeAll()
+        }
+        func flushList() {
+            if !list.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .list, text: list.joined(separator: "\n"))) }
+            list.removeAll()
+        }
+
+        for line in markdown.components(separatedBy: .newlines) {
+            if line.hasPrefix("```") {
+                if inCode {
+                    out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n")))
+                    code.removeAll()
+                    inCode = false
+                } else {
+                    flushParagraph(); flushList()
+                    inCode = true
+                }
+                continue
+            }
+            if inCode { code.append(line); continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { flushParagraph(); flushList(); continue }
+            if let headingLevel = headingLevel(trimmed) {
+                flushParagraph(); flushList()
+                out.append(MarkdownBlock(id: out.count, kind: .heading(headingLevel.level), text: headingLevel.text))
+            } else if isListItem(trimmed) {
+                flushParagraph()
+                list.append("• \(listItemText(trimmed))")
+            } else {
+                flushList()
+                paragraph.append(trimmed)
+            }
+        }
+        if !code.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"))) }
+        flushParagraph(); flushList()
+        return out.isEmpty ? [MarkdownBlock(id: 0, kind: .paragraph, text: markdown)] : out
+    }
+
+    private func headingLevel(_ line: String) -> (level: Int, text: String)? {
+        guard line.hasPrefix("#") else { return nil }
+        let hashes = line.prefix(while: { $0 == "#" })
+        let text = line.dropFirst(hashes.count).trimmingCharacters(in: .whitespaces)
+        guard hashes.count <= 6, !text.isEmpty else { return nil }
+        return (min(hashes.count, 3), text)
+    }
+
+    private func isListItem(_ line: String) -> Bool {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { return true }
+        // ordered list: "1. text"
+        let head = line.prefix(while: { $0.isNumber })
+        return !head.isEmpty && line.dropFirst(head.count).hasPrefix(". ")
+    }
+
+    private func listItemText(_ line: String) -> String {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+            return String(line.dropFirst(2))
+        }
+        let head = line.prefix(while: { $0.isNumber })
+        return String(line.dropFirst(head.count + 2))
+    }
+
+    private struct MarkdownBlock: Identifiable {
+        enum Kind { case heading(Int), paragraph, list, code }
+        let id: Int
+        let kind: Kind
+        let text: String
     }
 }

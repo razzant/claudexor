@@ -108,9 +108,23 @@ struct AuthSheet: View {
                 Panel {
                     VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                         SectionLabel("Setup job", systemImage: "list.bullet.rectangle")
+                        Label(job.state, systemImage: setupJobGlyph(job.state))
+                            .font(.caption)
+                            .foregroundStyle(setupJobColor(job.state))
                         Text(job.message)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            Text("Created: \(job.createdAt)")
+                            if let started = job.startedAt { Text("Started: \(started)") }
+                            if let first = job.firstOutputAt { Text("First output: \(first)") }
+                            if let latest = job.lastOutputAt { Text("Latest output: \(latest)") }
+                            if let finished = job.finishedAt { Text("Finished: \(finished)") }
+                            if let retry = job.retryCount, retry > 0 { Text("Retries: \(retry)") }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                         if let command = job.command {
                             Text(command)
                                 .font(.system(.caption, design: .monospaced))
@@ -158,7 +172,7 @@ struct AuthSheet: View {
             Divider().overlay(Theme.separator)
             HStack {
                 if running {
-                    Label("Setup job running", systemImage: "circle.dotted")
+                    Label(lastSetupJob.map { "Setup job \($0.state)" } ?? "Setup job running", systemImage: "circle.dotted")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -173,6 +187,8 @@ struct AuthSheet: View {
         .frame(width: 560)
     }
 
+    private static let terminalJobStates: Set<String> = ["succeeded", "failed", "cancelled", "timed_out", "not_supported"]
+
     private func runLogin() async {
         running = true
         defer { running = false }
@@ -182,6 +198,7 @@ struct AuthSheet: View {
         }
         lastSetupJob = job
         status = job.message
+        await pollSetupJob(job)
     }
 
     private func runInstall() async {
@@ -206,6 +223,23 @@ struct AuthSheet: View {
         if job.state == "not_supported", let raw = job.guideUrl, let url = URL(string: raw) {
             NSWorkspace.shared.open(url)
         }
+        await pollSetupJob(job)
+    }
+
+    /// Track the daemon-owned job to its terminal state so the sheet reflects
+    /// reality (a job stuck on "running" forever was a UX lie), then recheck doctor.
+    private func pollSetupJob(_ initial: SetupJob) async {
+        var current = initial
+        while !Self.terminalJobStates.contains(current.state) && current.state != "waiting_for_input" {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let next = await model.setupJobStatus(current.jobId) else { break }
+            current = next
+            lastSetupJob = next
+            status = next.message
+        }
+        if Self.terminalJobStates.contains(current.state) {
+            await model.refreshHarnesses()
+        }
     }
 
     private func recheck() async {
@@ -225,11 +259,33 @@ struct AuthSheet: View {
             if let job = await model.startSetupJob(family: family, action: "store_key") {
                 lastSetupJob = job
                 status = job.message
+                await pollSetupJob(job)
             } else {
                 status = "Stored secret ref: \(name). Reconnect the engine to recheck \(family.label)."
             }
         } else {
             status = "Could not store \(name); reconnect the local engine and try again."
+        }
+    }
+
+    private func setupJobGlyph(_ state: String) -> String {
+        switch state {
+        case "running": return "play.circle"
+        case "waiting_for_input": return "person.crop.circle.badge.questionmark"
+        case "succeeded": return "checkmark.circle.fill"
+        case "failed": return "xmark.octagon.fill"
+        case "cancelled": return "stop.circle"
+        default: return "circle"
+        }
+    }
+
+    private func setupJobColor(_ state: String) -> Color {
+        switch state {
+        case "succeeded": return Theme.status(.succeeded)
+        case "failed": return Theme.status(.failed)
+        case "waiting_for_input": return Theme.status(.blocked)
+        case "running": return Theme.status(.running)
+        default: return .secondary
         }
     }
 }

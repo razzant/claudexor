@@ -6,7 +6,7 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
-import { DELIVER_MODES, type DeliverMode, checkPatch, deliver } from "@claudexor/delivery";
+import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
 import { assertNoInlineSecretValues, containsSecretLikeToken, ensureDir, hashJson, readTextSafe, sha256, writeJson } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
@@ -94,7 +94,7 @@ Options:
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
-  --access <profile>       Access profile: readonly|workspace_write|full|inherit_native
+  --access <profile>       Access profile: readonly|workspace_write|full|external_sandbox_full|inherit_native
   --web <mode>             External web/search policy: off|auto|cached|live
   --model <id>             Model hint forwarded to the selected harness route
   --effort <level>         Reasoning effort hint: low|medium|high|xhigh|max
@@ -156,10 +156,14 @@ function testCommands(args: ParsedArgs): string[] | undefined {
 
 const ACCESS_PROFILES = new Set(["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"]);
 
-/** Access profile from `--access`; ignored (undefined) if not a known profile. */
+/** Access profile from `--access`. Invalid profiles FAIL LOUDLY (a typo must never silently run with the default write profile). */
 function accessProfile(args: ParsedArgs): "readonly" | "workspace_write" | "full" | "external_sandbox_full" | "inherit_native" | undefined {
   const v = flagStr(args, "access");
-  return v && ACCESS_PROFILES.has(v) ? (v as never) : undefined;
+  if (v === undefined) return undefined;
+  if (!ACCESS_PROFILES.has(v)) {
+    throw new Error(`invalid --access '${v}' (expected readonly|workspace_write|full|external_sandbox_full|inherit_native)`);
+  }
+  return v as never;
 }
 
 function effortHint(args: ParsedArgs): EffortHint | undefined {
@@ -235,9 +239,11 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
   }
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
+  let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
+    resolvedAccess = accessProfile(args);
   } catch (err) {
     process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
@@ -263,7 +269,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       attempts: intFlag(args, "attempts") ?? null,
       tests,
       maxUsd: maxUsd ?? null,
-      access: accessProfile(args),
+      access: resolvedAccess,
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
       model: flagStr(args, "model"),
@@ -682,8 +688,20 @@ function isManagedSecretName(name: string): boolean {
   return MANAGED_SECRET_NAMES.has(name);
 }
 
+/** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
+const KNOWN_FLAGS = new Set([
+  "harness", "mode", "n", "attempts", "test", "max-usd", "reviewer-model", "reviewer-effort",
+  "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place",
+  "answers", "previous", "spec", "json", "all", "dry-run", "deep", "from-env",
+]);
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  const unknownFlags = Object.keys(args.flags).filter((f) => !KNOWN_FLAGS.has(f));
+  if (unknownFlags.length > 0) {
+    process.stderr.write(`claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)\n`);
+    return 2;
+  }
   const json = flagBool(args, "json");
   const cmd = args._[0] ?? "help";
   const cwd = process.cwd();
@@ -893,36 +911,21 @@ async function main(): Promise<number> {
         print(`decision status is ${decision.data.status}; refusing apply`);
         return 1;
       }
+      // Apply policy has ONE owner (delivery.validateApplyGate) shared with the
+      // Control API; the CLI only adapts artifact reads into it.
+      const applyDecision = DecisionRecord.safeParse(store.readYaml(join(paths.arbitrationDir, "decision.yaml")));
       const workProduct = WorkProduct.safeParse(store.readYaml(join(paths.finalDir, "work_product.yaml")));
-      if (!workProduct.success) {
-        print("work product is required before apply");
-        return 1;
-      }
-      if (workProduct.data.kind !== "patch") {
-        print(`work product kind ${workProduct.data.kind} is not applyable as a patch`);
-        return 1;
-      }
-      const recordedPatchHash = workProduct.data.meta["patch_sha256"];
-      if (typeof recordedPatchHash !== "string" || recordedPatchHash.length === 0) {
-        print("work product patch hash is required before apply");
-        return 1;
-      }
-      if (recordedPatchHash !== sha256(patch)) {
-        print("patch artifact hash does not match the reviewed work product");
-        return 1;
-      }
       const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
-      if (!contract.success) {
-        print("task contract is required before apply");
-        return 1;
-      }
-      try {
-        if (realpathSync(contract.data.repo.root) !== realpathSync(process.cwd())) {
-          print("current repo does not match the run's original project; refusing apply");
-          return 1;
-        }
-      } catch {
-        print("run original project cannot be verified; refusing apply");
+      const gateError = validateApplyGate({
+        state: null, // artifact-only path: daemon job state is not available here
+        decision: applyDecision.success ? applyDecision.data : null,
+        workProduct: workProduct.success ? workProduct.data : null,
+        patch,
+        originalRepoRoot: contract.success ? contract.data.repo.root : null,
+        targetRepoRoot: process.cwd(),
+      });
+      if (gateError) {
+        print(gateError);
         return 1;
       }
       if (flagBool(args, "dry-run")) {

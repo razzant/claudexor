@@ -704,9 +704,25 @@ describe("DaemonControlApiServer", () => {
         expect(status.status).toBe(200);
         expect(await status.json()).toMatchObject({ jobId: "setup-1", state: "waiting_for_input" });
 
-        const events = await fetch(`${base}/setup/jobs/setup-1/events`, { headers: { authorization: `Bearer ${token}` } });
+        // The lifecycle stream STAYS OPEN for a non-terminal job (it is a real
+        // stream now, not a one-shot snapshot): read the first frame and abort.
+        const sseAbort = new AbortController();
+        const events = await fetch(`${base}/setup/jobs/setup-1/events`, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: sseAbort.signal,
+        });
         expect(events.status).toBe(200);
-        expect(await events.text()).toContain("event: setup");
+        const reader = (events.body as ReadableStream<Uint8Array>).getReader();
+        let sseText = "";
+        while (!sseText.includes("event: setup")) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseText += new TextDecoder().decode(value);
+        }
+        expect(sseText).toContain("event: setup");
+        expect(sseText).toContain("waiting_for_input");
+        expect(sseText).not.toContain("event: end");
+        sseAbort.abort();
 
         const confirmed = await fetch(`${base}/setup/jobs/setup-1/confirm`, {
           method: "POST",
@@ -722,6 +738,17 @@ describe("DaemonControlApiServer", () => {
         });
         expect(cancelled.status).toBe(200);
         expect(await cancelled.json()).toMatchObject({ jobId: "setup-1", state: "cancelled" });
+
+        // After cancel the job is terminal: the lifecycle stream must emit the
+        // terminal status and CLOSE with an end frame.
+        job.state = "cancelled";
+        job.finishedAt = new Date().toISOString() as never;
+        const ended = await fetch(`${base}/setup/jobs/setup-1/events`, { headers: { authorization: `Bearer ${token}` } });
+        expect(ended.status).toBe(200);
+        const endedText = await ended.text();
+        expect(endedText).toContain("event: setup");
+        expect(endedText).toContain("cancelled");
+        expect(endedText).toContain("event: end");
       },
       undefined,
       {
@@ -831,7 +858,8 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ harness: "codex", action: "doctor" }),
         });
-        expect(setup.status).toBe(400);
+        // A schema-invalid service RESULT is a server-side contract bug: 500, not 400.
+        expect(setup.status).toBe(500);
       },
       undefined,
       { setupHarness: async () => ({ harness: "codex", action: "doctor", status: "bogus", message: "bad" }) },

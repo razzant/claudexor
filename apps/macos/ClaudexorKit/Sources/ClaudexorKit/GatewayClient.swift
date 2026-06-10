@@ -255,7 +255,11 @@ public final class GatewayClient: Sendable {
                         if line.hasPrefix(":") { continue } // comment / heartbeat
                         if line.hasPrefix("id:") { id = Int(line.dropFirst(3).trimmingCharacters(in: .whitespaces)) }
                         else if line.hasPrefix("event:") { eventName = String(line.dropFirst(6).trimmingCharacters(in: .whitespaces)) }
-                        else if line.hasPrefix("data:") { dataLine += String(line.dropFirst(5).trimmingCharacters(in: .whitespaces)) }
+                        else if line.hasPrefix("data:") {
+                            // Per the SSE spec, multiple data: lines are joined with "\n".
+                            let chunk = String(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
+                            dataLine = dataLine.isEmpty ? chunk : dataLine + "\n" + chunk
+                        }
                     }
                     continuation.finish()
                 } catch {

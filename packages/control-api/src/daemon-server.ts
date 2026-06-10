@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { checkPatch, deliver } from "@claudexor/delivery";
+import { checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
 import {
   AccessProfile,
   ControlWebEvidence,
@@ -42,7 +42,7 @@ import {
   TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -71,6 +71,8 @@ export interface DaemonControlApiOptions {
   host?: string;
   port?: number;
   pollMs?: number;
+  /** SSE comment-ping cadence so quiet phases are distinguishable from dead connections. */
+  heartbeatMs?: number;
   runStartTimeoutMs?: number;
   services?: {
     harnesses?: () => Promise<unknown>;
@@ -82,7 +84,6 @@ export interface DaemonControlApiOptions {
     confirmSetupJob?: (input: unknown) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
-    auth?: () => Promise<unknown>;
     listSecrets?: () => Promise<unknown>;
     setSecret?: (input: unknown) => Promise<unknown>;
     deleteSecret?: (name: string) => Promise<unknown>;
@@ -93,6 +94,10 @@ export interface DaemonControlApiOptions {
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
+/** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
+const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
+/** Timeline projection cap (with explicit truncation marker). */
+const TIMELINE_EVENTS_MAX = 250;
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
@@ -235,7 +240,7 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
       return this.json(res, 200, {
-        runs: runs.map((r) => summarizeRun(r)),
+        runs: runs.map((r) => this.summarizeRunCached(r)),
       });
     }
 
@@ -259,6 +264,15 @@ export class DaemonControlApiServer {
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       const target = safeArtifactPath(rec.runDir, decodeURIComponent(artifactFetchMatch[2] as string));
       if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      // Size cap: a multi-MB events.jsonl must not block the event loop or the
+      // client; refuse loudly with the real size so callers can range/tail it.
+      const stats = lstatSync(target);
+      if (stats.size > MAX_ARTIFACT_FETCH_BYTES) {
+        return this.json(res, 413, {
+          error: `artifact is ${stats.size} bytes (limit ${MAX_ARTIFACT_FETCH_BYTES}); read it from disk at ${target}`,
+          bytes: stats.size,
+        });
+      }
       let data = readFileSync(target);
       if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
         return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
@@ -287,16 +301,12 @@ export class DaemonControlApiServer {
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
       if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply check" });
-      const applyableError = validateApplyableRun(rec);
-      if (applyableError) return this.json(res, 409, { error: applyableError });
-      const patchBindingError = validatePatchBinding(rec, patch);
-      if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = applyTargetRoot(body.target, rec);
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply check" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const repoError = validateApplyRepo(rec, repoRoot);
-      if (repoError) return this.json(res, 409, { error: repoError });
+      const gateError = applyGateError(rec, patch, repoRoot);
+      if (gateError) return this.json(res, 409, { error: gateError });
       return this.json(res, 200, await checkPatch(repoRoot, patch));
     }
 
@@ -316,16 +326,12 @@ export class DaemonControlApiServer {
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
       if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
-      const applyableError = validateApplyableRun(rec);
-      if (applyableError) return this.json(res, 409, { error: applyableError });
-      const patchBindingError = validatePatchBinding(rec, patch);
-      if (patchBindingError) return this.json(res, 409, { error: patchBindingError });
       const repoRoot = applyTargetRoot(body.target, rec);
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const repoError = validateApplyRepo(rec, repoRoot);
-      if (repoError) return this.json(res, 409, { error: repoError });
+      const gateError = applyGateError(rec, patch, repoRoot);
+      if (gateError) return this.json(res, 409, { error: gateError });
       return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
     }
 
@@ -377,7 +383,7 @@ export class DaemonControlApiServer {
     }
     const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && setupJobEventsMatch) {
-      return this.streamSetupJobEvents(decodeURIComponent(setupJobEventsMatch[1] as string), res);
+      return this.streamSetupJobEvents(decodeURIComponent(setupJobEventsMatch[1] as string), req, res);
     }
     if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
@@ -392,7 +398,7 @@ export class DaemonControlApiServer {
       }
       return this.service(res, "updateSettings", body);
     }
-    if (method === "GET" && path === "/auth") return this.service(res, "auth");
+    // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
     if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
     if (method === "POST" && path === "/secrets") {
       const body = await this.readBody(req);
@@ -474,14 +480,27 @@ export class DaemonControlApiServer {
       const value = await fn(arg);
       return this.json(res, 200, schema ? schema.parse(value) : value);
     } catch (err) {
-      return this.json(res, 400, { error: redactSecrets(err instanceof Error ? err.message : String(err)) });
+      // Honest status codes: services attach a typed `status` (e.g. 404 for a
+      // missing setup job); a schema-invalid service RESULT is an internal 500.
+      // Flattening everything to 400 made client-side error handling guesswork.
+      const message = redactSecrets(err instanceof Error ? err.message : String(err));
+      const typedStatus = err && typeof err === "object" && "status" in err ? Number((err as { status: unknown }).status) : Number.NaN;
+      // A schema-invalid service RESULT is a server bug (500), cross-realm-safe via the error name.
+      const status = Number.isFinite(typedStatus) ? typedStatus : err instanceof Error && err.name === "ZodError" ? 500 : 400;
+      return this.json(res, status, { error: message });
     }
   }
 
-  private async streamSetupJobEvents(jobId: string, res: ServerResponse): Promise<void> {
+  /**
+   * Live setup-job lifecycle stream: emits a `status` event on every state or
+   * message transition until the job reaches a terminal state. Backed by
+   * polling the job service (the manager has no event bus), which is exactly
+   * what the previous one-shot stub forced every client to reimplement.
+   */
+  private async streamSetupJobEvents(jobId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const fn = this.opts.services?.setupJobStatus as ((arg?: unknown) => Promise<unknown>) | undefined;
     if (!fn) return this.json(res, 501, { error: "setupJobStatus service is not configured" });
-    let job: unknown;
+    let job: ControlSetupJob;
     try {
       job = ControlSetupJob.parse(await fn({ jobId }));
     } catch (err) {
@@ -493,19 +512,60 @@ export class DaemonControlApiServer {
       connection: "keep-alive",
     });
     this.sseClients.add(res);
-    const parsed = ControlSetupJob.parse(job);
-    const event = ControlSetupJobEvent.parse({
-      jobId: parsed.jobId,
-      seq: 1,
-      time: nowIso(),
-      kind: "status",
-      state: parsed.state,
-      message: parsed.message,
-    });
-    res.write(`id: 1\nevent: setup\ndata: ${JSON.stringify(event)}\n\n`);
-    res.write("event: end\ndata: {}\n\n");
-    this.sseClients.delete(res);
-    res.end();
+
+    const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "cancelled", "not_supported"]);
+    let seq = 0;
+    let closed = false;
+    let lastSnapshot = "";
+    const cleanup = () => {
+      closed = true;
+      clearInterval(timer);
+      clearInterval(heartbeat);
+      this.sseClients.delete(res);
+    };
+    const emit = (current: ControlSetupJob): boolean => {
+      const snapshot = JSON.stringify([current.state, current.message, current.firstOutputAt, current.lastOutputAt, current.finishedAt]);
+      if (snapshot === lastSnapshot) return false;
+      lastSnapshot = snapshot;
+      seq += 1;
+      const event = ControlSetupJobEvent.parse({
+        jobId: current.jobId,
+        seq,
+        time: nowIso(),
+        kind: "status",
+        state: current.state,
+        message: current.message,
+      });
+      res.write(`id: ${seq}\nevent: setup\ndata: ${JSON.stringify(event)}\n\n`);
+      return true;
+    };
+    const finish = () => {
+      if (closed) return;
+      res.write("event: end\ndata: {}\n\n");
+      res.end();
+      cleanup();
+    };
+    const heartbeat = setInterval(() => {
+      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
+    }, this.opts.heartbeatMs ?? 15_000);
+    heartbeat.unref?.();
+    const tick = async () => {
+      if (closed) return;
+      try {
+        job = ControlSetupJob.parse(await fn({ jobId }));
+      } catch {
+        finish();
+        return;
+      }
+      emit(job);
+      if (TERMINAL_JOB_STATES.has(job.state)) finish();
+    };
+    const timer = setInterval(() => void tick(), this.opts.pollMs ?? 250);
+    timer.unref?.();
+    req.on("close", cleanup);
+    res.on("close", cleanup);
+    emit(job);
+    if (TERMINAL_JOB_STATES.has(job.state)) finish();
   }
 
   private async waitForRunStart(jobId: string): Promise<DaemonRunRecord> {
@@ -525,6 +585,24 @@ export class DaemonControlApiServer {
   private async findRun(id: string): Promise<DaemonRunRecord | null> {
     const runs = await this.opts.daemon.list();
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
+  }
+
+  private readonly summaryCache = new Map<string, { fingerprint: string; summary: ControlRunSummary }>();
+
+  /**
+   * GET /runs is the app's main screen and used to re-read every artifact for
+   * every retained job on every poll (O(jobs x file size) sync I/O). Terminal
+   * runs change only when their artifacts change, so summaries are cached on a
+   * state+artifact-mtime fingerprint.
+   */
+  private summarizeRunCached(rec: DaemonRunRecord): ControlRunSummary {
+    const fingerprint = summaryFingerprint(rec);
+    const hit = this.summaryCache.get(rec.id);
+    if (hit && hit.fingerprint === fingerprint) return hit.summary;
+    const summary = summarizeRun(rec);
+    if (this.summaryCache.size > 1_000) this.summaryCache.clear(); // bounded; repopulates on the next poll
+    this.summaryCache.set(rec.id, { fingerprint, summary });
+    return summary;
   }
 
   private lastEventId(req: IncomingMessage, url: URL): number {
@@ -554,8 +632,15 @@ export class DaemonControlApiServer {
     const cleanup = () => {
       closed = true;
       clearInterval(timer);
+      clearInterval(heartbeat);
       this.sseClients.delete(res);
     };
+    // Heartbeat: a quiet harness phase (long tool call, slow model) must not be
+    // indistinguishable from a dead connection — clients and proxies need bytes.
+    const heartbeat = setInterval(() => {
+      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
+    }, this.opts.heartbeatMs ?? 15_000);
+    heartbeat.unref?.();
     const writeAvailable = async () => {
       if (closed || !existsSync(eventsPath)) return;
       const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);
@@ -639,6 +724,16 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
   throw Object.assign(new Error(`project scope is required for mode '${mode}'`), { status: 400 });
 }
 
+/**
+ * Single owner of run-start normalization. Both entry paths (HTTP control API
+ * and the daemon socket runner) MUST use this so scope/secret/absolute-root
+ * acceptance can never drift between surfaces.
+ */
+export function normalizeRunStartRequest(raw: unknown): ControlRunStartRequest {
+  assertNoInlineSecretValues(raw);
+  return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}));
+}
+
 function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" | "deep" } {
   const p = paramsRecord(rec);
   const scope = p["scope"];
@@ -686,6 +781,29 @@ function appendRunAuditEvent(rec: DaemonRunRecord, type: string, payload: Record
   } catch {
     /* audit append must not change control behavior */
   }
+}
+
+function summaryFingerprint(rec: DaemonRunRecord): string {
+  const mtime = (rel: string): number => {
+    if (!rec.runDir) return 0;
+    const path = safeArtifactPath(rec.runDir, rel);
+    if (!path) return 0;
+    try {
+      return statSync(path).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  return [
+    rec.state,
+    rec.finishedAt ?? "",
+    rec.error ?? "",
+    mtime("events.jsonl"),
+    mtime("arbitration/decision.yaml"),
+    mtime("final/telemetry.yaml"),
+    mtime("final/failure.yaml"),
+    mtime("final/summary.md"),
+  ].join("|");
 }
 
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
@@ -896,7 +1014,22 @@ function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
       rawRef: "events.jsonl",
     }));
   }
-  return out.slice(-250);
+  // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
+  if (out.length > TIMELINE_EVENTS_MAX) {
+    const omitted = out.length - TIMELINE_EVENTS_MAX;
+    const tail = out.slice(-TIMELINE_EVENTS_MAX);
+    tail.unshift(
+      ControlTimelineEvent.parse({
+        type: "timeline.truncated",
+        title: `${omitted} earlier event(s) omitted from this projection`,
+        detail: "Full history remains in events.jsonl.",
+        severity: "info",
+        rawRef: "events.jsonl",
+      }),
+    );
+    return tail;
+  }
+  return out;
 }
 
 function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): ControlBudgetSnapshot {
@@ -1048,22 +1181,16 @@ function applyTargetRoot(target: ControlApplyCheckRequest["target"] | ControlApp
   return runRepoRoot(rec);
 }
 
-function validateApplyableRun(rec: DaemonRunRecord): string | null {
-  if (rec.state !== "succeeded") return `run is not applyable while state is ${rec.state}`;
-  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  if (!decision) return "decision record is required before apply";
-  if (decision.status !== "success") return `decision status is ${decision.status}; refusing apply`;
-  const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
-  if (!workProduct) return "work product is required before apply";
-  if (workProduct.kind !== "patch") return `work product kind ${workProduct.kind} is not applyable as a patch`;
-  return null;
-}
-
-function validatePatchBinding(rec: DaemonRunRecord, patch: string): string | null {
-  const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
-  const recorded = workProduct?.meta?.["patch_sha256"];
-  if (typeof recorded !== "string" || recorded.length === 0) return "work product patch hash is required before apply";
-  return recorded === sha256(patch) ? null : "patch artifact hash does not match the reviewed work product";
+/** Project the run record into the delivery package's single-owner apply gate. */
+function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: string): string | null {
+  return validateApplyGate({
+    state: rec.state,
+    decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
+    workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
+    patch,
+    originalRepoRoot: runRepoRoot(rec),
+    targetRepoRoot,
+  });
 }
 
 function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, schema: { parse(value: unknown): T }): T | null {
@@ -1095,20 +1222,6 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
     }
   }
   return out;
-}
-
-function validateApplyRepo(rec: DaemonRunRecord, repoRoot: string): string | null {
-  const original = runRepoRoot(rec);
-  if (!original) return "run original project is unknown; refusing apply";
-  const originalAbsoluteError = validateAbsoluteRepoRoot(original);
-  if (originalAbsoluteError) return "run original project is not an absolute path; refusing apply";
-  try {
-    const a = realpathSync(original);
-    const b = realpathSync(repoRoot);
-    return a === b ? null : "project root does not match the run's original project";
-  } catch {
-    return "project root cannot be verified";
-  }
 }
 
 function contentType(path: string): string {

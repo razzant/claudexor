@@ -16,15 +16,15 @@ enum Theme {
 
     // MARK: Surfaces (graphite dark signature; light mirrors with inverted luminance).
 
-    static let surfaceBase = Color(dark: (0.090, 0.095, 0.107), light: (0.953, 0.955, 0.962))
+    static let surfaceBase = Color(dark: (0.082, 0.087, 0.098), light: (0.953, 0.955, 0.962))
     /// Content cards — clearly lighter than base for Dark-Mode elevation/contrast (HIG).
-    static let surfaceRaised = Color(dark: (0.172, 0.183, 0.205), light: (1.0, 1.0, 1.0))
-    static let surfaceRaisedHi = Color(dark: (0.212, 0.225, 0.250), light: (0.965, 0.967, 0.974))
-    static let surfaceCode = Color(dark: (0.070, 0.074, 0.086), light: (0.968, 0.969, 0.976))
-    static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.10)
-    static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.06)
+    static let surfaceRaised = Color(dark: (0.205, 0.216, 0.240), light: (1.0, 1.0, 1.0))
+    static let surfaceRaisedHi = Color(dark: (0.250, 0.264, 0.294), light: (0.965, 0.967, 0.974))
+    static let surfaceCode = Color(dark: (0.060, 0.064, 0.076), light: (0.968, 0.969, 0.976))
+    static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.14)
+    static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.08)
     /// Card border — a touch stronger than separator for crisp card edges on the glow.
-    static let cardStroke = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.12)
+    static let cardStroke = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.18)
 
     // MARK: Brand (ONE identity hue — a cool, slightly desaturated steel-blue so the app's
     // own chrome stays neutral and the harness identity colors pop). Everything that is
@@ -85,9 +85,6 @@ enum Theme {
         static let xxxl: CGFloat = 48
     }
 
-    static let cardRadius: CGFloat = 8
-    static let heroRadius: CGFloat = 22
-
     // MARK: Content measure (one set of widths so every screen aligns its column).
 
     enum Layout {
@@ -101,8 +98,8 @@ enum Theme {
 
     enum Radius {
         static let control: CGFloat = 8     // chips, segmented selection, small code wells
-        static let card: CGFloat = 8        // content cards (== cardRadius)
-        static let hero: CGFloat = 22       // floating composer / hero glass (== heroRadius)
+        static let card: CGFloat = 8        // content cards
+        static let hero: CGFloat = 22       // floating composer / hero glass
     }
 
     // MARK: Layout metrics derived from icon/avatar columns (not magic numbers).
@@ -138,7 +135,7 @@ extension View {
     /// inner content (e.g. a leading accent bar); `strokeColor`/`lineWidth` support the
     /// winner-candidate emphasis without a second recipe.
     @ViewBuilder
-    func cardSurface(_ radius: CGFloat = Theme.cardRadius,
+    func cardSurface(_ radius: CGFloat = Theme.Radius.card,
                      stroke: Bool = true,
                      strokeColor: Color = Theme.cardStroke,
                      lineWidth: CGFloat = 1,
@@ -148,16 +145,16 @@ extension View {
             self.background(Theme.surfaceRaised, in: shape)
                 .clipShape(shape)
                 .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
+                .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
         } else {
             self.background(Theme.surfaceRaised, in: shape)
                 .overlay(stroke ? shape.strokeBorder(strokeColor, lineWidth: lineWidth) : nil)
-                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
+                .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
         }
     }
 
     /// A solid code/diff/transcript surface — maximum legibility, never glass behind it.
-    func codeSurface(_ radius: CGFloat = Theme.cardRadius) -> some View {
+    func codeSurface(_ radius: CGFloat = Theme.Radius.card) -> some View {
         self
             .background(Theme.surfaceCode, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Theme.separator, lineWidth: 1))
@@ -182,7 +179,7 @@ extension View {
 extension View {
     /// Genuine Liquid Glass for the navigation/chrome layer only (a floating composer or
     /// action). System-provided glass (sidebar/toolbar/inspector/sheets) needs no helper.
-    func chromeGlass(_ shape: some Shape = RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous), interactive: Bool = true) -> some View {
+    func chromeGlass(_ shape: some Shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), interactive: Bool = true) -> some View {
         self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
     }
 }

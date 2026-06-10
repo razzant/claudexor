@@ -125,11 +125,32 @@ final class AppModel {
         )
     }
 
+    /// Engine-side defaults for launch surfaces (quick launch, retry).
+    var defaultPortfolio: String { settingsSnapshot?.defaultPortfolio ?? "subscription-first" }
+    var defaultMaxUsdPerRun: Double? { settingsSnapshot?.budget.maxUsdPerRun }
+
     private var client: GatewayClient?
-    private var streamTask: Task<Void, Never>?
+    private var streamTasks: [String: Task<Void, Never>] = [:]
+    /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
+    private var lastEventIds: [String: Int] = [:]
+    /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
+    /// plain ISO8601DateFormatter parses none of them. Try fractional first.
+    private static let eventDateFormatterFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
     private static let eventDateFormatter = ISO8601DateFormatter()
 
+    static func parseEventDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        return eventDateFormatterFractional.date(from: raw) ?? eventDateFormatter.date(from: raw)
+    }
+
     init() {
+        // Without this first-run authorization request, run-completion
+        // notifications are silently dropped in the bundled .app forever.
+        Notifier.requestAuthIfPossible()
         if let raw = UserDefaults.standard.string(forKey: "claudexor.appearance"),
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved
@@ -231,6 +252,8 @@ final class AppModel {
 
     func connect() async {
         health = .connecting
+        // Streams hold the OLD client's connections; cancel before replacing it.
+        cancelAllStreams()
         if await tryConnect() { return }
         // Offline: if a bundled engine ships in this .app, start it and retry once.
         if DaemonLauncher.startIfNeeded() {
@@ -266,9 +289,36 @@ final class AppModel {
         do {
             let summaries = try await client.listRuns()
             let known = Set(demoTasks.map(\.id))
+            let existingById = Dictionary(uniqueKeysWithValues: liveTasks.map { ($0.id, $0) })
+            // Merge instead of replace: a refresh must not wipe locally-hydrated
+            // detail (activity, diff, findings, outputs) for rows we already track.
             liveTasks = summaries
                 .filter { !known.contains($0.runId) }
-                .map { Self.liveTask(from: $0) }
+                .map { summary in
+                    var task = Self.liveTask(from: summary)
+                    if let existing = existingById[task.id] ?? summary.jobId.flatMap({ existingById[$0] }) {
+                        if !existing.activity.isEmpty { task.activity = existing.activity }
+                        if !existing.diff.isEmpty { task.diff = existing.diff }
+                        if !existing.findings.isEmpty { task.findings = existing.findings }
+                        if !existing.plan.isEmpty { task.plan = existing.plan }
+                        task.answerText = existing.answerText ?? task.answerText
+                        task.diagnosticText = existing.diagnosticText ?? task.diagnosticText
+                        if task.artifactPaths.isEmpty { task.artifactPaths = existing.artifactPaths }
+                    }
+                    return task
+                }
+            // A 202-queued row was keyed by jobId; once the daemon surfaces the
+            // runId the open detail route must follow instead of dangling.
+            if case .task(let openId) = route, !liveTasks.contains(where: { $0.id == openId }) {
+                if let mapped = summaries.first(where: { $0.jobId == openId }) {
+                    route = .task(mapped.runId)
+                }
+            }
+            // Live progress for EVERY active run — including CLI-started runs and
+            // runs that were already active when the app (re)connected.
+            for task in liveTasks where task.isLive && task.status.isActive {
+                stream(runId: task.id)
+            }
             await hydrateReviewFindings()
         } catch {
             // keep last-known live tasks; connection badge reflects reality elsewhere
@@ -368,6 +418,11 @@ final class AppModel {
         }
     }
 
+    func setupJobStatus(_ jobId: String) async -> SetupJob? {
+        guard let client else { return nil }
+        return try? await client.setupJob(jobId: jobId)
+    }
+
     func refreshSettings() async {
         guard let client else { return }
         do {
@@ -465,6 +520,18 @@ final class AppModel {
         task.repoRoot = s.project?.root
         task.engineError = s.failure?.safeMessage ?? s.error
         task.runDir = s.runDir ?? s.failure?.runDir
+        task.outputReadyState = s.outputReadyState
+        task.requestedAccess = s.requestedAccess
+        task.effectiveAccess = s.effectiveAccess
+        // Surfaces project engine telemetry only: when the artifact is absent
+        // (legacy / mid-run) the UI says "telemetry unavailable", never a guess.
+        if s.webEvidence?.available == false {
+            task.webEvidenceStatus = nil
+            task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+        } else {
+            task.webEvidenceStatus = s.webEvidence?.status
+            task.webEvidenceDetail = Self.webEvidenceDetail(s.webEvidence)
+        }
         task.artifactPaths = s.failure.map { ($0.rawDetailRef.map { [$0] } ?? []) + $0.eventRefs + $0.logRefs } ?? []
         if let failure = s.failure {
             task.diagnosticText = failure.safeMessage
@@ -474,6 +541,18 @@ final class AppModel {
 
     private static func prettyTitle(_ id: String) -> String {
         "Live run · " + String(id.suffix(8))
+    }
+
+    private static func webEvidenceDetail(_ evidence: WebEvidence?) -> String? {
+        guard let evidence, evidence.attempted || evidence.required else { return nil }
+        var parts = ["web \(evidence.status)"]
+        if let effective = evidence.effectiveMode, effective != evidence.mode {
+            parts.append("requested \(evidence.mode) → ran \(effective)")
+        }
+        if let tool = evidence.tool { parts.append(tool) }
+        if let target = evidence.target { parts.append(target) }
+        if let error = evidence.errorSummary { parts.append(error) }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: Commands
@@ -537,6 +616,7 @@ final class AppModel {
                                       model: model?.isEmpty == false ? model : nil,
                                       n: n,
                                       maxUsd: capUsd, access: access,
+                                      web: "auto",
                                       tests: tests.isEmpty ? nil : tests)
             let result = try await client.startRun(req)
             switch result {
@@ -624,6 +704,16 @@ final class AppModel {
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
+            task.outputReadyState = detail.summary.outputReadyState
+            task.requestedAccess = detail.summary.requestedAccess
+            task.effectiveAccess = detail.summary.effectiveAccess
+            if detail.summary.webEvidence?.available == false {
+                task.webEvidenceStatus = nil
+                task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+            } else {
+                task.webEvidenceStatus = detail.summary.webEvidence?.status
+                task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)
+            }
             task.artifactPaths = detail.artifacts.map(\.path)
             if let budget = detail.budget {
                 if let cap = budget.maxUsd { task.capUsd = cap }
@@ -651,11 +741,22 @@ final class AppModel {
                 if primary.kind == "diagnostic" {
                     task.diagnosticText = text
                     task.answerText = nil
+                } else if primary.kind == "patch" {
+                    // A raw diff is NEVER markdown-rendered as the Outcome; it
+                    // belongs to the Diff tab (parsed below).
+                    task.answerText = nil
                 } else {
                     task.answerText = text
                 }
             } else {
                 task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/explore.md", "final/report.md", "final/plan.md", "final/summary.md"])
+            }
+            // Diff tab truth: load and parse the final patch artifact when present.
+            if task.diff.isEmpty, detail.artifacts.contains(where: { $0.path == "final/patch.diff" }) {
+                if let patchText = try? await client.artifactText(runId: id, path: "final/patch.diff"),
+                   !patchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    task.diff = Self.parseUnifiedDiff(patchText)
+                }
             }
             if !detail.timeline.isEmpty {
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
@@ -665,13 +766,18 @@ final class AppModel {
             if !persistedFindings.isEmpty {
                 task.findings = persistedFindings
             }
-            if !detail.artifacts.isEmpty, task.plan.isEmpty {
+            if !detail.artifacts.isEmpty, task.plan.isEmpty, task.mode == .plan {
+                // Only the actual SpecPack artifact is a "plan" row; arbitrary
+                // nested paths must not be synthesized into plan steps.
                 task.plan = detail.artifacts
-                    .filter { $0.kind == "file" }
-                    .prefix(8)
+                    .filter { $0.kind == "file" && $0.path == "final/plan.md" }
                     .map { PlanItem($0.path, .done, note: $0.bytes.map { "\($0) bytes" }) }
             }
-            liveTasks[idx] = task
+            // Re-resolve the row index at WRITE time: streams/refreshes may have
+            // inserted or removed rows during the awaits above.
+            if let writeIdx = liveTasks.firstIndex(where: { $0.id == id }) {
+                liveTasks[writeIdx] = task
+            }
         } catch {
             if let idx = liveTasks.firstIndex(where: { $0.id == id }) {
                 liveTasks[idx].engineError = "Could not load run detail: \(error)"
@@ -679,6 +785,67 @@ final class AppModel {
                 liveTasks[idx].updatedAt = .now
             }
         }
+    }
+
+    /// Minimal unified-diff parser for the Diff tab (paths, +/- counts, hunks).
+    static func parseUnifiedDiff(_ patch: String) -> [DiffFile] {
+        var files: [DiffFile] = []
+        var currentPath: String?
+        var currentHunks: [DiffHunk] = []
+        var currentLines: [DiffLine] = []
+        var currentHeader: String?
+        var added = 0
+        var removed = 0
+
+        func closeHunk() {
+            if let header = currentHeader {
+                currentHunks.append(DiffHunk(header: header, lines: currentLines))
+            }
+            currentHeader = nil
+            currentLines = []
+        }
+        func closeFile() {
+            closeHunk()
+            if let path = currentPath {
+                files.append(DiffFile(path: path, added: added, removed: removed, hunks: currentHunks))
+            }
+            currentPath = nil
+            currentHunks = []
+            added = 0
+            removed = 0
+        }
+
+        for line in patch.components(separatedBy: "\n") {
+            if line.hasPrefix("diff --git ") {
+                closeFile()
+                // "diff --git a/path b/path" -> take the b/ path
+                let parts = line.split(separator: " ")
+                if let bPart = parts.last, bPart.hasPrefix("b/") {
+                    currentPath = String(bPart.dropFirst(2))
+                } else {
+                    currentPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : line
+                }
+                continue
+            }
+            guard currentPath != nil else { continue }
+            if line.hasPrefix("@@") {
+                closeHunk()
+                currentHeader = line
+                continue
+            }
+            guard currentHeader != nil else { continue }
+            if line.hasPrefix("+") && !line.hasPrefix("+++") {
+                added += 1
+                currentLines.append(DiffLine(kind: .add, text: String(line.dropFirst())))
+            } else if line.hasPrefix("-") && !line.hasPrefix("---") {
+                removed += 1
+                currentLines.append(DiffLine(kind: .remove, text: String(line.dropFirst())))
+            } else if line.hasPrefix(" ") {
+                currentLines.append(DiffLine(kind: .context, text: String(line.dropFirst())))
+            }
+        }
+        closeFile()
+        return files
     }
 
     func storeSecret(name: String, value: String) async -> Bool {
@@ -714,13 +881,17 @@ final class AppModel {
         } else {
             kind = .system
         }
+        let detailParts = [event.detail, event.target.map { "target: \($0)" }, event.errorSummary.map { "error: \($0)" }]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
         return ActivityEvent(
             kind,
             harness: event.harnessId.flatMap { HarnessFamily(rawValue: $0) },
             event.title,
-            detail: event.detail,
+            detail: detailParts.isEmpty ? nil : detailParts.joined(separator: "\n"),
+            severity: event.severity,
             code: event.rawRef,
-            at: event.ts.flatMap { eventDateFormatter.date(from: $0) } ?? .now
+            at: parseEventDate(event.ts) ?? .now
         )
     }
 
@@ -758,6 +929,20 @@ final class AppModel {
             sections.append("# Failure\n\n" + failureLines.joined(separator: "\n"))
         }
         if let error, !error.isEmpty { sections.append("# Engine Error\n\n\(error)") }
+        if let web = detail.summary.webEvidence, web.attempted || web.required {
+            var lines = [
+                "status: \(web.status)",
+                "mode: \(web.mode)",
+                "required: \(web.required)",
+                "attempted: \(web.attempted)",
+                "satisfied: \(web.satisfied)"
+            ]
+            if let tool = web.tool { lines.append("tool: \(tool)") }
+            if let target = web.target { lines.append("target: \(target)") }
+            if let error = web.errorSummary { lines.append("error: \(error)") }
+            if let ref = web.rawDetailRef { lines.append("detail: \(ref)") }
+            sections.append("# Web Evidence\n\n" + lines.joined(separator: "\n"))
+        }
         var diagnosticPaths: [String] = ["final/failure.yaml", "context/context_error.md"]
         if let failure {
             if let ref = failure.rawDetailRef { diagnosticPaths.append(ref) }
@@ -780,29 +965,52 @@ final class AppModel {
 
     // MARK: Live SSE stream
 
+    /// Attach (idempotently) a live stream for a run. Reconnects with
+    /// Last-Event-ID after transient drops instead of dying silently, and only
+    /// stops on the server's terminal `end` frame or repeated failures.
     func stream(runId: String) {
-        guard let client else { return }
-        streamTask?.cancel()
-        streamTask = Task { [weak self] in
-            do {
-                for try await env in client.events(runId: runId) {
-                    guard let self else { return }
-                    self.apply(env, to: runId)
+        guard client != nil else { return }
+        guard streamTasks[runId] == nil else { return } // already attached; never restart a live stream
+        streamTasks[runId] = Task { [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                guard let self, let client = self.client else { break }
+                let resumeFrom = self.lastEventIds[runId]
+                do {
+                    for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
+                        if env.seq > 0 { self.lastEventIds[runId] = env.seq }
+                        self.apply(env, to: runId)
+                    }
+                    break // clean end frame: the run is terminal
+                } catch {
+                    if Task.isCancelled { break }
+                    attempt += 1
+                    if attempt > 5 { break }
+                    try? await Task.sleep(for: .seconds(min(Double(attempt) * 2.0, 10.0)))
                 }
-            } catch {
-                // stream ended or errored — fall through to a reconciling refresh
             }
-            // The SSE stream finished (terminal `end` event closes it without yielding a
-            // payload). Reconcile the row's final status from the canonical run list so a
+            // Reconcile the row's final status from the canonical run list so a
             // completed run never stays stuck on "Running".
             await self?.reconcile(runId: runId)
+            self?.streamTasks[runId] = nil
+            self?.lastEventIds[runId] = nil
         }
     }
 
+    /// Cancel every live stream (daemon/client about to be replaced).
+    private func cancelAllStreams() {
+        for task in streamTasks.values { task.cancel() }
+        streamTasks.removeAll()
+        lastEventIds.removeAll()
+    }
+
     private func reconcile(runId: String) async {
-        guard let client, let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
+        guard let client else { return }
+        let summary = try? await client.listRuns().first(where: { $0.runId == runId })
+        // Re-resolve the row index AFTER the await: the list may have changed.
+        guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let before = liveTasks[idx].status
-        if let summary = try? await client.listRuns().first(where: { $0.runId == runId }) {
+        if let summary {
             liveTasks[idx].status = RunStatus(api: summary.state)
         } else if liveTasks[idx].status.isActive {
             liveTasks[idx].status = .unknown
@@ -871,6 +1079,10 @@ final class AppModel {
                 }
                 shouldLoadDetail = true
             }
+            else if type == "run.blocked" {
+                t.status = RunStatus(api: payload["status"]?.stringValue ?? "blocked")
+                shouldLoadDetail = true
+            }
             else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.status = RunStatus(api: s) }
             else if t.status == .queued { t.status = .running }
         } else if type.hasPrefix("harness.") {
@@ -890,7 +1102,12 @@ final class AppModel {
                 t.findings.append(f)
             }
         } else if type.hasPrefix("budget.") {
-            if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue ?? payload["usd"]?.doubleValue {
+            if type == "budget.observation", let usd = payload["usd"]?.doubleValue {
+                // Observations are per-event INCREMENTS (live spend ticks up mid-run).
+                t.spendUsd += usd
+                t.spendKnown = true
+                if payload["estimated"]?.boolValue == true { t.spendEstimated = true }
+            } else if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue {
                 t.spendUsd = spend
                 t.spendKnown = true
                 t.spendEstimated = payload["estimated"]?.boolValue ?? t.spendEstimated
@@ -899,6 +1116,9 @@ final class AppModel {
                 t.capUsd = cap
                 t.capKnown = true
             }
+        } else if type == "output.ready" {
+            t.outputReadyState = payload["state"]?.stringValue ?? "ready"
+            shouldLoadDetail = true
         } else {
             t.activity.append(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }

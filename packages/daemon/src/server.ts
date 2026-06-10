@@ -1,4 +1,5 @@
-import { type Server, type Socket, createServer } from "node:net";
+import { type Server, type Socket, connect, createServer } from "node:net";
+import { timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -75,6 +76,11 @@ export class DaemonServer {
   constructor(private readonly opts: DaemonOptions) {}
 
   async start(): Promise<void> {
+    // Refuse to clobber a LIVE daemon: deleting its socket would orphan it and
+    // turn jobs.json into a last-writer-wins race between two processes.
+    if (pathExists(this.opts.socketPath) && (await socketAlive(this.opts.socketPath))) {
+      throw new Error(`a claudexor daemon is already listening on ${this.opts.socketPath}; stop it first`);
+    }
     this.load();
     try {
       rmSync(this.opts.socketPath, { force: true });
@@ -129,7 +135,7 @@ export class DaemonServer {
       return;
     }
     const { id, method, params, token } = msg;
-    if (token !== this.opts.token) {
+    if (!tokenMatches(typeof token === "string" ? token : "", this.opts.token)) {
       this.send(sock, { id, error: { message: "unauthorized" } });
       return;
     }
@@ -272,7 +278,10 @@ export class DaemonServer {
         },
       });
       rec.state = jobStateFromResult(rec.result, controller.signal.aborted);
-      if (rec.state !== "succeeded" && rec.state !== "cancelled") {
+      // Only failure-shaped terminals carry an error string. no_op / ungated /
+      // review_not_run / blocked are HONEST terminals: fabricating an error here
+      // would make the control facade render a failure that never happened.
+      if (rec.state === "failed" || rec.state === "exhausted" || rec.state === "not_converged") {
         rec.error = resultSummary(rec.result) ?? `run ended with status ${rec.state}`;
       }
     } catch (err) {
@@ -312,8 +321,32 @@ function jobStateFromResult(result: unknown, aborted: boolean): JobState {
     case "failed":
       return "failed";
     default:
-      return status === null ? "succeeded" : "failed";
+      // Fail loudly: a runner result without a recognizable status is NOT a
+      // success — success-by-default would mask malformed results forever.
+      return "failed";
   }
+}
+
+/** Constant-time token comparison (parity with the HTTP control facade). */
+function tokenMatches(candidate: string, expected: string): boolean {
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/** True when something is actively accepting connections on the socket path. */
+function socketAlive(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect(socketPath);
+    const done = (alive: boolean) => {
+      sock.destroy();
+      resolve(alive);
+    };
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    setTimeout(() => done(false), 500).unref();
+  });
 }
 
 function resultStatus(result: unknown): string | null {

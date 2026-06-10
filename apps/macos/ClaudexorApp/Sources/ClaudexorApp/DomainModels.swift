@@ -323,12 +323,14 @@ struct ActivityEvent: Identifiable, Hashable {
     var harness: HarnessFamily?
     var title: String
     var detail: String?
+    /// Engine-typed severity ("info" | "warning" | "error") used to tint rows.
+    var severity: String?
     var code: String?
     var timestamp: Date
     init(id: String = UUID().uuidString, _ kind: ActivityKind, harness: HarnessFamily? = nil,
-         _ title: String, detail: String? = nil, code: String? = nil, at: Date = .now) {
+         _ title: String, detail: String? = nil, severity: String? = nil, code: String? = nil, at: Date = .now) {
         self.id = id; self.kind = kind; self.harness = harness; self.title = title
-        self.detail = detail; self.code = code; self.timestamp = at
+        self.detail = detail; self.severity = severity; self.code = code; self.timestamp = at
     }
 }
 
@@ -549,6 +551,18 @@ struct TaskRun: Identifiable, Hashable {
     var artifactPaths: [String] = []
     var runDir: String?
     var repoRoot: String?
+    var outputReadyState: String?
+    var webEvidenceStatus: String?
+    var webEvidenceDetail: String?
+    var requestedAccess: String?
+    var effectiveAccess: String?
+
+    /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
+    var accessLabel: String? {
+        guard let effective = effectiveAccess else { return requestedAccess }
+        if let requested = requestedAccess, requested != effective { return "\(requested) → \(effective)" }
+        return effective
+    }
 
     var planDone: Int { plan.filter { $0.state == .done }.count }
     var filesChanged: Int { diff.count }

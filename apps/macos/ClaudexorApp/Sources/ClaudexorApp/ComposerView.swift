@@ -187,7 +187,7 @@ struct ComposerView: View {
             }
             .padding(Theme.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .selectedChip(active: active, shape: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            .selectedChip(active: active, shape: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

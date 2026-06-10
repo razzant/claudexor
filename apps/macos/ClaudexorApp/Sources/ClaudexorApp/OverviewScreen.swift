@@ -179,9 +179,11 @@ struct HomeScreen: View {
         let selected = selectedAvailableHarnesses
         guard !text.isEmpty, !selected.isEmpty, (!mode.requiresProject || model.hasCurrentProject) else { return }
         let n = mode.isMultiCandidate ? max(2, selected.count) : 1
+        // Quick launch honors the user's saved engine defaults; no hardcoded
+        // portfolio or invented spend cap.
         Task { await model.startRun(prompt: text, mode: mode, harnesses: selected,
-                                    primary: selected.first, portfolio: "subscription-first",
-                                    model: nil, n: n, capUsd: 0.50,
+                                    primary: selected.first, portfolio: model.defaultPortfolio,
+                                    model: nil, n: n, capUsd: model.defaultMaxUsdPerRun,
                                     access: mode.isReadOnly ? "readonly" : "workspace_write") }
         prompt = ""
     }
@@ -199,8 +201,8 @@ struct HomeScreen: View {
                 .buttonStyle(.bordered)
         }
         .padding(Theme.Spacing.md)
-        .background(Theme.status(.blocked).opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).stroke(Theme.status(.blocked).opacity(0.3), lineWidth: 1))
+        .background(Theme.status(.blocked).opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).stroke(Theme.status(.blocked).opacity(0.3), lineWidth: 1))
     }
 
     // MARK: Task sections (solid)

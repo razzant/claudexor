@@ -449,6 +449,21 @@ export const ControlSettingsSnapshot = z.object({
 });
 export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 
+/** Partial per-harness settings patch; absent fields keep their stored value. */
+export const ControlHarnessSettingsPatch = z.object({
+  enabled: z.boolean().optional(),
+  defaultModel: z.string().nullable().optional(),
+  effort: EffortHint.nullable().optional(),
+  maxTurns: z.number().int().positive().nullable().optional(),
+  maxRounds: z.number().int().positive().nullable().optional(),
+  maxUsd: z.number().nonnegative().nullable().optional(),
+  toolsAllow: z.array(z.string()).optional(),
+  toolsDeny: z.array(z.string()).optional(),
+  fallbackModel: z.string().nullable().optional(),
+  web: ExternalContextPolicy.optional(),
+});
+export type ControlHarnessSettingsPatch = z.infer<typeof ControlHarnessSettingsPatch>;
+
 export const ControlSettingsUpdateRequest = z
   .object({
     defaultPortfolio: Portfolio.optional(),
@@ -461,6 +476,7 @@ export const ControlSettingsUpdateRequest = z
     maxUsdPerDay: z.number().nonnegative().optional(),
     clearMaxUsdPerRun: z.boolean().optional(),
     clearMaxUsdPerDay: z.boolean().optional(),
+    harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
