@@ -15,6 +15,7 @@ struct ComposerView: View {
     @State private var n = 2
     @State private var capUsdText = "0.50"
     @State private var access: AccessProfile = .workspaceWrite
+    @State private var webPolicy: String = "auto"
     @State private var gateText = ""
 
     enum AccessProfile: String, CaseIterable, Identifiable {
@@ -296,6 +297,14 @@ struct ComposerView: View {
                     .help(p == .elevated ? "Elevated maps to full access and should be used only when the harness must operate outside the workspace." : "\(p.label) access profile")
                 }
             }
+            Picker("Web", selection: $webPolicy) {
+                Text("Auto").tag("auto")
+                Text("Off").tag("off")
+                Text("Cached").tag("cached")
+                Text("Live").tag("live")
+            }
+            .pickerStyle(.segmented)
+            .help("External web/search policy for this run (off | auto | cached | live) — same contract as the CLI --web flag. Cached upgrades to live on harnesses without a cached index, with disclosure.")
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Label("Gate commands (optional, one per line)", systemImage: "checklist").font(.caption).foregroundStyle(.secondary)
                 ZStack(alignment: .topLeading) {
@@ -337,6 +346,7 @@ struct ComposerView: View {
                                             model: modelHint.trimmingCharacters(in: .whitespacesAndNewlines),
                                             n: n, capUsd: parsedCapUsd,
                                             access: mode.isReadOnly ? "readonly" : access.wire,
+                                            web: webPolicy,
                                             tests: gateCommands) }
             } label: {
                 Label("Launch", systemImage: "paperplane.fill")

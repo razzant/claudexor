@@ -711,6 +711,14 @@ function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
 
 function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const mode = parsed.mode ?? "agent";
+  // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must
+  // 400 here, not persist a doomed job for the orchestrator to reject later.
+  if (parsed.web && parsed.externalContextPolicy && parsed.web !== parsed.externalContextPolicy) {
+    throw Object.assign(
+      new Error(`contradictory web policy: web='${parsed.web}' vs externalContextPolicy='${parsed.externalContextPolicy}' (pass one, or equal values)`),
+      { status: 400 },
+    );
+  }
   if (parsed.scope.kind === "project") {
     const repoRoot = parsed.scope.root.trim();
     const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);

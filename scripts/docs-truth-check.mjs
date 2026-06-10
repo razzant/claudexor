@@ -28,16 +28,29 @@ function implementedEndpoints(src) {
   // pattern is the complete literal-route extractor.
   const litRe = /method === "(GET|POST|DELETE|PUT|PATCH)"\s*&&\s*path === "([^"]+)"/g;
   for (let m = litRe.exec(src); m; m = litRe.exec(src)) out.add(`${m[1]} ${m[2]}`);
-  // Regex routes: const xMatch = /^\/runs\/([^/]+)\/apply$/ ... method === "POST" && xMatch
-  const regexDecl = /const (\w+Match) = (\/\^[^;]+\/)\.exec\(path\);\s*\n\s*if \(method === "(\w+)" && \1\)/g;
-  for (let m = regexDecl.exec(src); m; m = regexDecl.exec(src)) {
-    const template = m[2]
+  // Regex routes, matched in TWO independent passes so intervening lines
+  // between the declaration and its `if (method === ... && xMatch)` use can
+  // never silently drop an endpoint from the implemented set.
+  const regexByName = new Map();
+  const declRe = /const (\w+Match) = (\/\^[^;]+\/)\.exec\(path\);/g;
+  for (let m = declRe.exec(src); m; m = declRe.exec(src)) regexByName.set(m[1], m[2]);
+  const useRe = /method === "(\w+)" && (\w+Match)\b/g;
+  for (let m = useRe.exec(src); m; m = useRe.exec(src)) {
+    const pattern = regexByName.get(m[2]);
+    if (!pattern) continue;
+    const template = pattern
       .replace(/^\/\^/, "")
       .replace(/\$\/$/, "")
       .replaceAll("\\/", "/")
       .replace(/\(\[\^\/\]\+\)/g, ":id")
       .replace(/\(\.\+\)/g, "<path>");
-    out.add(`${m[3]} ${template}`);
+    out.add(`${m[1]} ${template}`);
+  }
+  // Self-check: every declared regex route must have been bound to a method.
+  for (const [name] of regexByName) {
+    if (![...out].some(() => src.includes(`&& ${name}`))) {
+      throw new Error(`docs-truth extractor: regex route '${name}' is declared but never used with a method guard`);
+    }
   }
   return out;
 }

@@ -29,7 +29,9 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
+// Relative dist import: the root package has no workspace dep on util, so the
+// bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
+import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 
 const TRIAD_MODELS = ["openai/gpt-5.5", "google/gemini-3.5-flash", "anthropic/claude-opus-4.8"];
 const SCOPE_MODEL = "openai/gpt-5.5";
@@ -448,8 +450,13 @@ async function main() {
     let parsed = [];
     if (status === "responded") {
       const arr = extractJsonArray(result.raw);
-      if (arr === null) status = "parse_failure";
-      else parsed = normalizeFindings(arr, result.model);
+      if (arr === null) {
+        status = "parse_failure";
+        writeFileSync(join(outDir, `triad-${slug}.parse-error.json`), JSON.stringify({ error: "no_parseable_json_array", raw_file: `triad-${slug}.raw.txt` }, null, 2) + "\n");
+      } else {
+        parsed = normalizeFindings(arr, result.model);
+        writeFileSync(join(outDir, `triad-${slug}.parsed-json-blocks.json`), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
+      }
     }
     const record = {
       model_id: result.model,
@@ -459,6 +466,9 @@ async function main() {
       parsed_count: parsed.length,
       usage: result.usage ?? null,
       started_at: result.startedAt ?? null,
+      // Non-streaming transport: there is no separate first-event timestamp;
+      // recorded as null deliberately rather than faked as completed_at.
+      first_event_at: null,
       completed_at: result.completedAt ?? null,
       duration_ms: result.ms,
       error: result.error ?? null,

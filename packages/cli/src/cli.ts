@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { assertNoInlineSecretValues, containsSecretLikeToken, ensureDir, hashJson, readTextSafe, sha256, writeJson } from "@claudexor/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, ensureDir, hashJson, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
@@ -59,7 +59,17 @@ function orchestratorRunner() {
   };
 }
 
-const HELP = `claudexor — harness-agnostic AI coding control plane (v0.6.0)
+// Version is read from the package manifest so the banner can never ship stale.
+const CLI_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
+    return pkg.version ?? "dev";
+  } catch {
+    return "dev";
+  }
+})();
+
+const HELP = `claudexor — harness-agnostic AI coding control plane (v${CLI_VERSION})
 
 Usage:
   claudexor init                          Scaffold repo-local config (.claudexor/config.yaml)
@@ -133,18 +143,21 @@ function harnessList(args: ParsedArgs): string[] | undefined {
   return h ? h.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
 }
 
+/** Invalid numeric flag values FAIL LOUDLY: `--n abc` must never silently run with the default. */
 function intFlag(args: ParsedArgs, key: string): number | undefined {
   const v = flagStr(args, key);
   if (v === undefined) return undefined;
   const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) ? n : undefined;
+  if (!Number.isFinite(n) || String(n) !== v.trim()) throw new Error(`invalid --${key} '${v}' (expected an integer)`);
+  return n;
 }
 
 function floatFlag(args: ParsedArgs, key: string): number | undefined {
   const v = flagStr(args, key);
   if (v === undefined) return undefined;
   const n = Number.parseFloat(v);
-  return Number.isFinite(n) ? n : undefined;
+  if (!Number.isFinite(n) || n < 0) throw new Error(`invalid --${key} '${v}' (expected a non-negative number)`);
+  return n;
 }
 
 /** Deterministic gate commands from `--test "<cmd>"`; multiple via `;;` separator. */
@@ -229,8 +242,6 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     process.stderr.write('claudexor: missing prompt\n');
     return 2;
   }
-  const maxUsdRaw = floatFlag(args, "max-usd");
-  const maxUsd = maxUsdRaw !== undefined && maxUsdRaw >= 0 ? maxUsdRaw : undefined;
   const portfolioRaw = flagStr(args, "portfolio");
   const portfolio = portfolioRaw !== undefined ? Portfolio.safeParse(portfolioRaw) : null;
   if (portfolioRaw !== undefined && !portfolio?.success) {
@@ -240,10 +251,16 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
+  let maxUsd: number | undefined;
+  let nFlag: number | undefined;
+  let attemptsFlag: number | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
+    maxUsd = floatFlag(args, "max-usd");
+    nFlag = intFlag(args, "n");
+    attemptsFlag = intFlag(args, "attempts");
   } catch (err) {
     process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
@@ -265,8 +282,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       harnesses: harnessList(args),
       primaryHarness: flagStr(args, "primary-harness"),
       portfolio: portfolio?.success ? portfolio.data : undefined,
-      n: intFlag(args, "n"),
-      attempts: intFlag(args, "attempts") ?? null,
+      n: nFlag,
+      attempts: attemptsFlag ?? null,
       tests,
       maxUsd: maxUsd ?? null,
       access: resolvedAccess,
@@ -683,7 +700,7 @@ function isManagedSecretName(name: string): boolean {
 const KNOWN_FLAGS = new Set([
   "harness", "mode", "n", "attempts", "test", "max-usd", "reviewer-model", "reviewer-effort",
   "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place",
-  "answers", "previous", "spec", "json", "all", "dry-run", "deep", "from-env",
+  "answers", "previous", "spec", "json", "all", "dry-run", "from-env",
 ]);
 
 async function main(): Promise<number> {
@@ -810,7 +827,13 @@ async function main(): Promise<number> {
         print("usage: claudexor inspect <run_id>");
         return 2;
       }
-      const store = new ArtifactStore(process.cwd());
+      // Project store first; no-project Ask runs live in the USER-LEVEL store
+      // (~/.claudexor/runs) and must be inspectable from any cwd.
+      let store = new ArtifactStore(process.cwd());
+      if (!existsSync(store.runPaths(runId).root)) {
+        const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
+        if (existsSync(userStore.runPaths(runId).root)) store = userStore;
+      }
       const paths = store.runPaths(runId);
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));

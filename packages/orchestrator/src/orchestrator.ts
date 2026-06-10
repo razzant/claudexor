@@ -1173,7 +1173,10 @@ export class Orchestrator {
           const plan = buildSynthesisPlan(evidences);
           const sourceDiffs = runs.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
           const synthAdapter = synthRouted.adapter;
-          const effectiveWeb = this.discloseWebUpgrade(log, synthRouted, contract.external_context.policy, "synth");
+          // Disclose against the PER-ROUTE policy (per-harness web defaults
+          // included), exactly like the candidate slots do.
+          const synthKnobs = this.routeSpecKnobs(synthRouted, contract.external_context.policy, input.model, input.effort);
+          const effectiveWeb = this.discloseWebUpgrade(log, synthRouted, synthKnobs.webPolicy, "synth");
           envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot", accessProfile: candidateAccess });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(

@@ -566,7 +566,8 @@ final class AppModel {
 
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
                   portfolio: String, model: String?, n: Int, capUsd: Double?,
-                  access: String = "workspace_write", tests: [String] = [], repoRootOverride: String? = nil) async {
+                  access: String = "workspace_write", web: String = "auto",
+                  tests: [String] = [], repoRootOverride: String? = nil) async {
         composerPresented = false
         let launchRepoRoot = repoRootOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
         guard !mode.requiresProject || !launchRepoRoot.isEmpty else {
@@ -623,7 +624,7 @@ final class AppModel {
                                       model: model?.isEmpty == false ? model : nil,
                                       n: n,
                                       maxUsd: capUsd, access: access,
-                                      web: "auto",
+                                      web: web,
                                       tests: tests.isEmpty ? nil : tests)
             let result = try await client.startRun(req)
             switch result {
