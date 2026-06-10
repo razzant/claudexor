@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/synthesis",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Synthesis decision + plan: when to merge candidates into a new (re-checked) candidate.",
   "type": "module",
   "main": "./dist/index.js",

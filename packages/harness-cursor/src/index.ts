@@ -63,7 +63,7 @@ export function createCursorAdapter(): HarnessAdapter {
         display_name: "Cursor CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.7.0",
+        adapter_version: "0.8.0",
         provider_family: "cursor",
         capabilities: {
           plan: true,

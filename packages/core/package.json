@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/core",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "HarnessAdapter contract, process helpers, typed errors, and low-level execution utilities.",
   "type": "module",
   "main": "./dist/index.js",

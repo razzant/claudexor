@@ -1,4 +1,4 @@
-# Claudexor v0.7.0 Architecture Reference
+# Claudexor v0.8.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a

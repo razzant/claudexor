@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/review",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Deterministic gates, cross-family review, finding revalidation, route proof, convergence, readiness-debt.",
   "type": "module",
   "main": "./dist/index.js",

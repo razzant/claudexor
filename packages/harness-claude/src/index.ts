@@ -116,7 +116,7 @@ export function createClaudeAdapter(): HarnessAdapter {
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.7.0",
+        adapter_version: "0.8.0",
         provider_family: "anthropic",
         capabilities: {
           plan: true,

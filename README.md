@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.7.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.8.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -287,6 +287,17 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
+- **v0.8.0** — live truth pass: event-sourced streaming with a monotonic
+  per-run `seq` and snapshot-then-subscribe SSE (gap-free reconnects, byte-level
+  parser in the macOS app), interactive runs (`waiting_on_user`) with Claude's
+  bidirectional control protocol live-verified (`AskUserQuestion` answered from
+  the app, CLI `claudexor follow`, ACP), automatic git initialization for
+  write-mode runs on non-git folders (seeded `.gitignore` + announced baseline
+  commit), orchestrator honesty fixes (no corpse review/synthesis spend,
+  root-cause `failure.yaml`, `output.ready` before terminal events, no vacuous
+  `tests=100%`), in-process setup doctor (exit-127 class removed), observed-model
+  route proof, global `GET /events` multiplex, configurable interaction timeout,
+  and the frosted floating-card design doctrine across both themes.
 - **v0.7.0** — engine truth pass: typed `tool_call`/`tool_result` events with a
   shared adapter run loop, engine-owned `final/telemetry.yaml` evidence, web
   policy as a manifest capability with disclosed upgrades, parallel
