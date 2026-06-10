@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AccessProfile, ContentHash, ExternalContextPolicy, Id, ModeKind, OutputReadyState, ProviderFamily } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest } from "./harness.js";
+import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
@@ -243,6 +243,19 @@ export const ControlWebEvidence = z.object({
 });
 export type ControlWebEvidence = z.infer<typeof ControlWebEvidence>;
 
+/**
+ * Run-level route evidence projected from telemetry (observed model per
+ * attempt). `verified` is true only when an observed model was actually
+ * reported by the harness stream — never inferred from the request.
+ */
+export const ControlRouteInfo = z.object({
+  requestedModel: z.string().nullable().default(null),
+  observedModel: z.string().nullable().default(null),
+  harnessId: z.string().nullable().default(null),
+  verified: z.boolean().default(false),
+});
+export type ControlRouteInfo = z.infer<typeof ControlRouteInfo>;
+
 export const ControlRunSummary = z.object({
   jobId: z.string(),
   runId: z.string(),
@@ -271,6 +284,10 @@ export const ControlRunSummary = z.object({
   webEvidence: ControlWebEvidence.default({}),
   toolPermissionPolicy: z.record(z.string(), z.unknown()).optional(),
   outputReadyState: OutputReadyState.default("pending"),
+  /** True while at least one interaction.requested has no answered/timeout. */
+  waitingOnUser: z.boolean().default(false),
+  /** Route evidence from telemetry; null when no telemetry exists (legacy). */
+  route: ControlRouteInfo.nullable().default(null),
   tests: z.array(z.string()).optional(),
   specId: z.string().optional(),
   specHash: ContentHash.optional(),
@@ -328,8 +345,51 @@ export const ControlArtifactInfo = z.object({
 });
 export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
 
+/** A live interaction awaiting the user's answer (snapshot projection). */
+export const ControlPendingInteraction = z.object({
+  interactionId: Id,
+  runId: Id,
+  attemptId: z.string().nullable().default(null),
+  harnessId: z.string().nullable().default(null),
+  sourceTool: z.string().nullable().default(null),
+  questions: z.array(InteractionQuestion).default([]),
+  requestedAt: z.string(),
+  timeoutAt: z.string().nullable().default(null),
+});
+export type ControlPendingInteraction = z.infer<typeof ControlPendingInteraction>;
+
+export const ControlInteractionAnswerRequest = z
+  .object({
+    answers: z
+      .array(
+        z
+          .object({
+            questionId: Id,
+            selectedLabels: z.array(z.string()).default([]),
+            freeText: z.string().nullable().default(null),
+          })
+          .strict(),
+      )
+      .default([]),
+  })
+  .strict();
+export type ControlInteractionAnswerRequest = z.infer<typeof ControlInteractionAnswerRequest>;
+
+export const ControlInteractionAnswerResponse = z.object({
+  accepted: z.boolean(),
+  status: z.enum(["delivered", "not_found", "already_resolved", "rejected"]),
+  message: z.string().optional(),
+});
+export type ControlInteractionAnswerResponse = z.infer<typeof ControlInteractionAnswerResponse>;
+
 export const ControlRunDetail = z.object({
   summary: ControlRunSummary,
+  /**
+   * Highest event seq included in this snapshot. Clients subscribe to the
+   * event stream from this cursor; events with seq <= lastSeq are already
+   * reflected in the snapshot (snapshot-then-subscribe, no gaps, no dupes).
+   */
+  lastSeq: z.number().int().nonnegative().default(0),
   artifacts: z.array(ControlArtifactInfo).default([]),
   primaryOutput: ControlPrimaryOutput.nullable().default(null),
   timeline: z.array(ControlTimelineEvent).default([]),
@@ -338,6 +398,7 @@ export const ControlRunDetail = z.object({
   decision: DecisionRecord.nullable().default(null),
   workProduct: WorkProduct.nullable().default(null),
   reviewFindings: z.array(ReviewFinding).default([]),
+  pendingInteractions: z.array(ControlPendingInteraction).default([]),
   failure: RunFailure.nullable().default(null),
 });
 export type ControlRunDetail = z.infer<typeof ControlRunDetail>;
@@ -413,6 +474,8 @@ export type ControlHarnessListResponse = z.infer<typeof ControlHarnessListRespon
 export const ControlSettingsSnapshot = z.object({
   sources: z.array(z.string()).default([]),
   defaultPortfolio: Portfolio.default("subscription-first"),
+  /** How long a run waits for an interactive answer before a benign decline. */
+  interactionTimeoutMs: z.number().int().positive().default(900_000),
   routing: z
     .object({
       defaultPolicy: z.enum(["auto", "primary", "portfolio"]).default("auto"),
@@ -472,6 +535,7 @@ export type ControlHarnessSettingsPatch = z.infer<typeof ControlHarnessSettingsP
 export const ControlSettingsUpdateRequest = z
   .object({
     defaultPortfolio: Portfolio.optional(),
+    interactionTimeoutMs: z.number().int().positive().optional(),
     routingPolicy: z.enum(["auto", "primary", "portfolio"]).optional(),
     primaryHarness: z.string().nullable().optional(),
     defaultModel: z.string().nullable().optional(),

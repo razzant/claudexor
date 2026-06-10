@@ -27,6 +27,7 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
+import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
 import { PLUGIN_HOSTS, type PluginHost, installPlugin } from "./plugins.js";
 import { buildGateway, buildRegistry } from "./registry.js";
 import {
@@ -42,7 +43,7 @@ import { parseReviewerEffortMap } from "./reviewer-options.js";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
   const orch = new Orchestrator({ registry: buildRegistry() });
-  return async (p: any) => {
+  return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null> }) => {
     if (p?.mode === "__status") return { harnesses: [...buildRegistry().keys()] };
     return orch.run({
       repoRoot: process.cwd(),
@@ -55,6 +56,8 @@ function orchestratorRunner() {
       model: p?.model ? String(p.model) : undefined,
       effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
       n: typeof p?.n === "number" ? p.n : undefined,
+      onEvent: hooks?.onEvent,
+      onInteraction: hooks?.onInteraction,
     });
   };
 }
@@ -83,6 +86,7 @@ Usage:
   claudexor create "<prompt>"             Create-from-scratch via current envelope pipeline
   claudexor audit | map                   Read-only repo audit / map
   claudexor inspect <run_id>              Inspect a run's decision + artifacts
+  claudexor follow <run_id> [--json]      Live-tail a daemon run (replay + push; answer questions in the TTY)
   claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
   claudexor settings show|set             Show/update user defaults
   claudexor auth status|login             Inspect native harness auth
@@ -298,6 +302,17 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       specHash: spec ? hashJson(spec) : undefined,
       specPath: specPath ? realpathSync(specPath) : undefined,
       inPlace: flagBool(args, "in-place"),
+      // Live progress + interactive answers on a TTY; --json stays a pure
+      // machine surface (no printer, no prompts — questions decline benignly).
+      ...(json
+        ? {}
+        : {
+            onEvent: (ev) => {
+              const line = formatRunEventLine(ev as unknown as Record<string, unknown>);
+              if (line) print(line);
+            },
+            onInteraction: (ctx) => promptQuestionsOnTty(ctx.request.interaction_id, ctx.request.questions, ctx.timeoutAt),
+          }),
     });
     if (json) {
       printJson(res);
@@ -823,6 +838,15 @@ async function main(): Promise<number> {
       }
       print("usage: claudexor acp serve");
       return 2;
+    }
+
+    case "follow": {
+      const runId = args._[1];
+      if (!runId) {
+        print("usage: claudexor follow <run_id>");
+        return 2;
+      }
+      return followRun(runId, json);
     }
 
     case "inspect": {

@@ -283,8 +283,15 @@ describe("Orchestrator", () => {
     };
     const orch = new Orchestrator({ registry: new Map([["leaky", adapter]]), reviewers: [] });
     const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["leaky"], n: 1 });
-    expect(readFileSync(join(res.runDir, "final", "patch.diff"), "utf8")).not.toContain(secret);
+    // The leaky candidate is refused before any artifact persists; with zero
+    // working candidates the run fails with the ROOT CAUSE (no corpse review,
+    // no empty final patch pretending to be a work product).
+    expect(res.status).toBe("failed");
+    expect(res.summary).toContain("secret-like token");
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
     expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).not.toContain(secret);
   });
 
   it("fails loudly when no available harness can perform the intent", async () => {
@@ -922,5 +929,202 @@ describe("Orchestrator", () => {
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
     }
+  });
+});
+
+function readRunEvents(runDir: string): { seq?: number; type: string; payload: Record<string, unknown> }[] {
+  return readFileSync(join(runDir, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { seq?: number; type: string; payload: Record<string, unknown> });
+}
+
+/** Lifecycle invariant: output.ready precedes the terminal event (non-cancelled). */
+function expectOutputReadyBeforeTerminal(runDir: string): void {
+  const events = readRunEvents(runDir);
+  const terminalIdx = events.findIndex((e) => ["run.completed", "run.failed", "run.blocked"].includes(e.type));
+  expect(terminalIdx).toBeGreaterThan(-1);
+  const terminal = events[terminalIdx]!;
+  if (terminal.type === "run.failed" && terminal.payload["status"] === "cancelled") return; // cancelled runs promise no output
+  const readyIdx = events.findIndex((e) => e.type === "output.ready");
+  expect(readyIdx).toBeGreaterThan(-1);
+  expect(readyIdx).toBeLessThan(terminalIdx);
+}
+
+describe("Orchestrator v0.8 honesty & streaming", () => {
+  it("stamps a strictly monotonic seq on every run event", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1 });
+    const events = readRunEvents(res.runDir);
+    expect(events.length).toBeGreaterThan(3);
+    for (const [idx, ev] of events.entries()) {
+      expect(ev.seq).toBe(idx + 1);
+    }
+  });
+
+  it("emits output.ready before the terminal event in every mode", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+    const answer = (sessionId: string) => [
+      { type: "started", session_id: sessionId, ts: new Date().toISOString() },
+      { type: "message", session_id: sessionId, ts: new Date().toISOString(), text: "An answer." },
+      { type: "completed", session_id: sessionId, ts: new Date().toISOString() },
+    ];
+    const askRegistry = new Map<string, HarnessAdapter>([["asker", askAdapter("asker", answer)]]);
+
+    const race = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1 });
+    expectOutputReadyBeforeTerminal(race.runDir);
+
+    const converge = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["impl"], attempts: 1 });
+    expectOutputReadyBeforeTerminal(converge.runDir);
+
+    const ask = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({ repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["asker"] });
+    expectOutputReadyBeforeTerminal(ask.runDir);
+
+    const plan = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({ repoRoot: repo, prompt: "q", mode: "plan", harnesses: ["asker"] });
+    expectOutputReadyBeforeTerminal(plan.runDir);
+  });
+
+  it("skips review/synthesis/arbitration entirely when no candidate produced work", async () => {
+    const repo = await initRepo();
+    const crashing: HarnessAdapter = {
+      id: "crasher",
+      async discover() {
+        return HarnessManifest.parse({ id: "crasher", display_name: "crasher", kind: "local_cli", provider_family: "openai", capabilities: { implement: true }, access_profiles_supported: ["workspace_write"] });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "crasher", status: "ok", enabled_intents: ["implement"] });
+      },
+      // eslint-disable-next-line require-yield
+      async *run(): AsyncIterable<never> {
+        throw new Error("adapter exploded before any work");
+      },
+    };
+    const res = await new Orchestrator({ registry: new Map([["crasher", crashing]]), reviewers: reviewers() }).run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["crasher"], n: 2,
+    });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toContain("adapter exploded");
+    const events = readRunEvents(res.runDir);
+    const types = events.map((e) => e.type);
+    // No reviewer money, no synthesis, no arbitration over corpses.
+    expect(types).not.toContain("review.started");
+    expect(types).not.toContain("reviewer.started");
+    expect(types).not.toContain("synthesis.started");
+    expect(types).not.toContain("arbitration.completed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("adapter exploded");
+    expect(failure).not.toContain("attempts/a02/attempt.yaml\n"); // rawDetailRef must reference an EXISTING file
+    expect(existsSync(join(res.runDir, "attempts", "a01", "attempt.yaml"))).toBe(true);
+    expectOutputReadyBeforeTerminal(res.runDir);
+  });
+
+  it("initializes a git boundary automatically for write modes on a non-git folder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-nongit-"));
+    writeFileSync(join(dir, "notes.txt"), "pre-existing file\n");
+    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: dir, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1,
+    });
+    expect(existsSync(join(dir, ".git"))).toBe(true);
+    const gitignore = readFileSync(join(dir, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".claudexor/");
+    const events = readRunEvents(res.runDir);
+    const initEvent = events.find((e) => e.type === "project.git.initialized");
+    expect(initEvent).toBeDefined();
+    expect(initEvent?.payload["baseline_committed"]).toBe(true);
+    const log = await runCapture("git", ["-C", dir, "log", "--oneline"]);
+    expect(log.stdout).toContain("claudexor: initialize repository baseline");
+    // The baseline must include the user's pre-existing file but never .claudexor/.
+    const tracked = await runCapture("git", ["-C", dir, "ls-files"]);
+    expect(tracked.stdout).toContain("notes.txt");
+    expect(tracked.stdout).not.toContain(".claudexor/runs");
+  });
+
+  it("delivers interactive answers into the harness and logs the lifecycle", async () => {
+    const repo = await initRepo();
+    const seen: unknown[] = [];
+    const interactive: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
+          | { request(req: unknown): Promise<unknown> }
+          | undefined;
+        if (channel) {
+          const answers = await channel.request({
+            interaction_id: "int-1",
+            source_tool: "AskUserQuestion",
+            questions: [{ id: "q1", question: "Which flavor?", header: null, options: [{ label: "vanilla", description: null }], multi_select: false }],
+          });
+          seen.push(answers);
+        }
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      onInteraction: async (ctx) => ({
+        interaction_id: ctx.request.interaction_id,
+        answers: [{ question_id: "q1", selected_labels: ["vanilla"], free_text: null }],
+      }),
+    });
+    expect(res.status).not.toBe("failed");
+    expect(seen).toHaveLength(1);
+    expect(JSON.stringify(seen[0])).toContain("vanilla");
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).toContain("interaction.requested");
+    expect(types).toContain("interaction.answered");
+  });
+
+  it("declines benignly when the interactive answer times out", async () => {
+    const repo = await initRepo();
+    const seen: unknown[] = [];
+    const interactive: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
+          | { request(req: unknown): Promise<unknown> }
+          | undefined;
+        if (channel) {
+          seen.push(await channel.request({ interaction_id: "int-t", source_tool: "AskUserQuestion", questions: [] }));
+        }
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      interactionTimeoutMs: 50,
+      onInteraction: () => new Promise(() => {}), // never answers
+    });
+    expect(res.status).not.toBe("failed");
+    expect(seen).toEqual([null]);
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).toContain("interaction.requested");
+    expect(types).toContain("interaction.timeout");
+    expect(types).not.toContain("interaction.answered");
   });
 });

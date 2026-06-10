@@ -49,6 +49,8 @@ Core endpoints:
 
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /events` (global live-only run-event multiplex, no replay)
+- `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
@@ -63,13 +65,20 @@ Core endpoints:
 The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
 unauthenticated, loopback-host-guarded liveness route). Artifact files remain
 the source of truth; API responses are projections over daemon state and run
-files. Harness setup commands are server allowlisted. Install/login/doctor
-execution uses setup jobs with risk flags, redacted logs, persistence across
-daemon restarts, watchdog timeouts, and a polling-backed SSE lifecycle stream
+files. Harness setup commands are server allowlisted. Install/login execution
+uses setup jobs with risk flags, redacted logs, persistence across daemon
+restarts, watchdog timeouts, and a polling-backed SSE lifecycle stream
 (`/setup/jobs/:id/events`) that heartbeats and closes on terminal states.
-API-key fallback goes through `/secrets`, not inline setup payloads.
+Doctor verification (the `doctor` and `store_key` jobs, and the post-install
+phase) runs IN-PROCESS through the same gateway code as the Harness Doctor
+screen — never as a `claudexor ...` shell command, which does not exist on
+PATH inside the bundled app. API-key fallback goes through `/secrets`, not
+inline setup payloads.
 
-`GET /runs/:id` includes `primaryOutput`, `timeline`, `budget`,
+`GET /runs/:id` includes `lastSeq` (the snapshot's event cursor for
+gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
+`summary.waitingOnUser`, `summary.route` (requested vs stream-observed model;
+verified only on observed evidence), `primaryOutput`, `timeline`, `budget`,
 `summary.outputReadyState`, requested/effective access, external context policy,
 and `summary.webEvidence` projections for clients that need the main
 answer/report, streamed activity, known spend state, and tool/web status without
@@ -80,8 +89,11 @@ artifacts are size-capped (HTTP 413 names the on-disk path) and timelines are
 capped with an explicit truncation marker.
 
 `POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
-Live input forwarding into a running harness is not part of the surface; the
-former `/runs/:id/input` stub was removed in v0.7.0.
+Interactive runs use the typed interaction surface instead of raw input
+forwarding: `interaction.requested` events carry the questions, the macOS app
+and `claudexor follow` answer via `POST /runs/:id/interactions/:id/answer`,
+and an unanswered question declines benignly after the configurable
+`interaction_timeout_ms`.
 
 ## MCP
 

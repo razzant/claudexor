@@ -339,6 +339,49 @@
           ],
           "default": "pending"
         },
+        "waitingOnUser": {
+          "type": "boolean",
+          "default": false
+        },
+        "route": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requestedModel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "observedModel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "harnessId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "verified": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "tests": {
           "type": "array",
           "items": {

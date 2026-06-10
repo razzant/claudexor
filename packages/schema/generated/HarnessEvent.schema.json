@@ -12,6 +12,7 @@
             "message",
             "tool_call",
             "tool_result",
+            "interaction_requested",
             "file_change",
             "usage",
             "error",
@@ -71,6 +72,79 @@
           },
           "required": [
             "name"
+          ],
+          "additionalProperties": false
+        },
+        "interaction": {
+          "type": "object",
+          "properties": {
+            "interaction_id": {
+              "$ref": "#/definitions/HarnessEvent/properties/session_id"
+            },
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/HarnessEvent/properties/session_id"
+                  },
+                  "question": {
+                    "type": "string"
+                  },
+                  "header": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "options": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        }
+                      },
+                      "required": [
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  },
+                  "multi_select": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "question"
+                ],
+                "additionalProperties": false
+              },
+              "default": []
+            },
+            "source_tool": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "interaction_id"
           ],
           "additionalProperties": false
         },

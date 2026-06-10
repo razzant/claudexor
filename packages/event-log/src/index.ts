@@ -5,8 +5,16 @@ import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudexor/util
 /**
  * Append-only JSONL event log for a single run. Terminal output and human
  * summaries are projections; this file is the canonical event stream.
+ *
+ * Every emitted event carries a monotonic per-run `seq` stamped here — the
+ * durable cursor for SSE resume (Last-Event-ID) and snapshot fencing
+ * (detail.lastSeq). The counter initializes from the existing file tail so a
+ * re-opened log (or an out-of-band appender like the control-api audit
+ * writer) continues the sequence instead of restarting it.
  */
 export class EventLog {
+  private nextSeq: number;
+
   constructor(
     private readonly path: string,
     private readonly runId: string,
@@ -18,11 +26,14 @@ export class EventLog {
      * must never break a run, so sink errors are swallowed.
      */
     private readonly onEmit?: (event: RunEvent) => void,
-  ) {}
+  ) {
+    this.nextSeq = lastSeqInFile(path) + 1;
+  }
 
   /** Append a typed run event. Validates against the schema before writing. */
   emit(type: RunEventType, payload: Record<string, unknown> = {}): RunEvent {
     const event = RunEventSchema.parse({
+      seq: this.nextSeq++,
       ts: nowIso(),
       run_id: this.runId,
       task_id: this.taskId,
@@ -57,6 +68,31 @@ export class EventLog {
     }
     return { events, malformed };
   }
+}
+
+/**
+ * Highest `seq` already present in an events.jsonl file (0 for missing/empty).
+ * Legacy lines without seq count by position so a continued log never reuses
+ * a line number an SSE replayer may have already served as a fallback id.
+ */
+export function lastSeqInFile(path: string): number {
+  const text = readTextSafe(path);
+  if (text === null) return 0;
+  let last = 0;
+  let lineNo = 0;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    lineNo += 1;
+    try {
+      const parsed = JSON.parse(trimmed) as { seq?: unknown };
+      const seq = typeof parsed.seq === "number" && Number.isFinite(parsed.seq) ? parsed.seq : lineNo;
+      if (seq > last) last = seq;
+    } catch {
+      if (lineNo > last) last = lineNo;
+    }
+  }
+  return last;
 }
 
 function redactEventValue(value: unknown): unknown {

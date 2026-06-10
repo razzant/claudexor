@@ -41,15 +41,26 @@ function openBlockerCount(c: CandidateEvidence): number {
  * Effective test pass-fraction. Held-out tests are authoritative when present
  * (anti-reward-hacking): a candidate that passes visible tests but fails the
  * held-out split must NOT outrank one that passes both.
+ *
+ * Zero configured tests is zero test EVIDENCE (0, never a vacuous 1): a
+ * candidate with no tests must not score "100%" in rankings or user-facing
+ * decision strings.
  */
 function effectiveTestFraction(c: CandidateEvidence): number {
   if (c.heldOutTotal && c.heldOutTotal > 0) {
     const held = (c.heldOutPassed ?? 0) / c.heldOutTotal;
-    const visible = c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 1;
+    const visible = c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
     // Weight held-out heavily; a held-out failure dominates.
     return held * 0.8 + visible * 0.2;
   }
-  return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 1;
+  return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
+}
+
+/** Human label for test evidence: honest "n/a" when no tests exist at all. */
+function testEvidenceLabel(c: CandidateEvidence): string {
+  const hasHeldOut = (c.heldOutTotal ?? 0) > 0;
+  if (!hasHeldOut && c.testsTotal === 0) return "n/a";
+  return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
 }
 
 /** Higher is better, compared lexicographically (evidence-first ordering). */
@@ -223,7 +234,7 @@ export function arbitrate(
     winner: winner.attemptId,
     status,
     outcome,
-    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${(acceptanceFraction(winner) * 100).toFixed(0)}%, blockers=${openBlockerCount(winner)}, tests=${(effectiveTestFraction(winner) * 100).toFixed(0)}%, cleanReview=${winner.finalReviewClean}`,
+    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${(acceptanceFraction(winner) * 100).toFixed(0)}%, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
     final_checks: [

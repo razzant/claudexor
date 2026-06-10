@@ -112,10 +112,14 @@ function parseClaudeEventStateful(
         const useId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
         const origin = useId ? pendingTools.get(useId) : undefined;
         if (useId) pendingTools.delete(useId);
-        // ExitPlanMode is Claude's plan-approval FLOW CONTROL tool, not a work
-        // tool. Headless stream-json has no approver, so its is_error result is
-        // the documented way plan mode ends — translate it to a benign thinking
-        // event (detail preserved) instead of a blocking error tool_result.
+        // ExitPlanMode and AskUserQuestion are Claude's interactive FLOW
+        // CONTROL tools, not work tools. A headless (or declined / timed-out)
+        // is_error result is their documented way of ending the interaction —
+        // translate it to a benign thinking event (detail preserved, the
+        // question text stays in the timeline) instead of a blocking error
+        // tool_result. Recovery-by-same-tool is impossible by construction for
+        // these tools, so the generic unrecovered-tool-error rule must never
+        // fail a run over them (CLAUDEXOR_BIBLE §5).
         if (origin?.name === "ExitPlanMode" && isError) {
           out.push({
             type: "thinking",
@@ -123,6 +127,16 @@ function parseClaudeEventStateful(
             ts,
             text: `plan mode ended (ExitPlanMode has no headless approver${detail ? `: ${detail}` : ""})`,
             payload: { tool: "ExitPlanMode", tool_use_id: useId },
+          });
+          continue;
+        }
+        if (origin?.name === "AskUserQuestion" && isError) {
+          out.push({
+            type: "thinking",
+            session_id: sessionId,
+            ts,
+            text: `clarifying questions declined (no user answer); the model continues with assumptions${detail ? `: ${detail}` : ""}`,
+            payload: { tool: "AskUserQuestion", tool_use_id: useId },
           });
           continue;
         }

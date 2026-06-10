@@ -123,8 +123,9 @@ describe("DaemonControlApiServer", () => {
     fn: (base: string) => Promise<void>,
     runStartTimeoutMs?: number,
     services?: DaemonControlApiOptions["services"],
+    bus?: DaemonControlApiOptions["bus"],
   ): Promise<void> {
-    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5, runStartTimeoutMs, services });
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5, runStartTimeoutMs, services, bus });
     const { host, port } = await server.start();
     try {
       await fn(`http://${host}:${port}`);
@@ -1051,5 +1052,158 @@ describe("DaemonControlApiServer", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  it("uses the PERSISTED event seq as the SSE cursor (sparse-safe replay from Last-Event-ID)", async () => {
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(
+      join(record.runDir as string, "events.jsonl"),
+      [
+        JSON.stringify({ seq: 10, ts: "t", run_id: "run-d1", task_id: "task-d1", type: "run.created", payload: {} }),
+        JSON.stringify({ seq: 20, ts: "t", run_id: "run-d1", task_id: "task-d1", type: "output.ready", payload: { path: "final/summary.md" } }),
+        JSON.stringify({ seq: 30, ts: "t", run_id: "run-d1", task_id: "task-d1", type: "run.completed", payload: { status: "success" } }),
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const sse = await fetch(`${base}/runs/run-d1/events`, { headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "10" } });
+      const text = await sse.text();
+      expect(text).not.toContain("run.created");
+      expect(text).toContain("id: 20");
+      expect(text).toContain("id: 30");
+      expect(text).toContain("event: end");
+    });
+  });
+
+  it("returns lastSeq + pending interactions in detail, overlays waitingOnUser, and delivers answers", async () => {
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(
+      join(record.runDir as string, "events.jsonl"),
+      [
+        JSON.stringify({ seq: 1, ts: "t", run_id: "run-d1", task_id: "task-d1", type: "run.created", payload: {} }),
+        JSON.stringify({ seq: 2, ts: "t", run_id: "run-d1", task_id: "task-d1", type: "interaction.requested", payload: { interaction_id: "int-1" } }),
+        "",
+      ].join("\n"),
+    );
+    const delivered: unknown[] = [];
+    const services: DaemonControlApiOptions["services"] = {
+      pendingInteractions: (runId: string) =>
+        runId === "run-d1"
+          ? [
+              {
+                interactionId: "int-1",
+                runId: "run-d1",
+                attemptId: "a01",
+                harnessId: "claude",
+                sourceTool: "AskUserQuestion",
+                questions: [{ id: "q1", question: "Which?", header: null, options: [{ label: "A", description: null }], multi_select: false }],
+                requestedAt: "t",
+                timeoutAt: null,
+              },
+            ]
+          : [],
+      answerInteraction: (runId: string, interactionId: string, answers: unknown) => {
+        delivered.push({ runId, interactionId, answers });
+        return interactionId === "int-1" ? { status: "delivered" } : { status: "not_found", message: "missing" };
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const detail = (await (await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        lastSeq: number;
+        pendingInteractions: { interactionId: string }[];
+        summary: { waitingOnUser: boolean };
+      };
+      expect(detail.lastSeq).toBe(2);
+      expect(detail.pendingInteractions).toHaveLength(1);
+      expect(detail.pendingInteractions[0]?.interactionId).toBe("int-1");
+      expect(detail.summary.waitingOnUser).toBe(true);
+
+      const list = (await (await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        runs: { waitingOnUser: boolean }[];
+      };
+      expect(list.runs[0]?.waitingOnUser).toBe(true);
+
+      const answer = await fetch(`${base}/runs/run-d1/interactions/int-1/answer`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ answers: [{ questionId: "q1", selectedLabels: ["A"], freeText: null }] }),
+      });
+      expect(answer.status).toBe(200);
+      expect(await answer.json()).toMatchObject({ accepted: true, status: "delivered" });
+      expect(delivered[0]).toMatchObject({
+        runId: "run-d1",
+        interactionId: "int-1",
+        answers: { interaction_id: "int-1", answers: [{ question_id: "q1", selected_labels: ["A"], free_text: null }] },
+      });
+
+      const missing = await fetch(`${base}/runs/run-d1/interactions/int-404/answer`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ answers: [] }),
+      });
+      expect(missing.status).toBe(404);
+    }, undefined, services);
+  });
+
+  it("streams the global live-only multiplex from the bus and 501s without one", async () => {
+    const { daemon } = fakeDaemon();
+    const listeners = new Set<(event: { run_id: string }) => void>();
+    const bus = {
+      subscribe(listener: (event: { run_id: string }) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      publish(event: { run_id: string }) {
+        for (const l of listeners) l(event);
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const res = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" } });
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      // Wait until the subscription is registered, then push one event.
+      const deadline = Date.now() + 2_000;
+      while (listeners.size === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+      bus.publish({ run_id: "run-d1", seq: 7, type: "harness.event", payload: { type: "message", title: "hi" } } as never);
+      let buffer = "";
+      const decoder = new TextDecoder();
+      while (!buffer.includes("\n\n") || !buffer.includes("data:")) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (Date.now() > deadline) break;
+      }
+      await reader.cancel();
+      expect(buffer).toContain("id: 7");
+      expect(buffer).toContain("event: harness.event");
+      expect(buffer).toContain("run-d1");
+    }, undefined, undefined, bus);
+
+    await withDaemonServer(daemon, async (base) => {
+      const res = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(501);
+    });
+  });
+
+  it("accepts a non-git existing project root (the engine initializes git itself) but 400s a missing one", async () => {
+    const { daemon } = fakeDaemon();
+    const nonGit = mkdtempSync(join(tmpdir(), "claudexor-nongit-api-"));
+    await withDaemonServer(daemon, async (base) => {
+      const ok = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "build", mode: "agent", scope: { kind: "project", root: nonGit } }),
+      });
+      expect(ok.status).toBe(200);
+
+      const missing = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "build", mode: "agent", scope: { kind: "project", root: join(tmpdir(), "claudexor-definitely-missing-xyz") } }),
+      });
+      expect(missing.status).toBe(400);
+      expect(await missing.text()).toContain("does not exist");
+    });
+    rmSync(nonGit, { recursive: true, force: true });
   });
 });

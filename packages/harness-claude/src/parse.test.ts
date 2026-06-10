@@ -175,4 +175,58 @@ describe("parseClaudeEvent", () => {
     expect(denyValue).toContain("Bash(rm:*)");
     expect(args).not.toContain("--allowedTools");
   });
+
+  it("translates a headless ExitPlanMode error result to a benign thinking event", () => {
+    const parse = createClaudeParser();
+    parse(
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_p", name: "ExitPlanMode", input: { plan: "The plan." } }] } },
+      "s1",
+    );
+    const out = parse(
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_p", is_error: true, content: "needs approval" }] } },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out).toHaveLength(1);
+    expect(out[0]?.type).toBe("thinking");
+    expect(out[0]?.text).toContain("plan mode ended");
+  });
+
+  it("translates a declined AskUserQuestion error result to a benign thinking event (never a blocking tool error)", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "toolu_q", name: "AskUserQuestion", input: { questions: [{ question: "Which stack?" }] } }] },
+      },
+      "s1",
+    );
+    const out = parse(
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_q", is_error: true, content: "Answer questions?" }] } },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out).toHaveLength(1);
+    expect(out[0]?.type).toBe("thinking");
+    expect(out[0]?.text).toContain("clarifying questions declined");
+    expect(out[0]?.text).toContain("Answer questions?");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("builds interactive args with stream-json input and the prompt on stdin", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-test",
+      intent: "plan",
+      prompt: "make a plan",
+      cwd: "/tmp",
+      access: "readonly",
+    });
+    const args = claudeArgsForSpec(spec, true);
+    expect(args).toContain("--input-format");
+    expect(args).toContain("stream-json");
+    // The prompt must NOT travel as an argv prompt in interactive mode.
+    expect(args).not.toContain("make a plan");
+    // One-shot mode keeps the prompt arg and no input-format flag.
+    const oneShot = claudeArgsForSpec(spec);
+    expect(oneShot).toContain("make a plan");
+    expect(oneShot).not.toContain("--input-format");
+  });
 });

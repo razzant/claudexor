@@ -214,6 +214,15 @@ declared run artifact, or an explicitly verified host side-effect. Absolute
 `/tmp/...` writes are host side effects and are not project diffs; project tmp
 requests default to `tmp/...` inside the project/envelope or to run artifacts.
 
+Write modes need a git boundary for that isolation. A NON-GIT project folder is
+initialized automatically before any candidate spawns: `.gitignore` is seeded
+with `.claudexor/` first, then `git init` plus a deterministic baseline commit
+(author `Claudexor`) make worktree diffs honest from the first run. The action
+is announced via a `project.git.initialized` run event in the timeline — never
+a refusal (comparator: Codex CLI refuses outside git; Claudexor creates the
+boundary itself), never a silent mutation. Read-only modes and `--in-place`
+stateful targets are untouched.
+
 Convergence modes also default to isolated envelopes. The CLI-only `--in-place`
 is reserved for explicit stateful external adapters, such as Terminal-Bench
 containers where runtime state is the deliverable and cannot be merged from a
@@ -251,6 +260,8 @@ artifact/delivery facade:
 
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /events` (global live-only run-event multiplex)
+- `POST /runs/:id/interactions/:id/answer` (deliver a waiting_on_user answer)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
@@ -264,6 +275,37 @@ artifact/delivery facade:
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.
+
+### Event streaming contract (snapshot-then-subscribe)
+
+Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
+EventLog at emit time (control-api audit appends continue the same sequence).
+`GET /runs/:id` returns the snapshot together with `lastSeq` — the highest seq
+already reflected in that snapshot — so a client subscribes to
+`GET /runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
+no gaps and no duplicates. The per-run stream replays from the canonical
+`events.jsonl` (legacy pre-seq lines fall back to line-number ids) and is
+push-driven by the daemon's in-process run-event bus, with a file-tail poll as
+fallback; `output.ready` is guaranteed to precede the terminal
+`run.completed|run.failed|run.blocked` event in every mode, so a client that
+has applied the terminal event provably has the output. `GET /events` is the
+global LIVE-ONLY multiplex (events tagged with `run_id`, no replay): on
+reconnect a client re-snapshots `/runs` first and uses per-run streams where it
+needs gap-free state.
+
+### Interactive runs (waiting_on_user)
+
+Harnesses with the `interactive` capability (Claude Code via its bidirectional
+stream-json control protocol) can raise typed user questions mid-run. The
+engine emits `interaction.requested` (questions, options, timeout deadline),
+parks ONLY that attempt, and the daemon registry exposes the pending question
+via `GET /runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
+arrive via `POST /runs/:id/interactions/:id/answer` and are delivered into the
+live session (`interaction.answered`); an unanswered question times out after
+the configurable `interaction_timeout_ms` (default 15 min) into a benign
+decline (`interaction.timeout`) — the model continues with stated assumptions
+and the run never hangs forever. Declined/timed-out interactive flow-control
+tools are benign timeline events, never blocking tool errors.
 
 `POST /harnesses/setup` owns setup preparation. It validates typed setup
 actions, rejects inline secrets, and returns only server-side allowlisted

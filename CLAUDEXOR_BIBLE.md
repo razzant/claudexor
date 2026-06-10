@@ -53,6 +53,15 @@ warning and blocks claimed success unless later verified recovery exists. Web
 answers are web-backed only when `WebSearch`/`WebFetch` or equivalent evidence
 was observed; a memory answer after a failed web tool is partial/unverified.
 
+Interactive FLOW-CONTROL tools are not work tools. A declined or timed-out
+`AskUserQuestion`/`ExitPlanMode` result is the documented end of an interaction
+(recovery-by-same-tool is impossible by construction), so adapters translate it
+into a benign timeline event — never a blocking tool error. An ANSWERED
+interaction is delivered through the typed interaction contract
+(`interaction.requested`/`answered`/`timeout` events) and the model's
+continuation is ordinary evidence. The generic is_error rule stays untouched
+for every real work tool.
+
 No regex governance: risk, permissions, web-required detection, tool success,
 winners, and tests-passed must be determined by typed contracts, settings,
 events, gates, or reviewer evidence, not ad hoc string matching over model text.

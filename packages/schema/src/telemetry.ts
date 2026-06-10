@@ -50,6 +50,12 @@ export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
 export const AttemptTelemetryRecord = z.object({
   attempt_id: Id,
   harness_id: Id,
+  /**
+   * Model identity the harness stream actually reported (route evidence).
+   * Null when the stream never disclosed one; surfaces must render that as
+   * unverified, never as a guess.
+   */
+  observed_model: z.string().nullable().default(null),
   web: WebEvidenceRecord,
   /** Bounded by the writer (most recent first when truncated; `tool_errors_total` keeps the true count). */
   tool_errors: z.array(ToolErrorRecord).default([]),

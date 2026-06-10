@@ -1,3 +1,5 @@
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { runCapture, WorkspaceError } from "@claudexor/core";
 
 export async function git(repo: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -14,6 +16,76 @@ export async function revParse(repo: string, ref: string): Promise<string> {
   const r = await git(repo, ["rev-parse", ref]);
   if (r.code !== 0) throw new WorkspaceError(`git rev-parse ${ref} failed: ${r.stderr.trim()}`);
   return r.stdout.trim();
+}
+
+export interface EnsureGitRepositoryResult {
+  /** True when `git init` ran (the folder was not a repository). */
+  initialized: boolean;
+  /** True when a baseline commit was created (fresh repo or unborn HEAD). */
+  baselineCommitted: boolean;
+  /** True when `.claudexor/` was added to (or created in) .gitignore. */
+  gitignoreSeeded: boolean;
+  /** HEAD sha after the call. */
+  headSha: string;
+}
+
+const GITIGNORE_SEED = ".claudexor/";
+
+/**
+ * Make a project folder usable as a git boundary for write-mode runs.
+ *
+ * Comparator note: Codex CLI refuses to run outside a git repo (its official
+ * quick start is `mkdir && git init && codex`); Claudexor goes one step
+ * further and creates the boundary itself, announced via the
+ * `project.git.initialized` run event. The baseline commit makes worktree
+ * diffs honest from the very first run; `.claudexor/` is seeded into
+ * .gitignore FIRST so run artifacts never enter the baseline.
+ *
+ * The baseline commit is authored as "Claudexor" deterministically — it is a
+ * tool-created commit and must not depend on (or pollute) user git identity.
+ */
+export async function ensureGitRepository(repo: string): Promise<EnsureGitRepositoryResult> {
+  const isRepo = await isGitRepo(repo);
+  const hasHead = isRepo && (await git(repo, ["rev-parse", "--verify", "HEAD"])).code === 0;
+  if (isRepo && hasHead) {
+    return { initialized: false, baselineCommitted: false, gitignoreSeeded: false, headSha: await revParse(repo, "HEAD") };
+  }
+
+  let gitignoreSeeded = false;
+  const gitignorePath = join(repo, ".gitignore");
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, `${GITIGNORE_SEED}\n`, "utf8");
+    gitignoreSeeded = true;
+  } else {
+    const lines = readFileSync(gitignorePath, "utf8").split("\n").map((l) => l.trim());
+    if (!lines.includes(GITIGNORE_SEED) && !lines.includes(".claudexor")) {
+      appendFileSync(gitignorePath, `${GITIGNORE_SEED}\n`, "utf8");
+      gitignoreSeeded = true;
+    }
+  }
+
+  let initialized = false;
+  if (!isRepo) {
+    const init = await git(repo, ["init"]);
+    if (init.code !== 0) throw new WorkspaceError(`git init failed: ${init.stderr.trim()}`);
+    initialized = true;
+  }
+
+  const add = await git(repo, ["add", "-A"]);
+  if (add.code !== 0) throw new WorkspaceError(`git add failed during repository initialization: ${add.stderr.trim()}`);
+  const commit = await git(repo, [
+    "-c",
+    "user.name=Claudexor",
+    "-c",
+    "user.email=noreply@claudexor.local",
+    "commit",
+    "--allow-empty",
+    "--no-verify",
+    "-m",
+    "claudexor: initialize repository baseline",
+  ]);
+  if (commit.code !== 0) throw new WorkspaceError(`baseline commit failed during repository initialization: ${commit.stderr.trim()}`);
+  return { initialized, baselineCommitted: true, gitignoreSeeded, headSha: await revParse(repo, "HEAD") };
 }
 
 export async function statusPorcelain(repo: string): Promise<string> {

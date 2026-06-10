@@ -103,6 +103,7 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       web_policy: "none",
       max_turns: false,
       tool_lists: false,
+      interactive: false,
       quota_signal: id === "fake-rate-limit" ? "observed" : "unknown",
       usage_signal: "exact",
     },

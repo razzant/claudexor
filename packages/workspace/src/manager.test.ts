@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { git } from "./git.js";
+import { ensureGitRepository, git, isGitRepo } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 
 async function initRepo(): Promise<string> {
@@ -83,5 +83,50 @@ describe("WorkspaceManager", () => {
     // ...but the scoped envelope base (home + baseline) is removed.
     expect(existsSync(env.home_dir)).toBe(false);
     expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
+  });
+});
+
+describe("ensureGitRepository", () => {
+  it("initializes a non-git folder with a seeded .gitignore and a baseline commit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    writeFileSync(join(dir, "data.txt"), "hello\n");
+    const result = await ensureGitRepository(dir);
+    expect(result.initialized).toBe(true);
+    expect(result.baselineCommitted).toBe(true);
+    expect(result.gitignoreSeeded).toBe(true);
+    expect(result.headSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(await isGitRepo(dir)).toBe(true);
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".claudexor/");
+    const tracked = await git(dir, ["ls-files"]);
+    expect(tracked.stdout).toContain("data.txt");
+    expect(tracked.stdout).toContain(".gitignore");
+    const author = await git(dir, ["log", "-1", "--format=%an"]);
+    expect(author.stdout.trim()).toBe("Claudexor");
+  });
+
+  it("creates a baseline commit for a repo with an unborn HEAD", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    await git(dir, ["init", "-b", "main"]);
+    writeFileSync(join(dir, "x.txt"), "x\n");
+    const result = await ensureGitRepository(dir);
+    expect(result.initialized).toBe(false);
+    expect(result.baselineCommitted).toBe(true);
+    expect((await git(dir, ["rev-parse", "--verify", "HEAD"])).code).toBe(0);
+  });
+
+  it("is a no-op for a healthy repo and never rewrites an existing .gitignore entry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    await git(dir, ["init", "-b", "main"]);
+    writeFileSync(join(dir, ".gitignore"), ".claudexor/\nnode_modules/\n");
+    writeFileSync(join(dir, "y.txt"), "y\n");
+    await git(dir, ["add", "-A"]);
+    await git(dir, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+    const before = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    const result = await ensureGitRepository(dir);
+    expect(result.initialized).toBe(false);
+    expect(result.baselineCommitted).toBe(false);
+    expect(result.gitignoreSeeded).toBe(false);
+    expect(result.headSha).toBe(before);
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(".claudexor/\nnode_modules/\n");
   });
 });

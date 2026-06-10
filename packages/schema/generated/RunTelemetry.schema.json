@@ -138,6 +138,13 @@
               "harness_id": {
                 "$ref": "#/definitions/RunTelemetry/properties/run_id"
               },
+              "observed_model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
               "web": {
                 "$ref": "#/definitions/RunTelemetry/properties/web"
               },

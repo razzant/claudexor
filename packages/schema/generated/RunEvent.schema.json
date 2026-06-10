@@ -4,6 +4,11 @@
     "RunEvent": {
       "type": "object",
       "properties": {
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": true,
+          "minimum": 0
+        },
         "ts": {
           "type": "string"
         },
@@ -20,6 +25,7 @@
             "run.created",
             "task.contract.created",
             "context.pack.created",
+            "project.git.initialized",
             "budget.lease.created",
             "budget.observation",
             "policy.web.upgraded",
@@ -29,6 +35,9 @@
             "route.fallback.started",
             "route.fallback.completed",
             "route.fallback.exhausted",
+            "interaction.requested",
+            "interaction.answered",
+            "interaction.timeout",
             "output.ready",
             "gate.started",
             "gate.completed",

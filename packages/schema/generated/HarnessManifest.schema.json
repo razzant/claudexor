@@ -392,6 +392,10 @@
               "type": "boolean",
               "default": false
             },
+            "interactive": {
+              "type": "boolean",
+              "default": false
+            },
             "quota_signal": {
               "$ref": "#/definitions/HarnessManifest/properties/capability_profile/properties/output/properties/usage_signal",
               "default": "unknown"

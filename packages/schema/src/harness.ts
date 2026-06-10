@@ -58,6 +58,12 @@ export const HarnessCapabilities = z.object({
   max_turns: z.boolean().default(false),
   /** Honors tool_permission_policy allow/deny lists (e.g. claude --allowedTools). */
   tool_lists: z.boolean().default(false),
+  /**
+   * The adapter can surface interactive user questions (interaction_requested
+   * events) and deliver typed answers back into the live session. Claude's
+   * bidirectional stream-json control protocol today; honest false elsewhere.
+   */
+  interactive: z.boolean().default(false),
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
 });
@@ -248,6 +254,51 @@ export const ToolRef = z.object({
 });
 export type ToolRef = z.infer<typeof ToolRef>;
 
+/**
+ * One multiple-choice option of an interactive question (AskUserQuestion-style).
+ */
+export const InteractionOption = z.object({
+  label: z.string(),
+  description: z.string().nullable().default(null),
+});
+export type InteractionOption = z.infer<typeof InteractionOption>;
+
+export const InteractionQuestion = z.object({
+  id: Id,
+  question: z.string(),
+  /** Short chip/header text some harnesses attach to a question. */
+  header: z.string().nullable().default(null),
+  options: z.array(InteractionOption).default([]),
+  multi_select: z.boolean().default(false),
+});
+export type InteractionQuestion = z.infer<typeof InteractionQuestion>;
+
+/**
+ * A live request for user input raised by an interactive harness session.
+ * Carried on `interaction_requested` HarnessEvents and projected into
+ * `interaction.requested` RunEvents.
+ */
+export const InteractionRequest = z.object({
+  interaction_id: Id,
+  questions: z.array(InteractionQuestion).default([]),
+  /** Native tool that raised the request (e.g. "AskUserQuestion"). */
+  source_tool: z.string().nullable().default(null),
+});
+export type InteractionRequest = z.infer<typeof InteractionRequest>;
+
+export const InteractionAnswer = z.object({
+  question_id: Id,
+  selected_labels: z.array(z.string()).default([]),
+  free_text: z.string().nullable().default(null),
+});
+export type InteractionAnswer = z.infer<typeof InteractionAnswer>;
+
+export const InteractionAnswerSet = z.object({
+  interaction_id: Id,
+  answers: z.array(InteractionAnswer).default([]),
+});
+export type InteractionAnswerSet = z.infer<typeof InteractionAnswerSet>;
+
 /** Normalized event emitted by every adapter (the SSOT of adapter output). */
 export const HarnessEvent = z.object({
   type: z.enum([
@@ -256,6 +307,7 @@ export const HarnessEvent = z.object({
     "message",
     "tool_call",
     "tool_result",
+    "interaction_requested",
     "file_change",
     "usage",
     "error",
@@ -266,6 +318,8 @@ export const HarnessEvent = z.object({
   text: z.string().optional(),
   /** Typed tool info; set on `tool_call` and `tool_result` events. */
   tool: ToolRef.optional(),
+  /** Set on `interaction_requested` events. */
+  interaction: InteractionRequest.optional(),
   usage: z
     .object({
       input_tokens: z.number().int().nonnegative().optional(),

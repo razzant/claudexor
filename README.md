@@ -28,6 +28,7 @@ claudexor explore "map this repo's auth and run storage"
 claudexor run "fix the failing auth refresh test" --harness codex
 claudexor race "fix add() and keep the patch minimal" --harness codex,claude --n 2
 claudexor inspect <run_id>
+claudexor follow <run_id>     # live event tail of a daemon run; answers questions in the TTY
 claudexor apply <run_id> --dry-run
 claudexor doctor
 claudexor secrets list
@@ -135,6 +136,8 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `GET /events` (global live-only run-event multiplex)
+- `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
@@ -146,18 +149,24 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `POST /spec/questions`, `POST /spec/freeze`
 
 Harness setup is server-owned. `/harnesses/setup` is the typed prepare surface;
-`/setup/jobs` is the execution lifecycle for allowlisted install/login/doctor
-jobs with redacted logs, risk flags, persistence across restarts, watchdog
-timeouts, and an SSE lifecycle stream. UI surfaces must not invent harness
+`/setup/jobs` is the execution lifecycle for allowlisted install/login jobs
+with redacted logs, risk flags, persistence across restarts, watchdog
+timeouts, and an SSE lifecycle stream; doctor verification runs in-process
+inside the daemon (no PATH dependency). UI surfaces must not invent harness
 setup commands or accept inline secrets.
 
-Run detail responses include `primaryOutput`, `timeline`, and `budget`
-projections. Web/tool evidence is projected from the engine-owned
-`final/telemetry.yaml`. Clients should use those fields first instead of
-guessing artifact paths or displaying fake zero spend/quota values.
+Run events carry a monotonic per-run `seq`; `GET /runs/:id` returns the
+snapshot plus `lastSeq`, so clients subscribe to `GET /runs/:id/events` with
+`Last-Event-ID` for gap-free live state (snapshot-then-subscribe). Run detail
+responses include `primaryOutput`, `timeline`, `budget`, `pendingInteractions`,
+and `summary.route` projections. Web/tool evidence is projected from the
+engine-owned `final/telemetry.yaml`. Clients should use those fields first
+instead of guessing artifact paths or displaying fake zero spend/quota values.
 `POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
-Live input forwarding is not part of the surface; the former `/runs/:id/input`
-stub was removed in v0.7.0.
+Interactive harnesses (Claude Code) can ask typed questions mid-run: the run
+parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
+interactions endpoint, and unanswered questions decline benignly after the
+configurable timeout.
 
 Start it:
 

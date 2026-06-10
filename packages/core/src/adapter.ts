@@ -3,6 +3,8 @@ import type {
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
+  InteractionAnswerSet,
+  InteractionRequest,
 } from "@claudexor/schema";
 
 export interface DoctorSpec {
@@ -37,3 +39,27 @@ export interface HarnessAdapter {
 
 /** A registry of available adapters keyed by harness id. */
 export type AdapterRegistry = Map<string, HarnessAdapter>;
+
+/**
+ * Imperative answer channel for interactive harness sessions.
+ *
+ * The adapter calls `request()` when its native session raises a user
+ * question (e.g. Claude's AskUserQuestion via the stream-json control
+ * protocol) and BLOCKS that tool until the promise resolves:
+ * - resolved with answers -> the adapter delivers them into the live session;
+ * - resolved with null (timeout / decline / no listener) -> the adapter
+ *   declines benignly and the model continues with assumptions.
+ *
+ * The channel is smuggled through `spec.extra` (duck-typed, same pattern as
+ * the abort signal) because HarnessRunSpec is a serializable schema shape.
+ */
+export interface InteractionChannel {
+  request(req: InteractionRequest): Promise<InteractionAnswerSet | null>;
+}
+
+export function interactionChannelFromSpec(spec: HarnessRunSpec): InteractionChannel | undefined {
+  const channel = spec.extra?.["interactionChannel"];
+  if (!channel || typeof channel !== "object") return undefined;
+  const candidate = channel as Partial<InteractionChannel>;
+  return typeof candidate.request === "function" ? (channel as InteractionChannel) : undefined;
+}

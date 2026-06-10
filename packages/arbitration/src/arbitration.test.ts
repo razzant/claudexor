@@ -118,4 +118,18 @@ describe("arbitrate", () => {
     expect(estimated.decision.budget_summary.spend_usd).toBeCloseTo(0.5);
     expect(estimated.decision.budget_summary.estimated).toBe(true);
   });
+
+  it("labels zero configured tests as n/a, never a vacuous 100%", () => {
+    const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);
+    expect(res.decision.why_winner).toContain("tests=n/a");
+    expect(res.decision.why_winner).not.toContain("tests=100%");
+  });
+
+  it("treats zero tests as zero test evidence in ranking (not a perfect score)", () => {
+    const withTests = candidate("A", { testsPassed: 10, testsTotal: 10 });
+    const noTests = candidate("B", { testsPassed: 0, testsTotal: 0 });
+    const res = arbitrate([noTests, withTests]);
+    expect(res.ranking[0]?.label).toBe("A");
+    expect(res.decision.why_winner).toContain("tests=100%");
+  });
 });

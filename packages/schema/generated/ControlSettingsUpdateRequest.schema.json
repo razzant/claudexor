@@ -18,6 +18,11 @@
             "conserve-codex"
           ]
         },
+        "interactionTimeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": true,
+          "minimum": 0
+        },
         "routingPolicy": {
           "type": "string",
           "enum": [

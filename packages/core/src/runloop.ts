@@ -1,5 +1,5 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
-import { spawnProcess } from "./proc.js";
+import { spawnProcess, type ChildStdin } from "./proc.js";
 
 /**
  * Shared CLI adapter run loop.
@@ -47,6 +47,20 @@ export interface CliRunLoopOptions {
   label?: string;
   /** Redactor applied to stderr detail before it is surfaced. */
   redact?: (text: string) => string;
+  /**
+   * Bidirectional session support (e.g. Claude's stream-json control
+   * protocol). When set, stdin stays open, `initialStdin` is written at spawn,
+   * frames matching `matches` are routed to `handle` (an async generator that
+   * may yield normalized events and write control responses via the stdin
+   * handle), and stdin is closed when `closeStdinOn` matches a frame —
+   * the cooperative end of a streaming session.
+   */
+  session?: {
+    initialStdin?: string;
+    matches: (obj: unknown) => boolean;
+    handle: (obj: unknown, io: ChildStdin) => AsyncGenerator<HarnessEvent>;
+    closeStdinOn?: (obj: unknown) => boolean;
+  };
 }
 
 export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
@@ -65,11 +79,23 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
   const stderrTail = (): string =>
     redact(stderrRing.join("\n")).slice(-STDERR_DETAIL_MAX).trim();
 
+  // Box the stdin handle: it is assigned inside the onSpawn callback, which
+  // TypeScript's control-flow narrowing cannot see through a plain let.
+  const session: { io: ChildStdin | null } = { io: null };
   try {
     for await (const ev of spawnProcess(opts.bin, opts.args, {
       cwd: spec.cwd,
       env: opts.env,
       abortSignal,
+      ...(opts.session
+        ? {
+            keepStdinOpen: true,
+            onSpawn: (io: ChildStdin) => {
+              session.io = io;
+              if (opts.session?.initialStdin) io.write(opts.session.initialStdin);
+            },
+          }
+        : {}),
     })) {
       if (ev.type === "stderr") {
         stderrRing.push(ev.line);
@@ -88,7 +114,20 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
         droppedUnparsedLines += 1;
         continue;
       }
+      if (opts.session && session.io && opts.session.matches(obj)) {
+        for await (const out of opts.session.handle(obj, session.io)) {
+          if (out.type === "error") sawError = true;
+          yield out;
+        }
+        continue;
+      }
       const events = opts.parseEvent(obj, spec.session_id);
+      if (opts.session && session.io && opts.session.closeStdinOn?.(obj)) {
+        // The native terminal frame arrived; close stdin so the streaming
+        // session ends cooperatively instead of waiting for more input.
+        session.io.end();
+        session.io = null;
+      }
       if (events === null) {
         droppedUnrecognizedEvents += 1;
         continue;
@@ -106,6 +145,9 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
       ts: ts(),
       error: `${label} failed to start: ${err instanceof Error ? err.message : String(err)}`,
     };
+  } finally {
+    session.io?.end();
+    session.io = null;
   }
 
   const aborted = abortSignal?.aborted === true;

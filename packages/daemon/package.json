@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   }
 }

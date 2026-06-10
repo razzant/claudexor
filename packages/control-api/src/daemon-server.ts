@@ -3,6 +3,7 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
+import { lastSeqInFile } from "@claudexor/event-log";
 import {
   AccessProfile,
   ControlWebEvidence,
@@ -32,6 +33,10 @@ import {
   ControlBudgetSnapshot,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
+  ControlInteractionAnswerRequest,
+  ControlInteractionAnswerResponse,
+  type ControlPendingInteraction,
+  type ControlRouteInfo,
   DecisionRecord,
   ModeKind,
   Portfolio,
@@ -74,6 +79,12 @@ export interface DaemonControlApiOptions {
   /** SSE comment-ping cadence so quiet phases are distinguishable from dead connections. */
   heartbeatMs?: number;
   runStartTimeoutMs?: number;
+  /**
+   * In-process run-event push source (the daemon's RunEventBus). The events
+   * FILE stays the canonical ordered log: a push only pokes the tailer so SSE
+   * latency drops from poll cadence to immediate, with the poll as fallback.
+   */
+  bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
     harnesses?: () => Promise<unknown>;
     setupHarness?: (input: unknown) => Promise<unknown>;
@@ -89,6 +100,9 @@ export interface DaemonControlApiOptions {
     deleteSecret?: (name: string) => Promise<unknown>;
     specQuestions?: (input: unknown) => Promise<unknown>;
     specFreeze?: (input: unknown) => Promise<unknown>;
+    /** Live waiting_on_user state (daemon InteractionRegistry projections). */
+    pendingInteractions?: (runId: string) => ControlPendingInteraction[];
+    answerInteraction?: (runId: string, interactionId: string, answers: unknown) => { status: string; message?: string };
   };
 }
 
@@ -240,7 +254,7 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
       return this.json(res, 200, {
-        runs: runs.map((r) => this.summarizeRunCached(r)),
+        runs: runs.map((r) => this.summarizeRunLive(r)),
       });
     }
 
@@ -248,7 +262,44 @@ export class DaemonControlApiServer {
     if (method === "GET" && runDetailMatch) {
       const rec = await this.findRun(decodeURIComponent(runDetailMatch[1] as string));
       if (!rec) return this.json(res, 404, { error: "no such run" });
-      return this.json(res, 200, detailFor(rec));
+      return this.json(res, 200, detailFor(rec, this.pendingInteractionsFor(rec)));
+    }
+
+    const interactionAnswerMatch = /^\/runs\/([^/]+)\/interactions\/([^/]+)\/answer$/.exec(path);
+    if (method === "POST" && interactionAnswerMatch) {
+      const rec = await this.findRun(decodeURIComponent(interactionAnswerMatch[1] as string));
+      if (!rec) return this.json(res, 404, { error: "no such run" });
+      const answerService = this.opts.services?.answerInteraction;
+      if (!answerService) return this.json(res, 501, { error: "interaction answers are not supported by this engine build" });
+      let body: ControlInteractionAnswerRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlInteractionAnswerRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      const interactionId = decodeURIComponent(interactionAnswerMatch[2] as string);
+      const answerSet = {
+        interaction_id: interactionId,
+        answers: body.answers.map((a) => ({
+          question_id: a.questionId,
+          selected_labels: a.selectedLabels,
+          free_text: a.freeText,
+        })),
+      };
+      const result = answerService(rec.runId ?? rec.id, interactionId, answerSet);
+      const accepted = result.status === "delivered";
+      return this.json(
+        res,
+        accepted ? 200 : result.status === "not_found" ? 404 : 409,
+        ControlInteractionAnswerResponse.parse({ accepted, status: result.status, message: result.message }),
+      );
+    }
+
+    if (method === "GET" && path === "/events") {
+      return this.streamGlobalEvents(req, res);
     }
 
     const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
@@ -611,6 +662,17 @@ export class DaemonControlApiServer {
     return summary;
   }
 
+  /**
+   * Cached artifact projection + LIVE waiting_on_user overlay. Pending
+   * interactions are in-process daemon state, not an artifact, so they must
+   * never be frozen into the fingerprint cache.
+   */
+  private summarizeRunLive(rec: DaemonRunRecord): ControlRunSummary {
+    const summary = this.summarizeRunCached(rec);
+    const waiting = this.pendingInteractionsFor(rec).length > 0;
+    return summary.waitingOnUser === waiting ? summary : { ...summary, waitingOnUser: waiting };
+  }
+
   private lastEventId(req: IncomingMessage, url: URL): number {
     const rawHeader = req.headers["last-event-id"];
     const headerId = rawHeader !== undefined ? Number(rawHeader) : Number.NaN;
@@ -631,14 +693,16 @@ export class DaemonControlApiServer {
     res.write(": connected\n\n");
     this.sseClients.add(res);
 
-    let lineSeq = 0;
+    let lineNo = 0;
     let offset = 0;
     let carry = "";
     let closed = false;
+    let unsubscribe: (() => void) | undefined;
     const cleanup = () => {
       closed = true;
       clearInterval(timer);
       clearInterval(heartbeat);
+      unsubscribe?.();
       this.sseClients.delete(res);
     };
     // Heartbeat: a quiet harness phase (long tool call, slow model) must not be
@@ -647,40 +711,109 @@ export class DaemonControlApiServer {
       if (!closed) res.write(`: ping ${Date.now()}\n\n`);
     }, this.opts.heartbeatMs ?? 15_000);
     heartbeat.unref?.();
+    let draining = false;
     const writeAvailable = async () => {
-      if (closed || !existsSync(eventsPath)) return;
-      const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);
-      offset = nextOffset;
-      carry = rest;
-      for (const raw of lines) {
-        const seq = ++lineSeq;
-        if (seq <= lastEventId) continue;
-        let type = "run";
-        try {
-          type = String((JSON.parse(raw) as { type?: string }).type ?? "run");
-        } catch {
-          type = "malformed";
+      if (closed || draining || !existsSync(eventsPath)) return;
+      draining = true;
+      try {
+        const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);
+        offset = nextOffset;
+        carry = rest;
+        for (const raw of lines) {
+          lineNo += 1;
+          // Durable cursor: the event's own persisted seq. Legacy lines without
+          // one fall back to their line number (matching EventLog's counter
+          // init), so resume ids stay consistent either way.
+          let seq = lineNo;
+          let type = "run";
+          try {
+            const parsed = JSON.parse(raw) as { type?: string; seq?: number };
+            type = String(parsed.type ?? "run");
+            if (typeof parsed.seq === "number" && Number.isFinite(parsed.seq)) seq = parsed.seq;
+          } catch {
+            type = "malformed";
+          }
+          if (seq <= lastEventId) continue;
+          res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
+          if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
+            res.write("event: end\ndata: {}\n\n");
+            res.end();
+            cleanup();
+            return;
+          }
         }
-        res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
-        if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
+        const latest = await this.opts.daemon.status(rec.id).catch(() => rec);
+        if (TERMINAL_STATES.has(latest.state)) {
           res.write("event: end\ndata: {}\n\n");
           res.end();
           cleanup();
-          return;
         }
-      }
-      const latest = await this.opts.daemon.status(rec.id).catch(() => rec);
-      if (TERMINAL_STATES.has(latest.state)) {
-        res.write("event: end\ndata: {}\n\n");
-        res.end();
-        cleanup();
+      } finally {
+        draining = false;
       }
     };
+    // Push: a bus event for this run pokes the tailer immediately; the file
+    // remains the single ordered source so push and poll can never disagree.
+    unsubscribe = this.opts.bus?.subscribe((event) => {
+      if (!closed && event.run_id === (rec.runId ?? rec.id)) void writeAvailable();
+    });
     const timer = setInterval(() => void writeAvailable(), this.opts.pollMs ?? 250);
     timer.unref?.();
     req.on("close", cleanup);
     res.on("close", cleanup);
     await writeAvailable();
+  }
+
+  /**
+   * Global live-only event multiplex (GET /events): every run's events as they
+   * happen, tagged with run_id, no replay. Documented asymmetry vs the per-run
+   * stream: reconnecting clients re-snapshot /runs first, then resume per-run
+   * streams (which DO replay via persisted seq) where they need gap-free state.
+   */
+  private streamGlobalEvents(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.opts.bus) {
+      this.json(res, 501, { error: "global event stream requires the daemon event bus" });
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+    res.write(": connected\n\n");
+    this.sseClients.add(res);
+    let closed = false;
+    const heartbeat = setInterval(() => {
+      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
+    }, this.opts.heartbeatMs ?? 15_000);
+    heartbeat.unref?.();
+    const unsubscribe = this.opts.bus.subscribe((event) => {
+      if (closed) return;
+      try {
+        const raw = JSON.stringify(event);
+        const type = String((event as { type?: string }).type ?? "run");
+        const seq = (event as { seq?: number }).seq;
+        res.write(`${typeof seq === "number" ? `id: ${seq}\n` : ""}event: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
+      } catch {
+        /* one bad event must not kill the stream */
+      }
+    });
+    const cleanup = () => {
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      this.sseClients.delete(res);
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
+  }
+
+  private pendingInteractionsFor(rec: DaemonRunRecord): ControlPendingInteraction[] {
+    try {
+      return this.opts.services?.pendingInteractions?.(rec.runId ?? rec.id) ?? [];
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -737,6 +870,12 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
     const repoRoot = parsed.scope.root.trim();
     const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
     if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
+    // Existence is the only filesystem precondition here: a NON-GIT folder is
+    // fine — write modes initialize the git boundary themselves (announced via
+    // the project.git.initialized run event).
+    if (!existsSync(repoRoot) || !lstatSync(repoRoot).isDirectory()) {
+      throw Object.assign(new Error(`project root does not exist or is not a directory: ${repoRoot}`), { status: 400 });
+    }
     return { ...parsed, scope: { kind: "project", root: repoRoot, context: parsed.scope.context ?? "auto" } };
   }
   if (mode === "ask") {
@@ -791,15 +930,19 @@ function readFailure(rec: DaemonRunRecord): RunFailure | null {
 function appendRunAuditEvent(rec: DaemonRunRecord, type: string, payload: Record<string, unknown>): void {
   if (!rec.runDir) return;
   try {
+    const eventsPath = join(rec.runDir, "events.jsonl");
     const redactedPayload = JSON.parse(redactSecrets(JSON.stringify(payload))) as Record<string, unknown>;
     const event = RunEvent.parse({
+      // Continue the run's monotonic sequence: audit events share the same
+      // durable cursor space as orchestrator events (SSE resume correctness).
+      seq: lastSeqInFile(eventsPath) + 1,
       ts: nowIso(),
       run_id: rec.runId ?? rec.id,
       task_id: rec.taskId ?? "unknown",
       type,
       payload: redactedPayload,
     });
-    appendFileSync(join(rec.runDir, "events.jsonl"), JSON.stringify(event) + "\n", { mode: 0o600 });
+    appendFileSync(eventsPath, JSON.stringify(event) + "\n", { mode: 0o600 });
   } catch {
     /* audit append must not change control behavior */
   }
@@ -825,6 +968,13 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("final/telemetry.yaml"),
     mtime("final/failure.yaml"),
     mtime("final/summary.md"),
+    // Primary outputs feed outputReadyState; a summary cached before the
+    // answer/plan/report/patch landed must invalidate when it does.
+    mtime("final/answer.md"),
+    mtime("final/plan.md"),
+    mtime("final/explore.md"),
+    mtime("final/report.md"),
+    mtime("final/patch.diff"),
   ].join("|");
 }
 
@@ -875,6 +1025,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     webEvidence,
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(rec),
+    route: controlRoute(telemetry, p),
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
     specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
     specHash: typeof p["specHash"] === "string" ? p["specHash"] : undefined,
@@ -914,11 +1065,35 @@ function controlWebEvidence(telemetry: RunTelemetry | null, task: TaskContract |
   });
 }
 
-function detailFor(rec: DaemonRunRecord): ControlRunDetail {
+/**
+ * Run-level route evidence: observed model comes ONLY from telemetry (the
+ * harness stream's own disclosure); the requested model from run params.
+ * `verified` is never inferred from the request alone.
+ */
+function controlRoute(telemetry: RunTelemetry | null, p: Record<string, unknown>): ControlRouteInfo | null {
+  if (!telemetry) return null;
+  const finalAttempt = telemetry.final_attempt_id
+    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
+    : undefined;
+  const observed = finalAttempt?.observed_model ?? telemetry.attempts.find((a) => a.observed_model)?.observed_model ?? null;
+  const harnessId = finalAttempt?.harness_id ?? telemetry.attempts.find((a) => a.observed_model)?.harness_id ?? null;
+  return {
+    requestedModel: typeof p["model"] === "string" ? p["model"] : null,
+    observedModel: observed,
+    harnessId,
+    verified: observed !== null,
+  };
+}
+
+function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInteraction[] = []): ControlRunDetail {
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  const summary = summarizeRun(rec);
   return ControlRunDetail.parse({
-    summary: summarizeRun(rec),
+    summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
+    // Snapshot fence: every event with seq <= lastSeq is reflected above, so a
+    // client subscribing from this cursor gets gap-free, duplicate-free state.
+    lastSeq: rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0,
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     primaryOutput: primaryOutput(rec),
     timeline: timelineEvents(rec),
@@ -927,6 +1102,7 @@ function detailFor(rec: DaemonRunRecord): ControlRunDetail {
     decision,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     reviewFindings: readReviewFindings(rec),
+    pendingInteractions,
     failure,
   });
 }

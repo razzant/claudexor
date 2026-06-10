@@ -69,6 +69,12 @@ export type TrustConfig = z.infer<typeof TrustConfig>;
 export const GlobalConfig = z.object({
   version: z.literal(1).default(1),
   default_portfolio: Portfolio.default("subscription-first"),
+  /**
+   * How long an interactive run waits for the user's answer to a harness
+   * question (interaction.requested) before delivering a benign decline and
+   * letting the model continue with assumptions.
+   */
+  interaction_timeout_ms: z.number().int().positive().default(900_000),
   routing: z
     .object({
       default_policy: RoutingPolicy.default("auto"),

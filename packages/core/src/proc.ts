@@ -12,6 +12,22 @@ export interface SpawnOptions {
   cancelKillDelayMs?: number;
   /** Runtime abort signal for active daemon/orchestrator cancellation. */
   abortSignal?: AbortSignal;
+  /**
+   * Keep stdin open after writing `input` (bidirectional protocols such as
+   * Claude's stream-json control channel). The caller receives a writer via
+   * `onSpawn` and OWNS closing it; the child usually exits on stdin EOF.
+   */
+  keepStdinOpen?: boolean;
+  /** Called once after spawn with a live stdin handle (see keepStdinOpen). */
+  onSpawn?: (io: ChildStdin) => void;
+}
+
+/** Minimal live stdin handle for bidirectional CLI protocols. */
+export interface ChildStdin {
+  /** Write one line/frame; errors are swallowed (exit carries the outcome). */
+  write(data: string): void;
+  /** Close stdin (EOF) — the cooperative way to end a streaming session. */
+  end(): void;
 }
 
 export type ProcEvent =
@@ -47,7 +63,26 @@ export async function* spawnProcess(
   if (opts.input !== undefined) {
     child.stdin.write(opts.input);
   }
-  child.stdin.end();
+  if (opts.keepStdinOpen) {
+    opts.onSpawn?.({
+      write: (data: string) => {
+        try {
+          child.stdin.write(data);
+        } catch {
+          /* child already gone; exit event carries the outcome */
+        }
+      },
+      end: () => {
+        try {
+          child.stdin.end();
+        } catch {
+          /* already closed */
+        }
+      },
+    });
+  } else {
+    child.stdin.end();
+  }
 
   const queue: ProcEvent[] = [];
   let wake: (() => void) | null = null;

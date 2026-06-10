@@ -175,6 +175,9 @@ importers:
       '@claudexor/delivery':
         specifier: workspace:*
         version: link:../delivery
+      '@claudexor/event-log':
+        specifier: workspace:*
+        version: link:../event-log
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
@@ -193,6 +196,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@claudexor/schema':
+        specifier: workspace:*
+        version: link:../schema
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util

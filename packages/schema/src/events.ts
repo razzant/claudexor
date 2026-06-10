@@ -5,6 +5,7 @@ export const RunEventType = z.enum([
   "run.created",
   "task.contract.created",
   "context.pack.created",
+  "project.git.initialized",
   "budget.lease.created",
   "budget.observation",
   "policy.web.upgraded",
@@ -14,6 +15,9 @@ export const RunEventType = z.enum([
   "route.fallback.started",
   "route.fallback.completed",
   "route.fallback.exhausted",
+  "interaction.requested",
+  "interaction.answered",
+  "interaction.timeout",
   "output.ready",
   "gate.started",
   "gate.completed",
@@ -38,6 +42,12 @@ export type RunEventType = z.infer<typeof RunEventType>;
 
 /** Append-only event record (one JSONL line). */
 export const RunEvent = z.object({
+  /**
+   * Monotonic per-run sequence stamped by the EventLog at emit time. It is the
+   * durable SSE cursor (Last-Event-ID) and the snapshot fence (detail.lastSeq).
+   * Optional only for pre-v0.8.0 artifacts; every new emit carries it.
+   */
+  seq: z.number().int().positive().optional(),
   ts: z.string(),
   run_id: Id,
   task_id: Id,

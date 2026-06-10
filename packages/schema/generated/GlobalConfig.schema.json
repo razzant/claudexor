@@ -24,6 +24,12 @@
           ],
           "default": "subscription-first"
         },
+        "interaction_timeout_ms": {
+          "type": "integer",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "default": 900000
+        },
         "routing": {
           "type": "object",
           "properties": {

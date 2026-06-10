@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
+import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
+import { handleControlRequestFrame, initialUserMessageFrame, isControlRequestFrame, isResultFrame } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = [
@@ -142,12 +143,14 @@ export function createClaudeAdapter(): HarnessAdapter {
           web_policy: "tools",
           max_turns: true,
           tool_lists: true,
+          interactive: true,
           quota_signal: "observed",
           usage_signal: "exact",
         },
         capability_profile: {
           execution_surfaces: [
             { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
+            { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true },
           ],
           session: { resume_latest: false, resume_by_id: false },
           output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
@@ -207,8 +210,12 @@ export function createClaudeAdapter(): HarnessAdapter {
 /** Claude's native names for web-permissioned tools. This knowledge lives ONLY in the adapter. */
 const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
 
-export function claudeArgsForSpec(spec: HarnessRunSpec): string[] {
-  const args = ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
+export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false): string[] {
+  // Interactive sessions deliver the prompt as a stream-json user message on
+  // stdin (the control protocol's transport); one-shot runs keep the prompt arg.
+  const args = interactive
+    ? ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", ...permissionArgs(spec.access)]
+    : ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   if (spec.effort_hint) args.push("--effort", spec.effort_hint);
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
@@ -245,7 +252,9 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
 }
 
 async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-  const args = claudeArgsForSpec(spec);
+  const channel: InteractionChannel | undefined = interactionChannelFromSpec(spec);
+  const interactive = channel !== undefined;
+  const args = claudeArgsForSpec(spec, interactive);
   const nativeAuthed = await authStatusOk();
   const key = anthropicApiKey();
   const scopedConfigNeedsAuth = Boolean(spec.env?.["CLAUDE_CONFIG_DIR"]);
@@ -271,5 +280,15 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     label: "claude",
     redact: redactSecrets,
     parseEvent: createClaudeParser(),
+    ...(interactive
+      ? {
+          session: {
+            initialStdin: initialUserMessageFrame(spec.prompt),
+            matches: isControlRequestFrame,
+            handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
+            closeStdinOn: isResultFrame,
+          },
+        }
+      : {}),
   });
 }
