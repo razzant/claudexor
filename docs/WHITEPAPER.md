@@ -54,9 +54,13 @@ separate from shell/network sandboxing.
 - `cached`: request cached web context where supported.
 - `live`: request live web search where supported.
 
-Web policy is a harness capability (`native | tools | none` in the manifest).
-A harness that cannot enforce the requested policy is excluded from routing;
-explicitly selecting one fails loudly instead of silently downgrading. Claude
+Web policy is a harness capability (`native | tools | uncontrolled | none` in
+the manifest). `uncontrolled` marks harnesses that can reach the web but expose
+no enforceable switch — they are excluded from both `off` (cannot be enforced)
+and web-required runs (cannot produce evidence); `none` marks harnesses with no
+web at all, which trivially satisfy `off`. A harness that cannot enforce the
+requested policy is excluded from routing; explicitly selecting one fails
+loudly instead of silently downgrading. Claude
 Code exposes permissioned `WebSearch` and `WebFetch` tools and native
 allow/deny controls such as `--allowedTools` and `--disallowedTools` — it has
 no cached web index, so a `cached` request executes as `live` and that upgrade

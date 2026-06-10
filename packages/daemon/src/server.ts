@@ -239,7 +239,10 @@ export class DaemonServer {
     const saved = readJsonSafe<JobRecord[]>(this.opts.persistPath);
     if (!saved) return;
     for (const rec of saved) {
-      if (rec.state === "running" || rec.state === "queued" || rec.state === "blocked") rec.state = "interrupted";
+      // Only genuinely in-flight states become interrupted on restart;
+      // `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web policy) that the
+      // review queue must keep across daemon restarts.
+      if (rec.state === "running" || rec.state === "queued") rec.state = "interrupted";
       this.records.set(rec.id, rec);
     }
   }

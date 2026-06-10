@@ -55,6 +55,8 @@ export const AttemptTelemetryRecord = z.object({
   tool_errors: z.array(ToolErrorRecord).default([]),
   tool_errors_total: z.number().int().nonnegative().default(0),
   unrecovered_tool_errors: z.number().int().nonnegative().default(0),
+  /** tool_result events that arrived WITHOUT a status field (never treated as ok). */
+  statusless_tool_results: z.number().int().nonnegative().default(0),
   /** Native lines/events the adapter could not parse or did not recognize (never silently zero). */
   dropped_events: z.number().int().nonnegative().default(0),
 });

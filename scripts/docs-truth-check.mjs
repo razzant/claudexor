@@ -23,16 +23,11 @@ const failures = [];
 
 function implementedEndpoints(src) {
   const out = new Set();
-  // Literal routes: method === "GET" && path === "/runs"
+  // Literal routes: method === "GET" && path === "/runs". Multi-method routes
+  // are implemented as separate `if` blocks in daemon-server, so this single
+  // pattern is the complete literal-route extractor.
   const litRe = /method === "(GET|POST|DELETE|PUT|PATCH)"\s*&&\s*path === "([^"]+)"/g;
   for (let m = litRe.exec(src); m; m = litRe.exec(src)) out.add(`${m[1]} ${m[2]}`);
-  // Literal routes with parenthesized method alternatives:
-  // (method === "GET" || method === "POST") && path === "/settings"
-  const multiRe = /\(method === "(\w+)"\s*\|\|\s*method === "(\w+)"\)\s*&&\s*path === "([^"]+)"/g;
-  for (let m = multiRe.exec(src); m; m = multiRe.exec(src)) {
-    out.add(`${m[1]} ${m[3]}`);
-    out.add(`${m[2]} ${m[3]}`);
-  }
   // Regex routes: const xMatch = /^\/runs\/([^/]+)\/apply$/ ... method === "POST" && xMatch
   const regexDecl = /const (\w+Match) = (\/\^[^;]+\/)\.exec\(path\);\s*\n\s*if \(method === "(\w+)" && \1\)/g;
   for (let m = regexDecl.exec(src); m; m = regexDecl.exec(src)) {

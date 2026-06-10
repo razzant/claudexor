@@ -98,7 +98,9 @@ export function createCursorAdapter(): HarnessAdapter {
           auth: { supported_sources: ["native_session", "api_key_env", "api_key_flag"], preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["cursor-agent", "status"], env_vars: ["CURSOR_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: false, mechanism: "cursor-agent flags (feature-probed)" },
         },
-        auth_modes: nativeAuthed ? ["local_session", "api_key"] : apiKey ? ["api_key"] : [],
+        // Source AVAILABILITY truth: each mode is listed only when its source
+        // actually exists right now (a native session does not imply a key).
+        auth_modes: [...(nativeAuthed ? ["local_session" as const] : []), ...(apiKey ? ["api_key" as const] : [])],
         access_profiles_supported: ["readonly", "workspace_write", "inherit_native"],
         models: { discovery: "available" },
       });

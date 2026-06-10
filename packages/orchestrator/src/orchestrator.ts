@@ -386,7 +386,6 @@ export class Orchestrator {
       }
     }
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
-    const webRequired = policy === "cached" || policy === "live";
     const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
     for (const id of ids) {
@@ -410,6 +409,13 @@ export class Orchestrator {
       const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? this.config(input.repoRoot).trust.access_default;
       const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
       const webSupport = manifest.capabilities.web_policy;
+      // The PER-ROUTE policy is what this harness will actually execute: a
+      // per-harness `web` default upgrades a run-level `auto` (routeSpecKnobs
+      // applies the same rule when building the spec), so the capability gate
+      // must judge that effective policy — not admit a route whose configured
+      // default it could never honor.
+      const routePolicy = policy === "auto" && cfgEntry?.web && cfgEntry.web !== "auto" ? cfgEntry.web : policy;
+      const routeWebRequired = routePolicy === "cached" || routePolicy === "live";
       // Web policy is a capability: `off` needs an enforceable off state and a
       // web-required run needs a route that can produce web evidence.
       // `none` (no web at ALL) trivially satisfies `off`; `uncontrolled` (web
@@ -417,10 +423,10 @@ export class Orchestrator {
       // the policy is excluded — or, when the user explicitly selected it, the
       // run fails loudly instead of silently downgrading.
       const webIncompatible =
-        (policy === "off" && webSupport === "uncontrolled") ||
-        (webRequired && (webSupport === "none" || webSupport === "uncontrolled"));
+        (routePolicy === "off" && webSupport === "uncontrolled") ||
+        (routeWebRequired && (webSupport === "none" || webSupport === "uncontrolled"));
       if (webIncompatible) {
-        const why = `${id} cannot enforce web policy '${policy}' (manifest web_policy=${webSupport})`;
+        const why = `${id} cannot enforce web policy '${routePolicy}' (manifest web_policy=${webSupport})`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;
@@ -626,7 +632,7 @@ export class Orchestrator {
     // explicit allow in ~/.claudexor trust settings — loud error, no downgrade.
     if (requestedAccess === "full" && !resolvedCfg.trust.allow_full_access) {
       throw new Error(
-        "access profile 'full' requires allow_full_access=true in the user-level trust config (~/.claudexor/config.yaml trust section); refusing to run unsandboxed",
+        "access profile 'full' requires allow_full_access: true in the user-level trust file for this repo (~/.claudexor/trust/<repo-hash>.yaml); refusing to run unsandboxed",
       );
     }
     // Effective access is COMPUTED by the engine, never echoed from a client:
@@ -2684,6 +2690,7 @@ function attemptTelemetryRecord(attemptId: string, harnessId: string, t: Attempt
     })),
     tool_errors_total: t.toolErrors.length,
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
+    statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
   };
 }

@@ -90,8 +90,8 @@ until Current Project is selected.
 Run detail uses the server-projected `primaryOutput` first, then artifact
 fallbacks. Active runs default to Timeline, completed runs to Outcome, and
 failures without output to Diagnostics. Cancel/interrupt uses the server control
-endpoint; live input is disabled in v0.6.0 rather than inferred from native
-harness capabilities that are not wired to active runs.
+endpoint; live input forwarding is not part of the control surface (the former
+input stub was removed in v0.7.0), so the app shows no input UI for active runs.
 
 Sample data is off by default behind Settings. Surfaces the engine does not
 fully expose yet use honest empty states instead of pretending to be live.

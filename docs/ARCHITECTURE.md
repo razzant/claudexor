@@ -122,11 +122,16 @@ records `requested_profile` and `effective_profile` under `access`, plus
 `external_context.policy` (`off | auto | cached | live`), `web_required`,
 `effective_mode`, and `tool_permission_policy`. CLI passes `--web` into the same
 contract that Control API and macOS use. Web policy is a manifest capability
-(`web_policy: native | tools | none`): harnesses that cannot enforce the
-requested policy are excluded from the pool, and explicitly selecting one fails
-loudly. Per-route upgrades (Claude has no cached web index, so `cached` runs as
-`live`) are disclosed via `policy.web.upgraded` events and recorded in
-telemetry. Adapters map the policy to native surface controls: Claude Code gets
+(`web_policy: native | tools | uncontrolled | none`): `native` is a config
+surface (codex), `tools` is permissioned tools (claude), `uncontrolled` means
+the harness can reach the web but exposes no enforceable switch (cursor,
+opencode today) and is excluded from BOTH `off` and web-required runs, while
+`none` means no web at all — trivially compatible with `off`, excluded from
+web-required runs. Harnesses that cannot enforce the effective per-route policy
+(including a per-harness `web` default upgrading a run-level `auto`) are
+excluded from the pool, and explicitly selecting one fails loudly. Per-route
+upgrades (Claude has no cached web index, so `cached` runs as `live`) are
+disclosed via `policy.web.upgraded` events and recorded in telemetry. Adapters map the policy to native surface controls: Claude Code gets
 explicit `WebSearch`/`WebFetch` allow/deny arguments, while Codex gets
 `web_search` config. Command/network sandboxing remains separate.
 

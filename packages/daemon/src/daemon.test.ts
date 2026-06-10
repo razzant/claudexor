@@ -143,6 +143,46 @@ describe("daemon", () => {
     }
   }, 20000);
 
+  it("keeps terminal blocked state across restart (only in-flight states interrupt)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-blocked";
+    const mk = () =>
+      new DaemonServer({
+        socketPath,
+        token,
+        persistPath,
+        runner: async () => ({ status: "blocked", summary: "NEEDS_HUMAN findings" }),
+      });
+    const a = mk();
+    await a.start();
+    let jobId = "";
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const job = await client.enqueue({ x: 1 });
+      jobId = job.id;
+      let st = await client.status(job.id);
+      for (let i = 0; i < 100 && st.state !== "blocked"; i++) {
+        await sleep(10);
+        st = await client.status(job.id);
+      }
+      expect(st.state).toBe("blocked");
+    } finally {
+      await a.stop();
+    }
+    const b = mk();
+    await b.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const list = (await client.list()) as JobRecord[];
+      // blocked is a TERMINAL review-queue state; a restart must not rewrite it.
+      expect(list.some((r) => r.id === jobId && r.state === "blocked")).toBe(true);
+    } finally {
+      await b.stop();
+    }
+  }, 20000);
+
   it("persists runId at run start and never writes the raw result to disk", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");

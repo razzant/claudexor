@@ -427,7 +427,9 @@ struct SettingsScreen: View {
                 }
                 settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
-                    KeyValueRow(key: "Version", value: "v0.6.0 beta")
+                    // Single source: the bundle version stamped at packaging time
+                    // (a hardcoded string here shipped stale in the past).
+                    KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev") beta")
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Solid grid queue; apply/check server endpoints only")
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")

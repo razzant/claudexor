@@ -29,6 +29,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
 
 const TRIAD_MODELS = ["openai/gpt-5.5", "google/gemini-3.5-flash", "anthropic/claude-opus-4.8"];
 const SCOPE_MODEL = "openai/gpt-5.5";
@@ -422,7 +423,13 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
 
   const triadPrompt = buildTriadPrompt(base);
-  writeFileSync(join(outDir, "triad-prompt.md"), triadPrompt);
+  // Fail BEFORE remote submission if the evidence contains a token-like value:
+  // a leaked secret must not reach OpenRouter or the persisted artifacts.
+  if (containsSecretLikeToken(triadPrompt)) {
+    console.error("ABORT: review evidence contains a secret-like token; scrub the diff/files first.");
+    process.exit(1);
+  }
+  writeFileSync(join(outDir, "triad-prompt.md"), redactSecrets(triadPrompt));
   console.error(`triad prompt: ${triadPrompt.length} chars; models: ${TRIAD_MODELS.join(", ")}`);
 
   // Reviewer progress telemetry (CHECKLISTS Review Protocol): a sequential or
@@ -436,7 +443,7 @@ async function main() {
   const findings = [];
   for (const [idx, result] of triadResults.entries()) {
     const slug = result.model.replace(/[^a-z0-9.-]+/gi, "_");
-    writeFileSync(join(outDir, `triad-${slug}.raw.txt`), result.raw ?? "");
+    writeFileSync(join(outDir, `triad-${slug}.raw.txt`), redactSecrets(result.raw ?? ""));
     let status = result.status;
     let parsed = [];
     if (status === "responded") {
@@ -476,7 +483,7 @@ async function main() {
   let scope = null;
   if (!arg("skip-scope")) {
     const scopePrompt = buildScopePrompt(base);
-    writeFileSync(join(outDir, "scope-prompt.md"), scopePrompt);
+    writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
     console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
     progress({ ts: new Date().toISOString(), type: "reviewer.started", model: SCOPE_MODEL, role: "scope" });
     const scopeResult = await callModel(SCOPE_MODEL, scopePrompt);
@@ -487,7 +494,7 @@ async function main() {
       role: "scope",
       duration_ms: scopeResult.ms,
     });
-    writeFileSync(join(outDir, "scope.raw.txt"), scopeResult.raw ?? "");
+    writeFileSync(join(outDir, "scope.raw.txt"), redactSecrets(scopeResult.raw ?? ""));
     let scopeStatus = scopeResult.status;
     let scopeFindings = [];
     if (scopeStatus === "responded") {
@@ -529,7 +536,7 @@ async function main() {
     ...rows,
     "",
   ].join("\n");
-  writeFileSync(join(outDir, "summary.md"), table);
+  writeFileSync(join(outDir, "summary.md"), redactSecrets(table));
   console.log(table);
 
   if (!quorumMet) {

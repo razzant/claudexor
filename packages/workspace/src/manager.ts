@@ -1,5 +1,5 @@
 import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { runCapture, WorkspaceError } from "@claudexor/core";
@@ -59,7 +59,7 @@ export class WorkspaceManager {
       }
     }
     const base = join(this.workspacesDir(), taskId, attemptId);
-    if (!base.startsWith(this.workspacesDir() + "/")) {
+    if (!base.startsWith(this.workspacesDir() + sep)) {
       throw new WorkspaceError(`envelope base escapes the workspaces dir: ${base}`);
     }
     return base;

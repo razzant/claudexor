@@ -201,6 +201,11 @@
                 "minimum": 0,
                 "default": 0
               },
+              "statusless_tool_results": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
               "dropped_events": {
                 "type": "integer",
                 "minimum": 0,
