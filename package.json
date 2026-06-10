@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.5.2",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "build": "turbo run build",
@@ -20,7 +20,7 @@
     "format:check": "prettier --check .",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release:verify:node": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && test -z \"$(git ls-files --others --exclude-standard packages/schema/generated)\" && pnpm build",
+    "release:verify:node": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && test -z \"$(git ls-files --others --exclude-standard packages/schema/generated)\" && pnpm docs:check && pnpm knip && pnpm build",
     "release:verify:swift": "(cd apps/macos/ClaudexorKit && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test) && (cd apps/macos/ClaudexorApp && PATH=\"$HOME/.swiftly/bin:$PATH\" swift build)",
     "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudex/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
     "release:verify": "pnpm release:verify:node && pnpm release:verify:swift && pnpm release:verify:app",

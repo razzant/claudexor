@@ -121,8 +121,14 @@ function applyHarnessSettingsPatches(
   patches: ControlSettingsUpdateRequest["harnesses"],
 ): GlobalConfig["harnesses"] {
   if (!patches) return current;
+  // FAIL LOUDLY on unknown harness ids: a typo ('codexx') must never be
+  // silently persisted as a new config entry nothing will ever read.
+  const knownIds = new Set(buildRegistry().keys());
   const next = { ...current };
   for (const [id, patch] of Object.entries(patches)) {
+    if (!knownIds.has(id)) {
+      throw Object.assign(new Error(`unknown harness id '${id}' (expected one of: ${[...knownIds].sort().join(", ")})`), { status: 400 });
+    }
     const base = next[id] ?? GlobalConfig.shape.harnesses.removeDefault().valueSchema.parse({});
     next[id] = {
       ...base,

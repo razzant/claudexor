@@ -646,17 +646,19 @@ export class Orchestrator {
       });
     const readOnlyMode = mode === "ask" || mode === "explore" || mode === "plan" || mode === "readonly_audit";
     const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
+    // Effective access is COMPUTED by the engine, never echoed from a client:
+    // read-only modes clamp to readonly regardless of the request.
+    const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
     // TrustConfig is USER-LEVEL only (versioned repo config must never
     // self-grant sensitive powers): unsandboxed full access requires an
     // explicit allow in ~/.claudexor trust settings — loud error, no downgrade.
-    if (requestedAccess === "full" && !resolvedCfg.trust.allow_full_access) {
+    // The gate applies to the EFFECTIVE profile: a read-only run clamped to
+    // readonly never runs unsandboxed and needs no trust allow.
+    if (effectiveAccess === "full" && !resolvedCfg.trust.allow_full_access) {
       throw new Error(
         "access profile 'full' requires allow_full_access: true in the user-level trust file for this repo (~/.claudexor/trust/<repo-hash>.yaml); refusing to run unsandboxed",
       );
     }
-    // Effective access is COMPUTED by the engine, never echoed from a client:
-    // read-only modes clamp to readonly regardless of the request.
-    const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
     const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";
     return TaskContractSchema.parse({
       schema_version: SCHEMA_VERSION,
@@ -2131,6 +2133,11 @@ export class Orchestrator {
       ambiguities.length > 0 ? ambiguities.map((a) => `- ${a.claim}`).join("\n") : "- (none surfaced by plan review; the live user interview is the interactive layer)",
     ].join("\n");
     store.writeText(join(paths.finalDir, "plan.md"), specPack + "\n");
+    // Canonical summary artifact (parity with every other mode's final/ layout).
+    store.writeText(
+      join(paths.finalDir, "summary.md"),
+      `# Run ${runId} (plan)\n\n- Status: success\n- Planners: ${plans.length}/${planAttempts.length} succeeded\n- Plan: final/plan.md\n- Open questions: ${ambiguities.length}\n${failedPlanners.length > 0 ? `- Omissions: ${failedPlanners.map((p) => `${p.harnessId} ${p.status}`).join(", ")}\n` : ""}`,
+    );
     this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, planAttempts.find((p) => p.status === "success")?.attemptId ?? null);
     log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
     log.emit("run.completed", { status: "success" });
