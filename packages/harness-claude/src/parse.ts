@@ -89,6 +89,11 @@ function parseClaudeEventStateful(
         if (EDIT_TOOLS.has(name)) {
           const path = input.file_path ?? input.path ?? input.notebook_path;
           out.push({ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name, tool_use_id: block.id } });
+        } else if (name === "ExitPlanMode" && typeof input.plan === "string" && input.plan.trim()) {
+          // The produced plan rides in ExitPlanMode's INPUT; surface it as the
+          // message it is so plan-mode runs keep their work product headless.
+          out.push({ type: "message", session_id: sessionId, ts, text: String(input.plan) });
+          out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool });
         } else {
           out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, payload: { input } });
         }
@@ -107,6 +112,20 @@ function parseClaudeEventStateful(
         const useId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
         const origin = useId ? pendingTools.get(useId) : undefined;
         if (useId) pendingTools.delete(useId);
+        // ExitPlanMode is Claude's plan-approval FLOW CONTROL tool, not a work
+        // tool. Headless stream-json has no approver, so its is_error result is
+        // the documented way plan mode ends — translate it to a benign thinking
+        // event (detail preserved) instead of a blocking error tool_result.
+        if (origin?.name === "ExitPlanMode" && isError) {
+          out.push({
+            type: "thinking",
+            session_id: sessionId,
+            ts,
+            text: `plan mode ended (ExitPlanMode has no headless approver${detail ? `: ${detail}` : ""})`,
+            payload: { tool: "ExitPlanMode", tool_use_id: useId },
+          });
+          continue;
+        }
         const tool: ToolRef = {
           name: origin?.name ?? "tool",
           kind: origin?.kind ?? "other",

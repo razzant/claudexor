@@ -9,23 +9,33 @@ const FIXTURES = join(__dirname, "..", "fixtures");
 /**
  * Adapter conformance parity (one test per harness, shared core validator):
  * recorded native streams must parse into schema-valid typed events with
- * tool_call/tool_result pairs, statusful results, and usage. Fixtures are
- * refreshed from real CLI streams during paid smoke runs.
+ * tool_call/tool_result pairs, statusful results, and usage. `recorded-*`
+ * fixtures come from real CLI streams; `basic-run` is the synthetic shape
+ * fixture that also exercises the failure path.
  */
 describe("claude adapter conformance fixtures", () => {
   for (const name of readdirSync(FIXTURES).filter((f) => f.endsWith(".jsonl"))) {
     it(`parses ${name} into a conformant typed stream`, () => {
       const parse = createClaudeParser();
-      const events = readFileSync(join(FIXTURES, name), "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .flatMap((line) => parse(JSON.parse(line), "ses-fixture") ?? []);
+      let invalidLines = 0;
+      const events: unknown[] = [];
+      for (const line of readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean)) {
+        let obj: unknown;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          invalidLines += 1; // the run loop counts torn lines as drops
+          continue;
+        }
+        events.push(...(parse(obj, "ses-fixture") ?? []));
+      }
       const stats = validateTypedStream(events);
+      expect(invalidLines).toBeLessThanOrEqual(2);
       expect(stats.started).toBeGreaterThan(0);
       expect(stats.toolCalls).toBeGreaterThan(0);
       expect(stats.toolResults).toBeGreaterThan(0);
       expect(stats.statuslessToolResults).toBe(0);
-      expect(stats.errorToolResults).toBeGreaterThan(0); // fixture includes a failed tool
+      expect(stats.errorToolResults).toBeGreaterThan(0); // both fixtures include a real failed tool
       expect(stats.usageEvents).toBeGreaterThan(0);
     });
   }

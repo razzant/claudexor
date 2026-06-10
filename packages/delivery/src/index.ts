@@ -53,7 +53,10 @@ export async function deliver(repoRoot: string, patch: string, opts: DeliverOpti
   if (opts.mode === "artifact_only") {
     return { mode: "artifact_only", applied: false, detail: "patch emitted; working tree untouched" };
   }
-  const before = await git(repoRoot, ["status", "--porcelain"]);
+  // Claudexor's own run/workspace artifacts (`.claudexor/`) are not user
+  // working-tree state; without this exclusion every repo that ever ran
+  // Claudexor would be permanently "dirty" and apply would always refuse.
+  const before = await git(repoRoot, ["status", "--porcelain", "--", ".", ":(exclude).claudexor"]);
   if (before.stdout.trim()) return { mode: opts.mode, applied: false, detail: "working tree is dirty; refusing delivery mutation" };
 
   let branch = opts.branch;

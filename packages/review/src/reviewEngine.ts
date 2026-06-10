@@ -177,6 +177,14 @@ ${runtimePrompt}
       observedSource = out.observedSource;
       reviewSpendUsd += out.costUsd;
       if (out.costEstimated) reviewSpendEstimated = true;
+      // accepted_model_arg semantics: when WE passed an explicit model argument
+      // and the native CLI completed without rejecting it, the accepted argv is
+      // metadata-level route evidence (weaker than stream-observed, stronger
+      // than nothing). Some CLIs (codex exec --json) never echo the model.
+      if (!observedModel && reviewer.requestedModel) {
+        observedModel = reviewer.requestedModel;
+        observedSource = "metadata";
+      }
     } catch (err) {
       reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
       writeParseError(artifact, { error: reviewerError });

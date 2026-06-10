@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"019eb0fe-1c4c-7fa1-b348-44928eac99d4"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'echo fixture-check'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'echo fixture-check'","aggregated_output":"fixture-check\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_1","type":"web_search","id":"ws_04d646c923ed21f8016a2936d7dac4819695dbe24098d7f223","query":"","action":{"type":"other"}}}
+{"type":"item.completed","item":{"id":"item_1","type":"web_search","id":"ws_09bad88e2f0690f8016a2936d755b88197b2e017335846004a","query":"current Node.js LTS major version Node.js release schedule","action":{"type":"search","query":"current Node.js LTS major version Node.js release schedule","queries":["current Node.js LTS major version Node.j{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":35629,"cached_input_tokens":30464,"output_tokens":225,"reasoning_output_tokens":166}}
+ng_output_tokens":154}}

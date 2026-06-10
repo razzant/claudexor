@@ -288,18 +288,24 @@ export class Orchestrator {
     const specs: ReviewerSpec[] = [];
     const seen = new Set<string>();
     const statuses = await this.gateway.statusAll({ cwd });
+    const harnessSettings = this.config(cwd)?.global.harnesses ?? {};
     for (const status of statuses) {
       const m = status.manifest;
       if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
       if (!status.enabledIntents.includes("review")) continue;
       if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
+      // Per-harness settings gate reviewers too (a disabled harness never reviews).
+      if (harnessSettings[status.id]?.enabled === false) continue;
       const adapter = this.deps.registry.get(status.id);
       if (!adapter) continue;
       seen.add(m.provider_family);
       specs.push({
         adapter,
         providerFamily: m.provider_family,
-        requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? null,
+        // Explicit per-family override first, then the user's per-harness
+        // default model: an explicit model request makes the route provable
+        // (accepted_model_arg) on CLIs that never echo their model.
+        requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? harnessSettings[status.id]?.default_model ?? null,
         requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
       });
       if (specs.length >= 2) break;

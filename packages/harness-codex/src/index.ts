@@ -117,7 +117,14 @@ async function smokeIsolatedApiKey(): Promise<{ ok: boolean; detail: string }> {
   } catch (err) {
     return { ok: false, detail: redactCodexDoctorDetail(err instanceof Error ? err.message : String(err)) };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    // codex can still be flushing session files into CODEX_HOME when the smoke
+    // returns. Cleanup is best-effort: a leaked OS tmp dir must never decide
+    // doctor/readiness truth (the smoke verdict is the codex run itself).
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      /* OS tmp reaper owns the leftovers */
+    }
   }
 }
 
@@ -335,6 +342,12 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       },
     });
   } finally {
-    if (tempCodexHome) rmSync(tempCodexHome, { recursive: true, force: true });
+    if (tempCodexHome) {
+      try {
+        rmSync(tempCodexHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch {
+        /* best-effort: OS tmp reaper owns the leftovers */
+      }
+    }
   }
 }
