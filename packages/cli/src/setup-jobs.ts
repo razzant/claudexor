@@ -236,12 +236,18 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         const message = ok
           ? `${job.harness} doctor passed (in-process).`
           : `${job.harness} doctor reports ${degraded ? "degraded" : "unavailable"}: ${reasons || "see the job log for checks"}`;
+        // A cancel may have landed while statusAll() was in flight; a terminal
+        // cancelled state must never be overwritten by a late doctor verdict.
+        const beforeTerminal = jobs.get(jobId);
+        if (!beforeTerminal || beforeTerminal.state !== "running") return;
         const done = update(jobId, { state: ok ? "succeeded" : "failed", finishedAt: nowForDto(), message });
         writeJobLog(done, message);
       } catch (err) {
         const message = `in-process doctor failed: ${err instanceof Error ? err.message : String(err)}`;
         const current = jobs.get(jobId);
-        if (!current || current.state === "cancelled") return;
+        // Same cancel-race guard as the success path: only a still-running
+        // job may take a terminal verdict from this async phase.
+        if (!current || current.state !== "running") return;
         const failed = update(jobId, { state: "failed", finishedAt: nowForDto(), message });
         writeJobLog(failed, message);
       }

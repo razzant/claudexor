@@ -1024,14 +1024,26 @@ export class Orchestrator {
           timeout_at: timeoutAt,
         });
         let timer: NodeJS.Timeout | undefined;
+        let onAbort: (() => void) | undefined;
+        const startedWaiting = Date.now();
         const answers = await Promise.race([
           handler({ runId, taskId, attemptId, harnessId, request, requestedAt, timeoutAt }).catch(() => null),
           new Promise<null>((resolve) => {
             timer = setTimeout(() => resolve(null), timeoutMs);
             timer.unref?.();
           }),
+          // A cancelled run must release the interaction wait IMMEDIATELY —
+          // the abort already kills the harness process, and sitting out the
+          // remaining timeout would park a dead run in waiting_on_user.
+          new Promise<null>((resolve) => {
+            if (!input.signal) return;
+            if (input.signal.aborted) return resolve(null);
+            onAbort = () => resolve(null);
+            input.signal.addEventListener("abort", onAbort, { once: true });
+          }),
         ]);
         if (timer) clearTimeout(timer);
+        if (onAbort) input.signal?.removeEventListener("abort", onAbort);
         if (answers && answers.answers.length > 0) {
           log.emit("interaction.answered", {
             interaction_id: request.interaction_id,
@@ -1045,7 +1057,8 @@ export class Orchestrator {
           interaction_id: request.interaction_id,
           attempt_id: attemptId,
           harness_id: harnessId,
-          waited_ms: timeoutMs,
+          waited_ms: Date.now() - startedWaiting,
+          ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
         });
         return null;
       },

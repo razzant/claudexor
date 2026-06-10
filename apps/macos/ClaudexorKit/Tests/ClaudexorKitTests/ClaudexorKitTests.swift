@@ -55,6 +55,17 @@ import Testing
         #expect(obj?["clearMaxUsdPerDay"] as? Bool == true)
     }
 
+    @Test func settingsUpdateEncodesInteractionTimeout() throws {
+        // The custom encode(to:) must actually serialize the field — a missing
+        // CodingKeys entry once made the Settings UI POST an empty body.
+        let req = SettingsUpdateRequest(interactionTimeoutMs: 300_000)
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect(obj?["interactionTimeoutMs"] as? Int == 300_000)
+        let empty = SettingsUpdateRequest()
+        let emptyObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(empty)) as? [String: Any]
+        #expect(emptyObj?["interactionTimeoutMs"] == nil)
+    }
+
     @Test func harnessStatusDecodesChecksAndDefaultsMissingIntentArrays() throws {
         let rich = """
         {

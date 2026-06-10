@@ -569,7 +569,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, harnesses
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -584,6 +584,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
         if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
         if clearMaxUsdPerDay { try c.encode(true, forKey: .clearMaxUsdPerDay) }
+        try c.encodeIfPresent(interactionTimeoutMs, forKey: .interactionTimeoutMs)
         try c.encodeIfPresent(harnesses, forKey: .harnesses)
     }
 }

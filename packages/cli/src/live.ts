@@ -87,7 +87,14 @@ export async function promptQuestionsOnTty(
     return null;
   }
   const deadlineMs = timeoutAt ? Date.parse(timeoutAt) - Date.now() : null;
-  const signal = deadlineMs && deadlineMs > 0 ? AbortSignal.timeout(deadlineMs) : undefined;
+  if (deadlineMs !== null && (!Number.isFinite(deadlineMs) || deadlineMs <= 0)) {
+    // An already-expired deadline must decline immediately — prompting with
+    // no signal would hang the TTY forever on a question the engine already
+    // timed out (e.g. a historical event replayed by `follow`).
+    print("(question already timed out — the run continues with assumptions)");
+    return null;
+  }
+  const signal = deadlineMs !== null ? AbortSignal.timeout(deadlineMs) : undefined;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answers: InteractionAnswerSet["answers"] = [];
@@ -221,6 +228,29 @@ async function answerInteractionFromTty(addr: ControlApiAddress, runId: string, 
         .map((r) => r.data)
     : [];
   if (questions.length === 0) return;
+  // Replay safety: the events stream replays from seq 1, so historical
+  // interaction.requested events arrive for questions long answered or timed
+  // out. Only prompt when the daemon still reports this interaction pending
+  // (the registry is populated before the event reaches any subscriber, so a
+  // LIVE question is always visible here). On a detail fetch failure, fall
+  // through — the expired-deadline guard in promptQuestionsOnTty still holds.
+  try {
+    const detailRes = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      headers: { Authorization: `Bearer ${addr.token}` },
+    });
+    if (detailRes.ok) {
+      const detail = (await detailRes.json()) as {
+        summary?: { state?: string };
+        pendingInteractions?: { interactionId?: string }[];
+      };
+      const state = detail.summary?.state ?? "";
+      const active = state === "running" || state === "queued";
+      const stillPending = (detail.pendingInteractions ?? []).some((pi) => pi.interactionId === interactionId);
+      if (!active || !stillPending) return;
+    }
+  } catch {
+    /* fall through to the deadline guard */
+  }
   const answers = await promptQuestionsOnTty(interactionId, questions, typeof p["timeout_at"] === "string" ? p["timeout_at"] : undefined);
   if (!answers) return;
   const body = {

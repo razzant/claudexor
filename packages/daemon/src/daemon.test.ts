@@ -250,3 +250,42 @@ describe("daemon", () => {
     }
   }, 20000);
 });
+
+describe("InteractionRegistry", () => {
+  it("keys pending entries by (runId, interactionId): concurrent runs reusing a native id never collide", async () => {
+    const { InteractionRegistry } = await import("./interactions.js");
+    const registry = new InteractionRegistry();
+    const ctx = (runId: string) => ({
+      runId,
+      taskId: `task-${runId}`,
+      attemptId: "a01",
+      harnessId: "claude",
+      request: {
+        interaction_id: "int-1", // same native id in BOTH runs
+        source_tool: "AskUserQuestion",
+        questions: [{ id: "q1", question: "Color?", header: null, options: [{ label: "Red", description: null }], multi_select: false }],
+      },
+      requestedAt: new Date().toISOString(),
+      timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const first = registry.register(ctx("run-a"));
+    const second = registry.register(ctx("run-b"));
+    expect(registry.pendingForRun("run-a")).toHaveLength(1);
+    expect(registry.pendingForRun("run-b")).toHaveLength(1);
+
+    const delivered = registry.answer("run-b", "int-1", {
+      interaction_id: "int-1",
+      answers: [{ question_id: "q1", selected_labels: ["Red"], free_text: null }],
+    });
+    expect(delivered.status).toBe("delivered");
+    await expect(second).resolves.toMatchObject({ interaction_id: "int-1" });
+    // run-a's identical native id is untouched and still answerable.
+    expect(registry.pendingForRun("run-a")).toHaveLength(1);
+    const other = registry.answer("run-a", "int-1", {
+      interaction_id: "int-1",
+      answers: [{ question_id: "q1", selected_labels: ["Red"], free_text: null }],
+    });
+    expect(other.status).toBe("delivered");
+    await expect(first).resolves.toMatchObject({ interaction_id: "int-1" });
+  });
+});

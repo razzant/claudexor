@@ -1127,4 +1127,45 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     expect(types).toContain("interaction.timeout");
     expect(types).not.toContain("interaction.answered");
   });
+
+  it("releases an interaction wait immediately when the run is cancelled (no timeout sit-out)", async () => {
+    const repo = await initRepo();
+    const interactive: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
+          | { request(req: unknown): Promise<unknown> }
+          | undefined;
+        if (channel) {
+          await channel.request({ interaction_id: "int-c", source_tool: "AskUserQuestion", questions: [] });
+        }
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const startedAt = Date.now();
+    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
+      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      interactionTimeoutMs: 60_000, // the wait must NOT sit this out
+      signal: controller.signal,
+      onInteraction: () => new Promise(() => {}), // never answers
+    });
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    const events = readRunEvents(res.runDir);
+    const timeoutEvent = events.find((e) => e.type === "interaction.timeout");
+    expect(timeoutEvent).toBeTruthy();
+    expect((timeoutEvent?.payload as Record<string, unknown>)["reason"]).toBe("cancelled");
+  });
 });

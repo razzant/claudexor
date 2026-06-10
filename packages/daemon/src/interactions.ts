@@ -32,10 +32,19 @@ export type InteractionAnswerStatus = "delivered" | "not_found" | "already_resol
 export class InteractionRegistry {
   private readonly pending = new Map<string, PendingEntry>();
 
+  /**
+   * Entries are keyed by (runId, interactionId): interaction ids originate
+   * from the harness's native request ids, which only need to be unique
+   * within one session — two concurrent runs may legally collide.
+   */
+  private key(runId: string, interactionId: string): string {
+    return `${runId}\u0000${interactionId}`;
+  }
+
   register(ctx: InteractionContext): Promise<InteractionAnswerSet | null> {
     this.prune();
     return new Promise<InteractionAnswerSet | null>((resolve) => {
-      this.pending.set(ctx.request.interaction_id, {
+      this.pending.set(this.key(ctx.runId, ctx.request.interaction_id), {
         ctx,
         resolve,
         expiresAtMs: Date.parse(ctx.timeoutAt) || Date.now() + 900_000,
@@ -45,11 +54,11 @@ export class InteractionRegistry {
 
   answer(runId: string, interactionId: string, rawAnswers: unknown): { status: InteractionAnswerStatus; message?: string } {
     this.prune();
-    const entry = this.pending.get(interactionId);
-    if (!entry || entry.ctx.runId !== runId) return { status: "not_found", message: `no pending interaction '${interactionId}' for run '${runId}'` };
+    const entry = this.pending.get(this.key(runId, interactionId));
+    if (!entry) return { status: "not_found", message: `no pending interaction '${interactionId}' for run '${runId}'` };
     const parsed = InteractionAnswerSetSchema.safeParse(rawAnswers);
     if (!parsed.success) return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
-    this.pending.delete(interactionId);
+    this.pending.delete(this.key(runId, interactionId));
     entry.resolve(parsed.data);
     return { status: "delivered" };
   }

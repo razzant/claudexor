@@ -71,4 +71,22 @@ describe("setup jobs in-process doctor", () => {
     expect(state).toBe("failed");
     expect(manager.status({ jobId: job.jobId }).message).toContain("gateway exploded");
   });
+
+  it("a cancel during the in-flight doctor is never overwritten by the late verdict", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const manager = createSetupJobManager({
+      statusAll: async () => {
+        await gate; // doctor still probing while the user cancels
+        return [okStatus("codex")];
+      },
+    });
+    const job = manager.create({ harness: "codex", action: "doctor" });
+    expect(manager.status({ jobId: job.jobId }).state).toBe("running");
+    const cancelled = manager.cancel({ jobId: job.jobId });
+    expect(cancelled.state).toBe("cancelled");
+    release?.();
+    await new Promise((r) => setTimeout(r, 30)); // let the late verdict race
+    expect(manager.status({ jobId: job.jobId }).state).toBe("cancelled");
+  });
 });
