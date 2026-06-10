@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/interview",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Spec interview: a hierarchical clarify-quiz that turns a vague task into a frozen, versioned, diffable SpecPack which maps deterministically into a TaskContract.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

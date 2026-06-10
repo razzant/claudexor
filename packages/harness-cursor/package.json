@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-cursor",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Cursor CLI adapter (cursor-agent -p --output-format stream-json).",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

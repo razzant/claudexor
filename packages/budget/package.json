@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/budget",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Budget governor: pre-call lease reservation, loop detection, 3-tier circuit breaker, portfolio routing, observed quota.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

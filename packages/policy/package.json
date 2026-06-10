@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/policy",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Typed risk classifier + thin policy (path guard, require-human, deny lists). No keyword-regex governance.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

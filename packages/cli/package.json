@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
   "main": "./dist/cli.js",
@@ -9,7 +9,9 @@
     "claudexor": "./dist/cli.js",
     "claudexord": "./dist/claudexord.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

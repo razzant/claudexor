@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/adapter-protocol",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "JSON-RPC-over-stdio protocol so external adapters (any language) can implement HarnessAdapter.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

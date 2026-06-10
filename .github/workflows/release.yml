@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to package, for example v0.6.0"
+        description: "Existing release tag to package, for example v0.7.0"
         required: true
         type: string
 
@@ -152,7 +152,8 @@ jobs:
           Claudexor ${version} unsigned beta build.
 
           This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
-          The macOS app, DMG, and ZIP are unsigned and not notarized for v0.6.0.
+          The macOS app, DMG, and ZIP are unsigned and not notarized for ${tag}.
+          macOS 26 or newer is required.
           Verify downloads with the attached SHA256 files.
           EOF
           if gh release view "$tag" >/dev/null 2>&1; then
