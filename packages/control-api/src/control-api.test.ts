@@ -880,7 +880,11 @@ describe("DaemonControlApiServer", () => {
       expect(text).toContain("run.completed");
       expect(text).toContain("event: end");
 
-      const cancel = await fetch(`${base}/runs/run-d1/cancel`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+      const cancel = await fetch(`${base}/runs/run-d1/control`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ control: { kind: "cancel" } }),
+      });
       expect(cancel.status).toBe(200);
       expect(cancelled).toEqual(["job-d1"]);
     });
@@ -1103,13 +1107,20 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("rejects invalid persisted summary modes instead of hiding them", async () => {
+  it("degrades an invalid persisted mode to an unknown field instead of poisoning the run list", async () => {
+    // One malformed job record (e.g. a legacy "daily" mode) must never 500 the
+    // whole run list/detail surface forever; the engine still rejects unknown
+    // modes loudly at RUN time — this is only the read-side projection.
     const { daemon, record } = fakeDaemon();
     record.params = { prompt: "legacy", mode: "daily" };
     await withDaemonServer(daemon, async (base) => {
       const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
-      expect(detail.status).toBe(500);
-      expect(await detail.text()).toContain("daily");
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as { summary: { mode?: string; runId: string } };
+      expect(body.summary.mode).toBeUndefined();
+      expect(body.summary.runId).toBe("run-d1");
+      const list = await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } });
+      expect(list.status).toBe(200);
     });
   });
 

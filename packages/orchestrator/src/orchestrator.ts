@@ -2,7 +2,9 @@ import { cpSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AccessProfile,
+  AttemptTelemetryRecord,
   EffortHint,
+  ExternalContextPolicy,
   GateResult,
   HarnessEvent,
   Intent,
@@ -14,9 +16,18 @@ import type {
   RunStatus,
   TaskContract,
   ProviderFamily,
+  ToolKind,
+  WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
-import { HarnessRunSpec, ModeKind as ModeKindSchema, SCHEMA_VERSION, TaskContract as TaskContractSchema, isBlocking } from "@claudexor/schema";
+import {
+  HarnessRunSpec,
+  ModeKind as ModeKindSchema,
+  RunTelemetry as RunTelemetrySchema,
+  SCHEMA_VERSION,
+  TaskContract as TaskContractSchema,
+  isBlocking,
+} from "@claudexor/schema";
 import { loadConfig } from "@claudexor/config";
 import type { AdapterRegistry, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError } from "@claudexor/core";
@@ -84,6 +95,9 @@ export interface RunInput {
   maxUsd?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
   access?: AccessProfile;
+  /** External/web context policy. Separate from shell/network sandboxing. */
+  web?: ExternalContextPolicy;
+  externalContextPolicy?: ExternalContextPolicy;
   /** Optional model hint forwarded to the selected harness route. */
   model?: string;
   /** Optional reasoning-effort hint forwarded to harnesses that support it. */
@@ -137,11 +151,68 @@ interface CandidateRun {
   errored: boolean;
   /** True when any of `cost` is token-estimated (not natively reported). */
   costEstimated: boolean;
+  /** Redacted runtime error summaries (harness errors + unrecovered tool errors). */
+  errors: string[];
+  telemetry: AttemptTelemetry;
+}
+
+interface ToolErrorRecord {
+  tool: string;
+  kind: ToolKind;
+  target: string | null;
+  summary: string;
+  toolUseId: string | null;
+  /** True when a later successful result of the same tool exists in the same attempt. */
+  recovered: boolean;
+}
+
+interface WebEvidenceState {
+  required: boolean;
+  mode: ExternalContextPolicy;
+  effectiveMode: ExternalContextPolicy;
+  attempted: boolean;
+  satisfied: boolean;
+  failed: boolean;
+  tool: string | null;
+  target: string | null;
+  errorSummary: string | null;
+}
+
+interface AttemptTelemetry {
+  toolErrors: ToolErrorRecord[];
+  /** tool_result events without a status field: never silently treated as ok. */
+  statuslessResults: number;
+  /** Native lines/events the adapter reported as dropped/unrecognized. */
+  droppedEvents: number;
+  web: WebEvidenceState;
+}
+
+/** A routed candidate adapter plus its manifest-declared web policy support. */
+interface RoutedAdapter {
+  adapter: HarnessAdapter;
+  webSupport: WebPolicySupport;
 }
 
 const LABELS = "ABCDEFGHIJ".split("");
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 const REVIEW_EVIDENCE_DIRNAME = ".claudexor-review-evidence";
+/** Concurrency cap for parallel candidates/explorers (locked decision: min(n, 4)). */
+const MAX_PARALLEL_CANDIDATES = 4;
+
+/** Run `work` over `items` with bounded concurrency, preserving item order via index. */
+async function runBounded<T>(items: T[], limit: number, work: (item: T, index: number) => Promise<void>): Promise<void> {
+  if (items.length === 0) return;
+  const concurrency = Math.max(1, Math.min(limit, items.length));
+  let next = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    for (;;) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      await work(items[idx] as T, idx);
+    }
+  });
+  await Promise.all(workers);
+}
 
 export class Orchestrator {
   private readonly gateway: HarnessGateway;
@@ -241,17 +312,26 @@ export class Orchestrator {
     if (primaryHarness && harnesses && harnesses.length > 0 && !harnesses.includes(primaryHarness)) {
       throw new Error(`primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`);
     }
+    if (input.web && input.externalContextPolicy && input.web !== input.externalContextPolicy) {
+      throw new Error(
+        `contradictory web policy: web='${input.web}' vs externalContextPolicy='${input.externalContextPolicy}' (pass one, or equal values)`,
+      );
+    }
+    const web = input.web ?? input.externalContextPolicy ?? "auto";
     return {
       ...input,
       harnesses,
       primaryHarness,
       model: input.model ?? cfg?.global.routing.default_model ?? undefined,
       portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.project.budget?.portfolio ?? cfg?.global.default_portfolio ?? "subscription-first",
+      web,
+      externalContextPolicy: web,
     };
   }
 
-  private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<HarnessAdapter[]> {
+  private async resolveCandidateAdapters(input: RunInput, intent: Intent): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
+    const explicitPool = Boolean(ids && ids.length > 0);
     const statuses = await this.gateway.statusAll({ cwd: input.repoRoot });
     const statusById = new Map(statuses.map((s) => [s.id, s]));
     if (!ids || ids.length === 0) {
@@ -267,7 +347,9 @@ export class Orchestrator {
     if (input.primaryHarness) {
       ids = [input.primaryHarness, ...ids.filter((id) => id !== input.primaryHarness)];
     }
-    const pool: HarnessAdapter[] = [];
+    const policy = input.web ?? input.externalContextPolicy ?? "auto";
+    const webRequired = policy === "cached" || policy === "live";
+    const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
     for (const id of ids) {
       const adapter = this.deps.registry.get(id);
@@ -278,8 +360,21 @@ export class Orchestrator {
       const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
       const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? "workspace_write";
       const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
+      const webSupport = manifest.capabilities.web_policy;
+      // Web policy is a capability: `off` needs an enforceable off switch and a
+      // web-required run needs a route that can produce web evidence. A harness
+      // that cannot honor the policy is excluded — or, when the user explicitly
+      // selected it, the run fails loudly instead of silently downgrading.
+      const webIncompatible =
+        (policy === "off" && webSupport === "none") || (webRequired && webSupport === "none");
+      if (webIncompatible) {
+        const why = `${id} cannot enforce web policy '${policy}' (manifest web_policy=${webSupport})`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
-      if (status.enabledIntents.includes(intent) && accessSupported) pool.push(adapter);
+      if (status.enabledIntents.includes(intent) && accessSupported) pool.push({ adapter, webSupport });
       else dropped.push(`${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`);
     }
     if (pool.length === 0) {
@@ -288,9 +383,38 @@ export class Orchestrator {
       );
     }
     const n = input.n ?? pool.length;
-    const out: HarnessAdapter[] = [];
-    for (let i = 0; i < n; i++) out.push(pool[i % pool.length] as HarnessAdapter);
+    const out: RoutedAdapter[] = [];
+    for (let i = 0; i < n; i++) out.push(pool[i % pool.length] as RoutedAdapter);
     return out;
+  }
+
+  /**
+   * The web mode a routed harness actually executes for a requested policy.
+   * Tools-permissioned web (e.g. claude) has no cached index: `cached` upgrades
+   * to `live` and MUST be disclosed via a `policy.web.upgraded` event.
+   */
+  private effectiveWebMode(policy: ExternalContextPolicy, webSupport: WebPolicySupport): ExternalContextPolicy {
+    if (policy === "cached" && webSupport === "tools") return "live";
+    return policy;
+  }
+
+  private discloseWebUpgrade(
+    log: EventLog,
+    routed: RoutedAdapter,
+    policy: ExternalContextPolicy,
+    attemptId: string,
+  ): ExternalContextPolicy {
+    const effective = this.effectiveWebMode(policy, routed.webSupport);
+    if (effective !== policy) {
+      log.emit("policy.web.upgraded", {
+        harness_id: routed.adapter.id,
+        attempt_id: attemptId,
+        from: policy,
+        to: effective,
+        reason: `web_policy=${routed.webSupport} has no cached web index`,
+      });
+    }
+    return effective;
   }
 
   /** Honest cross-family route proof: verified only when ≥2 DISTINCT provider families review. */
@@ -318,6 +442,12 @@ export class Orchestrator {
         assertNoSecretLikeTokens(`gate command ${i + 1}`, command);
         return { id: `gate-${i + 1}`, command, required: true };
       });
+    const readOnlyMode = mode === "ask" || mode === "explore" || mode === "plan" || mode === "readonly_audit";
+    const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : "workspace_write");
+    // Effective access is COMPUTED by the engine, never echoed from a client:
+    // read-only modes clamp to readonly regardless of the request.
+    const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
+    const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";
     return TaskContractSchema.parse({
       schema_version: SCHEMA_VERSION,
       task_id: taskId,
@@ -334,6 +464,25 @@ export class Orchestrator {
           }
         : undefined,
       tests: { commands },
+      access: {
+        requested_profile: requestedAccess,
+        effective_profile: effectiveAccess,
+      },
+      external_context: {
+        policy: externalContextPolicy,
+        web_required: externalContextPolicy === "cached" || externalContextPolicy === "live",
+        // Per-route upgrades (e.g. claude cached->live) are disclosed in events
+        // and telemetry.yaml; the immutable contract records the requested policy.
+        effective_mode: externalContextPolicy,
+      },
+      // Harness-native tool names are adapter knowledge; the neutral contract
+      // carries only the policy plus user-configured allow/deny lists (wired
+      // from per-harness settings).
+      tool_permission_policy: {
+        web: externalContextPolicy,
+        allow: [],
+        deny: [],
+      },
       budget: {
         portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
         max_usd: input.maxUsd ?? this.deps.maxUsd ?? null,
@@ -376,6 +525,8 @@ export class Orchestrator {
     modelHint?: string,
     effortHint?: EffortHint,
     intent: Intent = "implement",
+    log?: EventLog,
+    effectiveWebMode?: ExternalContextPolicy,
   ): Promise<CandidateRun> {
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
@@ -383,6 +534,8 @@ export class Orchestrator {
       prompt,
       cwd: envelope.worktree_path,
       access,
+      external_context_policy: contract.external_context.policy,
+      tool_permission_policy: contract.tool_permission_policy,
       model_hint: modelHint ?? null,
       effort_hint: effortHint ?? null,
       env: wsm.envFor(envelope),
@@ -391,8 +544,13 @@ export class Orchestrator {
 
     let cost = 0;
     let costEstimated = false;
-    let errored = false;
+    let harnessErrored = false;
     const errors: string[] = [];
+    const telemetry = createAttemptTelemetry(
+      contract.external_context.policy,
+      contract.external_context.web_required,
+      effectiveWebMode ?? contract.external_context.policy,
+    );
     const onAbort = () => {
       void adapter.cancel?.(spec.session_id)?.catch(() => {});
     };
@@ -401,30 +559,63 @@ export class Orchestrator {
       else signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
-      for await (const ev of adapter.run(spec)) {
-        if (signal?.aborted) break;
-        const safeEv = redactHarnessEvent(ev);
-        safeInvoke(onHarnessEvent, safeEv);
-        if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-          cost += safeEv.usage.cost_usd;
-          if (safeEv.usage.estimated) costEstimated = true;
+      if (!signal?.aborted) {
+        for await (const ev of adapter.run(spec)) {
+          if (signal?.aborted) break;
+          const safeEv = redactHarnessEvent(ev);
+          safeInvoke(onHarnessEvent, safeEv);
+          observeAttemptTelemetry(telemetry, safeEv);
+          if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+            cost += safeEv.usage.cost_usd;
+            if (safeEv.usage.estimated) costEstimated = true;
+            log?.emit("budget.observation", {
+              harness_id: adapter.id,
+              attempt_id: attemptId,
+              kind: "spend",
+              usd: safeEv.usage.cost_usd,
+              estimated: safeEv.usage.estimated === true,
+            });
+          }
+          if (safeEv.type === "error") {
+            harnessErrored = true;
+            errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
+          }
+          // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
+          const obs = observationFromEvent(adapter.id, safeEv);
+          if (obs) ledger.observe(obs);
         }
-        if (safeEv.type === "error") {
-          errored = true;
-          errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
-        }
-        // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
-        const obs = observationFromEvent(adapter.id, safeEv);
-        if (obs) ledger.observe(obs);
       }
+    } catch (err) {
+      // A throwing adapter must not lose the cost already streamed: record the
+      // error here and let the caller settle the REAL accumulated spend.
+      harnessErrored = true;
+      errors.push(safeErrorMessage(err));
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
+    // Tool errors block only when unrecovered at attempt end (a later successful
+    // result of the same tool is the verified recovery, CLAUDEXOR_BIBLE §5).
+    const unrecovered = unrecoveredToolErrors(telemetry);
+    for (const e of unrecovered.slice(0, 5)) {
+      errors.push(`${e.tool} error (unrecovered): ${e.summary}`);
+    }
+    if (webUnsatisfied(telemetry)) {
+      errors.push(
+        `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`,
+      );
+    }
+    const errored = harnessErrored || unrecovered.length > 0 || webUnsatisfied(telemetry);
 
     const diff = await wsm.diff(envelope);
+    log?.emit("gate.started", { attempt_id: attemptId, gates: this.gateSpecs(contract).length });
     const gates = await runGates(this.gateSpecs(contract), {
       cwd: envelope.worktree_path,
       env: wsm.envFor(envelope),
+    });
+    log?.emit("gate.completed", {
+      attempt_id: attemptId,
+      gates: gates.map((g) => ({ id: g.id, status: g.status, exit_code: g.exit_code })),
+      passed: gatesPassed(gates),
     });
 
     const attemptDir = join(paths.attemptsDir, attemptId);
@@ -436,10 +627,23 @@ export class Orchestrator {
       cost_usd: cost,
       errored,
       errors: errors.slice(0, 5),
+      ...telemetrySummary(telemetry),
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
       branch: envelope.branch_name,
     });
-    return { attemptId, harnessId: adapter.id, label, diff, reviewCwd: envelope.worktree_path, gates, cost, errored, costEstimated };
+    return {
+      attemptId,
+      harnessId: adapter.id,
+      label,
+      diff,
+      reviewCwd: envelope.worktree_path,
+      gates,
+      cost,
+      errored,
+      costEstimated,
+      errors: errors.slice(0, 8),
+      telemetry,
+    };
   }
 
   private toEvidence(
@@ -519,7 +723,7 @@ export class Orchestrator {
       tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
     });
 
-    let adapters: HarnessAdapter[];
+    let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(mode));
     } catch (err) {
@@ -542,65 +746,121 @@ export class Orchestrator {
     const reviewers = await this.resolveReviewers(input.repoRoot);
     const reviewVerified = this.routeVerified(reviewers);
 
-    const runs: CandidateRun[] = [];
     const reviewEnvelopes: WorkspaceEnvelope[] = [];
     const disposeReviewEnvelopes = async () => {
       const envelopes = reviewEnvelopes.splice(0);
       for (const env of envelopes) await wsm.dispose(env);
     };
-    let budgetStopped = false;
-    for (let i = 0; i < adapters.length; i++) {
-      if (input.signal?.aborted) break;
-      const adapter = adapters[i] as HarnessAdapter;
-      const attemptId = `a${String(i + 1).padStart(2, "0")}`;
-      const label = `Candidate ${LABELS[i] ?? i + 1}`;
+    const candidateAccess = contract.access.effective_profile;
 
-      const lease = ledger.reserve({ taskId, attemptId, intent: this.candidateIntent(mode), harnessId: adapter.id });
+    // Budget leases are reserved UPFRONT for every candidate; denied slots are
+    // never spawned. Granted candidates run in PARALLEL (bounded, isolated
+    // envelopes) — all run to completion and review picks the winner.
+    interface CandidateSlot {
+      routed: RoutedAdapter;
+      attemptId: string;
+      label: string;
+      leaseId: string;
+    }
+    let budgetStopped = false;
+    const slots: CandidateSlot[] = [];
+    for (let i = 0; i < adapters.length; i++) {
+      const routed = adapters[i] as RoutedAdapter;
+      const attemptId = `a${String(i + 1).padStart(2, "0")}`;
+      const lease = ledger.reserve({ taskId, attemptId, intent: this.candidateIntent(mode), harnessId: routed.adapter.id });
+      log.emit("budget.lease.created", { granted: lease.granted, reason: lease.reason, attempt_id: attemptId, harness_id: routed.adapter.id });
       if (!lease.granted) {
-        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId });
         budgetStopped = true;
         break; // hard cap: do not spawn more paid work
       }
+      slots.push({ routed, attemptId, label: `Candidate ${LABELS[i] ?? i + 1}`, leaseId: lease.lease?.lease_id ?? "" });
+    }
 
+    const runsBySlot = new Array<CandidateRun | undefined>(slots.length);
+    const runSlot = async (slot: CandidateSlot, slotIdx: number): Promise<void> => {
+      if (input.signal?.aborted) {
+        ledger.cancel(slot.leaseId);
+        return;
+      }
+      // Leases are granted upfront (before spend exists); a worker still
+      // re-checks the circuit breaker so queued slots beyond the parallel wave
+      // do not start after earlier candidates already blew the hard cap.
+      if (ledger.tier() === "hard") {
+        ledger.cancel(slot.leaseId);
+        log.emit("budget.lease.created", { granted: false, reason: "budget exhausted (hard cap reached)", attempt_id: slot.attemptId, harness_id: slot.routed.adapter.id, cancelled_after_grant: true });
+        budgetStopped = true;
+        return;
+      }
+      const adapter = slot.routed.adapter;
+      const effectiveWeb = this.discloseWebUpgrade(log, slot.routed, contract.external_context.policy, slot.attemptId);
       let envelope: WorkspaceEnvelope | undefined;
       try {
-        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId });
-        envelope = await wsm.create({ taskId, attemptId, baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+        log.emit("harness.started", { harness_id: adapter.id, attempt_id: slot.attemptId, external_context_policy: contract.external_context.policy });
+        envelope = await wsm.create({
+          taskId,
+          attemptId: slot.attemptId,
+          baseRef: contract.repo.base_ref,
+          dirtyPolicy: "snapshot",
+          accessProfile: candidateAccess,
+        });
         const run = await this.runCandidateInEnvelope(
           adapter,
           envelope,
-          attemptId,
-          label,
+          slot.attemptId,
+          slot.label,
           contract,
           input.prompt,
           store,
           paths,
           wsm,
           ledger,
-          "workspace_write",
+          candidateAccess,
           (ev) => {
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
-            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+            log.emit("harness.event", harnessEventPayload(adapter.id, slot.attemptId, safeEv));
           },
           input.signal,
           input.model,
           input.effort,
           this.candidateIntent(mode),
+          log,
+          effectiveWeb,
         );
-        ledger.settle(lease.lease?.lease_id ?? "", run.cost);
-        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, cost_usd: run.cost });
-        runs.push(run);
+        ledger.settle(slot.leaseId, run.cost);
+        log.emit("harness.completed", {
+          harness_id: adapter.id,
+          attempt_id: slot.attemptId,
+          status: run.errored ? "failed" : "success",
+          cost_usd: run.cost,
+          ...telemetrySummary(run.telemetry),
+        });
+        runsBySlot[slotIdx] = run;
         reviewEnvelopes.push(envelope);
         envelope = undefined;
       } catch (err) {
-        ledger.settle(lease.lease?.lease_id ?? "", 0);
-        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "failed", error: safeErrorMessage(err) });
-        runs.push({ attemptId, harnessId: adapter.id, label, diff: "", gates: [], cost: 0, errored: true, costEstimated: false });
+        // Envelope creation (or another pre-stream step) failed; stream errors
+        // are absorbed inside runCandidateInEnvelope with their real cost.
+        ledger.settle(slot.leaseId, 0);
+        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: slot.attemptId, status: "failed", error: safeErrorMessage(err) });
+        runsBySlot[slotIdx] = {
+          attemptId: slot.attemptId,
+          harnessId: adapter.id,
+          label: slot.label,
+          diff: "",
+          gates: [],
+          cost: 0,
+          errored: true,
+          costEstimated: false,
+          errors: [safeErrorMessage(err)],
+          telemetry: createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb),
+        };
       } finally {
         if (envelope) await wsm.dispose(envelope); // no worktree leak even on create/run error
       }
-    }
+    };
+    await runBounded(slots, Math.min(slots.length, MAX_PARALLEL_CANDIDATES), runSlot);
+    const runs: CandidateRun[] = runsBySlot.filter((r): r is CandidateRun => r !== undefined);
 
     if (input.signal?.aborted) {
       await disposeReviewEnvelopes();
@@ -646,22 +906,29 @@ export class Orchestrator {
     }
 
     log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
-    const evidences = await this.reviewRuns(runs, reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
-    await disposeReviewEnvelopes();
+    let evidences: CandidateEvidence[];
+    try {
+      evidences = await this.reviewRuns(runs, reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log, ledger, taskId);
+    } finally {
+      // Review preflight failures must not leak candidate worktrees.
+      await disposeReviewEnvelopes();
+    }
 
     // Synthesis: if worthwhile, run a synthesizer as a NEW, re-checked candidate.
     const synth = decideSynthesis(evidences, input.synthesis ?? "auto");
     store.writeYaml(join(paths.arbitrationDir, "synthesis.yaml"), synth);
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
-      const lease = ledger.reserve({ taskId, attemptId: "synth", intent: "synthesize", harnessId: adapters[0]?.id ?? "synth" });
+      const synthRouted = adapters[0] as RoutedAdapter;
+      const lease = ledger.reserve({ taskId, attemptId: "synth", intent: "synthesize", harnessId: synthRouted.adapter.id });
       if (lease.granted) {
         let envelope: WorkspaceEnvelope | undefined;
         try {
           const plan = buildSynthesisPlan(evidences);
           const sourceDiffs = runs.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
-          const synthAdapter = adapters[0] as HarnessAdapter;
-          envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot" });
+          const synthAdapter = synthRouted.adapter;
+          const effectiveWeb = this.discloseWebUpgrade(log, synthRouted, contract.external_context.policy, "synth");
+          envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot", accessProfile: candidateAccess });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
             synthAdapter,
@@ -674,7 +941,7 @@ export class Orchestrator {
             paths,
             wsm,
             ledger,
-            "workspace_write",
+            candidateAccess,
             (ev) => {
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
@@ -684,10 +951,18 @@ export class Orchestrator {
             input.model,
             input.effort,
             "synthesize",
+            log,
+            effectiveWeb,
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
-          const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log);
-          evidences.push(...synthEvidence);
+          reviewEnvelopes.push(envelope);
+          envelope = undefined;
+          try {
+            const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log, ledger, taskId);
+            evidences.push(...synthEvidence);
+          } finally {
+            await disposeReviewEnvelopes();
+          }
           runs.push(run);
         } catch (err) {
           ledger.settle(lease.lease?.lease_id ?? "", 0);
@@ -709,6 +984,9 @@ export class Orchestrator {
     log.emit("arbitration.completed", { winner: result.decision.winner, status: result.decision.status });
 
     const winnerRun = runs.find((r) => r.attemptId === result.decision.winner) ?? runs[0];
+    // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
+    const needsHuman = evidences.some((e) => e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)));
+    const status: RunStatus = needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
     if (winnerRun) {
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       const patchSha256 = sha256(winnerRun.diff);
@@ -720,39 +998,50 @@ export class Orchestrator {
         producer_attempt_id: winnerRun.attemptId,
         meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode, review_verified: actualReviewVerified, budget_stopped: budgetStopped, patch_sha256: patchSha256 },
       });
-      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, result.decision, evidences, synth.reason, actualReviewVerified));
+      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, { ...result.decision, status }, evidences, synth.reason, actualReviewVerified));
+      // A non-success run's summary/patch is diagnostic context, not an applyable green output.
+      log.emit("output.ready", {
+        kind: "summary",
+        path: "final/summary.md",
+        ...(status === "success" ? {} : { state: "diagnostic" }),
+      });
     }
 
-    const honestTerminal = result.decision.status === "no_op" || result.decision.status === "ungated" || result.decision.status === "review_not_run";
-    if (result.decision.status !== "success" && !honestTerminal) {
+    this.writeRunTelemetry(store, paths, contract, runId, taskId, mode, runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })), result.decision.status === "success" ? result.decision.winner : winnerRun?.attemptId ?? null);
+
+    const honestTerminal = status === "no_op" || status === "ungated" || status === "review_not_run";
+    if (status !== "success" && !honestTerminal) {
       writeFailure(store, paths, {
-        phase: "arbitration",
-        category: winnerRun?.errored ? "harness_error" : result.decision.status === "exhausted" ? "budget" : "internal",
+        phase: needsHuman ? "review" : "arbitration",
+        category: needsHuman ? "policy" : winnerRun?.errored ? "harness_error" : status === "exhausted" ? "budget" : "internal",
         harnessId: winnerRun?.errored ? winnerRun.harnessId : undefined,
         attemptId: winnerRun?.errored ? winnerRun.attemptId : undefined,
-        safeMessage: result.decision.why_winner,
+        safeMessage: needsHuman ? `review escalated to a human decision: ${result.decision.why_winner}` : result.decision.why_winner,
         rawDetailRef: winnerRun?.errored ? `attempts/${winnerRun.attemptId}/attempt.yaml` : undefined,
         runDir: paths.root,
-        nextActions: ["Open diagnostics", "Inspect candidate artifacts", "Retry with a narrower prompt or different harness pool"],
+        nextActions: needsHuman
+          ? ["Open the review queue", "Decide the NEEDS_HUMAN findings", "Re-run after the decision"]
+          : ["Open diagnostics", "Inspect candidate artifacts", "Retry with a narrower prompt or different harness pool"],
       });
       if (!winnerRun) {
-        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${result.decision.status}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`);
+        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`);
       }
     }
 
     log.emit("work_product.emitted", { winner: result.decision.winner });
-    log.emit(
-      result.decision.status === "success" || honestTerminal ? "run.completed" : "run.failed",
-      result.decision.status === "success" || honestTerminal
-        ? { status: result.decision.status, outcome: result.decision.outcome }
-        : { status: result.decision.status, phase: "arbitration", failure_ref: "final/failure.yaml" },
-    );
+    if (status === "success" || honestTerminal) {
+      log.emit("run.completed", { status, outcome: result.decision.outcome });
+    } else if (status === "blocked") {
+      log.emit("run.blocked", { status, phase: "review", failure_ref: "final/failure.yaml" });
+    } else {
+      log.emit("run.failed", { status, phase: "arbitration", failure_ref: "final/failure.yaml" });
+    }
 
     return {
       runId,
       taskId,
       mode,
-      status: result.decision.status,
+      status,
       winner: result.decision.winner,
       runDir: paths.root,
       summary: result.decision.why_winner,
@@ -766,6 +1055,51 @@ export class Orchestrator {
     };
   }
 
+  /** Single-owner telemetry artifact (final/telemetry.yaml); surfaces project it, never recompute. */
+  private writeRunTelemetry(
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+    contract: TaskContract,
+    runId: string,
+    taskId: string,
+    mode: ModeKind,
+    attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
+    finalAttemptId: string | null,
+  ): void {
+    const records = attempts.map((a) => attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry));
+    const finalRecord = finalAttemptId ? records.find((r) => r.attempt_id === finalAttemptId) : undefined;
+    // Run-level web evidence: the final attempt's evidence, else the most severe.
+    const severityRank = { satisfied: 0, none: 1, attempted: 2, unverified: 3, failed: 4 } as const;
+    const worst = [...records].sort((a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0))[0];
+    const runWeb = finalRecord?.web ?? worst?.web ?? {
+      required: contract.external_context.web_required,
+      policy: contract.external_context.policy,
+      effective_mode: contract.external_context.effective_mode,
+      attempted: false,
+      satisfied: false,
+      status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
+      tool: null,
+      target: null,
+      error_summary: null,
+    };
+    const telemetry = RunTelemetrySchema.parse({
+      schema_version: SCHEMA_VERSION,
+      run_id: runId,
+      task_id: taskId,
+      mode,
+      requested_access: contract.access.requested_profile,
+      effective_access: contract.access.effective_profile,
+      external_context_policy: contract.external_context.policy,
+      effective_web_mode: finalRecord?.web.effective_mode ?? contract.external_context.effective_mode,
+      web_required: contract.external_context.web_required,
+      final_attempt_id: finalAttemptId,
+      web: runWeb,
+      attempts: records,
+      generated_at: nowIso(),
+    });
+    store.writeYaml(join(paths.finalDir, "telemetry.yaml"), telemetry);
+  }
+
   /** Review a set of runs and return their evidence (with finalReviewClean + review_verified caveat). */
   private async reviewRuns(
     runs: CandidateRun[],
@@ -777,13 +1111,17 @@ export class Orchestrator {
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     log: EventLog,
+    ledger?: BudgetLedger,
+    taskId?: string,
   ): Promise<CandidateEvidence[]> {
     const evidences: CandidateEvidence[] = [];
     for (const run of runs) {
       const candidateCwd = run.reviewCwd ?? cwd;
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
+      // Reviewer panels spend real money: reserve before, settle the observed cost.
+      const reviewLease = ledger?.reserve({ taskId: taskId ?? "task", attemptId: run.attemptId, intent: "review", harnessId: "review-panel" });
       const result =
-        reviewers.length > 0
+        reviewers.length > 0 && (reviewLease?.granted ?? true)
           ? await reviewCandidate({
               candidateLabel: run.label,
               diff: run.diff,
@@ -793,7 +1131,15 @@ export class Orchestrator {
               reviewers,
               onReviewerEvent: (event) => log.emit(event.type, { ...event }),
             })
-          : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [] };
+          : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
+      if (reviewLease?.granted) {
+        ledger?.settle(reviewLease.lease?.lease_id ?? "", result.reviewSpendUsd ?? 0);
+        if ((result.reviewSpendUsd ?? 0) > 0) {
+          log.emit("budget.observation", { harness_id: "review-panel", attempt_id: run.attemptId, kind: "spend", usd: result.reviewSpendUsd, estimated: result.reviewSpendEstimated === true });
+        }
+      } else if (reviewLease && !reviewLease.granted) {
+        log.emit("budget.lease.created", { granted: false, reason: reviewLease.reason, attempt_id: run.attemptId, harness_id: "review-panel" });
+      }
       this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
       const revalidated = await revalidateFindings(result.findings);
       const inconclusive = revalidated.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
@@ -868,7 +1214,7 @@ export class Orchestrator {
     const reviewVerified = this.routeVerified(reviewers);
 
     // One envelope carried forward across attempts so the harness can repair its own work.
-    let adapterPool: HarnessAdapter[];
+    let adapterPool: RoutedAdapter[];
     try {
       adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined }, this.candidateIntent(mode));
     } catch (err) {
@@ -888,8 +1234,22 @@ export class Orchestrator {
         candidates: [],
       };
     }
+    // Fail fast on a provably unwinnable predicate instead of burning paid
+    // rounds: the default convergence predicate requires a clean cross-family
+    // review, which needs >=2 healthy reviewer provider families.
+    if (contract.convergence.require_final_cross_family_clean_review && !reviewVerified) {
+      const message =
+        `convergence requires a cross-family clean review (>=2 healthy reviewer provider families); found ${new Set(reviewers.map((r) => r.providerFamily)).size}. ` +
+        "Configure reviewers for a second provider family, or run with a convergence predicate that does not require cross-family review.";
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Convergence Preflight Error\n\n${message}\n`);
+      writeFailure(store, paths, { phase: "review", category: "policy", safeMessage: message, runDir: paths.root, nextActions: ["Configure a second reviewer family", "Check harness doctor for reviewer readiness"] });
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`);
+      log.emit("run.failed", { status: "failed", phase: "review", error: message, failure_ref: "final/failure.yaml" });
+      return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: message, candidates: [] };
+    }
     let adapterIdx = 0;
-    let adapter = adapterPool[0] as HarnessAdapter;
+    let routed = adapterPool[0] as RoutedAdapter;
+    let adapter = routed.adapter;
     let envelope: WorkspaceEnvelope | undefined;
 
     let attempt = 0;
@@ -905,7 +1265,9 @@ export class Orchestrator {
     // observed quota cooldown across all harnesses, or genuine no-progress (a stall on the same
     // failure signature after every available harness has tried it).
     const stallThreshold = mode === "until_clean" ? 4 : 2;
-    const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.id));
+    const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.adapter.id));
+    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    let lastDiffStable = true;
 
     try {
       envelope = await wsm.create({
@@ -926,13 +1288,21 @@ export class Orchestrator {
           break;
         }
 
+        // Repair prompts must include the RUNTIME errors that actually failed the
+        // previous attempt (tool/web errors), not only the review findings —
+        // otherwise the harness repairs blind.
+        const runtimeErrors = lastRun?.errors?.length
+          ? `\n\nRuntime errors from the previous attempt (fix or recover these):\n${lastRun.errors.map((e) => `- ${e}`).join("\n")}`
+          : "";
         const prompt =
           attempt === 1
             ? input.prompt
-            : `${input.prompt}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}`;
+            : `${input.prompt}\n\nThe previous attempt did not converge. Address these review findings (verify each against the code; fix valid ones, rebut invalid ones with evidence):\n${formatFindings(lastFindings)}${runtimeErrors}`;
 
+        const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
         let run: CandidateRun;
         try {
+          log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
           run = await this.runCandidateInEnvelope(
             adapter,
             envelope,
@@ -954,15 +1324,37 @@ export class Orchestrator {
             input.model,
             input.effort,
             "repair",
+            log,
+            effectiveWeb,
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+          log.emit("harness.completed", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            status: run.errored ? "failed" : "success",
+            cost_usd: run.cost,
+            ...telemetrySummary(run.telemetry),
+          });
         } catch (err) {
-          // A throwing adapter (vs. one that yields an error event) is treated as a failed attempt.
+          // Envelope/setup failure before the stream; stream errors are absorbed
+          // inside runCandidateInEnvelope with their real accumulated cost.
           ledger.settle(lease.lease?.lease_id ?? "", 0);
           log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "failed", error: safeErrorMessage(err) });
-          run = { attemptId, harnessId: adapter.id, label: `Attempt ${attempt}`, diff: "", gates: [], cost: 0, errored: true, costEstimated: false };
+          run = {
+            attemptId,
+            harnessId: adapter.id,
+            label: `Attempt ${attempt}`,
+            diff: "",
+            gates: [],
+            cost: 0,
+            errored: true,
+            costEstimated: false,
+            errors: [safeErrorMessage(err)],
+            telemetry: createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb),
+          };
         }
         lastRun = run;
+        attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry: run.telemetry });
 
         const candidateReviewCwd = run.reviewCwd ?? input.repoRoot;
         const candidateReviewEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateReviewCwd);
@@ -997,14 +1389,20 @@ export class Orchestrator {
         const finalReviewClean = reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified && !inconclusive && !revalidated.some((f) => isBlocking(f));
         lastFinalReviewClean = finalReviewClean;
 
+        // Measure diff stability instead of asserting it: the tree must not have
+        // changed between the candidate diff capture and the end of review.
+        const postReviewDiff = await wsm.diff(envelope);
+        const diffStableAfterReview = sha256(postReviewDiff) === sha256(run.diff);
+        lastDiffStable = diffStableAfterReview;
+
         const conv = evaluateConvergence({
           predicate: contract.convergence,
           gates: run.errored ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed", duration_ms: 0, required: true }] : run.gates,
           findings: revalidated,
           finalReviewClean,
-          diffStableAfterReview: true,
+          diffStableAfterReview,
         });
-        log.emit("finding.revalidated", { attempt_id: attemptId, converged: conv.converged, reasons: conv.reasons });
+        log.emit("finding.revalidated", { attempt_id: attemptId, converged: conv.converged, reasons: conv.reasons, diff_stable_after_review: diffStableAfterReview });
 
         if (conv.converged) {
           converged = true;
@@ -1031,8 +1429,9 @@ export class Orchestrator {
         if (readiness.isStalled(sig, stallThreshold)) {
           if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
             adapterIdx = (adapterIdx + 1) % adapterPool.length;
-            adapter = adapterPool[adapterIdx] as HarnessAdapter;
-            log.emit("harness.started", { harness_id: adapter.id, reason: "stall: switched harness" });
+            routed = adapterPool[adapterIdx] as RoutedAdapter;
+            adapter = routed.adapter;
+            log.emit("route.fallback.started", { from_harness: lastRun?.harnessId ?? null, to_harness: adapter.id, reason: "stall: switched harness" });
           } else {
             break; // tried every available harness on this failure and still stuck -> stop
           }
@@ -1063,6 +1462,10 @@ export class Orchestrator {
         status = decision.status;
       }
     }
+    // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
+    const needsHuman = lastFindings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f));
+    if (needsHuman && status !== "success" && status !== "cancelled") status = "blocked";
+    this.writeRunTelemetry(store, paths, contract, runId, taskId, mode, attemptTelemetries, lastRun?.attemptId ?? null);
 
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
     if (lastRun) {
@@ -1085,14 +1488,18 @@ export class Orchestrator {
     if (!converged) {
       writeFailure(store, paths, {
         phase: "convergence",
-        category: status === "exhausted" ? "budget" : status === "cancelled" ? "cancelled" : "internal",
-        safeMessage: `${status} after ${attempt} attempt(s)`,
+        category: status === "exhausted" ? "budget" : status === "cancelled" ? "cancelled" : status === "blocked" ? "policy" : "internal",
+        safeMessage: status === "blocked"
+          ? `review escalated to a human decision after ${attempt} attempt(s)`
+          : `${status} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
         runDir: paths.root,
         nextActions: status === "cancelled"
           ? ["Retry if cancellation was accidental"]
-          : ["Open diagnostics", "Inspect latest patch and review findings", "Retry with more attempts or a narrower prompt"],
+          : status === "blocked"
+            ? ["Open the review queue", "Decide the NEEDS_HUMAN findings", "Re-run after the decision"]
+            : ["Open diagnostics", "Inspect latest patch and review findings", "Retry with more attempts or a narrower prompt"],
       });
       if (!lastRun) {
         store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n`);
@@ -1101,10 +1508,13 @@ export class Orchestrator {
 
     log.emit("work_product.emitted", { winner: lastRun?.attemptId ?? null });
     const completed = converged || status === "no_op" || status === "ungated" || status === "review_not_run";
-    log.emit(
-      completed ? "run.completed" : "run.failed",
-      completed ? { status, attempts: attempt } : { status, attempts: attempt, phase: "convergence", failure_ref: "final/failure.yaml" },
-    );
+    if (completed) {
+      log.emit("run.completed", { status, attempts: attempt });
+    } else if (status === "blocked") {
+      log.emit("run.blocked", { status, attempts: attempt, phase: "review", failure_ref: "final/failure.yaml" });
+    } else {
+      log.emit("run.failed", { status, attempts: attempt, phase: "convergence", failure_ref: "final/failure.yaml" });
+    }
     return {
       runId,
       taskId,
@@ -1128,7 +1538,13 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
-    let adapters: HarnessAdapter[];
+    // Plan runs get the same immutable contract truth as every other mode.
+    const contract = this.buildContract(input, taskId, "plan");
+    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+
+    let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
     } catch (err) {
@@ -1149,20 +1565,32 @@ export class Orchestrator {
       };
     }
     const plans: { id: string; text: string }[] = [];
-    for (const [idx, adapter] of adapters.entries()) {
+    const planAttempts: { attemptId: string; harnessId: string; status: "success" | "failed" | "blocked"; error: string | null }[] = [];
+    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    for (const [idx, routed] of adapters.entries()) {
       if (input.signal?.aborted) break;
+      const adapter = routed.adapter;
       const attemptId = `p${String(idx + 1).padStart(2, "0")}`;
+      const lease = ledger.reserve({ taskId, attemptId, intent: "plan", harnessId: adapter.id });
+      if (!lease.granted) {
+        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
+        break;
+      }
+      const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: "plan",
         prompt: input.prompt,
         cwd: input.repoRoot,
         access: "readonly",
+        external_context_policy: contract.external_context.policy,
+        tool_permission_policy: contract.tool_permission_policy,
         model_hint: input.model ?? null,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
+      const telemetry = createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb);
       const onAbort = () => {
         void adapter.cancel?.(spec.session_id)?.catch(() => {});
       };
@@ -1170,48 +1598,52 @@ export class Orchestrator {
         if (input.signal.aborted) onAbort();
         else input.signal.addEventListener("abort", onAbort, { once: true });
       }
+      let cost = 0;
       let harnessError: string | null = null;
       try {
-        for await (const ev of adapter.run(spec)) {
-          if (input.signal?.aborted) break;
-          const safeEv = redactHarnessEvent(ev);
-          safeInvoke(input.onHarnessEvent, safeEv);
-          log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
-          appendLine(attemptEventsPath, JSON.stringify(safeEv));
-          if (safeEv.type === "message" && safeEv.text) parts.push(safeEv.text);
-          if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
+        if (!input.signal?.aborted) {
+          for await (const ev of adapter.run(spec)) {
+            if (input.signal?.aborted) break;
+            const safeEv = redactHarnessEvent(ev);
+            safeInvoke(input.onHarnessEvent, safeEv);
+            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+            appendLine(attemptEventsPath, JSON.stringify(safeEv));
+            observeAttemptTelemetry(telemetry, safeEv);
+            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+              cost += safeEv.usage.cost_usd;
+              log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
+            }
+            if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
+            if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+          }
         }
       } catch (err) {
         harnessError = safeErrorMessage(err);
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
+        ledger.settle(lease.lease?.lease_id ?? "", cost);
+      }
+      attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
+      const unrecovered = unrecoveredToolErrors(telemetry);
+      const webBlocked = webUnsatisfied(telemetry);
+      if (!harnessError && webBlocked) {
+        harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
+      }
+      if (!harnessError && unrecovered.length > 0) {
+        const first = unrecovered[0] as ToolErrorRecord;
+        harnessError = `${first.tool} failed without recovery: ${first.summary}`;
       }
       if (harnessError) {
-        store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${harnessError}\n`);
-        writeFailure(store, paths, {
-          phase: "harness",
-          category: "harness_error",
-          harnessId: adapter.id,
-          attemptId,
-          safeMessage: harnessError,
-          eventRefs: [`attempts/${attemptId}/events.jsonl`],
-          runDir: paths.root,
-          nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
-        });
-        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Harness: ${adapter.id}\n- Status: failed\n\n${harnessError}\n`);
-        log.emit("run.failed", { status: "failed", harness_id: adapter.id, attempt_id: attemptId, error: harnessError, failure_ref: "final/failure.yaml" });
-        return {
-          runId,
-          taskId,
-          mode: "plan",
-          status: "failed",
-          winner: null,
-          runDir: paths.root,
-          summary: harnessError,
-          candidates: [{ attemptId, harnessId: adapter.id, status: "failed" }],
-        };
+        // One failed planner does not abort a multi-harness plan; the run fails
+        // only when EVERY planner fails (parity with explore).
+        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: webBlocked ? "blocked" : "failed", error: harnessError, ...telemetrySummary(telemetry) });
+        planAttempts.push({ attemptId, harnessId: adapter.id, status: webBlocked ? "blocked" : "failed", error: harnessError });
+        continue;
       }
       const text = parts.join("\n").trim() || "(no output)";
+      log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "success", ...telemetrySummary(telemetry) });
+      planAttempts.push({ attemptId, harnessId: adapter.id, status: "success", error: null });
       plans.push({ id: adapter.id, text });
       store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
     }
@@ -1223,8 +1655,36 @@ export class Orchestrator {
         taskId,
         "plan",
         paths.root,
-        plans.map((p) => ({ attemptId: "plan", harnessId: p.id, status: "cancelled" })),
+        planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: "cancelled" })),
       );
+    }
+
+    if (plans.length === 0) {
+      const blocked = planAttempts.some((p) => p.status === "blocked");
+      const message = planAttempts.map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`).join("\n") || "all planners failed";
+      this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null);
+      store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${message}\n`);
+      writeFailure(store, paths, {
+        phase: "harness",
+        category: blocked ? "policy" : "harness_error",
+        safeMessage: message,
+        eventRefs: planAttempts.map((p) => `attempts/${p.attemptId}/events.jsonl`),
+        runDir: paths.root,
+        nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
+      });
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`);
+      if (blocked) log.emit("run.blocked", { status: "blocked", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
+      else log.emit("run.failed", { status: "failed", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
+      return {
+        runId,
+        taskId,
+        mode: "plan",
+        status: blocked ? "blocked" : "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: p.status })),
+      };
     }
 
     const reviewers = await this.resolveReviewers(input.repoRoot);
@@ -1243,20 +1703,31 @@ export class Orchestrator {
       });
       ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
       store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
+      if (res.reviewSpendUsd > 0) {
+        const lease = ledger.reserve({ taskId, attemptId: "plan-review", intent: "review", harnessId: "review-panel" });
+        if (lease.granted) ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd);
+        log.emit("budget.observation", { harness_id: "review-panel", kind: "spend", usd: res.reviewSpendUsd, estimated: res.reviewSpendEstimated });
+      }
     }
 
+    const failedPlanners = planAttempts.filter((p) => p.status !== "success");
     const specPack = [
       `# SpecPack (plan ${runId})`,
       "",
       `## Intent\n${redactSecrets(input.prompt)}`,
       "",
-      `## Plans (${plans.length} harness${plans.length === 1 ? "" : "es"})`,
+      `## Plans (${plans.length}/${planAttempts.length} harness${planAttempts.length === 1 ? "" : "es"})`,
       ...plans.map((p) => `\n### ${p.id}\n${redactSecrets(p.text)}`),
+      ...(failedPlanners.length > 0
+        ? ["", "## Planner omissions", ...failedPlanners.map((p) => `- ${p.attemptId} / ${p.harnessId} ${p.status}: ${p.error}`)]
+        : []),
       "",
       "## Open questions / ambiguities (resolve interactively before `claudexor run`)",
       ambiguities.length > 0 ? ambiguities.map((a) => `- ${a.claim}`).join("\n") : "- (none surfaced by plan review; the live user interview is the interactive layer)",
     ].join("\n");
     store.writeText(join(paths.finalDir, "plan.md"), specPack + "\n");
+    this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, planAttempts.find((p) => p.status === "success")?.attemptId ?? null);
+    log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
     log.emit("run.completed", { status: "success" });
 
     return {
@@ -1267,7 +1738,7 @@ export class Orchestrator {
       winner: null,
       runDir: paths.root,
       summary: `SpecPack from ${plans.length} harness plan(s); ${ambiguities.length} open question(s).`,
-      candidates: plans.map((p) => ({ attemptId: "plan", harnessId: p.id, status: "success" })),
+      candidates: planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: p.status })),
     };
   }
 
@@ -1321,10 +1792,23 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const width = opts.mode === "explore" ? Math.min(Math.max(input.n ?? 4, 1), 8) : 1;
-    let adapters: HarnessAdapter[];
+    const externalContextPolicy = contract.external_context.policy;
+    const width = opts.mode === "explore"
+      ? Math.min(Math.max(input.n ?? 4, 1), 8)
+      : externalContextPolicy === "off"
+        ? 1
+        : Math.min(Math.max(input.n ?? 2, 1), 3);
+    let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters({ ...input, prompt, n: width }, opts.intent);
+      if (opts.mode !== "explore") {
+        const seen = new Set<string>();
+        adapters = adapters.filter((routed) => {
+          if (seen.has(routed.adapter.id)) return false;
+          seen.add(routed.adapter.id);
+          return true;
+        });
+      }
     } catch (err) {
       const message = safeErrorMessage(err);
       store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
@@ -1342,9 +1826,30 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    const attempts: { attemptId: string; harnessId: string; status: "success" | "failed"; report: string; error: string | null }[] = [];
-    for (const [idx, adapter] of adapters.entries()) {
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    interface ReadonlyAttempt {
+      attemptId: string;
+      harnessId: string;
+      status: "success" | "failed" | "blocked";
+      report: string;
+      error: string | null;
+      telemetry: AttemptTelemetry;
+    }
+    const attempts: ReadonlyAttempt[] = [];
+    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    let fallbackOpen = false;
+    let budgetStopped = false;
+
+    const runReadonlyAttempt = async (routed: RoutedAdapter, idx: number): Promise<void> => {
+      const adapter = routed.adapter;
       const attemptId = `a${String(idx + 1).padStart(2, "0")}`;
+      const lease = ledger.reserve({ taskId, attemptId, intent: opts.intent, harnessId: adapter.id });
+      if (!lease.granted) {
+        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
+        budgetStopped = true;
+        return;
+      }
+      const effectiveWeb = this.discloseWebUpgrade(log, routed, contract.external_context.policy, attemptId);
       const explorerPrompt = opts.mode === "explore"
         ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
         : prompt;
@@ -1354,11 +1859,14 @@ export class Orchestrator {
         prompt: explorerPrompt,
         cwd: input.repoRoot,
         access: "readonly",
+        external_context_policy: contract.external_context.policy,
+        tool_permission_policy: contract.tool_permission_policy,
         model_hint: input.model ?? null,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
+      const telemetry = createAttemptTelemetry(contract.external_context.policy, contract.external_context.web_required, effectiveWeb);
       const onAbort = () => {
         void adapter.cancel?.(spec.session_id)?.catch(() => {});
       };
@@ -1366,82 +1874,162 @@ export class Orchestrator {
         if (input.signal.aborted) onAbort();
         else input.signal.addEventListener("abort", onAbort, { once: true });
       }
+      let cost = 0;
       let harnessError: string | null = null;
       try {
-        for await (const ev of adapter.run(spec)) {
-          if (input.signal?.aborted) break;
-          const safeEv = redactHarnessEvent(ev);
-          safeInvoke(input.onHarnessEvent, safeEv);
-          log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
-          appendLine(attemptEventsPath, JSON.stringify(safeEv));
-          if (safeEv.type === "message" && safeEv.text) parts.push(safeEv.text);
-          if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+        log.emit("harness.started", { harness_id: adapter.id, attempt_id: attemptId, external_context_policy: contract.external_context.policy });
+        if (!input.signal?.aborted) {
+          for await (const ev of adapter.run(spec)) {
+            if (input.signal?.aborted) break;
+            const safeEv = redactHarnessEvent(ev);
+            safeInvoke(input.onHarnessEvent, safeEv);
+            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+            appendLine(attemptEventsPath, JSON.stringify(safeEv));
+            observeAttemptTelemetry(telemetry, safeEv);
+            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+              cost += safeEv.usage.cost_usd;
+              log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
+            }
+            if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
+            if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+          }
         }
       } catch (err) {
         harnessError = safeErrorMessage(err);
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
+        ledger.settle(lease.lease?.lease_id ?? "", cost);
       }
-      if (input.signal?.aborted) {
-        return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
-          ...attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
-          { attemptId, harnessId: adapter.id, status: "cancelled" },
-        ]);
-      }
+      attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       const report = redactSecrets(parts.join("\n").trim());
+      const unrecovered = unrecoveredToolErrors(telemetry);
+      const webBlocked = webUnsatisfied(telemetry);
+      if (!harnessError && webBlocked) {
+        harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
+      }
+      if (!harnessError && unrecovered.length > 0) {
+        const first = unrecovered[0] as ToolErrorRecord;
+        harnessError = `${first.tool} failed without recovery: ${first.summary}`;
+      }
       if (harnessError) {
-        attempts.push({ attemptId, harnessId: adapter.id, status: "failed", report: "", error: harnessError });
+        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: webBlocked ? "blocked" : "failed", error: harnessError, ...telemetrySummary(telemetry) });
+        attempts.push({ attemptId, harnessId: adapter.id, status: webBlocked ? "blocked" : "failed", report, error: harnessError, telemetry });
         if (opts.mode === "explore") {
           store.writeText(join(paths.findingsDir, `${attemptId}-error.md`), `# Explorer ${attemptId} failed\n\n${harnessError}\n`);
+        }
+        return;
+      }
+      log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "success", ...telemetrySummary(telemetry) });
+      attempts.push({ attemptId, harnessId: adapter.id, status: "success", report: report || "(no output)", error: null, telemetry });
+      if (opts.mode === "explore") {
+        store.writeText(join(paths.findingsDir, `${attemptId}.md`), `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}\n`);
+      }
+    };
+
+    if (opts.mode === "explore") {
+      // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
+      await runBounded(adapters, Math.min(adapters.length, MAX_PARALLEL_CANDIDATES), runReadonlyAttempt);
+    } else {
+      // ask/audit: sequential fallback chain — first success wins; a blocked
+      // attempt opens a fallback arc to the next eligible harness.
+      for (const [idx, routed] of adapters.entries()) {
+        if (input.signal?.aborted) break;
+        await runReadonlyAttempt(routed, idx);
+        const last = attempts[attempts.length - 1];
+        if (!last) continue; // budget-denied slot
+        if (last.status === "success") {
+          if (fallbackOpen) {
+            log.emit("route.fallback.completed", { harness_id: last.harnessId, attempt_id: last.attemptId, status: "success" });
+            fallbackOpen = false;
+          }
+          break;
+        }
+        const hasNext = idx < adapters.length - 1 && !budgetStopped;
+        if (last.status === "blocked" && hasNext) {
+          log.emit("route.fallback.started", {
+            from_harness: last.harnessId,
+            to_harness: adapters[idx + 1]?.adapter.id ?? null,
+            attempt_id: last.attemptId,
+            reason: "web_evidence_unsatisfied",
+            error: last.error,
+          });
+          fallbackOpen = true;
           continue;
         }
-      } else {
-        attempts.push({ attemptId, harnessId: adapter.id, status: "success", report: report || "(no output)", error: null });
-        if (opts.mode === "explore") {
-          store.writeText(join(paths.findingsDir, `${attemptId}.md`), `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}\n`);
-        }
-        continue;
+        // Terminal failure (non-web failure, or no remaining fallback).
+        break;
       }
-      const singleError = harnessError ?? "harness failed";
+    }
+
+    if (input.signal?.aborted) {
+      return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
+        ...attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
+      ]);
+    }
+
+    const succeededReadonly = attempts.filter((a) => a.status === "success");
+    if (opts.mode !== "explore" && succeededReadonly.length === 0) {
+      const last = attempts[attempts.length - 1];
+      const webBlocked = attempts.some((a) => a.status === "blocked");
+      const singleError = last?.error ?? (budgetStopped ? "budget exhausted before any attempt" : "harness failed");
+      if (fallbackOpen || webBlocked) {
+        log.emit("route.fallback.exhausted", { harness_id: last?.harnessId ?? null, attempt_id: last?.attemptId ?? null, reason: "web_evidence_unsatisfied", error: singleError });
+        fallbackOpen = false;
+      }
+      const partialReport = [...attempts].reverse().find((a) => a.report)?.report ?? "";
+      if (partialReport) {
+        store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n> Unverified partial output. The run is ${webBlocked ? "blocked" : "failed"} because a required/attempted tool failed.\n\n${partialReport}\n`);
+        log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}`, state: "diagnostic" });
+      }
+      this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null);
       store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${singleError}\n`);
       writeFailure(store, paths, {
         phase: "harness",
-        category: "harness_error",
-        harnessId: adapter.id,
-        attemptId,
+        category: webBlocked ? "policy" : budgetStopped ? "budget" : "harness_error",
+        harnessId: last?.harnessId,
+        attemptId: last?.attemptId,
         safeMessage: singleError,
-        eventRefs: [`attempts/${attemptId}/events.jsonl`],
+        eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harness: ${adapter.id}\n- Status: failed\n\n${singleError}\n`);
-      log.emit("run.failed", { status: "failed", harness_id: adapter.id, error: singleError, failure_ref: "final/failure.yaml" });
+      const terminal = webBlocked ? "blocked" : budgetStopped && attempts.length === 0 ? "exhausted" : "failed";
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Status: ${terminal}\n\n${singleError}\n`);
+      if (terminal === "blocked") {
+        log.emit("run.blocked", { status: terminal, harness_id: last?.harnessId, error: singleError, failure_ref: "final/failure.yaml" });
+      } else {
+        log.emit("run.failed", { status: terminal, harness_id: last?.harnessId, error: singleError, failure_ref: "final/failure.yaml" });
+      }
       return {
         runId,
         taskId,
         mode: opts.mode,
-        status: "failed",
+        status: terminal,
         winner: null,
         runDir: paths.root,
         summary: singleError,
-        candidates: [{ attemptId, harnessId: adapter.id, status: "failed" }],
+        candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
       };
     }
-    const succeeded = attempts.filter((a) => a.status === "success");
+    const succeeded = succeededReadonly;
     if (opts.mode === "explore" && succeeded.length === 0) {
       const message = attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n");
+      const blocked = attempts.some((a) => a.status === "blocked");
+      this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null);
       writeFailure(store, paths, {
         phase: "harness",
-        category: "harness_error",
+        category: blocked ? "policy" : "harness_error",
         safeMessage: message || "all explorers failed",
         eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Reduce explore width", "Retry after setup"],
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: failed\n\n${message}\n`);
-      log.emit("run.failed", { status: "failed", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
-      return { runId, taskId, mode: opts.mode, status: "failed", winner: null, runDir: paths.root, summary: message, candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })) };
+      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`);
+      if (blocked) log.emit("run.blocked", { status: "blocked", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
+      else log.emit("run.failed", { status: "failed", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
+      return { runId, taskId, mode: opts.mode, status: blocked ? "blocked" : "failed", winner: null, runDir: paths.root, summary: message, candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })) };
     }
+    const unsuccessful = attempts.filter((a) => a.status !== "success");
     const report = opts.mode === "explore"
       ? [
           `Explorers succeeded: ${succeeded.length}/${attempts.length}.`,
@@ -1450,8 +2038,8 @@ export class Orchestrator {
           ...succeeded.map((a) => `\n### ${a.attemptId} / ${a.harnessId}\n\n${a.report}`),
           "",
           "## Omissions / Uncertainty",
-          ...(attempts.filter((a) => a.status === "failed").length
-            ? attempts.filter((a) => a.status === "failed").map((a) => `- ${a.attemptId} / ${a.harnessId} failed: ${a.error}`)
+          ...(unsuccessful.length
+            ? unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} ${a.status}: ${a.error}`)
             : ["- No explorer failures recorded. Claims still need evidence review before edit execution."]),
           "",
           "## Follow-up Questions",
@@ -1460,15 +2048,18 @@ export class Orchestrator {
         ].join("\n")
       : (succeeded[0]?.report ?? "(no output)");
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
+    this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, succeeded[0]?.attemptId ?? null);
+    log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}` });
     if (opts.mode === "explore") {
       store.writeYaml(join(paths.finalDir, "explore-findings.yaml"), {
         mode: "explore",
         width,
-        attempts: attempts.map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, status: a.status, error: a.error })),
-        omissions: attempts.filter((a) => a.status === "failed").map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, error: a.error })),
+        attempts: attempts.map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, status: a.status, error: a.error, telemetry: telemetrySummary(a.telemetry) })),
+        // Omissions account for EVERY unsuccessful explorer, including blocked ones.
+        omissions: unsuccessful.map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, status: a.status, error: a.error })),
         read_only: true,
       });
-      store.writeText(join(paths.finalDir, "omissions.md"), `# Omissions\n\n${attempts.filter((a) => a.status === "failed").map((a) => `- ${a.attemptId} / ${a.harnessId}: ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`);
+      store.writeText(join(paths.finalDir, "omissions.md"), `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`);
     }
     const harnessLabel = attempts.map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`).join(", ");
     store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: success\n\n${report}\n`);
@@ -1526,6 +2117,170 @@ function writeFailure(
   });
 }
 
+function createAttemptTelemetry(
+  policy: ExternalContextPolicy,
+  webRequired: boolean,
+  effectiveMode: ExternalContextPolicy = policy,
+): AttemptTelemetry {
+  return {
+    toolErrors: [],
+    statuslessResults: 0,
+    droppedEvents: 0,
+    web: {
+      required: webRequired,
+      mode: policy,
+      effectiveMode,
+      attempted: false,
+      satisfied: false,
+      failed: false,
+      tool: null,
+      target: null,
+      errorSummary: null,
+    },
+  };
+}
+
+/**
+ * Observe a normalized harness event into the attempt telemetry. Governance is
+ * fully typed: only the `tool` ToolRef on tool_call/tool_result/file_change
+ * events and the run-loop drop counters are consulted — never payload string
+ * matching or tool-name heuristics.
+ */
+function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
+  if (ev.type === "completed") {
+    const dropped =
+      Number(ev.payload?.["dropped_unparsed_lines"] ?? 0) + Number(ev.payload?.["dropped_unrecognized_events"] ?? 0);
+    if (Number.isFinite(dropped) && dropped > 0) t.droppedEvents += dropped;
+    return;
+  }
+  const tool = ev.tool;
+  if (!tool) return;
+
+  if (ev.type === "tool_call" || ev.type === "file_change") {
+    if (tool.kind === "web") {
+      t.web.attempted = true;
+      t.web.tool = tool.name;
+      t.web.target = tool.target ?? t.web.target;
+    }
+    return;
+  }
+
+  if (ev.type !== "tool_result") return;
+  if (tool.status === undefined) {
+    // A result without a status must never silently count as ok.
+    t.statuslessResults += 1;
+    return;
+  }
+  if (tool.status === "error") {
+    t.toolErrors.push({
+      tool: tool.name,
+      kind: tool.kind,
+      target: tool.target ?? null,
+      summary: redactSecrets(tool.error_summary ?? tool.content_summary ?? "tool result marked error").slice(0, 1000),
+      toolUseId: tool.use_id ?? null,
+      recovered: false,
+    });
+    if (tool.kind === "web") {
+      t.web.failed = true;
+      t.web.attempted = true;
+      t.web.tool = tool.name;
+      t.web.target = tool.target ?? t.web.target;
+      t.web.errorSummary = redactSecrets(tool.error_summary ?? "web tool result marked error").slice(0, 1000);
+    }
+    return;
+  }
+  // status === "ok": a later success of the SAME tool is the verified recovery
+  // for that tool's earlier errors within this attempt (CLAUDEXOR_BIBLE §5).
+  for (const err of t.toolErrors) {
+    if (!err.recovered && err.tool === tool.name) err.recovered = true;
+  }
+  if (tool.kind === "web") {
+    t.web.attempted = true;
+    t.web.satisfied = true;
+    t.web.failed = false;
+    t.web.tool = tool.name;
+    t.web.target = tool.target ?? t.web.target;
+  }
+}
+
+const TELEMETRY_TOOL_ERRORS_MAX = 20;
+
+function unrecoveredToolErrors(t: AttemptTelemetry): ToolErrorRecord[] {
+  return t.toolErrors.filter((e) => !e.recovered);
+}
+
+function webStatus(t: AttemptTelemetry): "none" | "attempted" | "satisfied" | "failed" | "unverified" {
+  if (t.web.satisfied) return "satisfied";
+  if (t.web.failed) return "failed";
+  if (t.web.attempted) return "attempted";
+  return t.web.required ? "unverified" : "none";
+}
+
+/** Bounded telemetry summary for events/artifacts (full detail lives in telemetry.yaml). */
+function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
+  const unrecovered = unrecoveredToolErrors(t);
+  return {
+    web_evidence: {
+      required: t.web.required,
+      mode: t.web.mode,
+      effective_mode: t.web.effectiveMode,
+      attempted: t.web.attempted,
+      satisfied: t.web.satisfied,
+      status: webStatus(t),
+      tool: t.web.tool,
+      target: t.web.target,
+      error_summary: t.web.errorSummary,
+    },
+    tool_errors_total: t.toolErrors.length,
+    unrecovered_tool_errors: unrecovered.length,
+    tool_errors: unrecovered.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })),
+    ...(t.droppedEvents > 0 ? { dropped_events: t.droppedEvents } : {}),
+    ...(t.statuslessResults > 0 ? { statusless_tool_results: t.statuslessResults } : {}),
+  };
+}
+
+function attemptTelemetryRecord(attemptId: string, harnessId: string, t: AttemptTelemetry): AttemptTelemetryRecord {
+  const errors = t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX);
+  return {
+    attempt_id: attemptId,
+    harness_id: harnessId,
+    web: {
+      required: t.web.required,
+      policy: t.web.mode,
+      effective_mode: t.web.effectiveMode,
+      attempted: t.web.attempted,
+      satisfied: t.web.satisfied,
+      status: webStatus(t),
+      tool: t.web.tool,
+      target: t.web.target,
+      error_summary: t.web.errorSummary,
+    },
+    tool_errors: errors.map((e) => ({
+      tool: e.tool,
+      kind: e.kind,
+      target: e.target,
+      summary: e.summary,
+      recovered: e.recovered,
+      tool_use_id: e.toolUseId,
+    })),
+    tool_errors_total: t.toolErrors.length,
+    unrecovered_tool_errors: unrecoveredToolErrors(t).length,
+    dropped_events: t.droppedEvents,
+  };
+}
+
+/**
+ * Web evidence gating (locked v0.7 semantics):
+ * - web_required && !satisfied  -> blocked, INCLUDING the never-attempted case;
+ * - attempted && failed && !satisfied -> blocked (a later successful web call
+ *   is the verified recovery that clears it).
+ */
+function webUnsatisfied(t: AttemptTelemetry): boolean {
+  if (t.web.satisfied) return false;
+  if (t.web.required) return true;
+  return t.web.attempted && t.web.failed;
+}
+
 function assertNoSecretLikeTokens(label: string, text: string): void {
   if (containsSecretLikeToken(text)) {
     throw new Error(`${label} contains secret-like token; refusing to persist artifact`);
@@ -1567,8 +2322,22 @@ function harnessEventPayload(harnessId: string, attemptId: string, ev: HarnessEv
     error: safe.error,
     usage: safe.usage,
     observed_model: safe.observed_model,
+    tool: safe.tool,
     payload: safe.payload,
   };
+}
+
+/**
+ * Deduplicate the known "final result repeats the last streamed message" shape
+ * (adjacent only). Legitimately repeated earlier messages are preserved — a
+ * whole-array dedupe would silently merge real output.
+ */
+function pushUniqueText(parts: string[], text: string): void {
+  const normalized = text.trim();
+  if (!normalized) return;
+  const last = parts[parts.length - 1]?.trim();
+  if (last === normalized) return;
+  parts.push(normalized);
 }
 
 function formatFindings(findings: ReviewFinding[]): string {

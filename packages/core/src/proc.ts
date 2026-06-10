@@ -40,6 +40,10 @@ export async function* spawnProcess(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  // A child can exit before/while stdin is written (e.g. a failing `git apply`).
+  // Without a handler the resulting EPIPE becomes an unhandled 'error' event and
+  // can crash the host process; the exit event already carries the real outcome.
+  child.stdin.on("error", () => {});
   if (opts.input !== undefined) {
     child.stdin.write(opts.input);
   }

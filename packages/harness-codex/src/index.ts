@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
@@ -125,12 +125,34 @@ function redactCodexDoctorDetail(text: string): string {
   return redactSecrets(text).slice(0, 500);
 }
 
-export function codexExecArgs(spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "prompt">): string[] {
+export function codexExecArgs(spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt">): string[] {
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
-  if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${spec.effort_hint}"`);
+  if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
+  args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   args.push(spec.prompt);
   return args;
+}
+
+/**
+ * Codex accepts minimal|low|medium|high|xhigh for model_reasoning_effort; the
+ * cross-harness `max` hint (valid for Claude) must clamp to xhigh instead of
+ * producing an invalid config value that breaks mixed-effort races.
+ */
+export function clampCodexEffort(effort: EffortHint): EffortHint {
+  return effort === "max" ? "xhigh" : effort;
+}
+
+function codexWebArgs(policy: HarnessRunSpec["external_context_policy"]): string[] {
+  switch (policy) {
+    case "off":
+      return ["-c", 'web_search="disabled"'];
+    case "live":
+      return ["-c", 'web_search="live"'];
+    case "cached":
+    case "auto":
+      return ["-c", 'web_search="cached"'];
+  }
 }
 
 export function createCodexAdapter(): HarnessAdapter {
@@ -179,6 +201,7 @@ export function createCodexAdapter(): HarnessAdapter {
           mcp: true,
           plugins: true,
           worktree_native: false,
+          web_policy: "native",
           quota_signal: "observed",
           usage_signal: "native",
         },
@@ -243,8 +266,9 @@ export function createCodexAdapter(): HarnessAdapter {
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const nativeAuthed = await loggedIn();
+  const key = codexApiKey();
   const scopedHomeNeedsAuth = Boolean(spec.env?.["CODEX_HOME"]) && !hasScopedCodexAuth(spec.env);
-  if (scopedHomeNeedsAuth && !codexApiKey()) {
+  if (scopedHomeNeedsAuth && !key) {
     yield {
       type: "error",
       session_id: spec.session_id,
@@ -254,75 +278,63 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
-  ensureCodexApiAuth(spec.env, !nativeAuthed || scopedHomeNeedsAuth);
-  const args = codexExecArgs(spec);
   const env: Record<string, string | null | undefined> = {
     ...spec.env,
     OPENAI_API_KEY: null,
     CODEX_API_KEY: null,
     CLAUDEXOR_CODEX_API_KEY: null,
+    // An inherited base-URL override could redirect traffic that carries seeded credentials.
+    OPENAI_BASE_URL: null,
   };
 
+  // Key-only auth parity with claude: a non-envelope run (no scoped CODEX_HOME)
+  // without native login would otherwise have no credentials at all, because
+  // codex ignores OPENAI_API_KEY without an auth.json. Seed a private temporary
+  // CODEX_HOME instead of touching the user's real ~/.codex.
+  let tempCodexHome: string | null = null;
+  if (!spec.env?.["CODEX_HOME"] && !nativeAuthed && key) {
+    tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
+    env["CODEX_HOME"] = tempCodexHome;
+    ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
+  } else {
+    ensureCodexApiAuth(spec.env, !nativeAuthed || scopedHomeNeedsAuth);
+  }
+
+  const args = codexExecArgs(spec);
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
 
-  let sawError = false;
-  let exitCode: number | null = null;
   try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
-      if (ev.type === "stdout") {
-        let obj: unknown;
-        try {
-          obj = JSON.parse(ev.line);
-        } catch {
-          continue;
-        }
-        const out = parseCodexEvent(obj, spec.session_id);
-        if (out) {
-          if (out.type === "started" && spec.model_hint && !out.observed_model) {
-            out.observed_model = spec.model_hint;
-            out.payload = { ...(out.payload ?? {}), observed_model_source: "metadata", model_arg: spec.model_hint };
+    yield* runCliHarness({
+      bin: BIN,
+      args,
+      spec,
+      env,
+      label: "codex",
+      redact: redactSecrets,
+      parseEvent: (obj, sessionId) => {
+        const out = parseCodexEvent(obj, sessionId);
+        if (out === null) return null;
+        for (const ev of out) {
+          // Do NOT fabricate observed_model from the request hint: route proof
+          // exists to catch silent fallback, so an unobserved model must stay
+          // unobserved. Record the requested model for diagnostics only.
+          if (ev.type === "started" && spec.model_hint && !ev.observed_model) {
+            ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
           }
-          if (out.type === "error") sawError = true;
-          if (out.type === "usage" && out.usage && out.usage.cost_usd === undefined) {
-            const est = estimateCodexCostUsd(model, out.usage);
+          if (ev.type === "usage" && ev.usage && ev.usage.cost_usd === undefined) {
+            const est = estimateCodexCostUsd(model, ev.usage);
             if (est !== undefined) {
-              out.usage.cost_usd = est;
-              out.usage.estimated = true;
+              ev.usage.cost_usd = est;
+              ev.usage.estimated = true;
             }
           }
-          yield out;
         }
-      } else if (ev.type === "exit") {
-        exitCode = ev.code;
-      }
-    }
-  } catch (err) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: err instanceof Error ? err.message : String(err),
-    };
-    return;
+        return out;
+      },
+    });
+  } finally {
+    if (tempCodexHome) rmSync(tempCodexHome, { recursive: true, force: true });
   }
-  if (exitCode !== null && exitCode !== 0 && !sawError) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: `codex exited with code ${exitCode}`,
-    };
-  }
-  yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-}
-
-function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
-  const signal = spec.extra?.["abortSignal"];
-  if (!signal || typeof signal !== "object") return undefined;
-  const candidate = signal as Partial<AbortSignal>;
-  return typeof candidate.aborted === "boolean" && typeof candidate.addEventListener === "function"
-    ? (signal as AbortSignal)
-    : undefined;
 }

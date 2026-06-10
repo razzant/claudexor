@@ -1,0 +1,239 @@
+{
+  "$ref": "#/definitions/RunTelemetry",
+  "definitions": {
+    "RunTelemetry": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 2
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "$ref": "#/definitions/RunTelemetry/properties/run_id"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "explore",
+            "agent",
+            "best_of_n",
+            "max_attempts",
+            "until_clean",
+            "plan",
+            "create",
+            "readonly_audit"
+          ]
+        },
+        "requested_access": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ]
+        },
+        "effective_access": {
+          "$ref": "#/definitions/RunTelemetry/properties/requested_access"
+        },
+        "external_context_policy": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "cached",
+            "live"
+          ]
+        },
+        "effective_web_mode": {
+          "$ref": "#/definitions/RunTelemetry/properties/external_context_policy"
+        },
+        "web_required": {
+          "type": "boolean",
+          "default": false
+        },
+        "final_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunTelemetry/properties/run_id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "web": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "default": false
+            },
+            "policy": {
+              "$ref": "#/definitions/RunTelemetry/properties/external_context_policy",
+              "default": "auto"
+            },
+            "effective_mode": {
+              "$ref": "#/definitions/RunTelemetry/properties/external_context_policy",
+              "default": "auto"
+            },
+            "attempted": {
+              "type": "boolean",
+              "default": false
+            },
+            "satisfied": {
+              "type": "boolean",
+              "default": false
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "none",
+                "attempted",
+                "satisfied",
+                "failed",
+                "unverified"
+              ],
+              "default": "none"
+            },
+            "tool": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "error_summary": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attempt_id": {
+                "$ref": "#/definitions/RunTelemetry/properties/run_id"
+              },
+              "harness_id": {
+                "$ref": "#/definitions/RunTelemetry/properties/run_id"
+              },
+              "web": {
+                "$ref": "#/definitions/RunTelemetry/properties/web"
+              },
+              "tool_errors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "web",
+                        "file",
+                        "command",
+                        "mcp",
+                        "search",
+                        "other"
+                      ],
+                      "default": "other"
+                    },
+                    "target": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "recovered": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "tool_use_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "tool",
+                    "summary"
+                  ],
+                  "additionalProperties": false
+                },
+                "default": []
+              },
+              "tool_errors_total": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "unrecovered_tool_errors": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "dropped_events": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              }
+            },
+            "required": [
+              "attempt_id",
+              "harness_id",
+              "web"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "generated_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "run_id",
+        "task_id",
+        "mode",
+        "requested_access",
+        "effective_access",
+        "external_context_policy",
+        "effective_web_mode",
+        "web",
+        "generated_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

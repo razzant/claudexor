@@ -92,6 +92,119 @@
           },
           "additionalProperties": false,
           "default": {}
+        },
+        "harnesses": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "defaultModel": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "effort": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "maxTurns": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "maxRounds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "maxUsd": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "toolsAllow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "toolsDeny": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "fallbackModel": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "web": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "auto",
+                  "cached",
+                  "live"
+                ],
+                "default": "auto"
+              },
+              "nativeOptions": {
+                "type": "object",
+                "additionalProperties": {},
+                "default": {}
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
         }
       },
       "additionalProperties": false

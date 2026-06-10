@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccessProfile, Id, Intent, ProviderFamily } from "./primitives.js";
+import { AccessProfile, ExternalContextPolicy, Id, Intent, ProviderFamily } from "./primitives.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z.enum(["exact", "native", "observed", "manual", "unknown"]);
@@ -17,6 +17,16 @@ export const HarnessKind = z.enum([
   "fake",
 ]);
 export type HarnessKind = z.infer<typeof HarnessKind>;
+
+/**
+ * How a harness can honor an external web/search policy:
+ * - "native": harness has its own first-class web-search switch (e.g. codex web_search config).
+ * - "tools": web access flows through permissioned tools the adapter can allow/deny (e.g. claude WebSearch/WebFetch).
+ * - "none": the adapter cannot enforce the policy; routing must treat web policy as an
+ *   unsupported capability (exclude from `off`/web-required runs, error on explicit selection).
+ */
+export const WebPolicySupport = z.enum(["native", "tools", "none"]);
+export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 export const HarnessCapabilities = z.object({
   plan: z.boolean().default(false),
@@ -40,6 +50,7 @@ export const HarnessCapabilities = z.object({
   mcp: z.boolean().default(false),
   plugins: z.boolean().default(false),
   worktree_native: z.boolean().default(false),
+  web_policy: WebPolicySupport.default("none"),
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
 });
@@ -185,6 +196,14 @@ export const HarnessRunSpec = z.object({
   prompt: z.string(),
   cwd: z.string(),
   access: AccessProfile.default("workspace_write"),
+  external_context_policy: ExternalContextPolicy.default("auto"),
+  tool_permission_policy: z
+    .object({
+      web: ExternalContextPolicy.default("auto"),
+      allow: z.array(z.string()).default([]),
+      deny: z.array(z.string()).default([]),
+    })
+    .default({ web: "auto", allow: [], deny: [] }),
   model_hint: z.string().nullable().default(null),
   effort_hint: EffortHint.nullable().default(null),
   max_usd: z.number().nullable().default(null),
@@ -195,6 +214,33 @@ export const HarnessRunSpec = z.object({
 });
 export type HarnessRunSpec = z.infer<typeof HarnessRunSpec>;
 
+/**
+ * Coarse tool classification used for typed governance (no tool-name string
+ * matching outside adapters). Adapters map native tool names to a kind.
+ */
+export const ToolKind = z.enum(["web", "file", "command", "mcp", "search", "other"]);
+export type ToolKind = z.infer<typeof ToolKind>;
+
+/**
+ * Typed tool reference attached to `tool_call` / `tool_result` events.
+ * `status` is REQUIRED on `tool_result` events (adapter conformance enforces it);
+ * a missing status on a result is treated as a dropped/diagnostic event, never as ok.
+ */
+export const ToolRef = z.object({
+  name: z.string(),
+  kind: ToolKind.default("other"),
+  use_id: z.string().optional(),
+  /** Redacted, bounded human-readable target (query/url/path/command). */
+  target: z.string().optional(),
+  status: z.enum(["ok", "error"]).optional(),
+  /** Redacted, bounded error detail for status=error results. */
+  error_summary: z.string().optional(),
+  /** Redacted, bounded content detail for results (success or failure). */
+  content_summary: z.string().optional(),
+  exit_code: z.number().int().optional(),
+});
+export type ToolRef = z.infer<typeof ToolRef>;
+
 /** Normalized event emitted by every adapter (the SSOT of adapter output). */
 export const HarnessEvent = z.object({
   type: z.enum([
@@ -202,6 +248,7 @@ export const HarnessEvent = z.object({
     "thinking",
     "message",
     "tool_call",
+    "tool_result",
     "file_change",
     "usage",
     "error",
@@ -210,6 +257,8 @@ export const HarnessEvent = z.object({
   session_id: Id,
   ts: z.string(),
   text: z.string().optional(),
+  /** Typed tool info; set on `tool_call` and `tool_result` events. */
+  tool: ToolRef.optional(),
   usage: z
     .object({
       input_tokens: z.number().int().nonnegative().optional(),

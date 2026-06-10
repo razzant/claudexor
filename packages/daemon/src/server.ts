@@ -301,6 +301,8 @@ function jobStateFromResult(result: unknown, aborted: boolean): JobState {
       return "ungated";
     case "review_not_run":
       return "review_not_run";
+    case "blocked":
+      return "blocked";
     case "cancelled":
       return "cancelled";
     case "exhausted":

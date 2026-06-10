@@ -36,6 +36,9 @@ export interface ReviewCandidateResult {
   /** True only when >=2 distinct provider families have verified route proofs. */
   crossFamilyVerified: boolean;
   distinctProviders: ProviderFamily[];
+  /** Observed reviewer panel spend (budget truth: reviewers are paid work). */
+  reviewSpendUsd: number;
+  reviewSpendEstimated: boolean;
 }
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 5 * 60_000;
@@ -60,6 +63,8 @@ interface ReviewerOutput {
   observedModel?: string;
   observedSource: RouteProof["observed"]["evidence_source"];
   artifactDir: string;
+  costUsd: number;
+  costEstimated: boolean;
 }
 
 interface ReviewerArtifactContext {
@@ -105,6 +110,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const routeProofs: RouteProof[] = [];
   const reviewerRequests: ReviewCandidateResult["reviewerRequests"] = [];
   const healthyFamilies = new Set<ProviderFamily>();
+  let reviewSpendUsd = 0;
+  let reviewSpendEstimated = false;
   const reviewerTimeoutMs = input.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
   const patch = writePatchEvidence(input.evidenceDir, input.diff);
   const artifactsBaseDir = input.artifactsDir ?? join(input.evidenceDir, "reviewer-artifacts");
@@ -168,6 +175,8 @@ ${runtimePrompt}
       text = out.text;
       observedModel = out.observedModel;
       observedSource = out.observedSource;
+      reviewSpendUsd += out.costUsd;
+      if (out.costEstimated) reviewSpendEstimated = true;
     } catch (err) {
       reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
       writeParseError(artifact, { error: reviewerError });
@@ -251,6 +260,8 @@ ${runtimePrompt}
     healthyProviders,
     crossFamilyVerified: verifiedFamilies.length >= 2,
     distinctProviders: verifiedFamilies,
+    reviewSpendUsd,
+    reviewSpendEstimated,
   };
 }
 
@@ -288,6 +299,8 @@ async function collectReviewerOutput(
     let text = "";
     let observedModel: string | undefined;
     let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
+    let costUsd = 0;
+    let costEstimated = false;
     for await (const ev of iter) {
       const eventTime = nowIso();
       appendLine(artifact.eventsPath, JSON.stringify(redactValue(ev)));
@@ -298,6 +311,11 @@ async function collectReviewerOutput(
           type: "reviewer.first_event",
           at: firstEventTime,
         });
+      }
+      if (ev.type === "usage" && ev.usage?.cost_usd) {
+        costUsd += ev.usage.cost_usd;
+        if (ev.usage.estimated) costEstimated = true;
+        updateReviewerMetadata(artifact, { cost_usd: costUsd, cost_estimated: costEstimated });
       }
       if (ev.type === "message" && ev.text) {
         const safeText = redactSecrets(ev.text);
@@ -334,7 +352,7 @@ async function collectReviewerOutput(
         observed_source: observedSource,
       });
     }
-    return { text, observedModel, observedSource, artifactDir: artifact.dir };
+    return { text, observedModel, observedSource, artifactDir: artifact.dir, costUsd, costEstimated };
   })();
 
   const timed = new Promise<never>((_, reject) => {

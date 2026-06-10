@@ -35,11 +35,15 @@ export function decideSynthesis(candidates: CandidateEvidence[], mode: Synthesis
   const strictlyBetter = compareCandidates(top, second) < 0;
   const clearWinner = ts.gatesPassed && ts.clean && ts.blockers === 0 && strictlyBetter;
   const topFixable = top.findings.some((f) => FIXABLE_STATUSES.has(f.status));
+  // Only a GREEN runner-up can contribute complementary strengths: a failed
+  // candidate with an empty diff is not "simpler", and synthesizing against it
+  // wastes a paid run plus a full review pass.
   const complementary =
-    ss.testFraction > ts.testFraction ||
-    ss.acceptance > ts.acceptance ||
-    ss.blockers < ts.blockers ||
-    (second.diffSize ?? 0) < (top.diffSize ?? 0); // second is simpler on a lower-priority axis
+    ss.gatesPassed &&
+    (ss.testFraction > ts.testFraction ||
+      ss.acceptance > ts.acceptance ||
+      ss.blockers < ts.blockers ||
+      (second.diffSize ?? 0) < (top.diffSize ?? 0)); // second is simpler on a lower-priority axis
 
   if (clearWinner && !topFixable && !complementary) {
     return { synthesize: false, reason: "a single candidate clearly passes all gates and review", sources: [top.attemptId] };

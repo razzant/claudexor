@@ -374,6 +374,15 @@
               "type": "boolean",
               "default": false
             },
+            "web_policy": {
+              "type": "string",
+              "enum": [
+                "native",
+                "tools",
+                "none"
+              ],
+              "default": "none"
+            },
             "quota_signal": {
               "$ref": "#/definitions/HarnessManifest/properties/capability_profile/properties/output/properties/usage_signal",
               "default": "unknown"

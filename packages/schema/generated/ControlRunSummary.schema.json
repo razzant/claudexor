@@ -234,6 +234,111 @@
             "inherit_native"
           ]
         },
+        "requestedAccess": {
+          "$ref": "#/definitions/ControlRunSummary/properties/access"
+        },
+        "effectiveAccess": {
+          "$ref": "#/definitions/ControlRunSummary/properties/access"
+        },
+        "externalContextPolicy": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "cached",
+            "live"
+          ]
+        },
+        "webRequired": {
+          "type": "boolean"
+        },
+        "webMode": {
+          "$ref": "#/definitions/ControlRunSummary/properties/externalContextPolicy"
+        },
+        "webEvidence": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "default": false
+            },
+            "mode": {
+              "$ref": "#/definitions/ControlRunSummary/properties/externalContextPolicy",
+              "default": "auto"
+            },
+            "effectiveMode": {
+              "$ref": "#/definitions/ControlRunSummary/properties/externalContextPolicy",
+              "default": "auto"
+            },
+            "attempted": {
+              "type": "boolean",
+              "default": false
+            },
+            "satisfied": {
+              "type": "boolean",
+              "default": false
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "none",
+                "attempted",
+                "satisfied",
+                "failed",
+                "unverified"
+              ],
+              "default": "none"
+            },
+            "tool": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "errorSummary": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "rawDetailRef": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "available": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "toolPermissionPolicy": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "outputReadyState": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "finalizing",
+            "ready",
+            "diagnostic"
+          ],
+          "default": "pending"
+        },
         "tests": {
           "type": "array",
           "items": {

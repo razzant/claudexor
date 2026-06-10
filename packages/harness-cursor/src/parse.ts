@@ -1,13 +1,73 @@
-import type { HarnessEvent } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
+import { nowIso, redactSecrets } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
-const EDIT_TOOLS = /edit|write|apply|create/i;
+const FILE_WRITE_VARIANTS = new Set(["write", "edit", "multiEdit", "delete", "create", "apply"]);
 
-/** Map a Cursor `--output-format stream-json` object to normalized events. */
-export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] {
+function variantToolName(toolCall: Json): string {
+  if (!toolCall || typeof toolCall !== "object") return "tool";
+  const keys = Object.keys(toolCall);
+  const variant = keys.find((k) => k.endsWith("ToolCall")) ?? keys[0];
+  if (!variant) return "tool";
+  return variant.endsWith("ToolCall") ? variant.slice(0, -"ToolCall".length) : variant;
+}
+
+function toolKindFor(name: string): ToolKind {
+  const n = name.toLowerCase();
+  if (n.includes("websearch") || n.includes("webfetch") || n === "web" || n.includes("browser")) return "web";
+  if (n.includes("shell") || n.includes("bash") || n.includes("terminal") || n.includes("command")) return "command";
+  if (n.includes("glob") || n.includes("grep") || n.includes("search")) return "search";
+  if (n.includes("read") || n.includes("write") || n.includes("edit") || n.includes("delete") || n === "ls" || n.includes("file")) return "file";
+  if (n.includes("mcp")) return "mcp";
+  return "other";
+}
+
+function argsTarget(args: Json): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const candidates = [args.path, args.file_path, args.command, args.pattern, args.query, args.url];
+  const found = candidates.find((v: unknown) => typeof v === "string" && (v as string).trim().length > 0);
+  return found ? redactSecrets(String(found)).slice(0, 500) : undefined;
+}
+
+function resultSummary(result: Json): string {
+  if (typeof result === "string") return redactSecrets(result).trim().replace(/\s+/g, " ").slice(0, 1000);
+  if (result && typeof result === "object") {
+    const rec = result as Record<string, unknown>;
+    const text = typeof rec["error"] === "string" ? rec["error"] : typeof rec["output"] === "string" ? rec["output"] : typeof rec["text"] === "string" ? rec["text"] : "";
+    if (text) return redactSecrets(text).trim().replace(/\s+/g, " ").slice(0, 1000);
+    return redactSecrets(JSON.stringify(result)).slice(0, 300);
+  }
+  return "";
+}
+
+export type CursorEventParser = (obj: Json, sessionId: string) => HarnessEvent[] | null;
+
+/**
+ * Create a stateful per-run parser for Cursor `--output-format stream-json`.
+ *
+ * Cursor tool_call events are keyed by a variant object (e.g.
+ * `tool_call.writeToolCall.args.path`) with `subtype: "started" | "completed"`
+ * and a `call_id` — there is no flat `name` field. State maps call_id back to
+ * the originating tool so completed events become self-describing
+ * `tool_result`s instead of duplicate `tool_call`s.
+ */
+export function createCursorParser(): CursorEventParser {
+  const pending = new Map<string, ToolRef>();
+  return (obj: Json, sessionId: string): HarnessEvent[] | null => parseCursorEventStateful(obj, sessionId, pending);
+}
+
+/** Stateless convenience used by tests; resolves results within one call only. */
+export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] | null {
+  return parseCursorEventStateful(obj, sessionId, new Map());
+}
+
+function parseCursorEventStateful(
+  obj: Json,
+  sessionId: string,
+  pending: Map<string, ToolRef>,
+): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
 
@@ -28,19 +88,69 @@ export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] {
     return out;
   }
 
+  if (type === "thinking" || type === "reasoning") {
+    const text = typeof obj.text === "string" ? obj.text : typeof obj.message === "string" ? obj.message : "";
+    return text ? [{ type: "thinking", session_id: sessionId, ts, text }] : [];
+  }
+
   if (type === "tool_call") {
-    const name = String(obj.tool_call?.name ?? obj.subtype ?? "tool");
-    if (EDIT_TOOLS.test(name)) {
-      const path = obj.tool_call?.args?.path ?? obj.tool_call?.args?.file_path;
-      return [{ type: "file_change", session_id: sessionId, ts, payload: { path, tool: name } }];
+    const toolCall = obj.tool_call ?? {};
+    const variant = variantToolName(toolCall);
+    const inner = toolCall[Object.keys(toolCall).find((k) => k.endsWith("ToolCall")) ?? variant] ?? toolCall;
+    const args = inner?.args ?? obj.tool_call?.args ?? {};
+    const callId = typeof obj.call_id === "string" ? obj.call_id : typeof obj.id === "string" ? obj.id : undefined;
+    const subtype = String(obj.subtype ?? "started");
+
+    if (subtype === "started" || subtype === "updated") {
+      if (subtype === "updated") return [];
+      const tool: ToolRef = {
+        name: variant,
+        kind: toolKindFor(variant),
+        use_id: callId,
+        target: argsTarget(args),
+      };
+      if (callId) pending.set(callId, tool);
+      return [{ type: "tool_call", session_id: sessionId, ts, text: variant, tool }];
     }
-    return [{ type: "tool_call", session_id: sessionId, ts, text: name }];
+
+    // completed / failed
+    const origin = callId ? pending.get(callId) : undefined;
+    if (callId) pending.delete(callId);
+    const result = inner?.result ?? obj.result;
+    const failed = subtype === "failed" || (result && typeof result === "object" && "error" in result && result.error);
+    const detail = resultSummary(result);
+    const tool: ToolRef = {
+      name: origin?.name ?? variant,
+      kind: origin?.kind ?? toolKindFor(variant),
+      use_id: callId,
+      target: origin?.target ?? argsTarget(args),
+      status: failed ? "error" : "ok",
+      error_summary: failed ? detail || "tool call failed" : undefined,
+      content_summary: detail || undefined,
+    };
+    const events: HarnessEvent[] = [
+      {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        text: failed ? `tool_result: error${detail ? `: ${detail}` : ""}` : "tool_result",
+        tool,
+      },
+    ];
+    if (!failed && FILE_WRITE_VARIANTS.has(tool.name)) {
+      const path = args?.path ?? args?.file_path;
+      events.push({ type: "file_change", session_id: sessionId, ts, tool: { name: tool.name, kind: "file", use_id: callId }, payload: { path, tool: tool.name } });
+    }
+    return events;
   }
 
   if (type === "result") {
     const out: HarnessEvent[] = [];
     if (typeof obj.total_cost_usd === "number") {
       out.push({ type: "usage", session_id: sessionId, ts, usage: { cost_usd: obj.total_cost_usd } });
+    }
+    if (typeof obj.result === "string" && obj.result.trim()) {
+      out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
     }
     if (obj.subtype && obj.subtype !== "success") {
       out.push({ type: "error", session_id: sessionId, ts, error: `result subtype: ${obj.subtype}` });
@@ -52,5 +162,5 @@ export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] {
     return [{ type: "error", session_id: sessionId, ts, error: String(obj.message ?? obj.error ?? "cursor error") }];
   }
 
-  return [];
+  return null;
 }

@@ -1,9 +1,9 @@
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
@@ -47,11 +47,6 @@ function providerKeyAvailable(): boolean {
   return providerKey() !== null;
 }
 
-function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
-  const signal = spec.extra["abortSignal"];
-  return signal instanceof AbortSignal ? signal : undefined;
-}
-
 export function createOpenCodeAdapter(): HarnessAdapter {
   return {
     id: "opencode",
@@ -91,13 +86,14 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           mcp: true,
           plugins: true,
           worktree_native: false,
+          web_policy: "none",
           quota_signal: "observed",
           usage_signal: "observed",
         },
         capability_profile: {
-          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "json", event_schema: "native" }],
+          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { resume_latest: false, resume_by_id: false },
-          output: { final_json: true, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
+          output: { ndjson_events: true, final_json: false, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
           auth: { supported_sources: ["api_key_env"], preferred_source: authReady ? "api_key_env" : null, probe_command: [], env_vars: [...PROVIDER_KEY_ENV] },
           access_control: { readonly: false, workspace_write: true, full: true, mechanism: "opencode permissions not yet conformance-proven" },
         },
@@ -143,38 +139,35 @@ export function createOpenCodeAdapter(): HarnessAdapter {
 }
 
 async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+  // The manifest declares readonly unsupported; running it with default
+  // (write-capable) permissions would be a silent access downgrade.
+  if (spec.access === "readonly") {
+    yield {
+      type: "error",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      error: "opencode does not support a conformance-proven readonly profile; use another harness for read-only intents",
+    };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+    return;
+  }
   const args = ["run", "--format", "json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   args.push(spec.prompt);
   const env: Record<string, string | null | undefined> = { ...spec.env };
-  const key = providerKey(spec.env);
+  // Doctor/run symmetry: resolve the key from the same sources doctor credits
+  // (spec env first, then process env, then stored secrets) so a doctor "ok"
+  // cannot precede a guaranteed-unauthenticated run.
+  const key = providerKey({ ...process.env, ...spec.env });
   for (const envVar of PROVIDER_KEY_ENV) env[envVar] = key?.envVar === envVar ? key.value : null;
 
-  let sawError = false;
-  let exitCode: number | null = null;
-  try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
-      if (ev.type === "stdout") {
-        let obj: unknown;
-        try {
-          obj = JSON.parse(ev.line);
-        } catch {
-          continue;
-        }
-        for (const out of parseOpenCodeEvent(obj, spec.session_id)) {
-          if (out.type === "error") sawError = true;
-          yield out;
-        }
-      } else if (ev.type === "exit") {
-        exitCode = ev.code;
-      }
-    }
-  } catch (err) {
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: err instanceof Error ? err.message : String(err) };
-    return;
-  }
-  if (exitCode !== null && exitCode !== 0 && !sawError) {
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: `opencode exited with code ${exitCode}` };
-  }
-  yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+  yield* runCliHarness({
+    bin: BIN,
+    args,
+    spec,
+    env,
+    label: "opencode",
+    redact: redactSecrets,
+    parseEvent: parseOpenCodeEvent,
+  });
 }

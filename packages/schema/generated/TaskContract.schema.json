@@ -277,7 +277,7 @@
         "access": {
           "type": "object",
           "properties": {
-            "profile": {
+            "requested_profile": {
               "type": "string",
               "enum": [
                 "readonly",
@@ -287,11 +287,74 @@
                 "inherit_native"
               ],
               "default": "workspace_write"
+            },
+            "effective_profile": {
+              "$ref": "#/definitions/TaskContract/properties/access/properties/requested_profile",
+              "default": "workspace_write"
             }
           },
           "additionalProperties": false,
           "default": {
-            "profile": "workspace_write"
+            "requested_profile": "workspace_write",
+            "effective_profile": "workspace_write"
+          }
+        },
+        "external_context": {
+          "type": "object",
+          "properties": {
+            "policy": {
+              "type": "string",
+              "enum": [
+                "off",
+                "auto",
+                "cached",
+                "live"
+              ],
+              "default": "auto"
+            },
+            "web_required": {
+              "type": "boolean",
+              "default": false
+            },
+            "effective_mode": {
+              "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
+              "default": "auto"
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "policy": "auto",
+            "web_required": false,
+            "effective_mode": "auto"
+          }
+        },
+        "tool_permission_policy": {
+          "type": "object",
+          "properties": {
+            "web": {
+              "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
+              "default": "auto"
+            },
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "deny": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "web": "auto",
+            "allow": [],
+            "deny": []
           }
         },
         "budget": {
@@ -299,6 +362,17 @@
           "properties": {
             "portfolio": {
               "type": "string",
+              "enum": [
+                "daily-rich",
+                "balanced",
+                "cheapest",
+                "strongest",
+                "burn",
+                "subscription-first",
+                "api-overflow",
+                "conserve-claude",
+                "conserve-codex"
+              ],
               "default": "subscription-first"
             },
             "max_usd": {
@@ -335,10 +409,6 @@
               "default": true
             },
             "require_no_accepted_fix_first_open": {
-              "type": "boolean",
-              "default": true
-            },
-            "require_rebuttals_not_overturned": {
               "type": "boolean",
               "default": true
             },

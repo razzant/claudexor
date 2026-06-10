@@ -237,6 +237,111 @@
                 "inherit_native"
               ]
             },
+            "requestedAccess": {
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access"
+            },
+            "effectiveAccess": {
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access"
+            },
+            "externalContextPolicy": {
+              "type": "string",
+              "enum": [
+                "off",
+                "auto",
+                "cached",
+                "live"
+              ]
+            },
+            "webRequired": {
+              "type": "boolean"
+            },
+            "webMode": {
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy"
+            },
+            "webEvidence": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "mode": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy",
+                  "default": "auto"
+                },
+                "effectiveMode": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy",
+                  "default": "auto"
+                },
+                "attempted": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "satisfied": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "attempted",
+                    "satisfied",
+                    "failed",
+                    "unverified"
+                  ],
+                  "default": "none"
+                },
+                "tool": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "target": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "errorSummary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "rawDetailRef": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "available": {
+                  "type": "boolean",
+                  "default": true
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "toolPermissionPolicy": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "outputReadyState": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "finalizing",
+                "ready",
+                "diagnostic"
+              ],
+              "default": "pending"
+            },
             "tests": {
               "type": "array",
               "items": {
@@ -373,6 +478,36 @@
                 ],
                 "default": null
               },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "warning",
+                  "error"
+                ],
+                "default": "info"
+              },
+              "toolName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "errorSummary": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
               "rawRef": {
                 "type": [
                   "string",
@@ -499,6 +634,7 @@
                     "no_op",
                     "ungated",
                     "review_not_run",
+                    "blocked",
                     "not_converged",
                     "failed",
                     "exhausted",

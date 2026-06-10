@@ -90,6 +90,9 @@ export type ReviewFinding = z.infer<typeof ReviewFinding>;
 /** Whether a finding can block convergence given its status + evidence. */
 export function isBlocking(f: Pick<ReviewFinding, "severity" | "status" | "evidence">): boolean {
   if (f.status !== "accepted") return false;
+  // A NEEDS_HUMAN escalation blocks until a human decides; the escalation
+  // itself is the signal, so it does not require file/diff evidence.
+  if (f.severity === "NEEDS_HUMAN") return true;
   if (f.severity !== "BLOCK" && f.severity !== "FIX_FIRST") return false;
   const hasEvidence =
     f.evidence.files.length > 0 ||

@@ -24,7 +24,9 @@ function hasEvidence(f: ReviewFinding): boolean {
 export function deterministicDecision(f: ReviewFinding): RevalidateDecision {
   if (f.severity === "OUT_OF_SCOPE") return { status: "out_of_scope" };
   if (f.severity === "INSUFFICIENT_EVIDENCE") return { status: "insufficient_evidence" };
-  if (f.severity === "NEEDS_HUMAN") return { status: "accepted_risk", note: "needs human review" };
+  // A reviewer escalation to a human BLOCKS until a human decides — it must
+  // never silently downgrade to a non-blocking accepted risk.
+  if (f.severity === "NEEDS_HUMAN") return { status: "accepted", note: "human decision required" };
   if ((f.severity === "BLOCK" || f.severity === "FIX_FIRST") && !hasEvidence(f)) {
     return { status: "insufficient_evidence", note: "no evidence -> cannot block" };
   }

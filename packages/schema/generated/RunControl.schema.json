@@ -8,11 +8,7 @@
           "type": "string",
           "enum": [
             "cancel",
-            "interrupt",
-            "successor_run",
-            "answer_question",
-            "approve",
-            "reject"
+            "interrupt"
           ]
         },
         "target": {

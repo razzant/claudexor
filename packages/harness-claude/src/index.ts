@@ -3,15 +3,17 @@ import { tmpdir } from "node:os";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
-import { parseClaudeEvent } from "./parse.js";
+import { createClaudeParser } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
+  // An inherited base-URL override could redirect traffic that carries the injected key.
+  "ANTHROPIC_BASE_URL",
   "CLAUDE_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK",
@@ -137,6 +139,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           mcp: true,
           plugins: true,
           worktree_native: true,
+          web_policy: "tools",
           quota_signal: "observed",
           usage_signal: "exact",
         },
@@ -199,11 +202,43 @@ export function createClaudeAdapter(): HarnessAdapter {
   };
 }
 
+/** Claude's native names for web-permissioned tools. This knowledge lives ONLY in the adapter. */
+const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
+
 export function claudeArgsForSpec(spec: HarnessRunSpec): string[] {
   const args = ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   if (spec.effort_hint) args.push("--effort", spec.effort_hint);
+  if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
+  args.push(...toolPermissionArgs(spec));
   if (spec.extra?.["bare"] === true) args.push("--bare");
+  return args;
+}
+
+/**
+ * Map the external-context policy plus the user's per-harness tool allow/deny
+ * lists to Claude flags. Uses the single comma-separated form: the repeated
+ * variadic form is a known-fragile area of the Claude CLI.
+ * Note `cached` executes as live web here (Claude has no cached web index);
+ * the orchestrator discloses that upgrade via `policy.web.upgraded`.
+ */
+function toolPermissionArgs(spec: HarnessRunSpec): string[] {
+  const policy = spec.external_context_policy;
+  const allow = new Set(spec.tool_permission_policy.allow);
+  const deny = new Set(spec.tool_permission_policy.deny);
+  if (policy === "off") {
+    for (const tool of CLAUDE_WEB_TOOLS) {
+      deny.add(tool);
+      allow.delete(tool);
+    }
+  } else {
+    for (const tool of CLAUDE_WEB_TOOLS) {
+      if (!deny.has(tool)) allow.add(tool);
+    }
+  }
+  const args: string[] = [];
+  if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
+  if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
   return args;
 }
 
@@ -226,50 +261,13 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   for (const name of CLAUDE_PROVIDER_ENV_DENYLIST) env[name] = null;
   if ((!nativeAuthed || scopedConfigNeedsAuth) && key) env.ANTHROPIC_API_KEY = key;
 
-  let sawError = false;
-  let exitCode: number | null = null;
-  try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
-      if (ev.type === "stdout") {
-        let obj: unknown;
-        try {
-          obj = JSON.parse(ev.line);
-        } catch {
-          continue;
-        }
-        for (const out of parseClaudeEvent(obj, spec.session_id)) {
-          if (out.type === "error") sawError = true;
-          yield out;
-        }
-      } else if (ev.type === "exit") {
-        exitCode = ev.code;
-      }
-    }
-  } catch (err) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: err instanceof Error ? err.message : String(err),
-    };
-    return;
-  }
-  if (exitCode !== null && exitCode !== 0 && !sawError) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: `claude exited with code ${exitCode}`,
-    };
-  }
-  yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-}
-
-function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
-  const signal = spec.extra?.["abortSignal"];
-  if (!signal || typeof signal !== "object") return undefined;
-  const candidate = signal as Partial<AbortSignal>;
-  return typeof candidate.aborted === "boolean" && typeof candidate.addEventListener === "function"
-    ? (signal as AbortSignal)
-    : undefined;
+  yield* runCliHarness({
+    bin: BIN,
+    args,
+    spec,
+    env,
+    label: "claude",
+    redact: redactSecrets,
+    parseEvent: createClaudeParser(),
+  });
 }

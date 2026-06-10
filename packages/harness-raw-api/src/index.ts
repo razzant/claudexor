@@ -1,10 +1,13 @@
 import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError } from "@claudexor/core";
+import { HarnessUnavailableError, abortSignalFromSpec } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso } from "@claudexor/util";
 import { parseChatCompletion } from "./parse.js";
+
+/** A stalled remote endpoint must not hang a run forever. */
+const RAW_API_TIMEOUT_MS = 180_000;
 
 export interface RawApiConfig {
   id?: string;
@@ -60,12 +63,14 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           apply_patch: false,
           structured_events: true,
           structured_output: true,
-          json_schema_output: true,
+          // spec.output_schema is not wired to the request yet; do not overclaim.
+          json_schema_output: false,
           resume: false,
           cancel: false,
           mcp: false,
           plugins: false,
           worktree_native: false,
+          web_policy: "none",
           quota_signal: "unknown",
           usage_signal: "exact",
         },
@@ -105,26 +110,34 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       const key = apiKey();
       if (!key) {
         yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: `raw-api: ${keyEnv} not set` };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
         return;
       }
       const model = spec.model_hint ?? defaultModel;
-      yield { type: "started", session_id: spec.session_id, ts: nowIso(), observed_model: model };
+      // The model is only REQUESTED here; the observed model comes from the response.
+      yield { type: "started", session_id: spec.session_id, ts: nowIso(), payload: { requested_model: model } };
       try {
+        const specSignal = abortSignalFromSpec(spec);
+        const timeoutSignal = AbortSignal.timeout(RAW_API_TIMEOUT_MS);
+        const signal = specSignal ? AbortSignal.any([specSignal, timeoutSignal]) : timeoutSignal;
         const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
           body: JSON.stringify({ model, messages: [{ role: "user", content: spec.prompt }] }),
-          signal: abortSignalFromSpec(spec),
+          signal,
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
+          const retryAfter = res.headers.get("retry-after");
+          const resetsAt = retryAfter ? resetsAtFromRetryAfter(retryAfter) : null;
           yield {
             type: "error",
             session_id: spec.session_id,
             ts: nowIso(),
             error: `raw-api HTTP ${res.status}`,
-            payload: res.status === 429 ? { resets_at: null } : { body: body.slice(0, 500) },
+            payload: res.status === 429 ? { resets_at: resetsAt } : { body: body.slice(0, 500) },
           };
+          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
         }
         const json = await res.json();
@@ -135,17 +148,20 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           session_id: spec.session_id,
           ts: nowIso(),
           usage: { input_tokens: parsed.usage.input_tokens, output_tokens: parsed.usage.output_tokens },
-          observed_model: parsed.model ?? model,
+          observed_model: parsed.model ?? undefined,
         };
-        yield { type: "completed", session_id: spec.session_id, ts: nowIso(), observed_model: parsed.model ?? model };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso(), observed_model: parsed.model ?? undefined };
       } catch (err) {
         yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: err instanceof Error ? err.message : String(err) };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       }
     },
   };
 }
 
-function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
-  const signal = spec.extra["abortSignal"];
-  return signal instanceof AbortSignal ? signal : undefined;
+function resetsAtFromRetryAfter(header: string): string | null {
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return new Date(Date.now() + seconds * 1000).toISOString();
+  const date = new Date(header);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }

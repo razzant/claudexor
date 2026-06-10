@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccessProfile, ContentHash, Id, ModeKind, ProviderFamily } from "./primitives.js";
+import { AccessProfile, ContentHash, ExternalContextPolicy, Id, ModeKind, OutputReadyState, ProviderFamily } from "./primitives.js";
 import { Portfolio } from "./budget.js";
 import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
@@ -38,7 +38,10 @@ export const ControlRunStartRequest = z
     n: z.number().int().positive().optional(),
     attempts: z.number().int().positive().nullable().optional(),
     maxUsd: z.number().nonnegative().nullable().optional(),
+    /** Requested access profile. Effective access is derived by the engine and never client-supplied. */
     access: AccessProfile.optional(),
+    web: ExternalContextPolicy.optional(),
+    externalContextPolicy: ExternalContextPolicy.optional(),
     tests: z.array(z.string()).optional(),
     envProfile: z.string().optional(),
     specPath: z.string().optional(),
@@ -106,7 +109,10 @@ export const ControlSetupJob = z
     requiresConfirmation: z.boolean().default(false),
     createdAt: z.string(),
     startedAt: z.string().nullable().default(null),
+    firstOutputAt: z.string().nullable().default(null),
+    lastOutputAt: z.string().nullable().default(null),
     finishedAt: z.string().nullable().default(null),
+    retryCount: z.number().int().nonnegative().default(0),
   })
   .strict();
 export type ControlSetupJob = z.infer<typeof ControlSetupJob>;
@@ -219,6 +225,24 @@ export const ControlProjectMetadata = z.object({
 });
 export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
 
+export const ControlWebEvidence = z.object({
+  required: z.boolean().default(false),
+  /** Requested external-context policy for the run. */
+  mode: ExternalContextPolicy.default("auto"),
+  /** Mode the selected route actually executed (disclosed upgrades, e.g. claude cached->live). */
+  effectiveMode: ExternalContextPolicy.default("auto"),
+  attempted: z.boolean().default(false),
+  satisfied: z.boolean().default(false),
+  status: z.enum(["none", "attempted", "satisfied", "failed", "unverified"]).default("none"),
+  tool: z.string().nullable().default(null),
+  target: z.string().nullable().default(null),
+  errorSummary: z.string().nullable().default(null),
+  rawDetailRef: z.string().nullable().default(null),
+  /** False when the run predates telemetry.yaml; surfaces must render "telemetry unavailable". */
+  available: z.boolean().default(true),
+});
+export type ControlWebEvidence = z.infer<typeof ControlWebEvidence>;
+
 export const ControlRunSummary = z.object({
   jobId: z.string(),
   runId: z.string(),
@@ -239,6 +263,14 @@ export const ControlRunSummary = z.object({
   spendUsd: z.number().nullable().optional(),
   spendEstimated: z.boolean().optional(),
   access: AccessProfile.optional(),
+  requestedAccess: AccessProfile.optional(),
+  effectiveAccess: AccessProfile.optional(),
+  externalContextPolicy: ExternalContextPolicy.optional(),
+  webRequired: z.boolean().optional(),
+  webMode: ExternalContextPolicy.optional(),
+  webEvidence: ControlWebEvidence.default({}),
+  toolPermissionPolicy: z.record(z.string(), z.unknown()).optional(),
+  outputReadyState: OutputReadyState.default("pending"),
   tests: z.array(z.string()).optional(),
   specId: z.string().optional(),
   specHash: ContentHash.optional(),
@@ -263,6 +295,10 @@ export const ControlTimelineEvent = z.object({
   attemptId: z.string().nullable().default(null),
   title: z.string(),
   detail: z.string().nullable().default(null),
+  severity: z.enum(["info", "warning", "error"]).default("info"),
+  toolName: z.string().nullable().default(null),
+  target: z.string().nullable().default(null),
+  errorSummary: z.string().nullable().default(null),
   rawRef: z.string().nullable().default(null),
 });
 export type ControlTimelineEvent = z.infer<typeof ControlTimelineEvent>;
@@ -315,37 +351,22 @@ export const RunControlTarget = z.object({
 export type RunControlTarget = z.infer<typeof RunControlTarget>;
 
 export const RunControl = z.object({
-  kind: z.enum(["cancel", "interrupt", "successor_run", "answer_question", "approve", "reject"]),
+  kind: z.enum(["cancel", "interrupt"]),
   target: RunControlTarget.default({}),
   reason: z.string().optional(),
   idempotencyKey: z.string().optional(),
 });
 export type RunControl = z.infer<typeof RunControl>;
 
-export const RunInput = z.object({
-  kind: z.enum(["message", "answer", "approval", "rejection", "correction"]),
-  target: RunControlTarget.default({}),
-  text: z.string().optional(),
-  answers: z.array(z.record(z.string(), z.unknown())).default([]),
-  idempotencyKey: z.string().optional(),
-});
-export type RunInput = z.infer<typeof RunInput>;
-
 export const ControlRunControlRequest = z.object({
   control: RunControl,
 });
 export type ControlRunControlRequest = z.infer<typeof ControlRunControlRequest>;
 
-export const ControlRunInputRequest = z.object({
-  input: RunInput,
-});
-export type ControlRunInputRequest = z.infer<typeof ControlRunInputRequest>;
-
 export const ControlRunControlResponse = z.object({
   accepted: z.boolean(),
   status: z.enum(["applied", "queued", "rejected", "unsupported"]).default("queued"),
   runId: Id.optional(),
-  successorRunId: Id.optional(),
   message: z.string().optional(),
 });
 export type ControlRunControlResponse = z.infer<typeof ControlRunControlResponse>;
@@ -406,6 +427,24 @@ export const ControlSettingsSnapshot = z.object({
       maxUsdPerRun: z.number().nullable().default(null),
       maxUsdPerDay: z.number().nullable().default(null),
     })
+    .default({}),
+  harnesses: z
+    .record(
+      z.string(),
+      z.object({
+        enabled: z.boolean().default(true),
+        defaultModel: z.string().nullable().default(null),
+        effort: EffortHint.nullable().default(null),
+        maxTurns: z.number().int().positive().nullable().default(null),
+        maxRounds: z.number().int().positive().nullable().default(null),
+        maxUsd: z.number().nonnegative().nullable().default(null),
+        toolsAllow: z.array(z.string()).default([]),
+        toolsDeny: z.array(z.string()).default([]),
+        fallbackModel: z.string().nullable().default(null),
+        web: ExternalContextPolicy.default("auto"),
+        nativeOptions: z.record(z.string(), z.unknown()).default({}),
+      }),
+    )
     .default({}),
 });
 export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;

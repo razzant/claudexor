@@ -11,6 +11,7 @@
             "thinking",
             "message",
             "tool_call",
+            "tool_result",
             "file_change",
             "usage",
             "error",
@@ -26,6 +27,52 @@
         },
         "text": {
           "type": "string"
+        },
+        "tool": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "web",
+                "file",
+                "command",
+                "mcp",
+                "search",
+                "other"
+              ],
+              "default": "other"
+            },
+            "use_id": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error"
+              ]
+            },
+            "error_summary": {
+              "type": "string"
+            },
+            "content_summary": {
+              "type": "string"
+            },
+            "exit_code": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false
         },
         "usage": {
           "type": "object",

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -17,10 +17,12 @@ import { SecretStore } from "@claudexor/secrets";
 import {
   DecisionRecord,
   EffortHint,
+  ExternalContextPolicy,
   ModeKind as ModeKindSchema,
   Portfolio,
   type ModeKind,
   SpecPack as SpecPackSchema,
+  RunTelemetry,
   TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
@@ -48,6 +50,8 @@ function orchestratorRunner() {
       mode: p?.mode ?? "agent",
       harnesses: p?.harness ? [String(p.harness)] : undefined,
       primaryHarness: p?.primaryHarness ? String(p.primaryHarness) : undefined,
+      web: p?.web ? ExternalContextPolicy.parse(String(p.web)) : undefined,
+      externalContextPolicy: p?.externalContextPolicy ? ExternalContextPolicy.parse(String(p.externalContextPolicy)) : undefined,
       model: p?.model ? String(p.model) : undefined,
       effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
       n: typeof p?.n === "number" ? p.n : undefined,
@@ -91,6 +95,7 @@ Options:
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
   --access <profile>       Access profile: readonly|workspace_write|full|inherit_native
+  --web <mode>             External web/search policy: off|auto|cached|live
   --model <id>             Model hint forwarded to the selected harness route
   --effort <level>         Reasoning effort hint: low|medium|high|xhigh|max
   --primary-harness <id>   Bias single-route modes and first candidate choice
@@ -165,6 +170,14 @@ function effortHint(args: ParsedArgs): EffortHint | undefined {
   return parsed.data;
 }
 
+function webPolicy(args: ParsedArgs): "off" | "auto" | "cached" | "live" | undefined {
+  const v = flagStr(args, "web");
+  if (v === undefined) return undefined;
+  const parsed = ExternalContextPolicy.safeParse(v);
+  if (!parsed.success) throw new Error(`invalid --web '${v}' (expected off|auto|cached|live)`);
+  return parsed.data;
+}
+
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. */
 function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
   const v = flagStr(args, "reviewer-model");
@@ -221,8 +234,10 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
     return 2;
   }
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
+  let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
+    resolvedWebPolicy = webPolicy(args);
   } catch (err) {
     process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
@@ -249,6 +264,8 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       tests,
       maxUsd: maxUsd ?? null,
       access: accessProfile(args),
+      web: resolvedWebPolicy,
+      externalContextPolicy: resolvedWebPolicy,
       model: flagStr(args, "model"),
       effort: effortHint(args),
       specId: spec?.id,
@@ -305,6 +322,7 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
         harnesses: harnessList(args),
         n: intFlag(args, "n"),
         access: "readonly",
+        web: webPolicy(args),
       });
       planRunId = plan.runId;
       planDir = plan.runDir;
@@ -370,6 +388,54 @@ function print(s: string): void {
 
 function printJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
+function primaryOutputForCli(root: string, mode?: ModeKind): { kind: string; path: string; text: string } | null {
+  const candidates =
+    mode === "ask"
+      ? [{ kind: "answer", path: "final/answer.md" }]
+      : mode === "plan"
+        ? [{ kind: "plan", path: "final/plan.md" }]
+        : mode === "explore"
+          ? [{ kind: "report", path: "final/explore.md" }, { kind: "summary", path: "final/summary.md" }]
+          : mode === "readonly_audit"
+            ? [{ kind: "report", path: "final/report.md" }, { kind: "summary", path: "final/summary.md" }]
+            : [{ kind: "summary", path: "final/summary.md" }, { kind: "patch", path: "final/patch.diff" }];
+  for (const candidate of candidates) {
+    const text = readTextSafe(join(root, candidate.path));
+    if (text?.trim()) return { ...candidate, text };
+  }
+  const failure = readTextSafe(join(root, "final/failure.yaml"));
+  return failure?.trim() ? { kind: "diagnostic", path: "final/failure.yaml", text: failure } : null;
+}
+
+function listCliArtifacts(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const abs = join(dir, name);
+      const rel = relative(root, abs).split(sep).join("/");
+      const st = lstatSync(abs);
+      out.push(st.isDirectory() ? `${rel}/` : rel);
+      if (st.isDirectory()) walk(abs);
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function targetFromCliInput(input: unknown): string | undefined {
+  const rec = objectRecord(input);
+  return str(rec["query"]) ?? str(rec["url"]) ?? str(rec["file_path"]) ?? str(rec["path"]);
 }
 
 function statusGlyph(status: string): string {
@@ -449,6 +515,14 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
       print(`budget.max_usd_per_day: ${cfg.global.budget.max_usd_per_day ?? "(none)"}`);
+      const harnessIds = Object.keys(cfg.global.harnesses);
+      if (harnessIds.length) {
+        print("harnesses:");
+        for (const id of harnessIds) {
+          const h = cfg.global.harnesses[id]!;
+          print(`  ${id}: enabled=${h.enabled} model=${h.default_model ?? "(native)"} effort=${h.effort ?? "(native)"} web=${h.web} max_turns=${h.max_turns ?? "(none)"} max_usd=${h.max_usd ?? "(none)"}`);
+        }
+      }
     }
     return 0;
   }
@@ -731,14 +805,66 @@ async function main(): Promise<number> {
       const paths = store.runPaths(runId);
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
-      if (json) {
-        printJson({ runId, runDir: paths.root, decision, work_product: workProduct });
-        return decision || workProduct ? 0 : 1;
-      }
+      const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
+      const primary = primaryOutputForCli(paths.root, contract.success ? contract.data.mode.kind : undefined);
+      // The CLI projects the orchestrator-owned telemetry artifact and NEVER
+      // recomputes evidence from raw events (single-owner rule); a missing
+      // artifact (legacy run) renders "telemetry unavailable".
+      const parsedTelemetry = RunTelemetry.safeParse(store.readYaml(join(paths.finalDir, "telemetry.yaml")));
+      const telemetry = parsedTelemetry.success ? parsedTelemetry.data : null;
+      const toolErrors = telemetry
+        ? telemetry.attempts.flatMap((a) => a.tool_errors.filter((e) => !e.recovered).map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })))
+        : [];
+      const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
+      const outputReadyState = primary?.kind === "diagnostic"
+        ? "diagnostic"
+        : primary?.text.trim()
+          ? "ready"
+          : readTextSafe(join(paths.finalDir, "failure.yaml"))
+            ? "diagnostic"
+            : "finalizing";
+      const parsedDecision = DecisionRecord.safeParse(decision);
       const summary = readTextSafe(join(paths.finalDir, "summary.md"));
+      if (json) {
+        printJson({ runId, runDir: paths.root, outputReadyState, contract: contract.success ? contract.data : null, telemetry, toolErrors, primaryOutput: primary, decision, work_product: workProduct, artifacts });
+        // exit-code parity with the text mode: read-only runs have no decision record
+        return summary || primary ? 0 : 1;
+      }
       print(`run ${runId} @ ${paths.root}`);
-      print(summary ?? "(no summary — run may not exist)");
-      return summary ? 0 : 1;
+      if (contract.success) {
+        print(`mode: ${contract.data.mode.kind}`);
+        print(`access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`);
+      }
+      if (telemetry) {
+        print(`web: policy=${telemetry.external_context_policy} effective=${telemetry.effective_web_mode} required=${telemetry.web_required} evidence=${telemetry.web.status}`);
+      } else if (contract.success) {
+        print(`web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`);
+      }
+      print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
+      if (parsedDecision.success) {
+        print(`decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}`);
+        const budget = parsedDecision.data.budget_summary;
+        print(`budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`);
+      }
+      if (telemetry && (telemetry.web.attempted || telemetry.web.required)) {
+        print(`web evidence: status=${telemetry.web.status} tool=${telemetry.web.tool ?? "none"} target=${telemetry.web.target ?? "none"}${telemetry.web.error_summary ? ` error=${telemetry.web.error_summary}` : ""}`);
+      }
+      if (toolErrors.length) {
+        print("tool errors (unrecovered):");
+        for (const err of toolErrors.slice(-8)) print(`  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`);
+      }
+      if (primary?.text.trim()) {
+        print("");
+        print(primary.text.trim());
+      } else {
+        print(summary ?? "(no summary — run may not exist)");
+      }
+      if (artifacts.length) {
+        print("");
+        print("artifacts:");
+        for (const a of artifacts.slice(0, 40)) print(`  - ${a}`);
+      }
+      return summary || primary ? 0 : 1;
     }
 
     case "apply": {

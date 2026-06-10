@@ -89,12 +89,31 @@
           ],
           "default": null
         },
+        "firstOutputAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "lastOutputAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "finishedAt": {
           "type": [
             "string",
             "null"
           ],
           "default": null
+        },
+        "retryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       },
       "required": [

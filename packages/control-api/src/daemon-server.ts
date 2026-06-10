@@ -5,6 +5,7 @@ import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep 
 import { checkPatch, deliver } from "@claudexor/delivery";
 import {
   AccessProfile,
+  ControlWebEvidence,
   ControlApplyCheckRequest,
   ControlApplyRequest,
   ControlHarnessSetupRequest,
@@ -23,7 +24,6 @@ import {
   ControlQueuedRunInfo,
   ControlRunControlRequest,
   ControlRunControlResponse,
-  ControlRunInputRequest,
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
@@ -38,6 +38,8 @@ import {
   ReviewFinding,
   RunEvent,
   RunFailure,
+  RunTelemetry,
+  TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
@@ -90,7 +92,7 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
+const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
@@ -439,54 +441,15 @@ export class DaemonControlApiServer {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
-      if (body.control.kind === "cancel" || body.control.kind === "interrupt") {
-        appendRunAuditEvent(rec, "control.requested", { control: body.control });
-        await this.opts.daemon.cancel(rec.id);
-        appendRunAuditEvent(rec, "control.applied", { control: body.control });
-        return this.json(res, 200, ControlRunControlResponse.parse({
-          accepted: true,
-          status: "applied",
-          runId: rec.runId ?? rec.id,
-          message: `${body.control.kind} requested`,
-        }));
-      }
-      appendRunAuditEvent(rec, "control.rejected", { control: body.control, reason: "unsupported" });
-      return this.json(res, 409, ControlRunControlResponse.parse({
-        accepted: false,
-        status: "unsupported",
-        runId: rec.runId ?? rec.id,
-        message: `control '${body.control.kind}' is not supported by this run yet`,
-      }));
-    }
-
-    const inputMatch = /^\/runs\/([^/]+)\/input$/.exec(path);
-    if (method === "POST" && inputMatch) {
-      const rec = await this.findRun(decodeURIComponent(inputMatch[1] as string));
-      if (!rec) return this.json(res, 404, { error: "no such run" });
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        const body = ControlRunInputRequest.parse(raw);
-        appendRunAuditEvent(rec, "input.received", { input: body.input });
-      } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
-      }
-      appendRunAuditEvent(rec, "control.rejected", { input: true, reason: "unsupported" });
-      return this.json(res, 409, ControlRunControlResponse.parse({
-        accepted: false,
-        status: "unsupported",
-        runId: rec.runId ?? rec.id,
-        message: "live input is not supported by this run yet",
-      }));
-    }
-
-    const cancelMatch = /^\/runs\/([^/]+)\/cancel$/.exec(path);
-    if (method === "POST" && cancelMatch) {
-      const rec = await this.findRun(decodeURIComponent(cancelMatch[1] as string));
-      if (!rec) return this.json(res, 404, { error: "no such run" });
+      appendRunAuditEvent(rec, "control.requested", { control: body.control });
       await this.opts.daemon.cancel(rec.id);
-      return this.json(res, 200, { runId: rec.runId ?? rec.id, jobId: rec.id, cancelled: true });
+      appendRunAuditEvent(rec, "control.applied", { control: body.control });
+      return this.json(res, 200, ControlRunControlResponse.parse({
+        accepted: true,
+        status: "applied",
+        runId: rec.runId ?? rec.id,
+        message: `${body.control.kind} requested`,
+      }));
     }
 
     const eventsMatch = /^\/runs\/([^/]+)\/events$/.exec(path);
@@ -608,7 +571,7 @@ export class DaemonControlApiServer {
           type = "malformed";
         }
         res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
-        if (type === "run.completed" || type === "run.failed") {
+        if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
           res.write("event: end\ndata: {}\n\n");
           res.end();
           cleanup();
@@ -727,9 +690,19 @@ function appendRunAuditEvent(rec: DaemonRunRecord, type: string, payload: Record
 
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const p = paramsRecord(rec);
-  const parsedMode = typeof p["mode"] === "string" ? ModeKind.parse(p["mode"]) : undefined;
-  const parsedPortfolio = typeof p["portfolio"] === "string" ? Portfolio.parse(p["portfolio"]) : undefined;
-  const parsedAccess = typeof p["access"] === "string" ? AccessProfile.parse(p["access"]) : undefined;
+  // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
+  // must degrade to an unknown field, never 500 the whole run list forever.
+  const parsedMode = ModeKind.safeParse(p["mode"]);
+  const parsedPortfolio = Portfolio.safeParse(p["portfolio"]);
+  const parsedAccess = parseAccessMaybe(p["access"]);
+  const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
+  const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
+  // Access truth comes from engine artifacts ONLY (contract/telemetry); client
+  // params can request but never assert what was effectively enforced.
+  const requestedAccess = telemetry?.requested_access ?? task?.access.requested_profile ?? parsedAccess;
+  const effectiveAccess = telemetry?.effective_access ?? task?.access.effective_profile;
+  const externalContextPolicy = telemetry?.external_context_policy ?? task?.external_context.policy;
+  const webEvidence = controlWebEvidence(telemetry, task);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const budget = budgetSnapshot(rec, decision);
   return ControlRunSummary.parse({
@@ -741,23 +714,61 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     error: rec.error,
     failure: readFailure(rec),
     project: projectMetadata(rec),
-    mode: parsedMode,
+    mode: parsedMode.success ? parsedMode.data : undefined,
     prompt: typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined,
     harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
-    portfolio: parsedPortfolio,
+    portfolio: parsedPortfolio.success ? parsedPortfolio.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
     n: typeof p["n"] === "number" ? p["n"] : undefined,
     maxUsd: typeof p["maxUsd"] === "number" || p["maxUsd"] === null ? (p["maxUsd"] as number | null) : undefined,
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
-    access: parsedAccess,
+    access: effectiveAccess ?? parsedAccess,
+    requestedAccess,
+    effectiveAccess,
+    externalContextPolicy,
+    webRequired: telemetry?.web_required ?? task?.external_context.web_required,
+    webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
+    webEvidence,
+    toolPermissionPolicy: task?.tool_permission_policy,
+    outputReadyState: outputReadyState(rec),
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
     specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
     specHash: typeof p["specHash"] === "string" ? p["specHash"] : undefined,
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,
+  });
+}
+
+/**
+ * Project the orchestrator-owned telemetry artifact into the control DTO. The
+ * control plane NEVER recomputes web evidence from raw events: a run without
+ * `final/telemetry.yaml` (legacy or still running) renders `available: false`
+ * so surfaces show "telemetry unavailable" instead of a recomputed guess.
+ */
+function controlWebEvidence(telemetry: RunTelemetry | null, task: TaskContract | null): ControlWebEvidence {
+  if (!telemetry) {
+    return ControlWebEvidence.parse({
+      required: task?.external_context.web_required ?? false,
+      mode: task?.external_context.policy ?? "auto",
+      effectiveMode: task?.external_context.effective_mode ?? task?.external_context.policy ?? "auto",
+      available: false,
+    });
+  }
+  return ControlWebEvidence.parse({
+    required: telemetry.web.required,
+    mode: telemetry.web.policy,
+    effectiveMode: telemetry.web.effective_mode,
+    attempted: telemetry.web.attempted,
+    satisfied: telemetry.web.satisfied,
+    status: telemetry.web.status,
+    tool: telemetry.web.tool,
+    target: telemetry.web.target,
+    errorSummary: telemetry.web.error_summary,
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
   });
 }
 
@@ -827,15 +838,50 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
   return null;
 }
 
+function outputReadyState(rec: DaemonRunRecord): "pending" | "finalizing" | "ready" | "diagnostic" {
+  const primary = primaryOutput(rec);
+  if (primary?.kind === "diagnostic") return "diagnostic";
+  if (primary?.text && primary.text.trim()) return "ready";
+  if (TERMINAL_STATES.has(rec.state)) return readFailure(rec) ? "diagnostic" : "finalizing";
+  return "pending";
+}
+
+function parseAccessMaybe(value: unknown): AccessProfile | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = AccessProfile.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Typed severity per event type — no string matching over event names. */
+const WARNING_EVENT_TYPES = new Set([
+  "route.fallback.started",
+  "route.fallback.exhausted",
+  "policy.web.upgraded",
+  "run.blocked",
+]);
+const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
+
 function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
   const out: ControlTimelineEvent[] = [];
   for (const ev of readRunEvents(rec)) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
+    // Typed tool info travels on the normalized HarnessEvent `tool` field.
+    const tool = payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
+      ? (payload["tool"] as Record<string, unknown>)
+      : {};
     const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
     const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
     const title = stringOrNull(payload["title"] ?? payload["message"] ?? payload["summary"] ?? payload["text"] ?? payload["error"]) ?? prettyEventType(type);
-    const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]);
+    const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
+    const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ?? stringOrNull(tool["content_summary"]) ?? errorSummary;
+    const toolName = stringOrNull(tool["name"]);
+    const target = stringOrNull(tool["target"]);
+    const severity = payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)
+      ? "error"
+      : WARNING_EVENT_TYPES.has(type)
+        ? "warning"
+        : "info";
     out.push(ControlTimelineEvent.parse({
       type,
       ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
@@ -843,6 +889,10 @@ function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
       attemptId,
       title,
       detail,
+      severity,
+      toolName,
+      target,
+      errorSummary,
       rawRef: "events.jsonl",
     }));
   }

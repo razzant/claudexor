@@ -52,6 +52,8 @@ async function main(): Promise<void> {
         // Policy from the GUI composer / API client (applied, not just displayed).
         maxUsd: p.maxUsd ?? null,
         access: p.access,
+        web: p.web ?? p.externalContextPolicy,
+        externalContextPolicy: p.externalContextPolicy ?? p.web,
         model: p.model,
         effort: p.effort,
         tests: Array.isArray(p.tests) ? p.tests : undefined,
@@ -152,6 +154,19 @@ function controlServices() {
           maxUsdPerRun: cfg.global.budget.max_usd_per_run,
           maxUsdPerDay: cfg.global.budget.max_usd_per_day,
         },
+        harnesses: Object.fromEntries(Object.entries(cfg.global.harnesses).map(([id, h]) => [id, {
+          enabled: h.enabled,
+          defaultModel: h.default_model,
+          effort: h.effort,
+          maxTurns: h.max_turns,
+          maxRounds: h.max_rounds,
+          maxUsd: h.max_usd,
+          toolsAllow: h.tools_allow,
+          toolsDeny: h.tools_deny,
+          fallbackModel: h.fallback_model,
+          web: h.web,
+          nativeOptions: h.native_options,
+        }])),
       };
     },
     updateSettings: async (patch: unknown) => {
@@ -372,6 +387,19 @@ function createSetupJobManager() {
     appendLine(job.logPath, `[${new Date().toISOString()}] ${redactSecrets(line)}`);
   };
 
+  const noteJobOutput = (jobId: string): void => {
+    const current = jobs.get(jobId);
+    if (!current || current.state !== "running") return;
+    const now = nowForDto();
+    update(jobId, {
+      firstOutputAt: current.firstOutputAt ?? now,
+      lastOutputAt: now,
+      message: current.firstOutputAt
+        ? `Running allowlisted ${current.harness} ${current.action} job. Latest output at ${now}.`
+        : `Running allowlisted ${current.harness} ${current.action} job. First output received.`,
+    });
+  };
+
   const startShellJob = (job: ControlSetupJob, command: string): ControlSetupJob => {
     const started = update(job.jobId, { state: "running", startedAt: nowForDto(), message: `Running allowlisted ${job.harness} ${job.action} job.` });
     writeJobLog(started, `$ ${command}`);
@@ -381,8 +409,8 @@ function createSetupJobManager() {
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.set(job.jobId, child);
-    child.stdout.on("data", (chunk) => writeJobLog(started, String(chunk)));
-    child.stderr.on("data", (chunk) => writeJobLog(started, String(chunk)));
+    child.stdout.on("data", (chunk) => { noteJobOutput(job.jobId); writeJobLog(jobs.get(job.jobId) ?? started, String(chunk)); });
+    child.stderr.on("data", (chunk) => { noteJobOutput(job.jobId); writeJobLog(jobs.get(job.jobId) ?? started, String(chunk)); });
     child.on("error", (err) => {
       children.delete(job.jobId);
       const failed = update(job.jobId, { state: "failed", finishedAt: nowForDto(), message: `Setup job failed to start: ${err.message}` });
@@ -448,7 +476,10 @@ IFS= read -r _
         requiresConfirmation: false,
         createdAt: nowForDto(),
         startedAt: null,
+        firstOutputAt: null,
+        lastOutputAt: null,
         finishedAt: null,
+        retryCount: 0,
       };
       writeJobLog(base, `created ${harness} ${action}`);
 

@@ -1,10 +1,10 @@
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, spawnProcess } from "@claudexor/core";
+import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso } from "@claudexor/util";
-import { parseCursorEvent } from "./parse.js";
+import { nowIso, redactSecrets } from "@claudexor/util";
+import { createCursorParser } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
 
@@ -13,7 +13,10 @@ function accessArgs(access: AccessProfile): string[] {
     case "readonly":
       return ["--mode", "plan", "--trust"];
     case "workspace_write":
-      return ["--force", "--trust"];
+      // `--force` alone force-allows commands with NO sandbox — materially
+      // broader than claude acceptEdits / codex --sandbox workspace-write for
+      // the same profile. Keep the sandbox on for workspace_write parity.
+      return ["--force", "--sandbox", "enabled", "--trust"];
     case "full":
     case "external_sandbox_full":
       return ["--force", "--sandbox", "disabled", "--trust"];
@@ -31,16 +34,6 @@ async function detectVersion(): Promise<string | null> {
   }
 }
 
-async function authOk(): Promise<boolean> {
-  if (cursorApiKey()) return true;
-  try {
-    const r = await runCapture(BIN, ["status"], { timeoutMs: 10_000 });
-    return r.code === 0;
-  } catch {
-    return false;
-  }
-}
-
 async function nativeAuthOk(): Promise<boolean> {
   try {
     const r = await runCapture(BIN, ["status"], { timeoutMs: 10_000 });
@@ -54,11 +47,6 @@ function cursorApiKey(): string | null {
   return process.env.CLAUDEXOR_CURSOR_API_KEY || resolveSecret("cursor") || process.env.CURSOR_API_KEY || null;
 }
 
-function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefined {
-  const signal = spec.extra["abortSignal"];
-  return signal instanceof AbortSignal ? signal : undefined;
-}
-
 export function createCursorAdapter(): HarnessAdapter {
   return {
     id: "cursor",
@@ -68,7 +56,6 @@ export function createCursorAdapter(): HarnessAdapter {
       if (version === null) {
         throw new HarnessUnavailableError("cursor-agent not found on PATH (set CLAUDEXOR_CURSOR_BIN)");
       }
-      const authed = await authOk();
       const nativeAuthed = await nativeAuthOk();
       const apiKey = cursorApiKey() !== null;
       return HarnessManifestSchema.parse({
@@ -100,6 +87,7 @@ export function createCursorAdapter(): HarnessAdapter {
           mcp: true,
           plugins: true,
           worktree_native: true,
+          web_policy: "none",
           quota_signal: "observed",
           usage_signal: "observed",
         },
@@ -126,22 +114,27 @@ export function createCursorAdapter(): HarnessAdapter {
           reasons: ["cursor-agent not found (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)"],
         });
       }
-      const authed = await authOk();
       const nativeAuthed = await nativeAuthOk();
       const apiKey = cursorApiKey() !== null;
+      // Readiness doctrine: a key string alone is source availability, not
+      // proven readiness. Only a passing native session probe yields "ok";
+      // key-only setups are degraded until an isolated smoke exists for cursor.
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "synthesize", "explain", "audit"];
       return ConformanceReportSchema.parse({
         harness_id: "cursor",
-        status: authed ? "ok" : "degraded",
+        status: nativeAuthed ? "ok" : apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: nativeAuthed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "cursor secret/env available" : "no cursor key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "cursor secret/env available (unproven without isolated smoke)" : "no cursor key fallback" },
         ],
-        enabled_intents: authed
-          ? ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "synthesize", "explain", "audit"]
-          : [],
-        disabled_intents: authed ? [] : ["implement", "review", "arbitrate"],
-        reasons: authed ? [] : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],
+        enabled_intents: nativeAuthed ? allIntents : [],
+        disabled_intents: nativeAuthed ? [] : allIntents,
+        reasons: nativeAuthed
+          ? []
+          : apiKey
+            ? ["cursor key present but unproven: no isolated smoke exists for cursor key-only auth"]
+            : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],
       });
     },
 
@@ -158,42 +151,43 @@ export function createCursorAdapter(): HarnessAdapter {
 async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (spec.access === "full" || spec.access === "external_sandbox_full") {
     yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: "cursor full access is not conformance-proven; use workspace_write or another harness" };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
   args.push(spec.prompt);
-  const nativeAuthed = await nativeAuthOk();
   const key = cursorApiKey();
   const env: Record<string, string | null | undefined> = { ...spec.env };
-  if (nativeAuthed) env.CURSOR_API_KEY = null;
-  else if (key) env.CURSOR_API_KEY = key;
-
-  let sawError = false;
-  let exitCode: number | null = null;
-  try {
-    for await (const ev of spawnProcess(BIN, args, { cwd: spec.cwd, env, abortSignal: abortSignalFromSpec(spec) })) {
-      if (ev.type === "stdout") {
-        let obj: unknown;
-        try {
-          obj = JSON.parse(ev.line);
-        } catch {
-          continue;
-        }
-        for (const out of parseCursorEvent(obj, spec.session_id)) {
-          if (out.type === "error") sawError = true;
-          yield out;
-        }
-      } else if (ev.type === "exit") {
-        exitCode = ev.code;
-      }
+  // Envelope runs use a scoped HOME where the native cursor session is
+  // unreachable, so the native-auth probe (which runs against the REAL home)
+  // must not be trusted for them: inside an envelope a key is required.
+  const scopedHome = Boolean(spec.env?.["HOME"]);
+  if (scopedHome) {
+    if (!key) {
+      yield {
+        type: "error",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        error: "isolated envelope HOME requires a stored Cursor API key fallback; the native cursor session cannot be reused inside this envelope",
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
     }
-  } catch (err) {
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: err instanceof Error ? err.message : String(err) };
-    return;
+    env.CURSOR_API_KEY = key;
+  } else {
+    const nativeAuthed = await nativeAuthOk();
+    if (nativeAuthed) env.CURSOR_API_KEY = null;
+    else if (key) env.CURSOR_API_KEY = key;
   }
-  if (exitCode !== null && exitCode !== 0 && !sawError) {
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: `cursor-agent exited with code ${exitCode}` };
-  }
-  yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+
+  yield* runCliHarness({
+    bin: BIN,
+    args,
+    spec,
+    env,
+    label: "cursor-agent",
+    redact: redactSecrets,
+    parseEvent: createCursorParser(),
+  });
 }

@@ -21,9 +21,6 @@
           "type": "string",
           "minLength": 1
         },
-        "successorRunId": {
-          "$ref": "#/definitions/ControlRunControlResponse/properties/runId"
-        },
         "message": {
           "type": "string"
         }

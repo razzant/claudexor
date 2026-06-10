@@ -73,6 +73,8 @@ describe("ensureCodexApiAuth", () => {
       "gpt-5.5",
       "-c",
       'model_reasoning_effort="xhigh"',
+      "-c",
+      'web_search="cached"',
       "review",
     ]);
   });

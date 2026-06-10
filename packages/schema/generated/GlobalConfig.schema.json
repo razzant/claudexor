@@ -117,6 +117,98 @@
                 ],
                 "default": null
               },
+              "effort": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "max_turns": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "max_rounds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "max_usd": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "tools_allow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "tools_deny": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "fallback_model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "web": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "auto",
+                  "cached",
+                  "live"
+                ],
+                "default": "auto"
+              },
+              "native_options": {
+                "type": "object",
+                "additionalProperties": {},
+                "default": {}
+              },
               "auth_ref": {
                 "anyOf": [
                   {

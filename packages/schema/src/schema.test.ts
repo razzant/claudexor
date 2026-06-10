@@ -26,7 +26,9 @@ describe("TaskContract", () => {
       user_intent: { raw: "do the thing" },
     });
     expect(tc.delivery.mutation_mode).toBe("envelope_live");
-    expect(tc.access.profile).toBe("workspace_write");
+    expect(tc.access.requested_profile).toBe("workspace_write");
+    expect(tc.access.effective_profile).toBe("workspace_write");
+    expect(tc.external_context.effective_mode).toBe("auto");
     expect(tc.budget.portfolio).toBe("subscription-first");
     expect(tc.convergence.require_tests_pass).toBe(true);
     expect(tc.context_policy.no_silent_truncation).toBe(true);

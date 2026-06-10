@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { AccessProfile } from "./primitives.js";
+import { AccessProfile, ExternalContextPolicy } from "./primitives.js";
+import { EffortHint } from "./harness.js";
 import { DeliveryPolicy } from "./workproduct.js";
 import { Portfolio } from "./budget.js";
 
@@ -89,6 +90,15 @@ export const GlobalConfig = z.object({
       z.object({
         enabled: z.boolean().default(true),
         default_model: z.string().nullable().default(null),
+        effort: EffortHint.nullable().default(null),
+        max_turns: z.number().int().positive().nullable().default(null),
+        max_rounds: z.number().int().positive().nullable().default(null),
+        max_usd: z.number().nonnegative().nullable().default(null),
+        tools_allow: z.array(z.string()).default([]),
+        tools_deny: z.array(z.string()).default([]),
+        fallback_model: z.string().nullable().default(null),
+        web: ExternalContextPolicy.default("auto"),
+        native_options: z.record(z.string(), z.unknown()).default({}),
         auth_ref: SecretRef.nullable().default(null),
       }),
     )

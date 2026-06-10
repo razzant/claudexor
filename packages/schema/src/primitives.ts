@@ -29,6 +29,14 @@ export const AccessProfile = z.enum([
 ]);
 export type AccessProfile = z.infer<typeof AccessProfile>;
 
+/** External context policy is separate from process/network sandboxing. */
+export const ExternalContextPolicy = z.enum(["off", "auto", "cached", "live"]);
+export type ExternalContextPolicy = z.infer<typeof ExternalContextPolicy>;
+
+/** Whether a terminal run also has a loaded user-facing output artifact. */
+export const OutputReadyState = z.enum(["pending", "finalizing", "ready", "diagnostic"]);
+export type OutputReadyState = z.infer<typeof OutputReadyState>;
+
 /** Provider families used for route-diversity reasoning. Open-ended via "unknown". */
 export const ProviderFamily = z.enum([
   "openai",

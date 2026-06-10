@@ -183,6 +183,18 @@
             "inherit_native"
           ]
         },
+        "web": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "cached",
+            "live"
+          ]
+        },
+        "externalContextPolicy": {
+          "$ref": "#/definitions/ControlRunStartRequest/properties/web"
+        },
         "tests": {
           "type": "array",
           "items": {

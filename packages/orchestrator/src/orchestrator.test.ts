@@ -87,6 +87,30 @@ function noImplementAdapter(id: string, family: ProviderFamily = "openai"): Harn
   };
 }
 
+function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unknown> | Iterable<unknown>, family: ProviderFamily = "openai"): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: family,
+        capabilities: { plan: true, review: true, read_files: true, structured_events: true, web_policy: "tools" },
+        access_profiles_supported: ["readonly"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["explain", "audit", "plan", "review"] });
+    },
+    async *run(spec) {
+      for await (const event of events(spec.session_id) as AsyncIterable<Record<string, unknown>>) {
+        yield event as never;
+      }
+    },
+  };
+}
+
 const reviewers = () => [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
 
 describe("Orchestrator", () => {
@@ -148,13 +172,16 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
 
-  it("stops spawning candidates once the budget hard cap is hit", async () => {
+  it("stops spawning queued candidates once the budget hard cap is hit (parallel wave finishes)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.005 });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 3 });
-    // first candidate spends 0.01 (> 0.005 cap) -> hard tier -> remaining candidates denied
-    expect(res.candidates.length).toBe(1);
+    // Candidates run in a bounded parallel wave (cap 4). Each fake spends 0.01
+    // (> 0.005 cap), so the first wave settles into the hard tier and the
+    // queued slots beyond the wave must be skipped, never spawned.
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 6 });
+    const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+    expect(primary.length).toBe(4);
   });
 
   it("capability-gates candidates: a non-implementing harness is dropped from an implement race", async () => {
@@ -274,6 +301,117 @@ describe("Orchestrator", () => {
     expect(res.summary).toMatch(/perform 'explain'/);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("Status: failed");
+  });
+
+  it("blocks ask success when an attempted WebSearch tool_result errors without recovery", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("web-bad", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" } };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        text: "tool_result: error: permission denied",
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", status: "error", error_summary: "permission denied" },
+      };
+      yield { type: "message", session_id: sessionId, ts, text: "Memory answer only." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const orch = new Orchestrator({ registry: new Map([["web-bad", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["web-bad"], web: "auto", n: 1 });
+    expect(res.status).toBe("blocked");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("web evidence unsatisfied");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Unverified partial output");
+    const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(eventLog).toContain("route.fallback.exhausted");
+    expect(eventLog).toContain("run.blocked");
+    // single-owner telemetry artifact records the web evidence
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: failed");
+    expect(telemetry).toContain("permission denied");
+  });
+
+  it("blocks a web-required run that never attempted web (required && !satisfied)", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("no-web", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "Answer from memory, no web call made." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const orch = new Orchestrator({ registry: new Map([["no-web", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["no-web"], web: "live", n: 1 });
+    expect(res.status).toBe("blocked");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("never attempted");
+  });
+
+  it("does not block on a tool error that was later recovered by the same tool", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("recovers", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t1", target: "pnpm test" } };
+      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t1", status: "error", error_summary: "2 tests failed" } };
+      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t2", target: "pnpm test" } };
+      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t2", status: "ok", content_summary: "all green" } };
+      yield { type: "message", session_id: sessionId, ts, text: "Recovered and finished." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const orch = new Orchestrator({ registry: new Map([["recovers", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["recovers"], n: 1 });
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Recovered and finished.");
+  });
+
+  it("blocks on an unrecovered tool error in a readonly run", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("never-recovers", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t1", target: "make it" } };
+      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t1", status: "error", error_summary: "command not found" } };
+      yield { type: "message", session_id: sessionId, ts, text: "Claimed done anyway." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const orch = new Orchestrator({ registry: new Map([["never-recovers", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["never-recovers"], n: 1 });
+    expect(res.status).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("failed without recovery");
+  });
+
+  it("falls back to another ask harness when web evidence is unsatisfied", async () => {
+    const repo = await initRepo();
+    const bad = askAdapter("web-bad", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" } };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", status: "error", error_summary: "permission denied" },
+      };
+      yield { type: "message", session_id: sessionId, ts, text: "Memory answer only." };
+    });
+    const good = askAdapter("web-good", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web2", target: "Anton Razzhigaev" } };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web2", status: "ok", content_summary: "search result" },
+      };
+      yield { type: "message", session_id: sessionId, ts, text: "Web-backed answer." };
+    }, "anthropic");
+    const orch = new Orchestrator({ registry: new Map([["web-bad", bad], ["web-good", good]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["web-bad", "web-good"], web: "auto" });
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Web-backed answer.");
+    const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(eventLog).toContain("route.fallback.started");
+    expect(eventLog).toContain("route.fallback.completed");
   });
 
   it("stores no-project Ask artifacts in the user config store, not the synthetic repo root", async () => {
