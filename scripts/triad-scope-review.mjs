@@ -493,6 +493,10 @@ async function main() {
   let scope = null;
   if (!arg("skip-scope")) {
     const scopePrompt = buildScopePrompt(base);
+    if (containsSecretLikeToken(scopePrompt)) {
+      console.error("ABORT: scope evidence contains a secret-like token; scrub the diff/atlas first.");
+      process.exit(1);
+    }
     writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
     console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
     progress({ ts: new Date().toISOString(), type: "reviewer.started", model: SCOPE_MODEL, role: "scope" });

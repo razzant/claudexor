@@ -571,8 +571,9 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
           return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
         }
         if (key === "budget_max_usd_per_run" || key === "budget_max_usd_per_day") {
-          const parsed = value === "none" ? null : Number.parseFloat(value);
-          if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) throw new Error(`${key} must be a non-negative number or none`);
+          // Number() parses the WHOLE string ('1abc' -> NaN), unlike parseFloat.
+          const parsed = value === "none" ? null : Number(value.trim());
+          if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0 || value.trim() === "")) throw new Error(`${key} must be a non-negative number or none`);
           return {
             ...cfg,
             budget: {

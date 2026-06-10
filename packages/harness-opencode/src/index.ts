@@ -114,17 +114,22 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         });
       }
       const authReady = providerKeyAvailable();
+      // A key STRING is source availability, not readiness: without an isolated
+      // smoke proving the route, the honest status is degraded (cursor parity).
       return ConformanceReportSchema.parse({
         harness_id: "opencode",
-        status: authReady ? "ok" : "degraded",
+        status: "degraded",
         checks: [
           { id: "installed", status: "pass", detail: version },
-          { id: "provider_auth", status: authReady ? "pass" : "fail" },
+          { id: "provider_auth", status: authReady ? "pass" : "fail", detail: authReady ? "provider key available (unproven without isolated smoke)" : undefined },
+          { id: "isolated_smoke", status: "skip", detail: "no isolated smoke implemented for opencode yet" },
           { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
         ],
         enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize"] : [],
         disabled_intents: authReady ? ["explain", "audit"] : ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize", "explain", "audit"],
-        reasons: authReady ? ["readonly/audit not enabled until conformance-proven"] : ["opencode provider auth not configured"],
+        reasons: authReady
+          ? ["key present but route unproven (no isolated smoke); readonly/audit not enabled until conformance-proven"]
+          : ["opencode provider auth not configured"],
       });
     },
 

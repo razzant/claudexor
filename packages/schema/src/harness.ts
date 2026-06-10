@@ -19,13 +19,6 @@ export const HarnessKind = z.enum([
 export type HarnessKind = z.infer<typeof HarnessKind>;
 
 /**
- * How a harness can honor an external web/search policy:
- * - "native": harness has its own first-class web-search switch (e.g. codex web_search config).
- * - "tools": web access flows through permissioned tools the adapter can allow/deny (e.g. claude WebSearch/WebFetch).
- * - "none": the adapter cannot enforce the policy; routing must treat web policy as an
- *   unsupported capability (exclude from `off`/web-required runs, error on explicit selection).
- */
-/**
  * How a harness can honor the external web policy:
  * - `native`: web modes are a native config surface (codex web_search).
  * - `tools`: web runs through permissioned tools the adapter can allow/deny (claude).

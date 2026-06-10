@@ -96,13 +96,20 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           reasons: [`set ${keyEnv} to enable the raw-api harness`],
         });
       }
+      // A key STRING is source availability, not proven readiness: no isolated
+      // smoke runs here (doctor must not spend paid API calls), so the honest
+      // status is degraded-with-reason rather than ok-by-key-presence.
       return ConformanceReportSchema.parse({
         harness_id: id,
-        status: "ok",
-        checks: [{ id: "api_key", status: "pass" }],
+        status: "degraded",
+        checks: [
+          { id: "api_key", status: "pass", detail: "key available (unproven without isolated smoke)" },
+          { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
+        ],
         // No native edit tools: planner/reviewer roles only.
         enabled_intents: ["plan", "spec", "review", "compare", "synthesize", "explain"],
         disabled_intents: ["implement", "create_from_scratch", "repair", "verify"],
+        reasons: ["key present but route unproven (no isolated smoke)"],
       });
     },
 

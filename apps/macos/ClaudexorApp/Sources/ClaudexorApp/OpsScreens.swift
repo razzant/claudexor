@@ -17,7 +17,10 @@ struct BudgetScreen: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.Spacing.md)], spacing: Theme.Spacing.md) {
                 Panel { MetricTile(title: "Spend", value: b.spendLabel, caption: "cap \(b.capLabel)", tint: Theme.accent, systemImage: "dollarsign.circle") }
                 Panel { MetricTile(title: "Remaining", value: b.remainingLabel, tint: b.spendKnown && b.capKnown ? Theme.status(.succeeded) : .secondary, systemImage: "creditcard") }
-                Panel { MetricTile(title: "Circuit breaker", value: b.breakerLabel, tint: b.breakerColor, systemImage: "bolt.shield") }
+                Panel {
+                    MetricTile(title: "Day threshold", value: b.breakerLabel, tint: b.breakerColor, systemImage: "bolt.shield")
+                        .help("Display threshold: spend across LISTED runs vs the configured per-day value. The engine enforces per-run caps; a cross-run day ledger does not exist yet, so this tier is informational, not an enforced breaker.")
+                }
             }
 
             Panel {
@@ -36,7 +39,7 @@ struct BudgetScreen: View {
                             TextField("No default", text: $maxUsdPerDay)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.callout, design: .monospaced))
-                                .help("User-level per-day cap. Empty means no configured day cap.")
+                                .help("Display threshold for the budget view (listed-run spend vs this value). Not an enforced engine cap: a persistent cross-run day ledger does not exist yet.")
                         }
                     }
                     if !runCapValid || !dayCapValid {

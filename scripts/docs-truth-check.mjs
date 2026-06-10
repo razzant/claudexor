@@ -72,7 +72,7 @@ const serverSrc = readFileSync("packages/control-api/src/daemon-server.ts", "utf
 const implemented = implementedEndpoints(serverSrc);
 implemented.add("GET /healthz"); // declared before auth with hostIsLoopback guard
 
-for (const docPath of ["docs/ARCHITECTURE.md", "docs/INTEGRATIONS.md"]) {
+for (const docPath of ["docs/ARCHITECTURE.md", "docs/INTEGRATIONS.md", "README.md"]) {
   const documented = documentedEndpoints(readFileSync(docPath, "utf8"));
   for (const ep of documented) {
     if (!implemented.has(ep)) failures.push(`${docPath} documents '${ep}' but daemon-server.ts does not implement it`);
