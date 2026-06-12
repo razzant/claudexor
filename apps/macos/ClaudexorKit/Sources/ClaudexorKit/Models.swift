@@ -341,6 +341,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let failure: RunFailureInfo?
     public let project: RunProjectInfo?
     public let mode: String?
+    /// v0.9 engine strategy flag on the mode (race/attempts/until_clean/swarm/create).
+    public let strategy: String?
     public let prompt: String?
     public let harnesses: [String]?
     public let primaryHarness: String?

@@ -99,13 +99,19 @@ export class DaemonServer {
   async stop(): Promise<void> {
     // Graceful shutdown: abort in-flight runs so the runner cancels their harness
     // children and settles each job (no orphaned processes / "running" zombies in
-    // jobs.json), then persist and close the listener.
+    // jobs.json), then WAIT (bounded) for the cancellations to settle. Without
+    // the wait, the process could exit before the SIGKILL escalation timers
+    // fire, leaving a SIGTERM-ignoring harness child alive in its group.
     for (const controller of this.controllers.values()) {
       try {
         controller.abort();
       } catch {
         /* already gone */
       }
+    }
+    const deadline = Date.now() + 5_000;
+    while (this.active > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     this.persist();
     await new Promise<void>((resolve) => {

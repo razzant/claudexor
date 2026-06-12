@@ -225,7 +225,13 @@ final class AppModel {
     var attentionTasks: [TaskRun] { tasks.filter { $0.status.needsAttention || $0.waitingOnUser } }
     var activeTasks: [TaskRun] { tasks.filter { $0.status.isActive && !$0.waitingOnUser } }
     var allFindings: [Finding] {
-        tasks.flatMap { $0.findings }.sorted { $0.severity.rank < $1.severity.rank }
+        tasks.flatMap { task in
+            task.findings.map { finding in
+                var f = finding
+                if f.taskId == nil { f.taskId = task.id }
+                return f
+            }
+        }.sorted { $0.severity.rank < $1.severity.rank }
     }
 
     func task(_ id: String) -> TaskRun? { tasks.first { $0.id == id } }
@@ -530,7 +536,7 @@ final class AppModel {
             id: s.runId,
             title: title,
             prompt: prompt,
-            mode: RunMode(apiValue: s.mode),
+            mode: RunMode(apiValue: s.mode, strategy: s.strategy),
             status: RunStatus(api: s.state),
             project: projectName,
             specTitle: nil,
@@ -884,7 +890,7 @@ final class AppModel {
             lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
             var task = liveTasks[baseIdx]
             task.status = RunStatus(api: detail.summary.state)
-            task.mode = RunMode(apiValue: detail.summary.mode)
+            task.mode = RunMode(apiValue: detail.summary.mode, strategy: detail.summary.strategy)
             task.operatorDecisionAction = detail.operatorDecisionAction
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }

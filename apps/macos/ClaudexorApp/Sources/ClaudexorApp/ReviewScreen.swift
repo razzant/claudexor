@@ -139,6 +139,7 @@ private struct ReviewHeaderCell: View {
 }
 
 private struct ReviewFindingRow: View {
+    @Environment(AppModel.self) private var model
     let finding: Finding
     let shaded: Bool
     let columns: ReviewGridColumns
@@ -149,12 +150,21 @@ private struct ReviewFindingRow: View {
                 .frame(width: columns.severity, alignment: .leading)
             findingCell
                 .frame(width: columns.finding, alignment: .leading)
-            Text(finding.taskTitle.isEmpty ? "No task" : finding.taskTitle)
-                .font(.callout)
-                .foregroundStyle(finding.taskTitle.isEmpty ? .secondary : .primary)
-                .lineLimit(1)
-                .padding(.horizontal, Theme.Spacing.md)
-                .frame(width: columns.task, alignment: .leading)
+            // The queue is a projection; ACTIONS (decide/apply) live on the run.
+            // The task cell routes there instead of dead-ending.
+            Button {
+                if let id = finding.taskId { model.route = .task(id) }
+            } label: {
+                Text(finding.taskTitle.isEmpty ? "No task" : finding.taskTitle)
+                    .font(.callout)
+                    .foregroundStyle(finding.taskId == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.link))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .disabled(finding.taskId == nil)
+            .help(finding.taskId == nil ? "" : "Open the run for decision/apply actions")
+            .padding(.horizontal, Theme.Spacing.md)
+            .frame(width: columns.task, alignment: .leading)
             reviewer
                 .padding(.horizontal, Theme.Spacing.md)
                 .frame(width: columns.reviewer, alignment: .leading)

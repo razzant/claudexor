@@ -158,6 +158,19 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    /// Display mode derived from the wire (mode, strategy) pair — `agent --n`
+    /// renders as Best-of-N, `audit --swarm` as Explore, etc.
+    init(apiValue: String?, strategy: String?) {
+        switch (apiValue, strategy) {
+        case ("agent", "race"): self = .bestOfN
+        case ("agent", "attempts"): self = .maxAttempts
+        case ("agent", "until_clean"): self = .untilClean
+        case ("agent", "create"): self = .create
+        case ("audit", "swarm"): self = .explore
+        default: self = RunMode(apiValue: apiValue)
+        }
+    }
+
     init(apiValue: String?) {
         switch apiValue {
         case "ask": self = .ask
@@ -505,6 +518,9 @@ struct Finding: Identifiable, Hashable {
     var evidenceLine: Int?
     var status: FindingStatus = .proposed
     var taskTitle: String = ""
+    /// Run id the finding belongs to — the review queue routes here for the
+    /// typed decision actions (decide/apply live on the run/turn surfaces).
+    var taskId: String?
     var hasEvidence: Bool { evidenceFile != nil }
 }
 

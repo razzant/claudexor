@@ -12,6 +12,12 @@ struct ThreadsScreen: View {
     @State private var composerText = ""
     @State private var composerMode: RunMode = .agent
 
+    /// Project-aware intents need a project scope; a no-project thread only asks.
+    private var threadHasProject: Bool {
+        guard let id = model.selectedThreadId, let t = model.threads.first(where: { $0.id == id }) else { return false }
+        return t.repoRoot?.isEmpty == false
+    }
+
     var body: some View {
         HSplitView {
             threadList
@@ -143,18 +149,31 @@ struct ThreadsScreen: View {
         VStack(spacing: Theme.Spacing.xs) {
             HStack(spacing: Theme.Spacing.sm) {
                 Picker("Intent", selection: $composerMode) {
-                    Label("Agent", systemImage: RunMode.agent.glyph).tag(RunMode.agent)
                     Label("Ask", systemImage: RunMode.ask.glyph).tag(RunMode.ask)
-                    Label("Plan", systemImage: RunMode.plan.glyph).tag(RunMode.plan)
-                    Label("Audit", systemImage: RunMode.readOnlyAudit.glyph).tag(RunMode.readOnlyAudit)
-                    Label("Race ×2", systemImage: RunMode.bestOfN.glyph).tag(RunMode.bestOfN)
-                    Label("Orchestrate", systemImage: RunMode.orchestrate.glyph).tag(RunMode.orchestrate)
+                    if threadHasProject {
+                        Label("Agent", systemImage: RunMode.agent.glyph).tag(RunMode.agent)
+                        Label("Plan", systemImage: RunMode.plan.glyph).tag(RunMode.plan)
+                        Label("Audit", systemImage: RunMode.readOnlyAudit.glyph).tag(RunMode.readOnlyAudit)
+                        Label("Race ×2", systemImage: RunMode.bestOfN.glyph).tag(RunMode.bestOfN)
+                        Label("Orchestrate", systemImage: RunMode.orchestrate.glyph).tag(RunMode.orchestrate)
+                    }
                 }
                 .pickerStyle(.menu)
                 .frame(width: 170)
-                .help("The intent for the next turn; strategies (race width, until-clean) are flags on the same conversation")
+                .help(threadHasProject
+                      ? "The intent for the next turn; strategies (race width, until-clean) are flags on the same conversation"
+                      : "This thread has no project: only Ask is available (pick a Current Project, then start a new thread)")
                 Spacer()
+                Button {
+                    model.composerPresented = true
+                } label: {
+                    Label("Full composer", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .help("The thread composer is a quick-send; open the full composer for routing, budget, access, and gates")
             }
+            .onAppear { if !threadHasProject { composerMode = .ask } }
+            .onChange(of: model.selectedThreadId) { if !threadHasProject { composerMode = .ask } }
             HStack(alignment: .bottom, spacing: Theme.Spacing.sm) {
                 TextField("Message this thread… (plan first, then continue — same native session)", text: $composerText, axis: .vertical)
                     .textFieldStyle(.roundedBorder)

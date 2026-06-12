@@ -24,9 +24,9 @@ Read these together before changing shared behavior:
 - `packages/core` owns adapter contracts, the shared CLI run loop, process
   helpers, typed errors, the doctor runner, and the stream conformance
   validator.
-- `packages/orchestrator` owns higher-level modes such as Ask, Explore, Agent,
-  Best-of-N, convergence, Plan, Create, and Read-only Audit, plus run
-  telemetry and policy gates.
+- `packages/orchestrator` owns the five canonical mode pipelines (ask, plan,
+  audit, agent, orchestrate) with their strategy flags (race width, attempt
+  caps, until-clean, swarm, create), plus run telemetry and policy gates.
 - `packages/gateway` owns harness discovery, doctor output, and capability
   gating.
 - `packages/harness-*` translate native CLI/API streams into typed events. They

@@ -16,7 +16,7 @@ export interface DoctorSpec {
 /**
  * The contract every harness adapter implements. Adapters translate a native
  * harness's I/O into typed Claudexor events — they never contain orchestration
- * logic. External adapters may implement this over a JSON-RPC stdio bridge.
+ * logic. External adapters may implement this as an in-tree HarnessAdapter implementation (the out-of-tree JSON-RPC bridge package was removed in v0.9).
  */
 export interface HarnessAdapter {
   readonly id: string;
