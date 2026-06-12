@@ -149,7 +149,10 @@ class ClaudexorAgent(BaseInstalledAgent):
                 # --ignore-scripts skips dependency postinstalls; the esbuild native
                 # binary's postinstall SIGSEGVs in TB's sandboxed container, and esbuild
                 # is needed neither by the tsc build nor the JS runtime.
-                "pnpm install --frozen-lockfile --ignore-scripts\n"
+                # Serialize pnpm io: high-parallelism fd polling trips a racy epoll
+                # EEXIST assert (libuv) on colima's virtiofs/QEMU stack.
+                "export UV_THREADPOOL_SIZE=4\n"
+                "pnpm install --frozen-lockfile --ignore-scripts --network-concurrency=2 --child-concurrency=1\n"
                 # Serialize the build so only one tsc runs at a time (low peak memory).
                 "pnpm build -- --concurrency=1\n"
             ),
