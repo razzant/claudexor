@@ -126,9 +126,9 @@ class ClaudexorAgent(BaseInstalledAgent):
                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash\n"
                 '. "$NVM_DIR/nvm.sh"\n'
                 # Node 22 is required by the repo's pinned pnpm@11 (uses node:sqlite).
-                # Pin 22.11: newer 22.x libuv crashes (uv__io_poll EEXIST assert) under
+                # Pin 22.16: 22.22+ libuv asserts under colima kernel; pnpm@11 needs >=22.12 (uv__io_poll EEXIST assert) under
                 # colima's emulated kernel even with UV_USE_IO_URING=0.
-                "nvm install 22.11.0 && nvm alias default 22.11.0\n"
+                "nvm install 22.16.0 && nvm alias default 22.16.0\n"
                 "corepack enable\n"
                 # Node 22.11's bundled corepack ships stale npm signing keys
                 # ("Cannot find matching keyid"); skip integrity pinning here.
