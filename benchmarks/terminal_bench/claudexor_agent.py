@@ -158,7 +158,7 @@ class ClaudexorAgent(BaseInstalledAgent):
                 "pnpm install --frozen-lockfile --ignore-scripts || true\n"
                 "test -d node_modules/.pnpm || { echo 'pnpm install did not materialize node_modules'; exit 1; }\n"
                 # Serialize the build so only one tsc runs at a time (low peak memory).
-                "pnpm build -- --concurrency=1 || true\n"
+                "pnpm build --concurrency=1 || true\n"
                 "test -f packages/cli/dist/cli.js || { echo 'build did not produce cli.js'; exit 1; }\n"
             ),
             env=install_env,
