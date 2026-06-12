@@ -8,6 +8,7 @@ import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
 import { noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig } from "@claudexor/schema";
+import { invalidateDoctorCache } from "@claudexor/core";
 import { buildGateway, buildRegistry } from "./registry.js";
 import { createSetupJobManager, setupHarness } from "./setup-jobs.js";
 import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
@@ -164,6 +165,7 @@ function applyHarnessSettingsPatches(
       tools_deny: patch.toolsDeny ?? base.tools_deny,
       fallback_model: patch.fallbackModel === undefined ? base.fallback_model : patch.fallbackModel,
       web: patch.web ?? base.web,
+      auth_preference: patch.authPreference ?? base.auth_preference,
     };
   }
   return next;
@@ -208,6 +210,11 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           eligibleHarnesses: cfg.global.routing.eligible_harnesses,
           defaultModel: cfg.global.routing.default_model,
           envInheritance: cfg.global.routing.env_inheritance,
+          authPreference: cfg.global.routing.auth_preference,
+          fallback: {
+            onQuotaExhaustion: cfg.global.routing.fallback.on_quota_exhaustion,
+            onMoneyExhaustion: cfg.global.routing.fallback.on_money_exhaustion,
+          },
         },
         budget: {
           maxUsdPerRun: cfg.global.budget.max_usd_per_run,
@@ -225,6 +232,7 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           fallbackModel: h.fallback_model,
           web: h.web,
           nativeOptions: h.native_options,
+          authPreference: h.auth_preference,
         }])),
       };
     },
@@ -237,7 +245,7 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         if (value === null || value === "none" || value === "__none") return null;
         return value;
       };
-      return updateGlobalConfig((cfg) => ({
+      const updated = updateGlobalConfig((cfg) => ({
         ...cfg,
         default_portfolio: p.defaultPortfolio ?? cfg.default_portfolio,
         interaction_timeout_ms: p.interactionTimeoutMs ?? cfg.interaction_timeout_ms,
@@ -248,6 +256,11 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           default_policy: p.routingPolicy ?? cfg.routing.default_policy,
           env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
           eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
+          auth_preference: p.authPreference ?? cfg.routing.auth_preference,
+          fallback: {
+            on_quota_exhaustion: p.fallbackOnQuotaExhaustion ?? cfg.routing.fallback.on_quota_exhaustion,
+            on_money_exhaustion: p.fallbackOnMoneyExhaustion ?? cfg.routing.fallback.on_money_exhaustion,
+          },
         },
         budget: {
           ...cfg.budget,
@@ -256,6 +269,10 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         },
         harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));
+      // Routing/auth settings change harness readiness semantics: drop the
+      // doctor TTL cache so the next /harnesses reflects the new truth.
+      invalidateDoctorCache();
+      return updated;
     },
     listSecrets: async () => ({ backend: secretStore.resolvedBackend(), secrets: secretStore.list() }),
     setSecret: async (input: unknown) => {
@@ -264,11 +281,15 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const value = typeof p["value"] === "string" ? p["value"] : "";
       if (!name || !value) throw new Error("name and value are required");
       const backend = secretStore.set(name, value);
+      // A new key changes auth readiness immediately: drop the doctor TTL cache.
+      invalidateDoctorCache();
       // Keychain->file degradation is disclosed, not silent (UI shows it).
       return { name, backend, stored: true, ...(secretStore.lastFallbackReason ? { warning: secretStore.lastFallbackReason } : {}) };
     },
     deleteSecret: async (name: string) => {
       secretStore.delete(name);
+      // A removed key changes auth readiness immediately: drop the doctor cache.
+      invalidateDoctorCache();
       return { name, deleted: true };
     },
     specQuestions: async (input: unknown) => {

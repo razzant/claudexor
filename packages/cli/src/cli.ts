@@ -986,20 +986,22 @@ async function main(): Promise<number> {
         print("patch contains secret-like token; refusing apply");
         return 1;
       }
-      const decision = DecisionRecord.safeParse(store.readYaml(join(paths.arbitrationDir, "decision.yaml")));
-      if (!decision.success) {
-        print("decision record is required before apply");
-        return 1;
-      }
-      if (decision.data.status !== "success") {
-        print(`decision status is ${decision.data.status}; refusing apply`);
-        return 1;
-      }
       // Apply policy has ONE owner (delivery.validateApplyGate) shared with the
-      // Control API; the CLI only adapts artifact reads into it.
+      // Control API; the CLI only adapts artifact reads into it. No duplicated
+      // pre-checks here: a NEEDS_HUMAN run unblocked through the typed decision
+      // endpoint (arbitration/operator_decision.yaml, hash-bound) must apply
+      // identically from BOTH surfaces.
       const applyDecision = DecisionRecord.safeParse(store.readYaml(join(paths.arbitrationDir, "decision.yaml")));
       const workProduct = WorkProduct.safeParse(store.readYaml(join(paths.finalDir, "work_product.yaml")));
       const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
+      const operatorDecisionRaw = store.readYaml(join(paths.arbitrationDir, "operator_decision.yaml")) as Record<string, unknown> | null;
+      const operatorDecision =
+        operatorDecisionRaw && typeof operatorDecisionRaw["action"] === "string"
+          ? {
+              action: operatorDecisionRaw["action"] as string,
+              patch_sha256: typeof operatorDecisionRaw["patch_sha256"] === "string" ? (operatorDecisionRaw["patch_sha256"] as string) : undefined,
+            }
+          : null;
       const gateError = validateApplyGate({
         state: null, // artifact-only path: daemon job state is not available here
         decision: applyDecision.success ? applyDecision.data : null,
@@ -1007,6 +1009,7 @@ async function main(): Promise<number> {
         patch,
         originalRepoRoot: contract.success ? contract.data.repo.root : null,
         targetRepoRoot: process.cwd(),
+        operatorDecision,
       });
       if (gateError) {
         print(gateError);

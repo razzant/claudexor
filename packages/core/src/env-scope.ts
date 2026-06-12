@@ -39,7 +39,7 @@ export const PROVIDER_SECRET_ENV: readonly string[] = [
   "AWS_SESSION_TOKEN",
   "AWS_PROFILE",
   "GOOGLE_APPLICATION_CREDENTIALS",
-  // Google / Gemini, xAI, OpenRouter, Cursor
+  // Google / Gemini, xAI, OpenRouter, Cursor, OpenCode
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "XAI_API_KEY",
@@ -47,6 +47,7 @@ export const PROVIDER_SECRET_ENV: readonly string[] = [
   "OPENROUTER_BASE_URL",
   "CURSOR_API_KEY",
   "CURSOR_API_URL",
+  "OPENCODE_API_KEY",
 ];
 
 /**

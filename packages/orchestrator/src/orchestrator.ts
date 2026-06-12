@@ -381,10 +381,21 @@ export class Orchestrator {
     return input.create === true ? "create_from_scratch" : "implement";
   }
 
-  /** Session fields for a route's run spec: auth route preference + native resume id (A2). */
+  /**
+   * Session fields for a route's run spec: auth route preference + native
+   * resume id (A2). Preference precedence: explicit per-run > per-harness
+   * config > global routing config > auto.
+   */
   private sessionSpecFields(input: RunInput, harnessId: string): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
+    const cfg = this.config(input.repoRoot)?.global;
+    const configured = (v?: "subscription" | "api_key" | "auto"): "subscription" | "api_key" | undefined =>
+      v && v !== "auto" ? v : undefined;
     return {
-      auth_preference: input.authPreference ?? "auto",
+      auth_preference:
+        input.authPreference ??
+        configured(cfg?.harnesses?.[harnessId]?.auth_preference) ??
+        configured(cfg?.routing?.auth_preference) ??
+        "auto",
       resume_session_id: input.resumeSessions?.[harnessId] ?? null,
     };
   }

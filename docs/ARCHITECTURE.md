@@ -346,11 +346,13 @@ an always-`unsupported` stub.
 
 A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
 change, critical-risk diff) is a terminal `blocked` state whose findings appear
-in the Review Queue. In v0.7 the queue is a read-only projection: there is no
-server endpoint yet to accept/override a NEEDS_HUMAN finding and unblock the
-run, so the human decision path is "review the findings, then re-run with the
-decision reflected" (for example narrower scope or explicit gates). A typed
-decision endpoint is future work; UI must not fake local accept/unblock state.
+in the Review Queue. Since v0.9 the human decision is a TYPED server action:
+`POST /runs/:id/decision` records `accept_risk` / `override_needs_human` as an
+auditable, patch-hash-bound `arbitration/operator_decision.yaml` that the
+single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
+apply`); `accept_clean_patch` delivers through the gate and
+`rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
+override. UI must not fake local accept/unblock state.
 
 Budget caps: the engine enforces `max_usd` per run (explicit run input, then
 surface defaults, then the global `budget.max_usd_per_run`). The configured

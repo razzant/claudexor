@@ -1,7 +1,7 @@
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
@@ -162,18 +162,19 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // Resume the thread's native opencode session (ses_...) as a follow-up turn.
   if (spec.resume_session_id) args.push("--session", spec.resume_session_id);
   args.push(spec.prompt);
-  const env: Record<string, string | null | undefined> = {
-    ...spec.env,
-    // Inherited base-URL overrides could redirect traffic carrying the provider keys below.
-    OPENAI_BASE_URL: null,
-    ANTHROPIC_BASE_URL: null,
-    OPENROUTER_BASE_URL: null,
-  };
   // Doctor/run symmetry: resolve the key from the same sources doctor credits
   // (spec env first, then process env, then stored secrets) so a doctor "ok"
   // cannot precede a guaranteed-unauthenticated run.
   const key = providerKey({ ...process.env, ...spec.env });
-  for (const envVar of PROVIDER_KEY_ENV) env[envVar] = key?.envVar === envVar ? key.value : null;
+  // Unified provider scrub (cross-provider leak fix): clear EVERY known provider
+  // secret/redirect from the child, then re-add ONLY the single key opencode's
+  // chosen provider route needs. The shared runner starts from process.env, so
+  // an adapter-local partial denylist would leak unrelated host credentials.
+  const env: Record<string, string | null | undefined> = {
+    ...spec.env,
+    ...providerScrubEnv(),
+  };
+  if (key) env[key.envVar] = key.value;
 
   yield* runCliHarness({
     bin: BIN,

@@ -327,9 +327,20 @@ export class DaemonControlApiServer {
         const body = await this.readBody(req);
         assertNoInlineSecretValues(body);
         const parsed = ControlThreadCreateRequest.parse(body);
+        // Same project-root boundary validation as run start: a durable thread
+        // with a relative/nonexistent root would only fail at its first turn.
+        let repoRoot: string | null = null;
+        if (parsed.scope.kind === "project") {
+          repoRoot = parsed.scope.root.trim();
+          const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+          if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
+          if (!existsSync(repoRoot) || !lstatSync(repoRoot).isDirectory()) {
+            throw Object.assign(new Error(`project root does not exist or is not a directory: ${repoRoot}`), { status: 400 });
+          }
+        }
         const thread = await svc({
           title: parsed.title,
-          repoRoot: parsed.scope.kind === "project" ? parsed.scope.root : null,
+          repoRoot,
           mode: parsed.mode,
           authPreference: parsed.authPreference,
           primaryHarness: parsed.primaryHarness ?? null,
@@ -398,16 +409,27 @@ export class DaemonControlApiServer {
         );
         const job = await this.opts.daemon.enqueue(params);
         const rec = await this.waitForRunStart(job.id);
-        const turn = await turnSvc(threadId, rec.runId ?? null, String(params.prompt ?? ""), "followup");
         if (rec.runId && rec.runDir) {
+          const turn = await turnSvc(threadId, rec.runId, String(params.prompt ?? ""), "followup");
           return this.json(res, 200, {
             ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
             turnId: (turn as { id?: string }).id,
             threadId,
           });
         }
-        const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-        return this.json(res, status, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
+        // FAIL LOUDLY instead of recording a turn that can never reconcile: a
+        // run id that arrives after this wait would leave a permanent
+        // null-linked turn and later turns would resume from the OLD head.
+        // The job stays canonical in the daemon; the client should cancel or
+        // retry the turn once the queue drains.
+        if (!TERMINAL_STATES.has(rec.state)) {
+          await this.opts.daemon.cancel(rec.id).catch(() => undefined);
+          return this.json(res, 503, {
+            error: "the engine queue did not start the turn within the wait window; the queued job was cancelled — retry the turn",
+            jobId: rec.id,
+          });
+        }
+        return this.json(res, 500, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
