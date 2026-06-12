@@ -210,6 +210,82 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(ApplyCheckResult.self, from: data)
     }
 
+    /// Apply a run's reviewed patch (apply | branch | commit | pr). Server-gated.
+    public func apply(runId: String, body: ApplyRunRequest = ApplyRunRequest()) async throws -> ApplyResultInfo {
+        var req = request("runs/\(runId)/apply", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ApplyResultInfo.self, from: data)
+    }
+
+    /// Typed operator decision on a blocked run (accept risk / rerun / apply clean patch).
+    public func decide(runId: String, body: RunDecisionRequest) async throws -> RunDecisionResponse {
+        var req = request("runs/\(runId)/decision", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(RunDecisionResponse.self, from: data)
+    }
+
+    // MARK: Threads (chat/session-first)
+
+    public func listThreads() async throws -> ThreadListResponse {
+        let req = request("threads", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadListResponse.self, from: data)
+    }
+
+    public func threadDetail(id: String) async throws -> ThreadDetailResponse {
+        let req = request("threads/\(id)", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadDetailResponse.self, from: data)
+    }
+
+    public func createThread(_ body: CreateThreadRequest) async throws -> ThreadSummary {
+        var req = request("threads", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadSummary.self, from: data)
+    }
+
+    /// Send a follow-up turn into a thread; the engine resumes native sessions.
+    public func sendTurn(threadId: String, body: ThreadTurnRequest) async throws -> RunStartResult {
+        var req = request("threads/\(threadId)/turns", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        if status == 200 {
+            return .started(try Self.decoder.decode(RunStartInfo.self, from: data))
+        }
+        if status == 202 {
+            return .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
+        }
+        throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+    }
+
     public func setSecret(name: String, value: String) async throws {
         var req = request("secrets", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

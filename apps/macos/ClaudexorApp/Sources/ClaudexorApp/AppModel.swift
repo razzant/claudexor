@@ -6,6 +6,7 @@ import ClaudexorKit
 // MARK: - Navigation
 
 enum SidebarRoute: Hashable {
+    case threads
     case overview
     case tasks
     case task(String)
@@ -74,6 +75,11 @@ final class AppModel {
     }
 
     var liveTasks: [TaskRun] = []
+    // Threads (chat/session-first): the conversation list + selected detail.
+    var threads: [ThreadSummary] = []
+    var selectedThreadId: String?
+    var selectedThreadDetail: ThreadDetailResponse?
+    var threadStatus: String?
     var liveHarnesses: [HarnessInfo] = []
     var liveBudget: BudgetState = .empty
     var settingsSnapshot: SettingsSnapshot?
@@ -636,6 +642,7 @@ final class AppModel {
             let scope = launchRepoRoot.isEmpty
                 ? RunScope.none
                 : RunScope.project(root: launchRepoRoot, context: launchContextMode == "deep" ? "deep" : "auto")
+            let flags = mode.strategyFlags
             let req = StartRunRequest(prompt: prompt, mode: mode.apiValue,
                                       scope: scope,
                                       execution: RunExecution(isolation: "envelope"),
@@ -643,10 +650,14 @@ final class AppModel {
                                       primaryHarness: primary?.rawValue,
                                       portfolio: portfolio,
                                       model: model?.isEmpty == false ? model : nil,
-                                      n: n,
+                                      n: mode == .bestOfN ? max(n, flags.defaultN ?? 2) : nil,
                                       maxUsd: capUsd, access: access,
                                       web: web,
-                                      tests: tests.isEmpty ? nil : tests)
+                                      tests: tests.isEmpty ? nil : tests,
+                                      attempts: mode == .maxAttempts ? 3 : nil,
+                                      untilClean: flags.untilClean ? true : nil,
+                                      swarm: flags.swarm ? true : nil,
+                                      create: flags.create ? true : nil)
             let result = try await client.startRun(req)
             switch result {
             case .started(let info):
@@ -710,6 +721,97 @@ final class AppModel {
             }
         } catch {
             // leave the row's status untouched if the server did not confirm the cancel
+        }
+    }
+
+    // MARK: Threads (chat/session-first)
+
+    func refreshThreads() async {
+        guard let client else { return }
+        do {
+            threads = try await client.listThreads().threads
+        } catch {
+            // Engine builds without thread support return 501; keep the list empty.
+            threads = []
+        }
+    }
+
+    func openThread(_ id: String) async {
+        guard let client else { return }
+        selectedThreadId = id
+        do {
+            selectedThreadDetail = try await client.threadDetail(id: id)
+        } catch {
+            threadStatus = "Could not load thread: \(error)"
+        }
+    }
+
+    func newThread(title: String?) async {
+        guard let client else {
+            threadStatus = "Engine offline: reconnect before creating a thread."
+            return
+        }
+        let scope: RunScope = normalizedProjectRoot.isEmpty ? .none : .project(root: normalizedProjectRoot, context: "auto")
+        do {
+            let thread = try await client.createThread(CreateThreadRequest(title: title, scope: scope))
+            threads.insert(thread, at: 0)
+            await openThread(thread.id)
+        } catch {
+            threadStatus = "Could not create thread: \(error)"
+        }
+    }
+
+    /// Send a follow-up turn; the engine resumes each harness's native session
+    /// (plan -> implement is one conversation, not a context reset).
+    func sendTurn(threadId: String, prompt: String, mode: RunMode) async {
+        guard let client else {
+            threadStatus = "Engine offline: reconnect before sending a turn."
+            return
+        }
+        let flags = mode.strategyFlags
+        do {
+            let result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
+                prompt: prompt,
+                mode: mode.apiValue,
+                n: flags.defaultN,
+                untilClean: flags.untilClean ? true : nil,
+                swarm: flags.swarm ? true : nil,
+                create: flags.create ? true : nil
+            ))
+            if case .started(let info) = result {
+                threadStatus = nil
+                await refreshRuns()
+                await openThread(threadId)
+                // Follow the new run live in the conversation.
+                stream(runId: info.runId)
+            } else {
+                threadStatus = "Turn queued; the engine is busy."
+            }
+        } catch {
+            threadStatus = "Turn failed: \(error)"
+        }
+    }
+
+    /// Typed operator decision on a blocked run (review queue actions).
+    func decide(runId: String, action: String, feedback: String? = nil, acceptedRisks: [String] = []) async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let res = try await client.decide(runId: runId, body: RunDecisionRequest(action: action, feedback: feedback, acceptedRisks: acceptedRisks))
+            await refreshRuns()
+            return res.accepted ? nil : (res.message ?? "Decision was not accepted (\(res.status)).")
+        } catch {
+            return "Decision failed: \(error)"
+        }
+    }
+
+    /// Apply a run's reviewed patch through the server-owned gate.
+    func applyRun(runId: String, mode: String = "apply") async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let res = try await client.apply(runId: runId, body: ApplyRunRequest(mode: mode))
+            return res.applied ? nil : (res.detail ?? "Apply was refused.")
+        } catch {
+            return "Apply failed: \(error)"
         }
     }
 

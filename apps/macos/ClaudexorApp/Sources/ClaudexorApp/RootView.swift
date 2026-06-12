@@ -72,6 +72,7 @@ struct RootView: View {
 
     private var routeTitle: String {
         switch model.route {
+        case .threads: return "Threads"
         case .overview: return "Home"
         case .tasks: return "Tasks"
         case .task: return model.selectedTask?.title ?? "Task"
@@ -92,6 +93,7 @@ private struct ContentRouter: View {
     var body: some View {
         Group {
             switch model.route {
+            case .threads: ThreadsScreen()
             case .overview: HomeScreen()
             case .tasks: TasksScreen()
             case .task(let id): TaskDetailView(taskId: id)
@@ -130,6 +132,8 @@ struct SidebarView: View {
         @Bindable var model = model
         List(selection: $model.route) {
             Section {
+                row("Threads", "bubble.left.and.text.bubble.right", .threads,
+                    badge: model.threads.filter(\.needsHuman).count)
                 row("Home", "house", .overview)
                 row("Tasks", "checklist", .tasks, badge: model.tasks.count)
                 row("Review Queue", "person.2.badge.gearshape", .review,

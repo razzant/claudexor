@@ -169,17 +169,25 @@ private struct CardSurfaceModifier: ViewModifier {
         let shadowRadius: CGFloat = dark ? (lifted ? 18 : 13) : (lifted ? 12 : 8)
         let shadowY: CGFloat = dark ? (lifted ? 8 : 5) : (lifted ? 5 : 3)
 
+        // A second TIGHT contact shadow gives dark cards an ambient-occlusion
+        // "lift" on the moving glow mesh (the soft shadow alone washed out and
+        // the cards read flat/dated in Dark Mode).
+        let contactColor = Color.black.opacity(dark ? 0.35 : 0.10)
         let base = content
             .background {
                 if reduceTransparency {
                     shape.fill(Theme.surfaceRaised)
+                        .shadow(color: contactColor, radius: 3, x: 0, y: 1)
                         .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
                 } else {
                     // The shadow is cast by the card SHAPE (not the composite
                     // view) so translucent fills never double-shadow the text.
                     shape.fill(.regularMaterial)
+                        .shadow(color: contactColor, radius: 3, x: 0, y: 1)
                         .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
-                    shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.30 : 0.40) : 0.55))
+                    // Raised dark veil (0.40 -> 0.60): cards must read as solid
+                    // floating surfaces over the glow, not melt into the mesh.
+                    shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.50 : 0.60) : 0.55))
                 }
             }
 
@@ -202,8 +210,10 @@ private struct CardSurfaceModifier: ViewModifier {
             shape.strokeBorder(
                 LinearGradient(
                     stops: [
-                        .init(color: dark ? .white.opacity(0.22) : .black.opacity(0.10), location: 0),
-                        .init(color: dark ? .white.opacity(0.05) : .black.opacity(0.04), location: 1),
+                        // Brighter top-lit lip in dark mode so the edge reads as a
+                        // raised surface catching light, not a cheap flat outline.
+                        .init(color: dark ? .white.opacity(0.30) : .black.opacity(0.10), location: 0),
+                        .init(color: dark ? .white.opacity(0.08) : .black.opacity(0.04), location: 1),
                     ],
                     startPoint: .top,
                     endPoint: .bottom,

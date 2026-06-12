@@ -53,6 +53,14 @@ public struct StartRunRequest: Codable, Sendable {
     public var access: String?
     public var web: String?
     public var tests: [String]?
+    /// v0.9 strategy flags (modes collapsed to 5; strategies ride as flags).
+    public var attempts: Int?
+    public var untilClean: Bool?
+    public var swarm: Bool?
+    public var create: Bool?
+    /// Thread linkage (chat/session-first): a run is a turn inside a thread.
+    public var threadId: String?
+    public var authPreference: String?
 
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
@@ -60,7 +68,9 @@ public struct StartRunRequest: Codable, Sendable {
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
                 web: String? = nil,
-                tests: [String]? = nil) {
+                tests: [String]? = nil,
+                attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
+                threadId: String? = nil, authPreference: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.scope = scope
@@ -76,6 +86,181 @@ public struct StartRunRequest: Codable, Sendable {
         self.access = access
         self.web = web
         self.tests = tests
+        self.attempts = attempts
+        self.untilClean = untilClean
+        self.swarm = swarm
+        self.create = create
+        self.threadId = threadId
+        self.authPreference = authPreference
+    }
+}
+
+// MARK: - Threads (A2 chat/session-first)
+
+public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let title: String?
+    public let repoRoot: String?
+    public let mode: String?
+    public let authPreference: String?
+    public let primaryHarness: String?
+    public let state: String?
+    public let runIds: [String]
+    public let headRunId: String?
+    public let needsHuman: Bool
+    public let createdAt: String
+    public let updatedAt: String
+}
+
+public struct ThreadSessionInfo: Codable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let threadId: String
+    public let harnessId: String
+    public let nativeSessionId: String?
+    public let observedModel: String?
+    public let state: String?
+}
+
+public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let threadId: String
+    public let runId: String?
+    public let parentRunId: String?
+    public let kind: String?
+    public let prompt: String
+    public let state: String?
+    public let createdAt: String
+}
+
+public struct ThreadListResponse: Codable, Sendable {
+    public let threads: [ThreadSummary]
+}
+
+public struct ThreadDetailResponse: Codable, Sendable {
+    public let thread: ThreadSummary
+    public let sessions: [ThreadSessionInfo]
+    public let turns: [ThreadTurnInfo]
+}
+
+public struct CreateThreadRequest: Codable, Sendable {
+    public var title: String?
+    public var scope: RunScope
+    public var mode: String?
+    public var authPreference: String?
+    public var primaryHarness: String?
+
+    public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
+                authPreference: String? = nil, primaryHarness: String? = nil) {
+        self.title = title
+        self.scope = scope
+        self.mode = mode
+        self.authPreference = authPreference
+        self.primaryHarness = primaryHarness
+    }
+}
+
+/// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.
+public struct ThreadTurnRequest: Codable, Sendable {
+    public var prompt: String
+    public var mode: String?
+    public var harnesses: [String]?
+    public var n: Int?
+    public var attempts: Int?
+    public var untilClean: Bool?
+    public var swarm: Bool?
+    public var create: Bool?
+    public var maxUsd: Double?
+
+    public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
+                attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
+                maxUsd: Double? = nil) {
+        self.prompt = prompt
+        self.mode = mode
+        self.harnesses = harnesses
+        self.n = n
+        self.attempts = attempts
+        self.untilClean = untilClean
+        self.swarm = swarm
+        self.create = create
+        self.maxUsd = maxUsd
+    }
+}
+
+// MARK: - Operator decisions (review queue actions)
+
+public struct RunDecisionRequest: Codable, Sendable {
+    public var action: String
+    public var findingIds: [String]
+    public var feedback: String?
+    public var acceptedRisks: [String]
+    public var applyMode: String?
+
+    public init(action: String, findingIds: [String] = [], feedback: String? = nil,
+                acceptedRisks: [String] = [], applyMode: String? = nil) {
+        self.action = action
+        self.findingIds = findingIds
+        self.feedback = feedback
+        self.acceptedRisks = acceptedRisks
+        self.applyMode = applyMode
+    }
+}
+
+public struct RunDecisionResponse: Codable, Sendable, Equatable {
+    public let accepted: Bool
+    public let status: String
+    public let newRunId: String?
+    public let message: String?
+}
+
+/// Result of POST /runs/:id/apply (delivery DeliverResult projection).
+public struct ApplyResultInfo: Codable, Sendable, Equatable {
+    public let mode: String
+    public let applied: Bool
+    public let branch: String?
+    public let commit: String?
+    public let prUrl: String?
+    public let detail: String?
+}
+
+public struct ApplyRunRequest: Codable, Sendable {
+    public var target: ApplyTarget
+    public var mode: String
+    public var branch: String?
+    public var message: String?
+
+    public init(target: ApplyTarget = .originalProject, mode: String = "apply", branch: String? = nil, message: String? = nil) {
+        self.target = target
+        self.mode = mode
+        self.branch = branch
+        self.message = message
+    }
+}
+
+public enum ApplyTarget: Codable, Sendable, Equatable {
+    case originalProject
+    case project(root: String)
+
+    enum CodingKeys: String, CodingKey { case kind, root }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        if kind == "project" {
+            self = .project(root: try c.decode(String.self, forKey: .root))
+        } else {
+            self = .originalProject
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .originalProject:
+            try c.encode("original_project", forKey: .kind)
+        case .project(let root):
+            try c.encode("project", forKey: .kind)
+            try c.encode(root, forKey: .root)
+        }
     }
 }
 

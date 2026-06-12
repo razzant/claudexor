@@ -129,36 +129,48 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
 // MARK: - Run modes
 
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, unknown
+    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, unknown
     var id: String { rawValue }
     static var allCases: [RunMode] {
-        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit]
+        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate]
     }
 
-    /// The wire value the control-api / orchestrator expects.
+    /// The wire MODE (v0.9: five canonical ids — strategies ride as flags, see `strategyFlags`).
     var apiValue: String {
         switch self {
         case .ask: return "ask"
-        case .explore: return "explore"
-        case .agent: return "agent"
-        case .bestOfN: return "best_of_n"
-        case .maxAttempts: return "max_attempts"
-        case .untilClean: return "until_clean"
+        case .explore, .readOnlyAudit: return "audit"
+        case .agent, .bestOfN, .maxAttempts, .untilClean, .create: return "agent"
         case .plan: return "plan"
-        case .create: return "create"
-        case .readOnlyAudit: return "readonly_audit"
+        case .orchestrate: return "orchestrate"
         case .unknown: return "unknown"
         }
     }
+
+    /// v0.9 strategy flags accompanying `apiValue` on a run start request.
+    var strategyFlags: (untilClean: Bool, swarm: Bool, create: Bool, defaultN: Int?) {
+        switch self {
+        case .bestOfN: return (false, false, false, 2)
+        case .untilClean: return (true, false, false, nil)
+        case .explore: return (false, true, false, nil)
+        case .create: return (false, false, true, nil)
+        default: return (false, false, false, nil)
+        }
+    }
+
     init(apiValue: String?) {
         switch apiValue {
         case "ask": self = .ask
-        case "explore": self = .explore
         case "agent": self = .agent
+        case "plan": self = .plan
+        case "audit": self = .readOnlyAudit
+        case "orchestrate": self = .orchestrate
+        // Legacy ids from pre-v0.9 dogfood artifacts decode leniently for
+        // DISPLAY only (the engine hard-errors on them at run time).
+        case "explore": self = .explore
         case "best_of_n": self = .bestOfN
         case "max_attempts": self = .maxAttempts
         case "until_clean": self = .untilClean
-        case "plan": self = .plan
         case "create": self = .create
         case "readonly_audit": self = .readOnlyAudit
         default: self = .unknown
@@ -175,6 +187,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "Plan"
         case .create: return "Create"
         case .readOnlyAudit: return "Read-only Audit"
+        case .orchestrate: return "Orchestrate"
         case .unknown: return "Unknown Mode"
         }
     }
@@ -189,6 +202,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "list.bullet.clipboard"
         case .create: return "plus.square.on.square"
         case .readOnlyAudit: return "magnifyingglass"
+        case .orchestrate: return "brain.head.profile"
         case .unknown: return "exclamationmark.triangle"
         }
     }
@@ -203,11 +217,12 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "Multi-harness planning → adversarial plan review → SpecPack."
         case .create: return "Scaffold a brand-new repo or component."
         case .readOnlyAudit: return "Read-only audit / map of a codebase."
+        case .orchestrate: return "Brain: routed like reviewers; produces a typed orchestration plan over the tool belt."
         case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }
     }
     var isMultiCandidate: Bool { self == .bestOfN }
-    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit }
+    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate }
     var requiresProject: Bool { self != .ask }
     var requiredIntent: String {
         switch self {
@@ -216,6 +231,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "plan"
         case .readOnlyAudit: return "audit"
         case .create: return "create_from_scratch"
+        case .orchestrate: return "orchestrate"
         case .unknown: return "implement"
         default: return "implement"
         }
