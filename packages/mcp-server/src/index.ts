@@ -3,7 +3,7 @@ import type { Readable, Writable } from "node:stream";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export const MCP_PROTOCOL_VERSION = "2024-11-05";
+export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 export interface McpTool {
   name: string;

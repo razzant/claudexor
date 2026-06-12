@@ -72,8 +72,18 @@ function parseCursorEventStateful(
   const type = obj?.type;
 
   if (type === "system" && obj.subtype === "init") {
+    // Cursor surfaces the chat id under different keys across versions; expose
+    // it uniformly so the engine can `--resume` this thread's native chat.
+    const nativeId =
+      typeof obj.chatId === "string" ? obj.chatId : typeof obj.chat_id === "string" ? obj.chat_id : typeof obj.session_id === "string" ? obj.session_id : undefined;
     return [
-      { type: "started", session_id: sessionId, ts, observed_model: typeof obj.model === "string" ? obj.model : undefined },
+      {
+        type: "started",
+        session_id: sessionId,
+        ts,
+        observed_model: typeof obj.model === "string" ? obj.model : undefined,
+        ...(nativeId ? { payload: { native_session_id: nativeId } } : {}),
+      },
     ];
   }
 

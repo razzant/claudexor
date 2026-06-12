@@ -30,7 +30,16 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
     return [{ type: "error", session_id: sessionId, ts, error: String(obj.error ?? obj.message ?? "opencode error") }];
   }
   if (type === "session" || type === "start" || type === "init") {
-    return [{ type: "started", session_id: sessionId, ts, observed_model: typeof obj.model === "string" ? obj.model : undefined }];
+    // Surface the native session id (ses_...) so the engine can resume this thread.
+    const nativeId =
+      typeof obj.sessionID === "string" ? obj.sessionID : typeof obj.session_id === "string" ? obj.session_id : typeof obj.session?.id === "string" ? obj.session.id : undefined;
+    return [{
+      type: "started",
+      session_id: sessionId,
+      ts,
+      observed_model: typeof obj.model === "string" ? obj.model : undefined,
+      ...(nativeId ? { payload: { native_session_id: nativeId } } : {}),
+    }];
   }
 
   // Text parts can arrive under several shapes across versions.

@@ -39,12 +39,21 @@ import {
   type SpecCommandResult,
 } from "./spec.js";
 import { parseReviewerEffortMap } from "./reviewer-options.js";
+import { runRepl } from "./repl.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
   const orch = new Orchestrator({ registry: buildRegistry() });
   return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null>; signal?: AbortSignal }) => {
-    if (p?.mode === "__status") return { harnesses: [...buildRegistry().keys()] };
+    if (p?.mode === "__status") {
+      // Doctor-backed truth (probe-cheap): fakes and unavailable harnesses are
+      // never presented as available tools to an MCP host.
+      const statuses = await buildGateway({ includeFakes: false }).statusAll({ cwd: process.cwd() });
+      return {
+        harnesses: statuses.map((s) => ({ id: s.id, status: s.status, intents: s.enabledIntents })),
+        available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
+      };
+    }
     return orch.run({
       repoRoot: typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd(),
       prompt: String(p?.prompt ?? ""),
@@ -753,6 +762,11 @@ async function main(): Promise<number> {
     return 2;
   }
   const json = flagBool(args, "json");
+  // No arguments at all = the interactive REPL: a thread of turns over the
+  // current project with native session continuity (chat is the normal loop).
+  if (args._.length === 0 && process.stdin.isTTY) {
+    return runRepl(process.cwd());
+  }
   const cmd = args._[0] ?? "help";
   const cwd = process.cwd();
 

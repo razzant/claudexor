@@ -92,7 +92,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         },
         capability_profile: {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
-          session: { resume_latest: false, resume_by_id: false },
+          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true, fork: true },
           output: { ndjson_events: true, final_json: false, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
           auth: { supported_sources: ["api_key_env"], preferred_source: authReady ? "api_key_env" : null, probe_command: [], env_vars: [...PROVIDER_KEY_ENV] },
           access_control: { readonly: false, workspace_write: true, full: true, mechanism: "opencode permissions not yet conformance-proven" },
@@ -159,6 +159,8 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   }
   const args = ["run", "--format", "json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
+  // Resume the thread's native opencode session (ses_...) as a follow-up turn.
+  if (spec.resume_session_id) args.push("--session", spec.resume_session_id);
   args.push(spec.prompt);
   const env: Record<string, string | null | undefined> = {
     ...spec.env,

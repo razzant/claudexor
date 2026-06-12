@@ -32,6 +32,8 @@ export interface AcpServerOptions {
  */
 export class AcpServer {
   private sessions = new Set<string>();
+  /** Editor-provided project root per session (anchors runs to the user's project). */
+  private readonly sessionCwds = new Map<string, string>();
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<string, (result: any) => void>();
   /** Active run per session: lets session/cancel abort and keeps prompts serial. */
@@ -104,6 +106,10 @@ export class AcpServer {
       case "session/new": {
         const sessionId = `acp-${Math.random().toString(36).slice(2, 10)}`;
         this.sessions.add(sessionId);
+        // The editor's cwd anchors all of this session's runs to the project the
+        // user is actually in (previously ignored -> runs hit the server's cwd).
+        const cwd = typeof params?.cwd === "string" && params.cwd.trim() ? params.cwd : undefined;
+        if (cwd) this.sessionCwds.set(sessionId, cwd);
         this.reply(id, { sessionId });
         return;
       }
@@ -128,7 +134,14 @@ export class AcpServer {
                 }
               : {}),
           };
-          const result = await this.opts.runner({ prompt: text, mode: params?.mode ?? "agent" }, hooks);
+          const result = await this.opts.runner(
+            {
+              prompt: text,
+              mode: params?.mode ?? "agent",
+              ...(sessionId && this.sessionCwds.has(sessionId) ? { repoPath: this.sessionCwds.get(sessionId) } : {}),
+            },
+            hooks,
+          );
           if (sessionId) {
             this.notify("session/update", {
               sessionId,
@@ -219,7 +232,21 @@ export class AcpServer {
         name: String(o?.label ?? `option ${idx + 1}`),
         kind: "allow_once",
       }));
-      if (options.length === 0) continue;
+      if (options.length === 0) {
+        // A free-text question (no options) still deserves an answer surface:
+        // ACP permission outcomes can carry text on some hosts; ask with a
+        // single acknowledge option and forward any text the host returned.
+        const response = await this.request("session/request_permission", {
+          sessionId,
+          toolCall: { toolCallId: String(request?.interaction_id ?? "interaction"), title: String(q?.question ?? "Question") },
+          options: [{ optionId: "opt-answer", name: "Answer in chat", kind: "allow_once" }],
+        });
+        const text = typeof response?.outcome?.text === "string" ? response.outcome.text : typeof response?.text === "string" ? response.text : null;
+        if (text && text.trim()) {
+          answers.push({ question_id: String(q?.id ?? ""), selected_labels: [], free_text: text });
+        }
+        continue;
+      }
       const response = await this.request("session/request_permission", {
         sessionId,
         toolCall: { toolCallId: String(request?.interaction_id ?? "interaction"), title: String(q?.question ?? "Question") },

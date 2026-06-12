@@ -1,7 +1,7 @@
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { createCursorParser } from "./parse.js";
@@ -93,7 +93,7 @@ export function createCursorAdapter(): HarnessAdapter {
         },
         capability_profile: {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
-          session: { resume_latest: false, resume_by_id: false },
+          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
           output: { ndjson_events: true, tool_lifecycle: true, file_changes: true, final_json: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
           auth: { supported_sources: ["native_session", "api_key_env", "api_key_flag"], preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["cursor-agent", "status"], env_vars: ["CURSOR_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: false, mechanism: "cursor-agent flags (feature-probed)" },
@@ -158,12 +158,15 @@ async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
+  // Resume the thread's native cursor chat as a follow-up turn.
+  if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
   args.push(spec.prompt);
   const key = cursorApiKey();
+  // Unified provider scrub (cross-provider leak fix); the chosen route re-adds
+  // ONLY its own variable below.
   const env: Record<string, string | null | undefined> = {
     ...spec.env,
-    // An inherited endpoint override could redirect traffic carrying credentials.
-    CURSOR_API_URL: null,
+    ...providerScrubEnv(),
   };
   // Envelope runs use a scoped HOME where the native cursor session is
   // unreachable, so the native-auth probe (which runs against the REAL home)

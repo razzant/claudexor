@@ -13,9 +13,10 @@ export interface RegistryOptions {
 }
 
 /**
- * Build the adapter registry. Real adapters (Codex/Claude; Cursor/OpenCode in
- * later phases) are always registered; the gateway only selects available
- * non-fake harnesses by default. Fakes are registered for explicit `--harness`.
+ * Build the adapter registry. All five real adapters are always registered;
+ * the gateway only selects doctor-OK non-fake harnesses by default. Fakes are
+ * registered for explicit `--harness`. An `openrouter` raw-API instance is the
+ * direct-API path for arbitrary models (brain/review) when its key exists.
  */
 export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
   const registry: AdapterRegistry = new Map();
@@ -25,6 +26,13 @@ export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
     createCursorAdapter(),
     createOpenCodeAdapter(),
     createRawApiAdapter(),
+    createRawApiAdapter({
+      id: "openrouter",
+      providerFamily: "unknown",
+      baseUrl: process.env.CLAUDEXOR_OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+      keyEnv: "OPENROUTER_API_KEY",
+      defaultModel: process.env.CLAUDEXOR_OPENROUTER_MODEL ?? "openai/gpt-5.5",
+    }),
   ]) {
     registry.set(adapter.id, adapter);
   }
