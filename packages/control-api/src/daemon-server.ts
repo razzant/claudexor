@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
@@ -37,6 +37,14 @@ import {
   ControlInteractionAnswerResponse,
   type ControlPendingInteraction,
   type ControlRouteInfo,
+  ControlRunDecisionRequest,
+  ControlRunDecisionResponse,
+  ControlThread,
+  ControlThreadCreateRequest,
+  ControlThreadDetail,
+  ControlThreadListResponse,
+  ControlSession,
+  ControlThreadTurn,
   DecisionRecord,
   ModeKind,
   Portfolio,
@@ -47,8 +55,8 @@ import {
   TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets } from "@claudexor/util";
-import { parse as parseYaml } from "yaml";
+import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export interface DaemonRunRecord {
   id: string;
@@ -103,6 +111,11 @@ export interface DaemonControlApiOptions {
     /** Live waiting_on_user state (daemon InteractionRegistry projections). */
     pendingInteractions?: (runId: string) => ControlPendingInteraction[];
     answerInteraction?: (runId: string, interactionId: string, answers: unknown) => { status: string; message?: string };
+    /** Thread/session SSOT (A2 chat/session-first). */
+    createThread?: (input: unknown) => Promise<unknown>;
+    listThreads?: () => Promise<{ threads: unknown[] }>;
+    threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
+    addThreadTurn?: (id: string, runId: string | null, prompt: string, kind?: unknown) => Promise<unknown>;
   };
 }
 
@@ -305,6 +318,102 @@ export class DaemonControlApiServer {
       return this.streamGlobalEvents(req, res);
     }
 
+    // ---- Threads (A2 chat/session-first): the Thread is the conversation SSOT;
+    // runs are turns inside it; native CLI sessions resume across turns. ----
+    if (method === "POST" && path === "/threads") {
+      const svc = this.opts.services?.createThread;
+      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      try {
+        const body = await this.readBody(req);
+        assertNoInlineSecretValues(body);
+        const parsed = ControlThreadCreateRequest.parse(body);
+        const thread = await svc({
+          title: parsed.title,
+          repoRoot: parsed.scope.kind === "project" ? parsed.scope.root : null,
+          mode: parsed.mode,
+          authPreference: parsed.authPreference,
+          primaryHarness: parsed.primaryHarness ?? null,
+        });
+        return this.json(res, 200, projectThread(thread, false));
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
+    if (method === "GET" && path === "/threads") {
+      const svc = this.opts.services?.listThreads;
+      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      const { threads } = await svc();
+      const runs = await this.opts.daemon.list();
+      const blocked = new Set(runs.filter((r) => r.state === "blocked").map((r) => r.runId ?? r.id));
+      return this.json(res, 200, ControlThreadListResponse.parse({
+        threads: threads.map((t) => projectThread(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? ""))),
+      }));
+    }
+
+    const threadDetailMatch = /^\/threads\/([^/]+)$/.exec(path);
+    if (method === "GET" && threadDetailMatch) {
+      const svc = this.opts.services?.threadDetail;
+      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      try {
+        const detail = await svc(decodeURIComponent(threadDetailMatch[1] as string));
+        const runs = await this.opts.daemon.list();
+        const states = new Map(runs.map((r) => [r.runId ?? r.id, r.state]));
+        const thread = detail.thread as { head_run_id?: string | null };
+        return this.json(res, 200, ControlThreadDetail.parse({
+          thread: projectThread(detail.thread, states.get(thread.head_run_id ?? "") === "blocked"),
+          sessions: detail.sessions.map(projectSession),
+          turns: detail.turns.map((t) => projectTurn(t, states)),
+        }));
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
+    const threadTurnMatch = /^\/threads\/([^/]+)\/turns$/.exec(path);
+    if (method === "POST" && threadTurnMatch) {
+      const detailSvc = this.opts.services?.threadDetail;
+      const turnSvc = this.opts.services?.addThreadTurn;
+      if (!detailSvc || !turnSvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      const threadId = decodeURIComponent(threadTurnMatch[1] as string);
+      try {
+        const detail = await detailSvc(threadId);
+        const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null };
+        const body = (await this.readBody(req)) as Record<string, unknown>;
+        assertNoInlineSecretValues(body);
+        // The turn body is a reduced run-start: thread anchors scope/mode/auth;
+        // the body may override strategy flags per turn (plan -> implement etc.).
+        const params = normalizeRunStart(
+          ControlRunStartRequest.parse({
+            ...body,
+            scope: thread.repo ? { kind: "project", root: thread.repo.root } : { kind: "none" },
+            mode: typeof body["mode"] === "string" ? body["mode"] : thread.mode,
+            threadId,
+            parentRunId: thread.head_run_id ?? undefined,
+            authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
+            ...(thread.primary_harness && body["primaryHarness"] === undefined ? { primaryHarness: thread.primary_harness } : {}),
+          }),
+        );
+        const job = await this.opts.daemon.enqueue(params);
+        const rec = await this.waitForRunStart(job.id);
+        const turn = await turnSvc(threadId, rec.runId ?? null, String(params.prompt ?? ""), "followup");
+        if (rec.runId && rec.runDir) {
+          return this.json(res, 200, {
+            ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
+            turnId: (turn as { id?: string }).id,
+            threadId,
+          });
+        }
+        const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
+        return this.json(res, status, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
     const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
     if (method === "GET" && artifactsRootMatch) {
       const rec = await this.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
@@ -387,6 +496,84 @@ export class DaemonControlApiServer {
       const gateError = applyGateError(rec, patch, repoRoot);
       if (gateError) return this.json(res, 409, { error: gateError });
       return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
+    }
+
+    // Operator decision on a NEEDS_HUMAN-blocked run (review queue actions):
+    // a typed, auditable unblock path instead of a read-only dead end.
+    const decisionMatch = /^\/runs\/([^/]+)\/decision$/.exec(path);
+    if (method === "POST" && decisionMatch) {
+      const rec = await this.findRun(decodeURIComponent(decisionMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      let body: ControlRunDecisionRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlRunDecisionRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+
+      if (body.action === "accept_risk" || body.action === "override_needs_human") {
+        const patch = readPatch(rec);
+        if (patch === null) return this.json(res, 409, { error: "no patch artifact; there is nothing to unblock for apply" });
+        const record = {
+          action: body.action,
+          finding_ids: body.findingIds,
+          accepted_risks: body.acceptedRisks,
+          patch_sha256: sha256(patch),
+          decided_at: nowIso(),
+        };
+        // The artifact name is server-fixed (no client path input); only the run
+        // dir root needs validating before the write.
+        const root = safeArtifactRoot(rec.runDir);
+        if (!root) return this.json(res, 500, { error: "cannot resolve run artifact root" });
+        mkdirSync(join(root, "arbitration"), { recursive: true });
+        writeFileSync(join(root, "arbitration", "operator_decision.yaml"), stringifyYaml(record), "utf8");
+        appendRunAuditEvent(rec, "control.applied", { decision: body.action, finding_ids: body.findingIds, accepted_risks: body.acceptedRisks });
+        return this.json(res, 200, ControlRunDecisionResponse.parse({ accepted: true, status: "applied", message: `${body.action} recorded; apply is now permitted for this exact patch` }));
+      }
+
+      if (body.action === "accept_clean_patch") {
+        const patch = readPatch(rec);
+        if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
+        if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
+        const repoRoot = applyTargetRoot(body.target ?? { kind: "original_project" }, rec);
+        if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
+        const gateError = applyGateError(rec, patch, repoRoot);
+        if (gateError) return this.json(res, 409, { error: gateError });
+        const delivered = await deliver(repoRoot, patch, { mode: body.applyMode ?? "apply" });
+        appendRunAuditEvent(rec, "control.applied", { decision: body.action, mode: body.applyMode ?? "apply", applied: delivered.applied });
+        return this.json(res, 200, ControlRunDecisionResponse.parse({ accepted: delivered.applied, status: delivered.applied ? "applied" : "rejected", message: delivered.detail ?? undefined }));
+      }
+
+      // rerun_with_feedback: enqueue a follow-up run seeded with the reviewer feedback.
+      if (!body.feedback || !body.feedback.trim()) {
+        return this.json(res, 400, { error: "feedback is required for rerun_with_feedback" });
+      }
+      const p = paramsRecord(rec);
+      const originalPrompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
+      let params: ControlRunStartRequest;
+      try {
+        params = normalizeRunStart(
+          ControlRunStartRequest.parse({
+            ...p,
+            prompt: `${originalPrompt}\n\n## Reviewer feedback to address (operator decision)\n${body.feedback}`,
+            parentRunId: rec.runId ?? rec.id,
+          }),
+        );
+      } catch (err) {
+        return this.json(res, 400, { error: `cannot rebuild run params for rerun: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      const job = await this.opts.daemon.enqueue(params);
+      const newRec = await this.waitForRunStart(job.id);
+      appendRunAuditEvent(rec, "control.applied", { decision: body.action, new_run_id: newRec.runId ?? newRec.id });
+      return this.json(res, 200, ControlRunDecisionResponse.parse({
+        accepted: true,
+        status: "requeued",
+        newRunId: newRec.runId ?? newRec.id,
+        message: "follow-up run enqueued with reviewer feedback",
+      }));
     }
 
     if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
@@ -845,6 +1032,59 @@ function readNewLines(path: string, offset: number, carry: string): { lines: str
   } finally {
     closeSync(fd);
   }
+}
+
+/* ---- Thread projections (engine snake_case -> control camelCase) ---- */
+
+function projectThread(raw: unknown, needsHuman: boolean): ControlThread {
+  const t = raw as Record<string, unknown>;
+  const repo = t["repo"] as { root?: string } | null;
+  return ControlThread.parse({
+    id: t["id"],
+    title: t["title"] ?? null,
+    repoRoot: repo?.root ?? null,
+    mode: t["mode"],
+    authPreference: t["auth_preference"] ?? "auto",
+    primaryHarness: t["primary_harness"] ?? null,
+    portfolio: t["portfolio"],
+    state: t["state"] ?? "active",
+    runIds: t["run_ids"] ?? [],
+    headRunId: t["head_run_id"] ?? null,
+    needsHuman,
+    createdAt: t["created_at"],
+    updatedAt: t["updated_at"],
+  });
+}
+
+function projectSession(raw: unknown): ControlSession {
+  const s = raw as Record<string, unknown>;
+  return ControlSession.parse({
+    id: s["id"],
+    threadId: s["thread_id"],
+    harnessId: s["harness_id"],
+    providerFamily: s["provider_family"] ?? "unknown",
+    nativeSessionId: s["native_session_id"] ?? null,
+    observedModel: s["last_observed_model"] ?? null,
+    authMode: s["auth_mode"] ?? "unknown",
+    state: s["state"] ?? "live",
+    turnCount: 0,
+  });
+}
+
+function projectTurn(raw: unknown, states: Map<string, string>): ControlThreadTurn {
+  const t = raw as Record<string, unknown>;
+  const runId = (t["run_id"] as string | null) ?? null;
+  return ControlThreadTurn.parse({
+    id: t["id"],
+    threadId: t["thread_id"],
+    runId,
+    parentRunId: t["parent_run_id"] ?? null,
+    sessionId: t["session_id"] ?? null,
+    kind: t["kind"] ?? "followup",
+    prompt: t["prompt"] ?? "",
+    state: runId ? states.get(runId) : undefined,
+    createdAt: t["created_at"],
+  });
 }
 
 function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
@@ -1420,7 +1660,21 @@ function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: str
     patch,
     originalRepoRoot: runRepoRoot(rec),
     targetRepoRoot,
+    operatorDecision: readOperatorDecision(rec),
   });
+}
+
+/** The persisted operator unblock decision (accept_risk / override), if any. */
+function readOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha256?: string } | null {
+  try {
+    const raw = readTextArtifact(rec, "arbitration/operator_decision.yaml");
+    if (!raw) return null;
+    const doc = parseYaml(raw) as Record<string, unknown> | null;
+    if (!doc || typeof doc["action"] !== "string") return null;
+    return { action: doc["action"], patch_sha256: typeof doc["patch_sha256"] === "string" ? doc["patch_sha256"] : undefined };
+  } catch {
+    return null;
+  }
 }
 
 function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, schema: { parse(value: unknown): T }): T | null {

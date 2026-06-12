@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DaemonControlApiServer, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "@claudexor/util";
@@ -133,6 +133,87 @@ describe("DaemonControlApiServer", () => {
       await server.stop();
     }
   }
+
+  it("threads: create -> list -> turn (enqueued with threadId + native resume anchors) -> detail", async () => {
+    const { daemon, record } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-"));
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params);
+      },
+    };
+    // Minimal in-memory thread service double (the daemon's ThreadStore contract).
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-1",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "test thread",
+      mode: "agent",
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const services: DaemonControlApiOptions["services"] = {
+      createThread: async () => threadObj,
+      listThreads: async () => ({ threads: [threadObj] }),
+      threadDetail: async (id) => {
+        expect(id).toBe("th-1");
+        return { thread: threadObj, sessions: [], turns };
+      },
+      addThreadTurn: async (id, runId, prompt) => {
+        const turn = { id: "tn-1", thread_id: id, run_id: runId, parent_run_id: null, session_id: null, kind: "followup", prompt, created_at: now };
+        turns.push(turn);
+        threadObj["head_run_id"] = runId;
+        return turn;
+      },
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+      const created = await fetch(`${base}/threads`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: "test thread", scope: { kind: "project", root: repo } }),
+      });
+      expect(created.status).toBe(200);
+      expect(((await created.json()) as { id: string }).id).toBe("th-1");
+
+      const list = (await (await fetch(`${base}/threads`, { headers: { authorization: `Bearer ${token}` } })).json()) as { threads: { id: string; needsHuman: boolean }[] };
+      expect(list.threads[0]?.id).toBe("th-1");
+
+      const turn = await fetch(`${base}/threads/th-1/turns`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "continue the plan" }),
+      });
+      expect(turn.status).toBe(200);
+      const turnBody = (await turn.json()) as { runId: string; turnId: string; threadId: string };
+      expect(turnBody.runId).toBe(record.runId);
+      expect(turnBody.threadId).toBe("th-1");
+      // The enqueued run carries the thread anchors (the engine resolves native resume from them).
+      expect(enqueued).toMatchObject({ threadId: "th-1", mode: "agent", scope: { kind: "project", root: repo } });
+
+      const detail = (await (await fetch(`${base}/threads/th-1`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        thread: { id: string; headRunId: string | null };
+        turns: { prompt: string; state?: string }[];
+      };
+      expect(detail.thread.headRunId).toBe(record.runId);
+      expect(detail.turns[0]?.prompt).toBe("continue the plan");
+      },
+      undefined,
+      services,
+    );
+  });
 
   it("allows Ask without a project by normalizing it to user-level context-off storage", async () => {
     const { daemon } = fakeDaemon();
@@ -881,6 +962,76 @@ describe("DaemonControlApiServer", () => {
       });
       expect(apply.status).toBe(409);
       expect(await apply.text()).toContain("not_converged");
+    });
+  });
+
+  it("operator decision unblocks a blocked run for apply (accept_risk), scoped to the exact patch", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "blocked";
+    await withDaemonServer(daemon, async (base) => {
+      // Blocked: apply/check refuses before any operator decision.
+      const before = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(before.status).toBe(409);
+
+      // Operator accepts the risk (typed, audited, hash-bound).
+      const decide = await fetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "accept_risk", findingIds: ["f-1"], acceptedRisks: ["protected path change reviewed by hand"] }),
+      });
+      expect(decide.status).toBe(200);
+      expect(((await decide.json()) as { accepted: boolean }).accepted).toBe(true);
+      // The decision is a durable, auditable artifact.
+      const persisted = readFileSync(join(record.runDir as string, "arbitration", "operator_decision.yaml"), "utf8");
+      expect(persisted).toContain("accept_risk");
+      expect(persisted).toContain("patch_sha256");
+
+      // The gate now passes for THIS patch...
+      const after = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(after.status).toBe(200);
+
+      // ...but a mutated patch invalidates the override (hash-bound).
+      writeFileSync(join(record.runDir as string, "final", "patch.diff"), "diff --git a/x b/x\n+tampered\n");
+      const tampered = await fetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: "{}",
+      });
+      expect(tampered.status).toBe(409);
+    });
+  });
+
+  it("rerun_with_feedback enqueues a follow-up run carrying the operator feedback", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "blocked";
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await fetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Narrow the diff to src/auth only." }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; newRunId?: string };
+      expect(body.status).toBe("requeued");
+      expect(body.newRunId).toBeTruthy();
+      expect(String(enqueued?.["prompt"])).toContain("Narrow the diff to src/auth only.");
+      expect(enqueued?.["parentRunId"]).toBe("run-d1");
     });
   });
 

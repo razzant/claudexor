@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { DaemonClient, DaemonServer, InteractionRegistry, RunEventBus, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudexor/daemon";
+import { DaemonClient, DaemonServer, InteractionRegistry, RunEventBus, ThreadStore, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
@@ -29,6 +29,9 @@ async function main(): Promise<void> {
   // harness questions park in the interaction registry until answered.
   const bus = new RunEventBus();
   const interactions = new InteractionRegistry();
+  // Thread/session SSOT (A2): durable conversation registry; vendor CLI session
+  // ids are the re-hostable cache that lets later turns resume natively.
+  const threads = new ThreadStore(join(daemonDir(), "threads.json"));
 
   const server = new DaemonServer({
     socketPath,
@@ -47,10 +50,17 @@ async function main(): Promise<void> {
         reviewerModels: p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
         reviewerEfforts: p.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined,
       });
+      const threadId = typeof p.threadId === "string" && p.threadId ? p.threadId : undefined;
       return orchestrator.run({
         onEvent: (event) => bus.publish(event),
         onInteraction: (ctx2) => interactions.register(ctx2),
         interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
+        threadId,
+        // Native session continuity: resume each routed harness's own prior
+        // conversation in this thread; record new native ids for future turns.
+        resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
+        onSessionObserved: threadId ? (harnessId, nativeSessionId) => threads.recordSession(threadId, harnessId, nativeSessionId) : undefined,
+        authPreference: p.authPreference,
         repoRoot,
         prompt: String(p.prompt ?? ""),
         mode: p.mode,
@@ -92,7 +102,7 @@ async function main(): Promise<void> {
           daemon: new DaemonClient(socketPath, token),
           port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
           bus,
-          services: controlServices(interactions),
+          services: controlServices(interactions, threads),
         });
   if (control) {
     const controlAddr = await control.start();
@@ -159,11 +169,24 @@ function applyHarnessSettingsPatches(
   return next;
 }
 
-function controlServices(interactions: InteractionRegistry) {
+function controlServices(interactions: InteractionRegistry, threads: ThreadStore) {
   const secretStore = new SecretStore();
   const setupJobs = createSetupJobManager();
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
+    createThread: async (input: unknown) => threads.createThread((input ?? {}) as Parameters<ThreadStore["createThread"]>[0]),
+    listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),
+    threadDetail: async (id: string) => {
+      const thread = threads.getThread(id);
+      if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+      return {
+        thread: thread as unknown,
+        sessions: threads.sessionsForThread(id) as unknown[],
+        turns: threads.turnsFor(id) as unknown[],
+      };
+    },
+    addThreadTurn: async (id: string, runId: string | null, prompt: string, kind?: unknown) =>
+      threads.addTurn(id, runId, prompt, (kind ?? "followup") as Parameters<ThreadStore["addTurn"]>[3]),
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),
     harnesses: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),

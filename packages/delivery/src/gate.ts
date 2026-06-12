@@ -20,14 +20,28 @@ export interface ApplyGateInput {
   originalRepoRoot: string | null;
   /** Repo the caller wants to apply into. */
   targetRepoRoot: string;
+  /**
+   * A persisted, auditable operator decision (arbitration/operator_decision.yaml)
+   * that explicitly accepts the blocking risk for THIS patch. The override is
+   * valid only when its recorded patch hash matches the artifact — a typed,
+   * server-owned unblock, never client-faked state.
+   */
+  operatorDecision?: { action: string; patch_sha256?: string } | null;
 }
 
 export function validateApplyGate(input: ApplyGateInput): string | null {
-  if (input.state && input.state !== "succeeded") {
+  const override =
+    input.operatorDecision &&
+    (input.operatorDecision.action === "accept_risk" || input.operatorDecision.action === "override_needs_human") &&
+    typeof input.operatorDecision.patch_sha256 === "string" &&
+    input.operatorDecision.patch_sha256 === sha256(input.patch);
+  if (input.state && input.state !== "succeeded" && !(override && input.state === "blocked")) {
     return `run is not applyable while state is ${input.state}`;
   }
   if (!input.decision) return "decision record is required before apply";
-  if (input.decision.status !== "success") return `decision status is ${input.decision.status}; refusing apply`;
+  if (input.decision.status !== "success" && !override) {
+    return `decision status is ${input.decision.status}; refusing apply (an operator accept_risk/override decision can unblock it)`;
+  }
   if (!input.workProduct) return "work product is required before apply";
   if (input.workProduct.kind !== "patch") return `work product kind ${input.workProduct.kind} is not applyable as a patch`;
   const recorded = input.workProduct.meta?.["patch_sha256"];

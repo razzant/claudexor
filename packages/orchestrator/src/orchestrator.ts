@@ -123,6 +123,18 @@ export interface RunInput {
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
+  /** Thread this run is a turn of (A2 chat/session-first); recorded in events. */
+  threadId?: string;
+  /** Preferred auth route for harness attempts (subscription/api_key/auto). */
+  authPreference?: "subscription" | "api_key" | "auto";
+  /**
+   * Native CLI session ids to resume, keyed by harness id (the thread's vendor
+   * session cache). A routed harness with an entry continues its own native
+   * conversation (`codex exec resume` / `claude --resume`) instead of starting fresh.
+   */
+  resumeSessions?: Record<string, string>;
+  /** Called when a harness emits its native session id (recorded for future resume). */
+  onSessionObserved?: (harnessId: string, nativeSessionId: string) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
   onEvent?: (event: RunEvent) => void;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
@@ -367,6 +379,27 @@ export class Orchestrator {
   /** The producing intent a candidate plays (create flag switches it; not hardcoded to implement). */
   private candidateIntent(input: RunInput): Intent {
     return input.create === true ? "create_from_scratch" : "implement";
+  }
+
+  /** Session fields for a route's run spec: auth route preference + native resume id (A2). */
+  private sessionSpecFields(input: RunInput, harnessId: string): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
+    return {
+      auth_preference: input.authPreference ?? "auto",
+      resume_session_id: input.resumeSessions?.[harnessId] ?? null,
+    };
+  }
+
+  /** Record a harness-emitted native session id for future thread resume (observer never fails the run). */
+  private observeNativeSession(input: RunInput | undefined, harnessId: string, ev: HarnessEvent): void {
+    if (!input?.onSessionObserved || ev.type !== "started") return;
+    const nid = ev.payload?.["native_session_id"];
+    if (typeof nid === "string" && nid.length > 0) {
+      try {
+        input.onSessionObserved(harnessId, nid);
+      } catch {
+        /* observer errors must never fail the run */
+      }
+    }
   }
 
   /**
@@ -893,6 +926,7 @@ export class Orchestrator {
     effectiveWebMode?: ExternalContextPolicy,
     interaction?: InteractionChannel,
     budgetGuard?: (streamedUsd: number) => boolean,
+    runInput?: RunInput,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelHint, effortHint);
@@ -912,6 +946,7 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       max_usd: routed.settings?.maxUsd ?? null,
+      ...(runInput ? this.sessionSpecFields(runInput, adapter.id) : {}),
       env: wsm.envFor(envelope),
     });
     if (signal) spec.extra["abortSignal"] = signal;
@@ -939,6 +974,7 @@ export class Orchestrator {
           if (signal?.aborted) break;
           const safeEv = redactHarnessEvent(ev);
           safeInvoke(onHarnessEvent, safeEv);
+          this.observeNativeSession(runInput, adapter.id, safeEv);
           observeAttemptTelemetry(telemetry, safeEv);
           if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
             cost += safeEv.usage.cost_usd;
@@ -1349,6 +1385,7 @@ export class Orchestrator {
             lg.updateHold(slot.leaseId, streamedUsd);
             return lg.tier() === "hard";
           },
+          input,
         );
         slotLedger(slot).settle(slot.leaseId, run.cost);
         log.emit("harness.completed", {
@@ -1555,6 +1592,8 @@ export class Orchestrator {
             log,
             effectiveWeb,
             this.interactionChannelFor(input, log, runId, taskId, "synth", synthAdapter.id),
+            undefined,
+            input,
           );
           ledger.settle(lease.lease?.lease_id ?? "", run.cost);
           reviewEnvelopes.push(envelope);
@@ -2038,6 +2077,7 @@ export class Orchestrator {
               lg.updateHold(lease.lease?.lease_id ?? "", streamedUsd);
               return lg.tier() === "hard";
             },
+            input,
           );
           this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", run.cost);
           log.emit("harness.completed", {
@@ -2350,6 +2390,7 @@ export class Orchestrator {
         prompt: input.prompt + contextSection,
         cwd: input.repoRoot,
         access: "readonly",
+        ...this.sessionSpecFields(input, adapter.id),
         external_context_policy: knobs.webPolicy,
         tool_permission_policy: {
           web: knobs.webPolicy,
@@ -2387,6 +2428,7 @@ export class Orchestrator {
             if (input.signal?.aborted) break;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
+            this.observeNativeSession(input, adapter.id, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));
             observeAttemptTelemetry(telemetry, safeEv);
@@ -2719,6 +2761,7 @@ export class Orchestrator {
         prompt: explorerPrompt,
         cwd: input.repoRoot,
         access: "readonly",
+        ...this.sessionSpecFields(input, adapter.id),
         external_context_policy: knobs.webPolicy,
         tool_permission_policy: {
           web: knobs.webPolicy,
@@ -2757,6 +2800,7 @@ export class Orchestrator {
             if (input.signal?.aborted) break;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
+            this.observeNativeSession(input, adapter.id, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));
             observeAttemptTelemetry(telemetry, safeEv);
