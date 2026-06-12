@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/orchestrator",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Hub that composes all subsystems and implements the execution modes (ask, agent, best-of-N, convergence, plan, create, audit).",
   "type": "module",
   "main": "./dist/index.js",

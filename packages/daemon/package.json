@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/daemon",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Optional local daemon: Unix-socket JSON-RPC, token auth, task queue. Runner injected (no second scheduler).",
   "type": "module",
   "main": "./dist/index.js",

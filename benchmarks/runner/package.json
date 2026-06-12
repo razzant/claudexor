@@ -1,6 +1,6 @@
 {
   "name": "claudexor-benchmark-runner",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "BenchmarkRunner + SWE-bench Verified (predictions/report) with ablations; scaffolds for Terminal-Bench/OSWorld/ProgramBench.",
   "private": true,
   "type": "module",

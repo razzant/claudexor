@@ -49,6 +49,9 @@ Core endpoints:
 
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
+- `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
+- `POST /threads/:id/turns` (follow-up turn; native harness sessions resume)
+- `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
 - `GET /events` (global live-only run-event multiplex, no replay)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`

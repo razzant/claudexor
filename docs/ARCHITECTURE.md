@@ -28,21 +28,31 @@ packages, never in macOS or CLI-specific state.
 
 ## 2. Canonical Modes
 
-`ModeKind` lives in `packages/schema` and is the single source of truth:
+`ModeKind` lives in `packages/schema` and is the single source of truth. v0.9
+collapsed the nine v0.8 ids into FIVE intents-on-a-thread; engine strategies
+became flags, not modes:
 
 - `ask` - one selected read-only `explain` route; writes `final/answer.md`.
-- `explore` - bounded read-only research swarm; writes per-explorer findings,
-  `final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
-- `agent` - default `claudexor run`; one primary-biased orchestrator/envelope route.
-- `best_of_n` - isolated candidate envelopes, review, synthesis, arbitration.
-- `max_attempts` - convergence loop with explicit attempt cap.
-- `until_clean` - convergence loop with no fixed cap; stops on clean review/gates,
-  budget/quota exhaustion, cancellation, or no-progress stall.
 - `plan` - read-only multi-harness planning; writes `final/plan.md`.
-- `create` - create-from-scratch path, currently sharing the race pipeline.
-- `readonly_audit` - one selected read-only `audit` route; writes `final/report.md`.
+- `audit` - read-only audit/map (`final/report.md`); with `--swarm` (the old
+  `explore`) a bounded research swarm writing `final/explore.md`,
+  `final/explore-findings.yaml`, and `final/omissions.md`.
+- `agent` - default `claudexor run`; one primary-biased envelope route. Flags
+  select the strategy on the SAME mode: `--n N` (best-of-N race with isolated
+  candidate envelopes, review, synthesis, arbitration), `--attempts N`
+  (convergence loop with an explicit cap), `--until-clean` (convergence loop
+  with no fixed cap; stops on clean review/gates, budget/quota exhaustion,
+  cancellation, or no-progress stall), `--create` (create-from-scratch intent).
+- `orchestrate` - the autonomous brain: routed like reviewers (doctor-ok +
+  `orchestrate` capability + quota headroom), runs READ-ONLY, and produces a
+  typed orchestration plan over the six-tool belt (`start_run`, `race`,
+  `status`, `answer_question`, `apply`, `review`); writes
+  `final/orchestration.md`. With one verified harness it plans single-route;
+  with two or more it may plan cross-family race/review.
 
-Old mode ids (`daily`, `until_convergence`, `readonly_swarm`) are not aliases.
+Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
+`readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
+are NOT aliases: they hard-error at every wire boundary.
 
 ## 3. Package Map
 
@@ -261,6 +271,14 @@ artifact/delivery facade:
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /events` (global live-only run-event multiplex)
+- `POST /threads`, `GET /threads`, `GET /threads/:id` (the chat/session-first
+  conversation SSOT; threads carry run lineage + native harness sessions)
+- `POST /threads/:id/turns` (a follow-up turn: enqueues a run anchored to the
+  thread; the engine resumes each routed harness's own native CLI session)
+- `POST /runs/:id/decision` (typed operator decision on a blocked run:
+  `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
+  `arbitration/operator_decision.yaml` honored by the apply gate;
+  `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up)
 - `POST /runs/:id/interactions/:id/answer` (deliver a waiting_on_user answer)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`

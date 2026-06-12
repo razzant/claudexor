@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-raw-api",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Raw-API harness: OpenAI-compatible chat completions (planner/reviewer; no native edit tools).",
   "type": "module",
   "main": "./dist/index.js",

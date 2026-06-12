@@ -99,7 +99,7 @@ export class AcpServer {
       case "initialize":
         this.reply(id, {
           protocolVersion: ACP_PROTOCOL_VERSION,
-          agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.8.0" },
+          agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.9.0" },
           agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
         });
         return;

@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/control-api",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Loopback HTTP+SSE control surface for GUI/service clients: token-auth, Host/Origin guard, live run event stream with Last-Event-ID replay. Runner injected (no second scheduler).",
   "type": "module",
   "main": "./dist/index.js",

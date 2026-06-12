@@ -32,12 +32,17 @@ and unavailable harnesses fail loudly.
 
 ## 4. Modes Are Canonical And Breaking
 
-The canonical modes are `ask`, `explore`, `agent`, `best_of_n`, `max_attempts`,
-`until_clean`, `plan`, `create`, and `readonly_audit`. `Ask` is the default app
-composer mode and is read-only. `Explore` is a bounded read-only research swarm
-that writes synthesis, per-explorer findings, omissions, and follow-up
-questions. `Agent` is the default `claudexor run` route. Old ids are not
-compatibility aliases unless explicitly reintroduced in schema and docs.
+The canonical modes are `ask`, `plan`, `audit`, `agent`, and `orchestrate`
+(five intents-on-a-thread). Engine strategies are FLAGS on a mode, never modes
+of their own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
+(`--until-clean`), research swarm (`audit --swarm`), and create-from-scratch
+(`agent --create`). `Ask` is the default app composer mode and is read-only.
+`Agent` is the default `claudexor run` route. `Orchestrate` is the brain — an
+intent routed like reviewers, never a privileged harness. A thread is the
+Claudexor-owned conversation (runs are its turns); the vendor CLI session is a
+re-hostable cache that later turns resume natively. Old ids (including the
+former strategy modes) are not compatibility aliases unless explicitly
+reintroduced in schema and docs.
 
 ## 5. Evidence Beats Summaries
 
@@ -121,7 +126,11 @@ live Budget, Harness Doctor, Review Queue, and run diagnostics.
 Inspect/apply/check use control-api endpoints and run artifacts. The UI must not
 invent local accept/rebut/apply state. Read-only modes do not expose patch apply
 controls. Apply is allowed only for successful runs with a successful decision
-record and a patch WorkProduct for the original verified repo root.
+record and a patch WorkProduct for the original verified repo root — with one
+typed, server-owned exception: an operator decision (`POST /runs/:id/decision`,
+`accept_risk`/`override_needs_human`) persists an auditable, patch-hash-bound
+record that unblocks apply for a `blocked` run; a mutated patch invalidates the
+override. The human decision is never client-faked state.
 
 Terminal run state and output readiness are separate. A terminal daemon job can
 be `succeeded`, `blocked`, `failed`, or `not_converged` while

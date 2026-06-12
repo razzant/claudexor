@@ -240,7 +240,7 @@ export function createCodexAdapter(): HarnessAdapter {
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.8.0",
+        adapter_version: "0.9.0",
         provider_family: "openai",
         capabilities: {
           plan: true,

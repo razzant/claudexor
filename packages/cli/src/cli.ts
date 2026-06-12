@@ -137,6 +137,8 @@ Options:
   --previous <spec.json>   Previous SpecPack JSON for section-level diff
   --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
   --json                   Machine-readable JSON output
+  --help                   Show this help
+  --version                Print the CLI version
 `;
 
 const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
