@@ -126,7 +126,9 @@ class ClaudexorAgent(BaseInstalledAgent):
                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash\n"
                 '. "$NVM_DIR/nvm.sh"\n'
                 # Node 22 is required by the repo's pinned pnpm@11 (uses node:sqlite).
-                "nvm install 22 && nvm alias default 22\n"
+                # Pin 22.11: newer 22.x libuv crashes (uv__io_poll EEXIST assert) under
+                # colima's emulated kernel even with UV_USE_IO_URING=0.
+                "nvm install 22.11.0 && nvm alias default 22.11.0\n"
                 "corepack enable\n"
                 "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n"
                 # Cap V8 heap; TB task containers are memory-limited and a parallel
