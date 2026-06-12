@@ -423,6 +423,17 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
     env["CODEX_HOME"] = tempCodexHome;
     ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
+    // Same disclosure as the envelope path: an explicit subscription preference
+    // that lands on the billed key route is never silent.
+    if (spec.auth_preference === "subscription") {
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        text: "[auth] subscription route unavailable (not logged in); fell back to api_key",
+        payload: { auth_switched: true, from_auth_mode: "local_session", to_auth_mode: "api_key" },
+      };
+    }
   }
 
   const args = codexExecArgs(spec);

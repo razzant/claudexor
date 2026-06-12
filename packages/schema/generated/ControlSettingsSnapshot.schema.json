@@ -82,27 +82,6 @@
                 "auto"
               ],
               "default": "auto"
-            },
-            "fallback": {
-              "type": "object",
-              "properties": {
-                "onQuotaExhaustion": {
-                  "type": "string",
-                  "enum": [
-                    "subscription_to_api",
-                    "harness_to_harness",
-                    "both",
-                    "off"
-                  ],
-                  "default": "both"
-                },
-                "onMoneyExhaustion": {
-                  "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/fallback/properties/onQuotaExhaustion",
-                  "default": "both"
-                }
-              },
-              "additionalProperties": false,
-              "default": {}
             }
           },
           "additionalProperties": false,

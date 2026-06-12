@@ -52,9 +52,6 @@ export const PROVIDER_SECRET_ENV: readonly string[] = [
   "GROQ_API_KEY",
   "MISTRAL_API_KEY",
   "DEEPSEEK_API_KEY",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
   "OPENAI_API_BASE",
 ];
 

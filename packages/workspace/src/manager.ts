@@ -1,4 +1,4 @@
-import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
@@ -73,6 +73,20 @@ export class WorkspaceManager {
     // in a diff.
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     ensureDir(base);
+    // Self-ignoring runtime dir: a `.gitignore` with `*` INSIDE .claudexor makes
+    // the whole dir invisible to git in PRE-EXISTING repos too (v0.9 widened the
+    // seeded credentials from API keys to subscription OAuth copies; a user's
+    // `git add -A` in their own repo must never capture them). This is the
+    // git-native trick that avoids mutating the user's .gitignore.
+    const claudexorDir = join(this.repoRoot, ".claudexor");
+    const selfIgnore = join(claudexorDir, ".gitignore");
+    if (!existsSync(selfIgnore)) {
+      try {
+        writeFileSync(selfIgnore, "*\n", { flag: "wx" });
+      } catch {
+        /* concurrent envelope creation already wrote it */
+      }
+    }
     const homeDir = join(base, "home");
     const envDir = join(base, "env");
     const logsDir = join(base, "logs");

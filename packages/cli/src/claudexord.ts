@@ -211,10 +211,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           defaultModel: cfg.global.routing.default_model,
           envInheritance: cfg.global.routing.env_inheritance,
           authPreference: cfg.global.routing.auth_preference,
-          fallback: {
-            onQuotaExhaustion: cfg.global.routing.fallback.on_quota_exhaustion,
-            onMoneyExhaustion: cfg.global.routing.fallback.on_money_exhaustion,
-          },
         },
         budget: {
           maxUsdPerRun: cfg.global.budget.max_usd_per_run,
@@ -257,10 +253,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
           eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
           auth_preference: p.authPreference ?? cfg.routing.auth_preference,
-          fallback: {
-            on_quota_exhaustion: p.fallbackOnQuotaExhaustion ?? cfg.routing.fallback.on_quota_exhaustion,
-            on_money_exhaustion: p.fallbackOnMoneyExhaustion ?? cfg.routing.fallback.on_money_exhaustion,
-          },
         },
         budget: {
           ...cfg.budget,

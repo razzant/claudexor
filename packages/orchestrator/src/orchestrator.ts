@@ -982,9 +982,26 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       max_usd: routed.settings?.maxUsd ?? null,
-      ...(runInput ? this.sessionSpecFields(runInput, adapter.id) : {}),
+      // Envelope runs get a FRESH scoped harness home (CODEX_HOME/CLAUDE_CONFIG_DIR),
+      // so a native session id recorded earlier cannot exist there: never ask the
+      // CLI to resume it (deterministic session-not-found), and disclose the lossy
+      // continuation below instead of failing or silently pretending continuity.
+      ...(runInput ? { auth_preference: this.sessionSpecFields(runInput, adapter.id).auth_preference } : {}),
       env: wsm.envFor(envelope),
     });
+    if (runInput?.resumeSessions?.[adapter.id]) {
+      log?.emit("session.rebound", {
+        thread_id: runInput.threadId ?? null,
+        harness_id: adapter.id,
+        from_session_id: runInput.resumeSessions[adapter.id],
+        to_session_id: null,
+        summary: "isolated envelope turn runs fresh: the native session is not portable into a scoped harness home; continuity rides on the thread prompt + repo state",
+        contract_ref: null,
+        open_tasks: [],
+        diff_state: null,
+        reason: "manual",
+      });
+    }
     if (signal) spec.extra["abortSignal"] = signal;
     if (interaction) spec.extra["interactionChannel"] = interaction;
 
@@ -1010,7 +1027,9 @@ export class Orchestrator {
           if (signal?.aborted) break;
           const safeEv = redactHarnessEvent(ev);
           safeInvoke(onHarnessEvent, safeEv);
-          this.observeNativeSession(runInput, adapter.id, safeEv);
+          // Deliberately NOT observing native session ids here: an envelope-born
+          // session lives in the scoped home that dispose() deletes — recording
+          // it would poison the thread's resume map with unreachable ids.
           this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
           observeAttemptTelemetry(telemetry, safeEv);
           if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -2660,7 +2679,9 @@ export class Orchestrator {
    * harnesses unlock cross-family race/review in the plan space.
    */
   private async runOrchestrate(input: RunInput): Promise<OrchestratorResult> {
-    const pool = await this.gateway.availableReal({ cwd: input.repoRoot });
+    // "Doctor-verified" must mean status ok — degraded key-present routes are
+    // excluded from the pool the brain plans over (readiness honesty).
+    const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot });
     const crossFamily = pool.length >= 2;
     const goal = input.prompt || "Plan the next move for this repository.";
     const brainPrompt = [
@@ -2692,19 +2713,22 @@ export class Orchestrator {
         title: "Orchestration plan",
         artifactName: "orchestration.md",
         defaultPrompt: brainPrompt,
+        contractIntent: goal,
       },
     );
   }
 
   private async runReadOnlyReport(
     input: RunInput,
-    opts: { mode: "ask" | "audit" | "orchestrate"; swarm: boolean; intent: "explain" | "audit" | "orchestrate"; title: string; artifactName: string; defaultPrompt: string },
+    opts: { mode: "ask" | "audit" | "orchestrate"; swarm: boolean; intent: "explain" | "audit" | "orchestrate"; title: string; artifactName: string; defaultPrompt: string; contractIntent?: string },
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     const prompt = input.prompt || opts.defaultPrompt;
-    // Contract validation BEFORE the run is announced (see runRace).
-    const contract = this.buildContract({ ...input, prompt }, taskId, opts.mode);
+    // Contract validation BEFORE the run is announced (see runRace). The
+    // recorded user intent is the CALLER's goal, not a synthesized wrapper
+    // prompt (orchestrate wraps the goal in a brain prompt).
+    const contract = this.buildContract({ ...input, prompt: opts.contractIntent ?? prompt }, taskId, opts.mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);

@@ -80,27 +80,6 @@
                 "auto"
               ],
               "default": "auto"
-            },
-            "fallback": {
-              "type": "object",
-              "properties": {
-                "on_quota_exhaustion": {
-                  "type": "string",
-                  "enum": [
-                    "subscription_to_api",
-                    "harness_to_harness",
-                    "both",
-                    "off"
-                  ],
-                  "default": "both"
-                },
-                "on_money_exhaustion": {
-                  "$ref": "#/definitions/GlobalConfig/properties/routing/properties/fallback/properties/on_quota_exhaustion",
-                  "default": "both"
-                }
-              },
-              "additionalProperties": false,
-              "default": {}
             }
           },
           "additionalProperties": false,

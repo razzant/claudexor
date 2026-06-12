@@ -673,12 +673,6 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
     public let envInheritance: String
     /// Engine auth route preference: subscription | api_key | auto.
     public let authPreference: String?
-    public let fallback: FallbackSettings?
-}
-
-public struct FallbackSettings: Codable, Sendable, Equatable {
-    public let onQuotaExhaustion: String?
-    public let onMoneyExhaustion: String?
 }
 
 public struct BudgetSettings: Codable, Sendable, Equatable {
@@ -735,8 +729,6 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var eligibleHarnesses: [String]?
     public var envInheritance: String?
     public var authPreference: String?
-    public var fallbackOnQuotaExhaustion: String?
-    public var fallbackOnMoneyExhaustion: String?
     public var maxUsdPerRun: Double?
     public var maxUsdPerDay: Double?
     public var clearMaxUsdPerRun: Bool
@@ -748,7 +740,6 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
                 primaryHarness: String? = nil, defaultModel: String? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 authPreference: String? = nil,
-                fallbackOnQuotaExhaustion: String? = nil, fallbackOnMoneyExhaustion: String? = nil,
                 maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
                 clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false,
                 interactionTimeoutMs: Int? = nil,
@@ -760,8 +751,6 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.eligibleHarnesses = eligibleHarnesses
         self.envInheritance = envInheritance
         self.authPreference = authPreference
-        self.fallbackOnQuotaExhaustion = fallbackOnQuotaExhaustion
-        self.fallbackOnMoneyExhaustion = fallbackOnMoneyExhaustion
         self.maxUsdPerRun = maxUsdPerRun
         self.maxUsdPerDay = maxUsdPerDay
         self.clearMaxUsdPerRun = clearMaxUsdPerRun
@@ -771,7 +760,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, fallbackOnQuotaExhaustion, fallbackOnMoneyExhaustion, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -783,8 +772,6 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
         try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
         try c.encodeIfPresent(authPreference, forKey: .authPreference)
-        try c.encodeIfPresent(fallbackOnQuotaExhaustion, forKey: .fallbackOnQuotaExhaustion)
-        try c.encodeIfPresent(fallbackOnMoneyExhaustion, forKey: .fallbackOnMoneyExhaustion)
         try c.encodeIfPresent(maxUsdPerRun, forKey: .maxUsdPerRun)
         try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
         if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }

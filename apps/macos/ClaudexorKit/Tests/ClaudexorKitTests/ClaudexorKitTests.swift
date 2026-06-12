@@ -24,7 +24,7 @@ import Testing
     @Test func startRunRequestEncodesPromptAndMode() throws {
         let req = StartRunRequest(
             prompt: "fix bug",
-            mode: "best_of_n",
+            mode: "agent",
             scope: .project(root: "/tmp/repo"),
             harnesses: ["codex", "claude"],
             reviewerModels: ["openai": "gpt-5.5"],
@@ -34,7 +34,7 @@ import Testing
         let data = try JSONEncoder().encode(req)
         let decoded = try JSONDecoder().decode(JSONValue.self, from: data)
         #expect(decoded["prompt"]?.stringValue == "fix bug")
-        #expect(decoded["mode"]?.stringValue == "best_of_n")
+        #expect(decoded["mode"]?.stringValue == "agent")
         #expect(decoded["scope"]?["kind"]?.stringValue == "project")
         #expect(decoded["scope"]?["root"]?.stringValue == "/tmp/repo")
         #expect(decoded["execution"]?["isolation"]?.stringValue == "envelope")

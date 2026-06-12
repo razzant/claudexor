@@ -87,4 +87,16 @@ export class HarnessGateway {
       .filter((s) => s.manifest?.kind !== "fake" && s.available && s.enabledIntents.length > 0)
       .map((s) => s.id);
   }
+
+  /**
+   * Doctor-VERIFIED real harnesses only (`status === "ok"`). Degraded routes
+   * (key present but unproven) are excluded — claims of "doctor-verified"
+   * availability must never include them.
+   */
+  async doctorOkReal(spec: DoctorSpec = { cwd: process.cwd() }): Promise<string[]> {
+    const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
+    return statuses
+      .filter((s) => s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.length > 0)
+      .map((s) => s.id);
+  }
 }

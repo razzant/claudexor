@@ -10,7 +10,7 @@ import {
   ProviderFamily,
 } from "./primitives.js";
 import { AuthMode, Portfolio } from "./budget.js";
-import { FallbackMode } from "./config.js";
+import { } from "./config.js";
 import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
@@ -616,12 +616,6 @@ export const ControlSettingsSnapshot = z.object({
       defaultModel: z.string().nullable().default(null),
       envInheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
       authPreference: AuthPreference.default("auto"),
-      fallback: z
-        .object({
-          onQuotaExhaustion: FallbackMode.default("both"),
-          onMoneyExhaustion: FallbackMode.default("both"),
-        })
-        .default({}),
     })
     .default({}),
   budget: z
@@ -687,8 +681,6 @@ export const ControlSettingsUpdateRequest = z
     clearMaxUsdPerRun: z.boolean().optional(),
     clearMaxUsdPerDay: z.boolean().optional(),
     authPreference: AuthPreference.optional(),
-    fallbackOnQuotaExhaustion: FallbackMode.optional(),
-    fallbackOnMoneyExhaustion: FallbackMode.optional(),
     harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
   })
   .strict()

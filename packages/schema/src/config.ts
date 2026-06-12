@@ -8,18 +8,6 @@ export const RoutingPolicy = z.enum(["auto", "primary", "portfolio"]);
 export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
 
 /** What to do when the preferred auth route's quota/money is exhausted. */
-export const FallbackMode = z.enum(["subscription_to_api", "harness_to_harness", "both", "off"]);
-export type FallbackMode = z.infer<typeof FallbackMode>;
-
-/** Auto-fallback policy (every harness supports both subscription and api_key). */
-export const FallbackConfig = z
-  .object({
-    on_quota_exhaustion: FallbackMode.default("both"),
-    on_money_exhaustion: FallbackMode.default("both"),
-  })
-  .default({});
-export type FallbackConfig = z.infer<typeof FallbackConfig>;
-
 export const SecretRef = z.object({
   ref: z.string().min(1),
   env: z.string().optional(),
@@ -97,8 +85,6 @@ export const GlobalConfig = z.object({
       env_inheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
       /** Default auth route preference (subscription/api_key/auto). */
       auth_preference: AuthPreference.default("auto"),
-      /** Auto-fallback policy on quota/money exhaustion (never silent). */
-      fallback: FallbackConfig,
     })
     .default({}),
   budget: z

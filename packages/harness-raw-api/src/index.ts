@@ -137,11 +137,15 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           const body = await res.text().catch(() => "");
           const retryAfter = res.headers.get("retry-after");
           const resetsAt = retryAfter ? resetsAtFromRetryAfter(retryAfter) : null;
+          const retryDelayMs = retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : null;
           yield {
             type: "error",
             session_id: spec.session_id,
             ts: nowIso(),
             error: `raw-api HTTP ${res.status}`,
+            // A 429 is a TYPED rate-limit signal (cooldown/fallback governance
+            // reads ev.rate_limit, never prose), with the native reset when known.
+            ...(res.status === 429 ? { rate_limit: { resets_at: resetsAt, retry_delay_ms: retryDelayMs } } : {}),
             payload: res.status === 429 ? { resets_at: resetsAt } : { body: redactSecrets(body.slice(0, 500)) },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };

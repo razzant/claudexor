@@ -547,6 +547,11 @@ export class DaemonControlApiServer {
       }
 
       if (body.action === "accept_risk" || body.action === "override_needs_human") {
+        // The override exists to unblock NON-success terminals; a succeeded run
+        // applies directly and must not accumulate misleading risk records.
+        if (rec.state === "succeeded") {
+          return this.json(res, 409, { error: "run already succeeded; apply it directly (no risk override needed)" });
+        }
         const patch = readPatch(rec);
         if (patch === null) return this.json(res, 409, { error: "no patch artifact; there is nothing to unblock for apply" });
         const record = {
@@ -600,6 +605,20 @@ export class DaemonControlApiServer {
       const job = await this.opts.daemon.enqueue(params);
       const newRec = await this.waitForRunStart(job.id);
       appendRunAuditEvent(rec, "control.applied", { decision: body.action, new_run_id: newRec.runId ?? newRec.id });
+      // A thread-anchored rerun is a TURN of that conversation: record it (kind
+      // "decision") so head_run_id/needsHuman move off the old blocked head.
+      const threadId = typeof p["threadId"] === "string" ? p["threadId"] : null;
+      const turnSvc = this.opts.services?.addThreadTurn;
+      if (threadId && turnSvc && newRec.runId) {
+        const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
+        const chained = previous
+          .catch(() => undefined)
+          .then(async () => {
+            await turnSvc(threadId, newRec.runId ?? null, String(params.prompt ?? ""), "decision");
+          });
+        this.threadTurnChains.set(threadId, chained.then(() => undefined, () => undefined));
+        await chained.catch(() => undefined);
+      }
       return this.json(res, 200, ControlRunDecisionResponse.parse({
         accepted: true,
         status: "requeued",

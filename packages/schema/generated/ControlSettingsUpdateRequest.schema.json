@@ -79,18 +79,6 @@
             "auto"
           ]
         },
-        "fallbackOnQuotaExhaustion": {
-          "type": "string",
-          "enum": [
-            "subscription_to_api",
-            "harness_to_harness",
-            "both",
-            "off"
-          ]
-        },
-        "fallbackOnMoneyExhaustion": {
-          "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/fallbackOnQuotaExhaustion"
-        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {
