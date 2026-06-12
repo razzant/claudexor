@@ -130,6 +130,9 @@ class ClaudexorAgent(BaseInstalledAgent):
                 # colima's emulated kernel even with UV_USE_IO_URING=0.
                 "nvm install 22.11.0 && nvm alias default 22.11.0\n"
                 "corepack enable\n"
+                # Node 22.11's bundled corepack ships stale npm signing keys
+                # ("Cannot find matching keyid"); skip integrity pinning here.
+                "export COREPACK_INTEGRITY_KEYS=0\n"
                 "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n"
                 # Cap V8 heap; TB task containers are memory-limited and a parallel
                 # 29-package tsc build otherwise OOMs (SIGABRT / exit 134).
