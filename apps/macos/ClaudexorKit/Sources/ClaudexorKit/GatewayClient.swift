@@ -280,8 +280,12 @@ public final class GatewayClient: Sendable {
         if status == 200 {
             return .started(try Self.decoder.decode(RunStartInfo.self, from: data))
         }
-        if status == 202 {
-            return .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
+        if status == 503 {
+            // The server cancelled a turn that did not start within the wait
+            // window (no silent null-linked turns); surface it as transient.
+            struct BusyBody: Decodable { let error: String?; let jobId: String? }
+            let body = try? Self.decoder.decode(BusyBody.self, from: data)
+            throw GatewayError.queueBusy(message: body?.error ?? "engine queue is busy — retry the turn")
         }
         throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
     }

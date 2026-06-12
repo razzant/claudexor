@@ -115,7 +115,7 @@ export interface DaemonControlApiOptions {
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
-    addThreadTurn?: (id: string, runId: string | null, prompt: string, kind?: unknown) => Promise<unknown>;
+    addThreadTurn?: (id: string, runId: string | null, prompt: string, kind?: unknown, parentRunId?: string | null) => Promise<unknown>;
   };
 }
 
@@ -153,6 +153,8 @@ function originIsLoopback(origin: string | undefined): boolean {
 export class DaemonControlApiServer {
   private server?: Server;
   private readonly sseClients = new Set<ServerResponse>();
+  /** Per-thread turn submission chains (serialize head_run_id lineage updates). */
+  private readonly threadTurnChains = new Map<string, Promise<void>>();
 
   constructor(private readonly opts: DaemonControlApiOptions) {}
 
@@ -389,6 +391,10 @@ export class DaemonControlApiServer {
       const turnSvc = this.opts.services?.addThreadTurn;
       if (!detailSvc || !turnSvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
+      // Per-thread serialization: concurrent turns on one thread would race the
+      // head_run_id lineage (check-then-act across awaits). Chain them.
+      const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
+      const turnWork = previous.catch(() => undefined).then(async () => {
       try {
         const detail = await detailSvc(threadId);
         const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null };
@@ -407,10 +413,11 @@ export class DaemonControlApiServer {
             ...(thread.primary_harness && body["primaryHarness"] === undefined ? { primaryHarness: thread.primary_harness } : {}),
           }),
         );
+        const parentRunId = thread.head_run_id ?? null;
         const job = await this.opts.daemon.enqueue(params);
         const rec = await this.waitForRunStart(job.id);
         if (rec.runId && rec.runDir) {
-          const turn = await turnSvc(threadId, rec.runId, String(params.prompt ?? ""), "followup");
+          const turn = await turnSvc(threadId, rec.runId, String(params.prompt ?? ""), "followup", parentRunId);
           return this.json(res, 200, {
             ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
             turnId: (turn as { id?: string }).id,
@@ -434,6 +441,9 @@ export class DaemonControlApiServer {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
+      });
+      this.threadTurnChains.set(threadId, turnWork.then(() => undefined, () => undefined));
+      return turnWork;
     }
 
     const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
@@ -1089,7 +1099,6 @@ function projectSession(raw: unknown): ControlSession {
     observedModel: s["last_observed_model"] ?? null,
     authMode: s["auth_mode"] ?? "unknown",
     state: s["state"] ?? "live",
-    turnCount: 0,
   });
 }
 
@@ -1122,6 +1131,9 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
       new Error(`contradictory web policy: web='${parsed.web}' vs externalContextPolicy='${parsed.externalContextPolicy}' (pass one, or equal values)`),
       { status: 400 },
     );
+  }
+  if ((parsed as { rehost?: boolean }).rehost === true) {
+    throw Object.assign(new Error("rehost is not supported yet (planned for v0.10); omit the flag"), { status: 400 });
   }
   // Live (in-place) isolation is only honored by the convergence strategies
   // (agent + attempts / until_clean flags); accepting it elsewhere would
@@ -1442,6 +1454,7 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
 /** Typed severity per event type — no string matching over event names. */
 const WARNING_EVENT_TYPES = new Set([
   "route.fallback.started",
+  "route.fallback.auth_switched",
   "route.fallback.exhausted",
   "policy.web.upgraded",
   "run.blocked",

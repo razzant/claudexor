@@ -596,6 +596,10 @@ final class AppModel {
                   access: String = "workspace_write", web: String = "auto",
                   tests: [String] = [], repoRootOverride: String? = nil) async {
         composerPresented = false
+        guard mode != .unknown else {
+            settingsStatus = "This run used a legacy mode id the engine no longer accepts; relaunch it with a current intent."
+            return
+        }
         let launchRepoRoot = repoRootOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
         guard !mode.requiresProject || !launchRepoRoot.isEmpty else {
             settingsStatus = "Choose a Current Project before launching \(mode.label). Ask can run without a project."
@@ -768,12 +772,17 @@ final class AppModel {
             threadStatus = "Engine offline: reconnect before sending a turn."
             return
         }
+        guard mode != .unknown else {
+            threadStatus = "This run used a legacy mode id; pick an intent from the composer instead."
+            return
+        }
         let flags = mode.strategyFlags
         do {
             let result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,
                 n: flags.defaultN,
+                attempts: mode == .maxAttempts ? 3 : nil,
                 untilClean: flags.untilClean ? true : nil,
                 swarm: flags.swarm ? true : nil,
                 create: flags.create ? true : nil
@@ -787,6 +796,8 @@ final class AppModel {
             } else {
                 threadStatus = "Turn queued; the engine is busy."
             }
+        } catch let GatewayError.queueBusy(message) {
+            threadStatus = "Engine busy: \(message)"
         } catch {
             threadStatus = "Turn failed: \(error)"
         }
@@ -1440,9 +1451,11 @@ final class AppModel {
     private static func finding(from payload: JSONValue?, taskTitle: String) -> Finding? {
         guard let payload else { return nil }
         let sevRaw = (payload["severity"]?.stringValue ?? "minor").lowercased()
-        let severity: Severity = sevRaw.contains("block") ? .blocker
+        // NEEDS_HUMAN is the review-queue gate: it must read as blocking, never
+        // collapse into a low-priority tint.
+        let severity: Severity = sevRaw.contains("block") || sevRaw.contains("needs_human") ? .blocker
             : sevRaw.contains("fix_first") || sevRaw.contains("major") || sevRaw.contains("high") ? .major
-            : sevRaw.contains("nit") || sevRaw.contains("low") ? .nit : .minor
+            : sevRaw.contains("nit") || sevRaw.contains("low") || sevRaw.contains("out_of_scope") || sevRaw.contains("insufficient_evidence") ? .nit : .minor
         let evidenceFile = payload["file"]?.stringValue ?? payload["path"]?.stringValue ?? Self.firstEvidenceFile(payload)?.path
         let evidenceLine = payload["line"]?.doubleValue.map(Int.init) ?? Self.firstEvidenceFile(payload)?.line
         let reviewerRaw = payload["reviewer"]?.stringValue

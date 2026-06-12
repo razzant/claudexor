@@ -248,6 +248,7 @@ struct SettingsScreen: View {
     @State private var defaultPortfolio = "subscription-first"
     @State private var routingPolicy = "auto"
     @State private var primaryHarness = "__none"
+    @State private var authPreference = "auto"
     @State private var defaultModel = ""
     @State private var envInheritance = "mirror_native"
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
@@ -355,6 +356,12 @@ struct SettingsScreen: View {
                         Text("Profile only").tag("profile_only")
                     }
                     .help("mirror_native reuses native CLI auth/session context by default.")
+                    Picker("Auth route", selection: $authPreference) {
+                        Text("Auto (subscription first)").tag("auto")
+                        Text("Subscription").tag("subscription")
+                        Text("API key").tag("api_key")
+                    }
+                    .help("Which credential route harness runs prefer. Auto seeds the native subscription session and falls back to a stored API key; an explicit route discloses any fallback in the run events.")
                     FlowLayout(spacing: Theme.Spacing.sm) {
                         ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
                             FilterChip(label: family.label, systemImage: family.glyph,
@@ -542,6 +549,7 @@ struct SettingsScreen: View {
         defaultPortfolio = s.defaultPortfolio
         routingPolicy = s.routing.defaultPolicy
         primaryHarness = s.routing.primaryHarness ?? "__none"
+        authPreference = s.routing.authPreference ?? "auto"
         defaultModel = s.routing.defaultModel ?? ""
         envInheritance = s.routing.envInheritance
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
@@ -572,6 +580,7 @@ struct SettingsScreen: View {
             defaultModel: defaultModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "__none" : defaultModel,
             eligibleHarnesses: eligibleHarnesses.map(\.rawValue).sorted(),
             envInheritance: envInheritance,
+            authPreference: authPreference,
             maxUsdPerRun: runCap,
             maxUsdPerDay: dayCap,
             clearMaxUsdPerRun: clearRunCap,

@@ -7,7 +7,7 @@ import {
   Thread as ThreadSchema,
   ThreadTurn as ThreadTurnSchema,
 } from "@claudexor/schema";
-import { newId, nowIso } from "@claudexor/util";
+import { newId, nowIso, redactSecrets } from "@claudexor/util";
 
 interface ThreadStoreState {
   threads: Thread[];
@@ -40,10 +40,17 @@ export class ThreadStore {
     if (!existsSync(this.path)) return;
     try {
       const raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<ThreadStoreState>;
+      // Per-record leniency: ONE invalid/migrated record must not wipe the
+      // whole conversation history — skip it, keep the rest.
+      const keep = <T>(items: unknown[] | undefined, schema: { safeParse(v: unknown): { success: boolean; data?: T } }): T[] =>
+        (items ?? []).flatMap((item) => {
+          const parsed = schema.safeParse(item);
+          return parsed.success && parsed.data !== undefined ? [parsed.data] : [];
+        });
       this.state = {
-        threads: (raw.threads ?? []).map((t) => ThreadSchema.parse(t)),
-        sessions: (raw.sessions ?? []).map((s) => SessionSchema.parse(s)),
-        turns: (raw.turns ?? []).map((t) => ThreadTurnSchema.parse(t)),
+        threads: keep(raw.threads, ThreadSchema),
+        sessions: keep(raw.sessions, SessionSchema),
+        turns: keep(raw.turns, ThreadTurnSchema),
       };
     } catch {
       // A corrupt store must not brick the daemon; threads are recoverable
@@ -102,17 +109,21 @@ export class ThreadStore {
     return map;
   }
 
-  /** Record a turn (a run enqueued inside a thread). */
-  addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup"): ThreadTurn {
+  /** Record a turn (a run enqueued inside a thread). `parentRunId` should be
+   * captured by the caller BEFORE enqueue awaits so concurrent turns cannot
+   * both claim the same stale head. */
+  addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup", parentRunId?: string | null): ThreadTurn {
     const thread = this.getThread(threadId);
     if (!thread) throw Object.assign(new Error(`no such thread: ${threadId}`), { status: 404 });
     const turn = ThreadTurnSchema.parse({
       id: newId("tn"),
       thread_id: threadId,
       run_id: runId,
-      parent_run_id: thread.head_run_id,
+      parent_run_id: parentRunId !== undefined ? parentRunId : thread.head_run_id,
       kind,
-      prompt,
+      // The durable conversation store is read back into UIs: redact at the
+      // persist boundary exactly like jobs.json / events.jsonl do.
+      prompt: redactSecrets(prompt),
       created_at: nowIso(),
     });
     this.state.turns.push(turn);

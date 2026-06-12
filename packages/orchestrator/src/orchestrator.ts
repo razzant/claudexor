@@ -25,6 +25,7 @@ import type {
 import {
   DEFAULT_ORCHESTRATE_TOOL_BELT,
   HarnessRunSpec,
+  RouteFallbackPayload as RouteFallbackPayloadSchema,
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
   ReviewFinding as ReviewFindingSchema,
@@ -414,6 +415,30 @@ export class Orchestrator {
   }
 
   /**
+   * Lift an adapter's auth-route override marker into the typed
+   * `route.fallback.auth_switched` run event (validated payload). An explicit
+   * subscription/api_key preference that could not be honored is never silent.
+   */
+  private observeAuthSwitch(log: EventLog | undefined, harnessId: string, attemptId: string, ev: HarnessEvent): void {
+    if (!log || ev.type !== "message" || ev.payload?.["auth_switched"] !== true) return;
+    try {
+      log.emit(
+        "route.fallback.auth_switched",
+        RouteFallbackPayloadSchema.parse({
+          from_harness: harnessId,
+          to_harness: harnessId,
+          from_auth_mode: ev.payload?.["from_auth_mode"],
+          to_auth_mode: ev.payload?.["to_auth_mode"],
+          reason: "manual",
+          attempt_id: attemptId,
+        }) as unknown as Record<string, unknown>,
+      );
+    } catch {
+      /* a malformed marker must not fail the run; the prose message still lands */
+    }
+  }
+
+  /**
    * Resolve candidate adapters: explicit `--harness`, else available real harnesses, then
    * **capability-gate** to those that can actually produce work for `intent` (e.g. a
    * raw-API reviewer with `implement: false` is dropped from an implement race), and
@@ -506,7 +531,7 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
-      const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
+      const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit" || intent === "orchestrate";
       // Mirror buildContract: the trust-config default decides write-mode access
       // when the run does not request a profile explicitly.
       const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? this.config(input.repoRoot).trust.access_default;
@@ -728,7 +753,7 @@ export class Orchestrator {
         assertNoSecretLikeTokens(`gate command ${i + 1}`, command);
         return { id: `gate-${i + 1}`, command, required: true };
       });
-    const readOnlyMode = mode === "ask" || mode === "plan" || mode === "audit";
+    const readOnlyMode = mode === "ask" || mode === "plan" || mode === "audit" || mode === "orchestrate";
     const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
     // Effective access is COMPUTED by the engine, never echoed from a client:
     // read-only modes clamp to readonly regardless of the request.
@@ -986,6 +1011,7 @@ export class Orchestrator {
           const safeEv = redactHarnessEvent(ev);
           safeInvoke(onHarnessEvent, safeEv);
           this.observeNativeSession(runInput, adapter.id, safeEv);
+          this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
           observeAttemptTelemetry(telemetry, safeEv);
           if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
             cost += safeEv.usage.cost_usd;
@@ -2224,7 +2250,7 @@ export class Orchestrator {
             adapterIdx = (adapterIdx + 1) % adapterPool.length;
             routed = adapterPool[adapterIdx] as RoutedAdapter;
             adapter = routed.adapter;
-            log.emit("route.fallback.started", { from_harness: lastRun?.harnessId ?? null, to_harness: adapter.id, reason: "stall: switched harness" });
+            log.emit("route.fallback.started", { from_harness: lastRun?.harnessId ?? null, to_harness: adapter.id, reason: "stall" });
           } else {
             break; // tried every available harness on this failure and still stuck -> stop
           }
@@ -2440,6 +2466,7 @@ export class Orchestrator {
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
             this.observeNativeSession(input, adapter.id, safeEv);
+            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));
             observeAttemptTelemetry(telemetry, safeEv);
@@ -2812,6 +2839,7 @@ export class Orchestrator {
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
             this.observeNativeSession(input, adapter.id, safeEv);
+            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));
             observeAttemptTelemetry(telemetry, safeEv);

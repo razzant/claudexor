@@ -187,8 +187,8 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         turns: threads.turnsFor(id) as unknown[],
       };
     },
-    addThreadTurn: async (id: string, runId: string | null, prompt: string, kind?: unknown) =>
-      threads.addTurn(id, runId, prompt, (kind ?? "followup") as Parameters<ThreadStore["addTurn"]>[3]),
+    addThreadTurn: async (id: string, runId: string | null, prompt: string, kind?: unknown, parentRunId?: string | null) =>
+      threads.addTurn(id, runId, prompt, (kind ?? "followup") as Parameters<ThreadStore["addTurn"]>[3], parentRunId),
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),
     harnesses: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),

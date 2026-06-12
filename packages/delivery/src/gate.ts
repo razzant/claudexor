@@ -72,6 +72,14 @@ function patchPaths(patch: string): string[] {
       const raw = line.slice(4).trim();
       if (raw === "/dev/null") continue;
       paths.add(raw.startsWith("a/") || raw.startsWith("b/") ? raw.slice(2) : raw);
+      continue;
+    }
+    // Pure rename/copy hunks carry no +++/--- lines; their targets must be
+    // confined too (git apply re-checks, this is defense-in-depth).
+    if (line.startsWith("rename to ") || line.startsWith("copy to ")) {
+      paths.add(line.slice(line.indexOf(" to ") + 4).trim());
+    } else if (line.startsWith("rename from ") || line.startsWith("copy from ")) {
+      paths.add(line.slice(line.indexOf(" from ") + 6).trim());
     }
   }
   return [...paths];

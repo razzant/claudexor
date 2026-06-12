@@ -3,7 +3,7 @@ import { ConformanceReport as ConformanceReportSchema, HarnessManifest as Harnes
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, abortSignalFromSpec } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseChatCompletion } from "./parse.js";
 
 /** A stalled remote endpoint must not hang a run forever. */
@@ -142,7 +142,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             session_id: spec.session_id,
             ts: nowIso(),
             error: `raw-api HTTP ${res.status}`,
-            payload: res.status === 429 ? { resets_at: resetsAt } : { body: body.slice(0, 500) },
+            payload: res.status === 429 ? { resets_at: resetsAt } : { body: redactSecrets(body.slice(0, 500)) },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
@@ -159,7 +159,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso(), observed_model: parsed.model ?? undefined };
       } catch (err) {
-        yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: err instanceof Error ? err.message : String(err) };
+        yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: redactSecrets(err instanceof Error ? err.message : String(err)) };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       }
     },

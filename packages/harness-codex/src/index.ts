@@ -367,12 +367,19 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // from ~/.codex — the fix that makes subscription-first actually work inside an
   // envelope); `api_key` seeds the OpenAI key. Order follows auth_preference, and
   // each falls back to the other so a run is not stranded when one source is gone.
+  let authRoute: "subscription" | "api_key" | null = null;
   if (scopedHomeNeedsAuth) {
-    const trySub = (): boolean => (nativeAuthed ? ensureCodexNativeAuth(spec.env as Record<string, string>) : false);
+    const trySub = (): boolean => {
+      const ok = nativeAuthed ? ensureCodexNativeAuth(spec.env as Record<string, string>) : false;
+      if (ok) authRoute = "subscription";
+      return ok;
+    };
     const tryKey = (): boolean => {
       if (!key) return false;
       ensureCodexApiAuth(spec.env, true);
-      return hasScopedCodexAuth(spec.env);
+      const ok = hasScopedCodexAuth(spec.env);
+      if (ok) authRoute = "api_key";
+      return ok;
     };
     const seeded = preferApi ? tryKey() || trySub() : trySub() || tryKey();
     if (!seeded) {
@@ -385,6 +392,18 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       };
       yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       return;
+    }
+    // An EXPLICIT auth preference that could not be honored is disclosed as a
+    // typed marker; the orchestrator lifts it into route.fallback.auth_switched.
+    const preferred = preferApi ? "api_key" : "subscription";
+    if (spec.auth_preference !== "auto" && authRoute && authRoute !== preferred) {
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        text: `[auth] ${preferred} route unavailable; fell back to ${authRoute}`,
+        payload: { auth_switched: true, from_auth_mode: preferred === "subscription" ? "local_session" : "api_key", to_auth_mode: authRoute === "subscription" ? "local_session" : "api_key" },
+      };
     }
   }
 

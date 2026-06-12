@@ -4,30 +4,14 @@ import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, providerScrubEnv, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
 import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame, isResultFrame } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
-const CLAUDE_PROVIDER_ENV_DENYLIST = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  // An inherited base-URL override could redirect traffic that carries the injected key.
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "ANTHROPIC_BEDROCK_BASE_URL",
-  "ANTHROPIC_VERTEX_PROJECT_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_PROFILE",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-];
+const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
 
 function permissionArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -350,6 +334,23 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       : canKey
         ? "api_key"
         : null;
+
+  // An EXPLICIT auth preference that could not be honored is disclosed as a
+  // typed marker; the orchestrator lifts it into route.fallback.auth_switched.
+  const preferredRoute = preferApi ? "api_key" : "subscription";
+  if (spec.auth_preference !== "auto" && route !== null && route !== preferredRoute) {
+    yield {
+      type: "message",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      text: `[auth] ${preferredRoute} route unavailable; fell back to ${route}`,
+      payload: {
+        auth_switched: true,
+        from_auth_mode: preferredRoute === "subscription" ? "local_session" : "api_key",
+        to_auth_mode: route === "subscription" ? "local_session" : "api_key",
+      },
+    };
+  }
 
   if (route === null) {
     yield {

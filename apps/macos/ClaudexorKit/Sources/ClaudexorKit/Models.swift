@@ -671,6 +671,14 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
     public let eligibleHarnesses: [String]
     public let defaultModel: String?
     public let envInheritance: String
+    /// Engine auth route preference: subscription | api_key | auto.
+    public let authPreference: String?
+    public let fallback: FallbackSettings?
+}
+
+public struct FallbackSettings: Codable, Sendable, Equatable {
+    public let onQuotaExhaustion: String?
+    public let onMoneyExhaustion: String?
 }
 
 public struct BudgetSettings: Codable, Sendable, Equatable {
@@ -690,6 +698,7 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
     public let fallbackModel: String?
     public let web: String
     public let nativeOptions: [String: JSONValue]
+    public let authPreference: String?
 }
 
 /// Partial per-harness settings patch; absent fields keep their stored value.
@@ -725,6 +734,9 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var defaultModel: String?
     public var eligibleHarnesses: [String]?
     public var envInheritance: String?
+    public var authPreference: String?
+    public var fallbackOnQuotaExhaustion: String?
+    public var fallbackOnMoneyExhaustion: String?
     public var maxUsdPerRun: Double?
     public var maxUsdPerDay: Double?
     public var clearMaxUsdPerRun: Bool
@@ -735,6 +747,8 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
                 primaryHarness: String? = nil, defaultModel: String? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
+                authPreference: String? = nil,
+                fallbackOnQuotaExhaustion: String? = nil, fallbackOnMoneyExhaustion: String? = nil,
                 maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
                 clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false,
                 interactionTimeoutMs: Int? = nil,
@@ -745,6 +759,9 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.defaultModel = defaultModel
         self.eligibleHarnesses = eligibleHarnesses
         self.envInheritance = envInheritance
+        self.authPreference = authPreference
+        self.fallbackOnQuotaExhaustion = fallbackOnQuotaExhaustion
+        self.fallbackOnMoneyExhaustion = fallbackOnMoneyExhaustion
         self.maxUsdPerRun = maxUsdPerRun
         self.maxUsdPerDay = maxUsdPerDay
         self.clearMaxUsdPerRun = clearMaxUsdPerRun
@@ -754,7 +771,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, fallbackOnQuotaExhaustion, fallbackOnMoneyExhaustion, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -765,6 +782,9 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(defaultModel, forKey: .defaultModel)
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
         try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
+        try c.encodeIfPresent(authPreference, forKey: .authPreference)
+        try c.encodeIfPresent(fallbackOnQuotaExhaustion, forKey: .fallbackOnQuotaExhaustion)
+        try c.encodeIfPresent(fallbackOnMoneyExhaustion, forKey: .fallbackOnMoneyExhaustion)
         try c.encodeIfPresent(maxUsdPerRun, forKey: .maxUsdPerRun)
         try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
         if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
@@ -809,4 +829,6 @@ public enum GatewayError: Error, Sendable, Equatable {
     case http(status: Int, body: String)
     case decoding(String)
     case transport(String)
+    /// Transient: the engine queue did not start the work in the wait window.
+    case queueBusy(message: String)
 }
