@@ -215,12 +215,14 @@ private struct TurnCard: View {
                     }
                     .buttonStyle(.link)
                 }
-                if (run.status == .blocked || run.status == .needsReview) && !riskAccepted {
+                // Server-derived: a persisted operator decision (from ANY surface,
+                // surviving reloads) unblocks apply; `riskAccepted` only bridges
+                // the moment between decide() and the refreshed run detail.
+                let unblocked = run.operatorDecisionAction != nil || riskAccepted
+                if (run.status == .blocked || run.status == .needsReview) && !unblocked {
                     decisionBar(run)
                 }
-                // Apply appears for green runs AND for blocked runs the operator
-                // just unblocked (the server gate remains the authority).
-                if (run.status == .succeeded && !run.diff.isEmpty) || riskAccepted {
+                if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
                     applyBar(run)
                 }
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
@@ -247,7 +249,11 @@ private struct TurnCard: View {
             Button("Accept risk & unblock") {
                 Task {
                     actionError = await model.decide(runId: run.id, action: "accept_risk", acceptedRisks: ["operator accepted via thread"])
-                    if actionError == nil { riskAccepted = true }
+                    if actionError == nil {
+                        riskAccepted = true
+                        // Pull the server-persisted decision so the affordance survives reloads.
+                        await model.loadRunDetail(run.id)
+                    }
                 }
             }
             .help("Records an auditable operator decision bound to this exact patch, then allows apply")

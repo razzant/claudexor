@@ -68,7 +68,6 @@ export const ControlRunStartRequest = z
     parentRunId: Id.optional(),
     sessionId: Id.optional(),
     /** Re-host the thread onto the routed harness (serialize + session.rebound). */
-    rehost: z.boolean().optional(),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional(),
   })
@@ -290,6 +289,8 @@ export const ControlRunSummary = z.object({
   failure: RunFailure.nullable().default(null),
   project: ControlProjectMetadata.default({}),
   mode: ModeKind.optional(),
+  /** v0.9 engine strategy on the mode (flags, not modes): race width / repair caps / swarm / create. */
+  strategy: z.enum(["race", "attempts", "until_clean", "swarm", "create"]).nullable().optional(),
   prompt: z.string().optional(),
   harnesses: z.array(z.string()).optional(),
   primaryHarness: z.string().optional(),
@@ -420,6 +421,11 @@ export const ControlRunDetail = z.object({
   budget: ControlBudgetSnapshot.default({}),
   finalSummary: z.string().nullable().default(null),
   decision: DecisionRecord.nullable().default(null),
+  /** Persisted operator unblock decision (accept_risk/override), hash-bound; server-owned apply affordance. */
+  operatorDecision: z
+    .object({ action: z.string(), decidedAt: z.string().nullable().default(null) })
+    .nullable()
+    .default(null),
   workProduct: WorkProduct.nullable().default(null),
   reviewFindings: z.array(ReviewFinding).default([]),
   pendingInteractions: z.array(ControlPendingInteraction).default([]),

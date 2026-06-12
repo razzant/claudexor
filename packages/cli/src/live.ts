@@ -135,12 +135,12 @@ export async function promptQuestionsOnTty(
   }
 }
 
-interface ControlApiAddress {
+export interface ControlApiAddress {
   baseUrl: string;
   token: string;
 }
 
-function controlApiAddress(): ControlApiAddress {
+export function controlApiAddress(): ControlApiAddress {
   const info = JSON.parse(readFileSync(join(daemonDir(), "control-api.json"), "utf8")) as { host?: string; port?: number };
   const token = readToken();
   if (!info.host || !info.port || !token) throw new Error("daemon control API is not available (run: claudexor daemon start)");

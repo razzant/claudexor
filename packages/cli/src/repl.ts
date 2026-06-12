@@ -1,9 +1,10 @@
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import { join } from "node:path";
 import { ThreadStore, daemonDir } from "@claudexor/daemon";
 import { Orchestrator } from "@claudexor/orchestrator";
 import type { ModeKind } from "@claudexor/schema";
 import { buildRegistry } from "./registry.js";
+import { type ControlApiAddress, controlApiAddress, followRun } from "./live.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -18,7 +19,9 @@ const REPL_HELP = `claudexor REPL — a thread of turns over your harnesses
   /new [title]      start a new thread
   /help             this help
   /quit             exit
-Turns RESUME each harness's own native CLI session (plan -> implement is one conversation).`;
+Read-only turns (ask/plan/audit/orchestrate) RESUME each harness's own native
+CLI session; agent/write turns run fresh isolated envelopes with a typed
+session.rebound disclosure (continuity = thread prompt + repo state).`;
 
 interface ReplTurnSpec {
   mode: ModeKind;
@@ -57,24 +60,118 @@ function parseReplLine(line: string): ReplTurnSpec | { command: "thread" | "new"
   }
 }
 
+/** Daemon control-api reachable right now? (threads SSOT lives there). */
+async function daemonAddress(): Promise<ControlApiAddress | null> {
+  try {
+    const addr = controlApiAddress();
+    const res = await fetch(`${addr.baseUrl}/healthz`, { signal: AbortSignal.timeout(1500) });
+    return res.ok ? addr : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Interactive REPL: `claudexor` with no arguments. A thread of turns over the
- * project in the current directory — each turn resumes the routed harness's
- * own native CLI session, so "plan, then continue" is one conversation, not a
- * context reset. Thread state shares the daemon's durable ThreadStore.
+ * project in the current directory. When the daemon is running, the REPL is a
+ * THIN CLIENT of the control API — threads live in the daemon SSOT and appear
+ * in the macOS app; turns stream live through the same follow pipeline. When
+ * no daemon is up, it falls back to an in-process engine with a terminal-local
+ * thread store (disclosed in the banner).
  */
 export async function runRepl(repoRoot: string): Promise<number> {
-  // The REPL runs the engine IN-PROCESS and keeps its own thread store file:
-  // ThreadStore has no cross-process locking, so sharing the daemon's
-  // threads.json would let two writers clobber each other's conversations.
-  // REPL threads are local to the terminal session by design (the daemon/app
-  // SSOT stays single-writer).
+  const addr = await daemonAddress();
+  if (addr) return runDaemonRepl(repoRoot, addr);
+  return runLocalRepl(repoRoot);
+}
+
+async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise<number> {
+  const headers = { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" };
+  const api = async (method: string, path: string, body?: unknown): Promise<any> => {
+    const res = await fetch(`${addr.baseUrl}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(typeof json?.error === "string" ? json.error : `HTTP ${res.status}`);
+    return json;
+  };
+
+  let thread = await api("POST", "/threads", { title: `repl ${new Date().toISOString().slice(0, 16)}`, scope: { kind: "project", root: repoRoot } });
+  process.stdout.write(`claudexor REPL — thread ${thread.id} on ${repoRoot} (daemon-backed; visible in the app)\nType /help for commands.\n`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
+  rl.prompt();
+
+  for await (const line of rl) {
+    const parsed = parseReplLine(line);
+    if (!parsed) {
+      rl.prompt();
+      continue;
+    }
+    if ("command" in parsed) {
+      if (parsed.command === "quit") break;
+      if (parsed.command === "help") process.stdout.write(REPL_HELP + "\n");
+      if (parsed.command === "new") {
+        thread = await api("POST", "/threads", { title: parsed.arg || undefined, scope: { kind: "project", root: repoRoot } });
+        process.stdout.write(`new thread ${thread.id}\n`);
+      }
+      if (parsed.command === "thread") {
+        try {
+          const detail = await api("GET", `/threads/${encodeURIComponent(thread.id)}`);
+          process.stdout.write(`thread ${detail.thread.id} (${detail.thread.title ?? "untitled"})\n`);
+          for (const t of detail.turns ?? []) process.stdout.write(`  turn ${t.id} run=${t.runId ?? "-"} [${t.state ?? "?"}] :: ${String(t.prompt).slice(0, 80)}\n`);
+          for (const s of detail.sessions ?? []) process.stdout.write(`  session ${s.harnessId} native=${s.nativeSessionId ?? "-"} state=${s.state ?? "?"}\n`);
+        } catch (err) {
+          process.stdout.write(`thread fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+      }
+      rl.prompt();
+      continue;
+    }
+    if (!parsed.prompt) {
+      process.stdout.write("(empty prompt)\n");
+      rl.prompt();
+      continue;
+    }
+    try {
+      const started = await api("POST", `/threads/${encodeURIComponent(thread.id)}/turns`, {
+        prompt: parsed.prompt,
+        mode: parsed.mode,
+        ...(parsed.race ? { n: 2 } : {}),
+      });
+      if (started.runId) {
+        // Live-stream the turn through the shared follow pipeline (replay +
+        // push + interactive question answering). Pause our readline so the
+        // two stdin consumers never fight.
+        rl.pause();
+        try {
+          await followRun(String(started.runId), false);
+        } finally {
+          rl.resume();
+        }
+      } else {
+        process.stdout.write(`turn queued: ${JSON.stringify(started)}\n`);
+      }
+    } catch (err) {
+      process.stdout.write(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    rl.prompt();
+  }
+  rl.close();
+  process.stdout.write("bye\n");
+  return 0;
+}
+
+async function runLocalRepl(repoRoot: string): Promise<number> {
+  // No daemon: in-process engine with a TERMINAL-LOCAL thread store. ThreadStore
+  // has no cross-process locking, so the daemon's threads.json stays
+  // single-writer; local REPL threads are not visible to the app by design.
   const threads = new ThreadStore(join(daemonDir(), "threads-repl.json"));
   let thread = threads.createThread({ title: `repl ${new Date().toISOString().slice(0, 16)}`, repoRoot });
   const orch = new Orchestrator({ registry: buildRegistry() });
 
-  process.stdout.write(`claudexor REPL — thread ${thread.id} on ${repoRoot} (terminal-local thread store)\nType /help for commands.\n`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
+  process.stdout.write(
+    `claudexor REPL — thread ${thread.id} on ${repoRoot} (local engine; start the daemon to share threads with the app)\nType /help for commands.\n`,
+  );
+  const rl: Interface = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
   rl.prompt();
 
   for await (const line of rl) {

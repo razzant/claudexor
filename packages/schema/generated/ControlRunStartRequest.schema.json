@@ -229,9 +229,6 @@
         "sessionId": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
         },
-        "rehost": {
-          "type": "boolean"
-        },
         "authPreference": {
           "type": "string",
           "enum": [

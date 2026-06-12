@@ -10,6 +10,13 @@ import type { AdapterRegistry, DoctorSpec } from "./adapter.js";
  * `invalidateDoctorCache()` for an immediate refresh.
  */
 const DOCTOR_TTL_MS = Number(process.env.CLAUDEXOR_DOCTOR_TTL_MS ?? 90_000);
+/**
+ * Non-OK results age out much faster: an out-of-band `codex login` /
+ * `claude /login` (which Claudexor cannot observe to invalidate) should become
+ * routable within seconds, not a full TTL. OK results keep the long TTL since
+ * readiness rarely degrades spontaneously and re-probing it is what costs money.
+ */
+const DOCTOR_NON_OK_TTL_MS = Number(process.env.CLAUDEXOR_DOCTOR_NON_OK_TTL_MS ?? 15_000);
 interface DoctorCacheEntry {
   report: ConformanceReport;
   at: number;
@@ -39,7 +46,8 @@ export async function runDoctor(
     const key = doctorCacheKey(adapter.id, spec);
     if (cacheable) {
       const hit = doctorCache.get(key);
-      if (hit && now - hit.at < DOCTOR_TTL_MS) {
+      const ttl = hit?.report.status === "ok" ? DOCTOR_TTL_MS : DOCTOR_NON_OK_TTL_MS;
+      if (hit && now - hit.at < ttl) {
         reports.push(hit.report);
         continue;
       }

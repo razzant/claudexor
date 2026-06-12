@@ -250,11 +250,12 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
       parentRunId: "run-0",
       sessionId: "se-1",
       authPreference: "subscription",
-      rehost: true,
     });
     expect(req.threadId).toBe("th-1");
     expect(req.authPreference).toBe("subscription");
-    expect(req.rehost).toBe(true);
+    // `rehost` was removed until its behavior ships (staged-field rule): the
+    // strict DTO rejects it LOUDLY instead of accepting a no-op flag.
+    expect(() => ControlRunStartRequest.parse({ prompt: "x", mode: "agent", rehost: true })).toThrow(/rehost/);
   });
 
   it("validates a typed review decision (unblock) request, rejecting unknown keys", () => {

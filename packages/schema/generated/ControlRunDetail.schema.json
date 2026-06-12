@@ -176,6 +176,23 @@
                 "orchestrate"
               ]
             },
+            "strategy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "race",
+                    "attempts",
+                    "until_clean",
+                    "swarm",
+                    "create"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "prompt": {
               "type": "string"
             },
@@ -764,6 +781,33 @@
               "required": [
                 "winner",
                 "status"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "operatorDecision": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "decidedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "action"
               ],
               "additionalProperties": false
             },

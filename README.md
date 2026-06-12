@@ -250,8 +250,9 @@ Important boundaries:
 - `packages/schema` owns contracts and generated JSON Schema.
 - `packages/harness-*` adapters translate native tool I/O into typed events.
 - `packages/workspace` owns worktree envelopes and scoped harness homes.
-- `packages/orchestrator` owns Ask, Explore, Agent, Best-of-N, Max Attempts,
-  Until Clean, Plan, Create, and Read-only Audit modes.
+- `packages/orchestrator` owns the five canonical mode pipelines (ask, plan,
+  audit, agent, orchestrate) and their strategy flags (race width, attempt
+  caps, until-clean, swarm, create).
 - `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.

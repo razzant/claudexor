@@ -297,6 +297,7 @@ final class AppModel {
                 await refreshHarnesses()
                 await refreshSettings()
                 await refreshSecrets()
+                await refreshThreads()
                 startGlobalStream()
                 return true
             }
@@ -884,6 +885,7 @@ final class AppModel {
             var task = liveTasks[baseIdx]
             task.status = RunStatus(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode)
+            task.operatorDecisionAction = detail.operatorDecisionAction
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }
             task.project = detail.summary.project?.projectName ?? detail.summary.project?.root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? task.project

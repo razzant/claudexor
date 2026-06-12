@@ -1009,6 +1009,26 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("post-terminal audit appends keep the seq cursor strictly monotonic (SSE resume safety)", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "blocked";
+    await withDaemonServer(daemon, async (base) => {
+      const before = (await (await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })).json()) as { lastSeq: number };
+      const decide = await fetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "accept_risk", acceptedRisks: ["r"] }),
+      });
+      expect(decide.status).toBe(200);
+      const after = (await (await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })).json()) as { lastSeq: number; operatorDecision?: { action: string } | null };
+      // The control.applied audit event appended to the terminal run must advance
+      // the durable cursor (a collision would break Last-Event-ID resume).
+      expect(after.lastSeq).toBeGreaterThan(before.lastSeq);
+      // ...and the persisted operator decision is server-projected for UIs.
+      expect(after.operatorDecision?.action).toBe("accept_risk");
+    });
+  });
+
   it("rerun_with_feedback enqueues a follow-up run carrying the operator feedback", async () => {
     const { daemon, record } = fakeDaemon();
     record.state = "blocked";

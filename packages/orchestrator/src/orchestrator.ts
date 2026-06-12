@@ -25,6 +25,8 @@ import type {
 import {
   DEFAULT_ORCHESTRATE_TOOL_BELT,
   HarnessRunSpec,
+  OrchestrateContract as OrchestrateContractSchema,
+  type OrchestrateContract as OrchestrateContractT,
   OrchestratePlan as OrchestratePlanSchema,
   type OrchestratePlan as OrchestratePlanT,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
@@ -2393,6 +2395,7 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
+
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
 
     let adapters: RoutedAdapter[];
@@ -2688,6 +2691,14 @@ export class Orchestrator {
     const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
     const crossFamily = pool.length >= 2;
     const goal = input.prompt || "Plan the next move for this repository.";
+    // The typed orchestration contract is a REAL persisted artifact (producer
+    // here, consumers: the brain prompt below + the plan validator).
+    const orchestrateContract = OrchestrateContractSchema.parse({
+      thread_id: input.threadId ?? newId("th"),
+      goal,
+      budget: { max_usd: input.maxUsd ?? null, max_tool_calls: null },
+      autonomy: "suggest",
+    });
     const brainPrompt = [
       `You are the Claudexor orchestration brain. Plan — do not implement.`,
       ``,
@@ -2701,7 +2712,7 @@ export class Orchestrator {
         : `Only single-route execution is available (fewer than 2 verified harnesses).`,
       ``,
       `## Tool belt (the ONLY actions your plan may use)`,
-      ...DEFAULT_ORCHESTRATE_TOOL_BELT.map((t) => `- ${t}`),
+      ...orchestrateContract.tool_belt.map((t) => `- ${t}`),
       ``,
       `## Required output`,
       `1. A concise markdown orchestration plan (numbered steps; each step names ONE tool and its arguments).`,
@@ -2718,13 +2729,14 @@ export class Orchestrator {
         artifactName: "orchestration.md",
         defaultPrompt: brainPrompt,
         contractIntent: goal,
+        orchestrateContract,
       },
     );
   }
 
   private async runReadOnlyReport(
     input: RunInput,
-    opts: { mode: "ask" | "audit" | "orchestrate"; swarm: boolean; intent: "explain" | "audit" | "orchestrate"; title: string; artifactName: string; defaultPrompt: string; contractIntent?: string },
+    opts: { mode: "ask" | "audit" | "orchestrate"; swarm: boolean; intent: "explain" | "audit" | "orchestrate"; title: string; artifactName: string; defaultPrompt: string; contractIntent?: string; orchestrateContract?: OrchestrateContractT },
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -2741,6 +2753,9 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
+    if (opts.orchestrateContract) {
+      store.writeYaml(join(paths.contextDir, "orchestrate_contract.yaml"), opts.orchestrateContract);
+    }
 
     // Lazy ContextPack: explore/audit attach the compact scope atlas; ask stays bare.
     let contextSection = "";

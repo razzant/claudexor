@@ -581,6 +581,8 @@ struct TaskRun: Identifiable, Hashable {
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false
+    /// Server-persisted operator unblock decision action (accept_risk/override), if any.
+    var operatorDecisionAction: String?
 
     /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
     var accessLabel: String? {

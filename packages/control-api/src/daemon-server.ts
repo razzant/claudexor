@@ -1158,9 +1158,6 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
       { status: 400 },
     );
   }
-  if ((parsed as { rehost?: boolean }).rehost === true) {
-    throw Object.assign(new Error("rehost is not supported yet (planned for v0.10); omit the flag"), { status: 400 });
-  }
   // Live (in-place) isolation is only honored by the convergence strategies
   // (agent + attempts / until_clean flags); accepting it elsewhere would
   // silently run an envelope while claiming live semantics.
@@ -1275,6 +1272,16 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
   ].join("|");
 }
 
+/** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
+function strategyFromParams(p: Record<string, unknown>): "race" | "attempts" | "until_clean" | "swarm" | "create" | null {
+  if (p["untilClean"] === true) return "until_clean";
+  if (typeof p["attempts"] === "number" && p["attempts"] > 0) return "attempts";
+  if (p["create"] === true) return "create";
+  if (p["swarm"] === true) return "swarm";
+  if (typeof p["n"] === "number" && p["n"] > 1) return "race";
+  return null;
+}
+
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const p = paramsRecord(rec);
   // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
@@ -1302,6 +1309,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     failure: readFailure(rec),
     project: projectMetadata(rec),
     mode: parsedMode.success ? parsedMode.data : undefined,
+    strategy: strategyFromParams(p),
     prompt: typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined,
     harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
@@ -1393,6 +1401,17 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
   const lastSeq = cursor ?? (rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  const operator = readOperatorDecision(rec);
+  const operatorDecisionRaw = operator
+    ? (() => {
+        try {
+          const doc = parseYaml(readTextArtifact(rec, "arbitration/operator_decision.yaml") ?? "") as Record<string, unknown> | null;
+          return { action: operator.action, decidedAt: typeof doc?.["decided_at"] === "string" ? doc["decided_at"] : null };
+        } catch {
+          return { action: operator.action, decidedAt: null };
+        }
+      })()
+    : null;
   const summary = summarizeRun(rec);
   return ControlRunDetail.parse({
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
@@ -1403,6 +1422,7 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     budget: budgetSnapshot(rec, decision),
     finalSummary: readTextArtifact(rec, "final/summary.md"),
     decision,
+    operatorDecision: operatorDecisionRaw,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,

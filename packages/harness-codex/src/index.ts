@@ -415,11 +415,13 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     ...providerScrubEnv(),
   };
 
-  // Non-envelope run (no scoped CODEX_HOME) without native login: seed a private
-  // temporary CODEX_HOME with the api key (codex ignores OPENAI_API_KEY without an
-  // auth.json) instead of touching the user's real ~/.codex.
+  // Non-envelope run (no scoped CODEX_HOME): an explicit `api_key` preference is
+  // HONORED even when natively logged in (a private temp CODEX_HOME seeded with
+  // the key; codex ignores OPENAI_API_KEY without an auth.json) — and a missing
+  // key falls back to the native session with a typed disclosure. Without a
+  // preference, the key route is only the no-native fallback.
   let tempCodexHome: string | null = null;
-  if (!scopedHome && !nativeAuthed && key) {
+  if (!scopedHome && key && (preferApi || !nativeAuthed)) {
     tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
     env["CODEX_HOME"] = tempCodexHome;
     ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
@@ -434,6 +436,14 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
         payload: { auth_switched: true, from_auth_mode: "local_session", to_auth_mode: "api_key" },
       };
     }
+  } else if (!scopedHome && preferApi && !key && nativeAuthed) {
+    yield {
+      type: "message",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      text: "[auth] api_key route unavailable (no key); fell back to subscription",
+      payload: { auth_switched: true, from_auth_mode: "api_key", to_auth_mode: "local_session" },
+    };
   }
 
   const args = codexExecArgs(spec);

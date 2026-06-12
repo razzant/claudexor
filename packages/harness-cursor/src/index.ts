@@ -172,6 +172,7 @@ async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // unreachable, so the native-auth probe (which runs against the REAL home)
   // must not be trusted for them: inside an envelope a key is required.
   const scopedHome = Boolean(spec.env?.["HOME"]);
+  const preferApi = spec.auth_preference === "api_key";
   if (scopedHome) {
     if (!key) {
       yield {
@@ -186,8 +187,36 @@ async function* runCursor(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     env.CURSOR_API_KEY = key;
   } else {
     const nativeAuthed = await nativeAuthOk();
-    if (nativeAuthed) env.CURSOR_API_KEY = null;
-    else if (key) env.CURSOR_API_KEY = key;
+    // An EXPLICIT auth preference is honored; an unfulfillable one falls back
+    // with a typed disclosure (never silent).
+    if (preferApi && key) {
+      env.CURSOR_API_KEY = key;
+    } else if (preferApi && !key && nativeAuthed) {
+      env.CURSOR_API_KEY = null;
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        text: "[auth] api_key route unavailable (no key); fell back to subscription",
+        payload: { auth_switched: true, from_auth_mode: "api_key", to_auth_mode: "local_session" },
+      };
+    } else if (nativeAuthed) {
+      env.CURSOR_API_KEY = null;
+      if (spec.auth_preference === "subscription") {
+        // honored — nothing to disclose
+      }
+    } else if (key) {
+      env.CURSOR_API_KEY = key;
+      if (spec.auth_preference === "subscription") {
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          text: "[auth] subscription route unavailable (not logged in); fell back to api_key",
+          payload: { auth_switched: true, from_auth_mode: "local_session", to_auth_mode: "api_key" },
+        };
+      }
+    }
   }
 
   yield* runCliHarness({
