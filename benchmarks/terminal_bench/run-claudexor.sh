@@ -33,5 +33,5 @@ AK=(--ak "harness=${CLAUDEXOR_TB_HARNESS:-claude}" --ak "attempts=$ATTEMPTS")
 log "claudexor (in-place convergence + cross-family review): dataset=$DATASET harness=${CLAUDEXOR_TB_HARNESS:-claude} attempts=$ATTEMPTS reviewer=${CODEX_MODEL:-<codex default>} -> $OUT"
 # shellcheck disable=SC2086
 # ${arr[@]+...} guards empty-array expansion under `set -u` on bash 3.2 (macOS).
-harbor run -d "$DATASET" --agent-import-path "$AGENT_IMPORT" ${MODEL_FLAG[@]+"${MODEL_FLAG[@]}"} "${AK[@]}" $SEL -n "$N_CONCURRENT" -o "$OUT"
+harbor run -d "$DATASET" --timeout-multiplier "${CLAUDEXOR_TB_TIMEOUT_MULT:-3}" --agent-import-path "$AGENT_IMPORT" ${MODEL_FLAG[@]+"${MODEL_FLAG[@]}"} "${AK[@]}" $SEL -n "$N_CONCURRENT" -o "$OUT"
 log "done: $OUT"
