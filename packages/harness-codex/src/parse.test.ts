@@ -97,4 +97,18 @@ describe("parseCodexEvent", () => {
     expect(parseCodexEvent({ type: "error", message: "boom" }, "s1")?.[0]?.type).toBe("error");
     expect(parseCodexEvent({ type: "turn.failed", error: { message: "x" } }, "s1")?.[0]?.error).toBe("x");
   });
+
+  it("sets the typed rate_limit signal from native error phrasing (conservatively)", () => {
+    const rl = (message: string) => parseCodexEvent({ type: "error", message }, "s1")?.[0]?.rate_limit;
+    // Real rate-limit/quota phrasing -> typed signal.
+    expect(rl("HTTP 429 Too Many Requests")).toBeTruthy();
+    expect(rl("UsageLimitExceeded")).toBeTruthy();
+    expect(rl("rate limited, retry later")).toBeTruthy();
+    // Unrelated mentions of 429/quota -> NO false signal.
+    expect(rl("received 429 items")).toBeUndefined();
+    expect(rl("the quota field is missing")).toBeUndefined();
+    // A resets_at hint is carried through onto the typed signal.
+    const withReset = parseCodexEvent({ type: "error", message: "rate limit", resets_at: "2026-06-12T09:00:00Z" }, "s1")?.[0];
+    expect(withReset?.rate_limit?.resets_at).toBe("2026-06-12T09:00:00Z");
+  });
 });

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -180,6 +180,41 @@ describe("daemon", () => {
       expect(list.some((r) => r.id === jobId && r.state === "blocked")).toBe(true);
     } finally {
       await b.stop();
+    }
+  }, 20000);
+
+  it("re-enqueues persisted queued jobs on restart (pending work is not dropped to interrupted)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-requeue";
+    // Simulate a daemon that went down with a job still QUEUED (never started).
+    writeFileSync(
+      persistPath,
+      JSON.stringify([{ id: "job-q1", state: "queued", params: { x: 5 }, createdAt: new Date().toISOString() }]),
+    );
+    let ran = 0;
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath,
+      runner: async (p) => {
+        ran += 1;
+        return { status: "success", echoed: (p as { x: number }).x };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      let st = await client.status("job-q1");
+      for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
+        await sleep(10);
+        st = await client.status("job-q1");
+      }
+      expect(st.state).toBe("succeeded");
+      expect(ran).toBe(1);
+    } finally {
+      await server.stop();
     }
   }, 20000);
 

@@ -20,4 +20,6 @@ export * from "./events.js";
 export * from "./telemetry.js";
 export * from "./config.js";
 export * from "./workspace.js";
+export * from "./thread.js";
+export * from "./orchestrate.js";
 export * from "./control.js";

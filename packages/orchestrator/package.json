@@ -27,12 +27,13 @@
     "@claudexor/core": "workspace:*",
     "@claudexor/event-log": "workspace:*",
     "@claudexor/gateway": "workspace:*",
+    "@claudexor/interview": "workspace:*",
+    "@claudexor/policy": "workspace:*",
     "@claudexor/review": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/synthesis": "workspace:*",
     "@claudexor/util": "workspace:*",
-    "@claudexor/workspace": "workspace:*",
-    "@claudexor/policy": "workspace:*"
+    "@claudexor/workspace": "workspace:*"
   },
   "devDependencies": {
     "@claudexor/harness-fake": "workspace:*"

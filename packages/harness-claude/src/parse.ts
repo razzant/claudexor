@@ -51,21 +51,35 @@ function parseClaudeEventStateful(
         session_id: sessionId,
         ts,
         observed_model: typeof obj.model === "string" ? obj.model : undefined,
-        payload: { tools: obj.tools, plugins: obj.plugins, mcp_servers: obj.mcp_servers },
+        // The native session id (when present) lets the engine resume this thread.
+        payload: {
+          tools: obj.tools,
+          plugins: obj.plugins,
+          mcp_servers: obj.mcp_servers,
+          ...(typeof obj.session_id === "string" ? { native_session_id: obj.session_id } : {}),
+        },
       },
     ];
   }
 
   if (type === "system" && obj.subtype === "api_retry") {
-    return [
-      {
-        type: "thinking",
-        session_id: sessionId,
-        ts,
-        text: `api_retry: ${redactSecrets(String(obj.error ?? ""))}`,
-        payload: { api_retry: true, retry_delay_ms: obj.retry_delay_ms },
-      },
-    ];
+    const errText = String(obj.error ?? "");
+    const ev: HarnessEvent = {
+      type: "thinking",
+      session_id: sessionId,
+      ts,
+      text: `api_retry: ${redactSecrets(errText)}`,
+      payload: { api_retry: true, retry_delay_ms: obj.retry_delay_ms },
+    };
+    // Adapter-layer translation of claude's native retry into a TYPED rate-limit
+    // signal (the budget layer reads the typed field, not the prose).
+    if (/rate.?limit|overloaded|too many requests|quota/i.test(errText)) {
+      ev.rate_limit = {
+        resets_at: null,
+        retry_delay_ms: typeof obj.retry_delay_ms === "number" ? obj.retry_delay_ms : null,
+      };
+    }
+    return [ev];
   }
 
   if (type === "assistant") {

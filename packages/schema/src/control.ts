@@ -1,10 +1,21 @@
 import { z } from "zod";
-import { AccessProfile, ContentHash, ExternalContextPolicy, Id, ModeKind, OutputReadyState, ProviderFamily } from "./primitives.js";
-import { Portfolio } from "./budget.js";
+import {
+  AccessProfile,
+  AuthPreference,
+  ContentHash,
+  ExternalContextPolicy,
+  Id,
+  ModeKind,
+  OutputReadyState,
+  ProviderFamily,
+} from "./primitives.js";
+import { AuthMode, Portfolio } from "./budget.js";
+import { FallbackMode } from "./config.js";
 import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
+import { ThreadState, ThreadTurnKind } from "./thread.js";
 
 export const RunScopeContext = z.enum(["auto", "deep"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
@@ -37,6 +48,12 @@ export const ControlRunStartRequest = z
     reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),
     n: z.number().int().positive().optional(),
     attempts: z.number().int().positive().nullable().optional(),
+    /** agent flag: iterate until the convergence predicate is clean (no fixed cap). */
+    untilClean: z.boolean().optional(),
+    /** audit flag: bounded read-only research swarm (the old `explore`). */
+    swarm: z.boolean().optional(),
+    /** agent flag: create-from-scratch intent (the old `create` mode). */
+    create: z.boolean().optional(),
     maxUsd: z.number().nonnegative().nullable().optional(),
     /** Requested access profile. Effective access is derived by the engine and never client-supplied. */
     access: AccessProfile.optional(),
@@ -47,6 +64,14 @@ export const ControlRunStartRequest = z
     specPath: z.string().optional(),
     specId: z.string().optional(),
     specHash: ContentHash.optional(),
+    /** Thread/session linkage (A2): a run is a turn inside a thread. */
+    threadId: Id.optional(),
+    parentRunId: Id.optional(),
+    sessionId: Id.optional(),
+    /** Re-host the thread onto the routed harness (serialize + session.rebound). */
+    rehost: z.boolean().optional(),
+    /** Per-run auth route override (subscription/api_key/auto). */
+    authPreference: AuthPreference.optional(),
   })
   .strict();
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
@@ -455,6 +480,113 @@ export const ControlApplyRequest = z
   .strict();
 export type ControlApplyRequest = z.infer<typeof ControlApplyRequest>;
 
+/**
+ * Operator decision on a NEEDS_HUMAN-blocked run (review_actions). Closes the
+ * v0.8 "apply: human_review" dead end: a typed, auditable unblock path instead
+ * of a read-only review queue.
+ */
+export const RunDecisionAction = z.enum([
+  "accept_clean_patch",
+  "rerun_with_feedback",
+  "accept_risk",
+  "override_needs_human",
+]);
+export type RunDecisionAction = z.infer<typeof RunDecisionAction>;
+
+export const ControlRunDecisionRequest = z
+  .object({
+    action: RunDecisionAction,
+    /** Findings the decision targets (override/accept_risk). */
+    findingIds: z.array(Id).default([]),
+    /** Reviewer feedback to seed a rerun turn. */
+    feedback: z.string().optional(),
+    /** Risk reasons being explicitly accepted (recorded, never silent). */
+    acceptedRisks: z.array(z.string()).default([]),
+    /** Apply mode + target for accept_clean_patch. */
+    applyMode: z.enum(["artifact_only", "apply", "branch", "commit", "pr"]).optional(),
+    target: ApplyTarget.optional(),
+  })
+  .strict();
+export type ControlRunDecisionRequest = z.infer<typeof ControlRunDecisionRequest>;
+
+export const ControlRunDecisionResponse = z.object({
+  accepted: z.boolean(),
+  status: z.enum(["applied", "requeued", "rejected", "unsupported"]),
+  /** New run id when the decision re-enqueues a turn (rerun_with_feedback). */
+  newRunId: Id.optional(),
+  message: z.string().optional(),
+});
+export type ControlRunDecisionResponse = z.infer<typeof ControlRunDecisionResponse>;
+
+/* ---- Threads / Sessions (A2 chat/session-first; camelCase control projections) ---- */
+
+export const ControlThread = z.object({
+  id: Id,
+  title: z.string().nullable().default(null),
+  repoRoot: z.string().nullable().default(null),
+  mode: ModeKind.optional(),
+  authPreference: AuthPreference.default("auto"),
+  primaryHarness: z.string().nullable().default(null),
+  portfolio: Portfolio.optional(),
+  state: ThreadState.default("active"),
+  runIds: z.array(Id).default([]),
+  headRunId: Id.nullable().default(null),
+  /** True when the head turn is blocked on a human decision (needs-me inbox). */
+  needsHuman: z.boolean().default(false),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ControlThread = z.infer<typeof ControlThread>;
+
+export const ControlSession = z.object({
+  id: Id,
+  threadId: Id,
+  harnessId: Id,
+  providerFamily: ProviderFamily.default("unknown"),
+  nativeSessionId: z.string().nullable().default(null),
+  observedModel: z.string().nullable().default(null),
+  authMode: AuthMode.default("unknown"),
+  state: z.enum(["live", "stale", "rebound"]).default("live"),
+  turnCount: z.number().int().nonnegative().default(0),
+});
+export type ControlSession = z.infer<typeof ControlSession>;
+
+export const ControlThreadTurn = z.object({
+  id: Id,
+  threadId: Id,
+  runId: Id.nullable().default(null),
+  parentRunId: Id.nullable().default(null),
+  sessionId: Id.nullable().default(null),
+  kind: ThreadTurnKind.default("followup"),
+  prompt: z.string().default(""),
+  state: z.string().optional(),
+  createdAt: z.string(),
+});
+export type ControlThreadTurn = z.infer<typeof ControlThreadTurn>;
+
+export const ControlThreadCreateRequest = z
+  .object({
+    title: z.string().optional(),
+    scope: RunScope.default({ kind: "none" }),
+    mode: ModeKind.optional(),
+    authPreference: AuthPreference.optional(),
+    primaryHarness: z.string().optional(),
+  })
+  .strict();
+export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateRequest>;
+
+export const ControlThreadListResponse = z.object({
+  threads: z.array(ControlThread).default([]),
+});
+export type ControlThreadListResponse = z.infer<typeof ControlThreadListResponse>;
+
+export const ControlThreadDetail = z.object({
+  thread: ControlThread,
+  sessions: z.array(ControlSession).default([]),
+  turns: z.array(ControlThreadTurn).default([]),
+});
+export type ControlThreadDetail = z.infer<typeof ControlThreadDetail>;
+
 export const HarnessStatusDto = z.object({
   id: z.string(),
   status: AdapterStatus,
@@ -483,6 +615,13 @@ export const ControlSettingsSnapshot = z.object({
       eligibleHarnesses: z.array(z.string()).default([]),
       defaultModel: z.string().nullable().default(null),
       envInheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
+      authPreference: AuthPreference.default("auto"),
+      fallback: z
+        .object({
+          onQuotaExhaustion: FallbackMode.default("both"),
+          onMoneyExhaustion: FallbackMode.default("both"),
+        })
+        .default({}),
     })
     .default({}),
   budget: z
@@ -506,6 +645,7 @@ export const ControlSettingsSnapshot = z.object({
         fallbackModel: z.string().nullable().default(null),
         web: ExternalContextPolicy.default("auto"),
         nativeOptions: z.record(z.string(), z.unknown()).default({}),
+        authPreference: AuthPreference.default("auto"),
       }),
     )
     .default({}),
@@ -528,6 +668,7 @@ export const ControlHarnessSettingsPatch = z
     toolsDeny: z.array(z.string()).optional(),
     fallbackModel: z.string().nullable().optional(),
     web: ExternalContextPolicy.optional(),
+    authPreference: AuthPreference.optional(),
   })
   .strict();
 export type ControlHarnessSettingsPatch = z.infer<typeof ControlHarnessSettingsPatch>;
@@ -545,6 +686,9 @@ export const ControlSettingsUpdateRequest = z
     maxUsdPerDay: z.number().nonnegative().optional(),
     clearMaxUsdPerRun: z.boolean().optional(),
     clearMaxUsdPerDay: z.boolean().optional(),
+    authPreference: AuthPreference.optional(),
+    fallbackOnQuotaExhaustion: FallbackMode.optional(),
+    fallbackOnMoneyExhaustion: FallbackMode.optional(),
     harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
   })
   .strict()

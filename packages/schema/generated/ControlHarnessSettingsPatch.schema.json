@@ -91,6 +91,14 @@
             "cached",
             "live"
           ]
+        },
+        "authPreference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ]
         }
       },
       "additionalProperties": false

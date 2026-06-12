@@ -18,6 +18,41 @@ export class SpecNotReadyError extends Error {
 }
 
 /**
+ * Build the typed task graph from a SpecPack's tasks (A3): topologically ordered,
+ * failing loudly on unknown dependencies or cycles — an ambiguous graph must
+ * never silently flatten into "run them in file order".
+ */
+export function buildTaskGraph(tasks: SpecPack["tasks"]): TaskContract["task_graph"] {
+  if (tasks.length === 0) return null;
+  const nodes = tasks.map((t) => ({ id: t.id, title: t.title, depends_on: t.depends_on }));
+  const ids = new Set(nodes.map((n) => n.id));
+  for (const n of nodes) {
+    for (const dep of n.depends_on) {
+      if (!ids.has(dep)) throw new SpecNotReadyError(`task '${n.id}' depends on unknown task '${dep}'`);
+    }
+  }
+  // Kahn topological sort; leftovers mean a cycle.
+  const inDeg = new Map(nodes.map((n) => [n.id, n.depends_on.length]));
+  const queue = nodes.filter((n) => n.depends_on.length === 0).map((n) => n.id);
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    order.push(id);
+    for (const n of nodes) {
+      if (!n.depends_on.includes(id)) continue;
+      const d = (inDeg.get(n.id) ?? 0) - 1;
+      inDeg.set(n.id, d);
+      if (d === 0) queue.push(n.id);
+    }
+  }
+  if (order.length !== nodes.length) {
+    const stuck = nodes.filter((n) => !order.includes(n.id)).map((n) => n.id);
+    throw new SpecNotReadyError(`task graph has a dependency cycle involving: ${stuck.join(", ")}`);
+  }
+  return { nodes, order };
+}
+
+/**
  * Deterministically map a frozen SpecPack into an immutable TaskContract. Fails
  * loudly if the spec is not frozen or has open clarifications — a run must never
  * start from an ambiguous spec.
@@ -36,12 +71,13 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
     task_id: newId("task"),
     created_at: nowIso(),
     repo: { root: opts.repoRoot, base_ref: opts.baseRef ?? "HEAD", dirty_policy: "snapshot" },
-    mode: { kind: opts.mode ?? "until_clean" },
+    mode: { kind: opts.mode ?? "agent" },
     user_intent: { raw: redactSecrets(spec.intent.raw), normalized: redactSecrets(spec.summary || spec.intent.normalized || spec.intent.raw) },
     success_criteria: spec.success_criteria.map((c) => ({ id: c.id, text: c.behavior, required: c.required })),
     non_goals: spec.non_goals,
     forbidden_approaches: spec.forbidden_approaches,
     decided_tradeoffs: spec.decided_tradeoffs,
+    task_graph: buildTaskGraph(spec.tasks),
     constraints: spec.constraints,
     tests: { commands: spec.tests },
     budget: { max_usd: opts.maxUsd ?? null },

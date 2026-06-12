@@ -60,6 +60,9 @@ async function main(): Promise<void> {
         portfolio: p.portfolio,
         n: p.n,
         attempts: p.attempts ?? null,
+        untilClean: p.untilClean === true,
+        swarm: p.swarm === true,
+        create: p.create === true,
         // Policy from the GUI composer / API client (applied, not just displayed).
         maxUsd: p.maxUsd ?? null,
         access: p.access,

@@ -1,0 +1,92 @@
+{
+  "$ref": "#/definitions/OrchestrateContract",
+  "definitions": {
+    "OrchestrateContract": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string"
+        },
+        "tool_belt": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "start_run",
+              "race",
+              "status",
+              "answer_question",
+              "apply",
+              "review"
+            ]
+          },
+          "default": [
+            "start_run",
+            "race",
+            "status",
+            "answer_question",
+            "apply",
+            "review"
+          ]
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "max_usd": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_tool_calls": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "stop_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "autonomy": {
+          "type": "string",
+          "enum": [
+            "suggest",
+            "auto_safe",
+            "auto_full"
+          ],
+          "default": "suggest"
+        }
+      },
+      "required": [
+        "thread_id",
+        "goal"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

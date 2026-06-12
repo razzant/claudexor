@@ -1,0 +1,132 @@
+{
+  "$ref": "#/definitions/Thread",
+  "definitions": {
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 2
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "updated_at": {
+          "$ref": "#/definitions/Thread/properties/created_at"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "root": {
+                  "type": "string"
+                },
+                "base_ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "root",
+                "base_ref"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "plan",
+            "audit",
+            "agent",
+            "orchestrate"
+          ],
+          "default": "agent"
+        },
+        "auth_preference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ],
+          "default": "auto"
+        },
+        "primary_harness": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "portfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ],
+          "default": "subscription-first"
+        },
+        "run_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Thread/properties/id"
+          },
+          "default": []
+        },
+        "head_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Thread/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "blocked",
+            "closed"
+          ],
+          "default": "active"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

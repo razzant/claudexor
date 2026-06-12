@@ -19,6 +19,7 @@ export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   if (caps.compare) intents.push("compare", "arbitrate");
   if (caps.synthesize) intents.push("synthesize");
   if (caps.read_files) intents.push("explain", "audit");
+  if (caps.orchestrate) intents.push("orchestrate");
   return [...new Set(intents)];
 }
 

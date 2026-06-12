@@ -1,0 +1,67 @@
+{
+  "$ref": "#/definitions/RouteFallbackPayload",
+  "definitions": {
+    "RouteFallbackPayload": {
+      "type": "object",
+      "properties": {
+        "from_harness": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "to_harness": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "from_auth_mode": {
+          "type": "string",
+          "enum": [
+            "local_session",
+            "api_key",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "to_auth_mode": {
+          "$ref": "#/definitions/RouteFallbackPayload/properties/from_auth_mode",
+          "default": "unknown"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "quota_exhausted",
+            "money_exhausted",
+            "subscription_exhausted",
+            "rate_limited",
+            "harness_error",
+            "stall",
+            "web_evidence_unsatisfied",
+            "fallback_model",
+            "manual"
+          ],
+          "default": "manual"
+        },
+        "attempt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "error_summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

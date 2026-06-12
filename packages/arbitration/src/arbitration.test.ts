@@ -42,6 +42,18 @@ describe("arbitrate", () => {
     expect(res.decision.apply_recommendation).toBe("apply");
   });
 
+  it("discloses an exact tie (winner by route order, not silently decisive)", () => {
+    const a = candidate("A");
+    const b = candidate("B"); // identical evidence on every axis
+    const res = arbitrate([a, b]);
+    expect(res.ranking[0]?.label).toBe("A"); // route order
+    expect(res.decision.final_checks.some((c) => c.includes("tie: winner chosen by route order"))).toBe(true);
+    // A genuinely better candidate is NOT flagged as a tie.
+    const c = candidate("C", { diffSize: 10 });
+    const res2 = arbitrate([c, candidate("D", { diffSize: 999 })]);
+    expect(res2.decision.final_checks.some((x) => x.includes("tie:"))).toBe(false);
+  });
+
   it("held-out tests are authoritative (anti reward hacking)", () => {
     // X games visible tests (10/10) but fails held-out; Y passes held-out.
     const x = candidate("X", { testsPassed: 10, testsTotal: 10, heldOutPassed: 0, heldOutTotal: 10 });

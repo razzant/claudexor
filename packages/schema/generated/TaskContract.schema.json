@@ -53,14 +53,10 @@
               "type": "string",
               "enum": [
                 "ask",
-                "explore",
-                "agent",
-                "best_of_n",
-                "max_attempts",
-                "until_clean",
                 "plan",
-                "create",
-                "readonly_audit"
+                "audit",
+                "agent",
+                "orchestrate"
               ]
             }
           },
@@ -146,6 +142,54 @@
             "type": "string"
           },
           "default": []
+        },
+        "task_graph": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "$ref": "#/definitions/TaskContract/properties/task_id"
+                      },
+                      "title": {
+                        "type": "string",
+                        "default": ""
+                      },
+                      "depends_on": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/definitions/TaskContract/properties/task_id"
+                        },
+                        "default": []
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "default": []
+                },
+                "order": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/TaskContract/properties/task_id"
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "constraints": {
           "type": "object",
@@ -417,6 +461,10 @@
               "default": true
             },
             "require_final_diff_stable_after_review": {
+              "type": "boolean",
+              "default": true
+            },
+            "require_no_accepted_needs_human_open": {
               "type": "boolean",
               "default": true
             }

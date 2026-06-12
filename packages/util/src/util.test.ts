@@ -26,6 +26,21 @@ describe("util", () => {
     expect(containsSecretLikeToken("ordinary prompt")).toBe(false);
   });
 
+  it("redacts Cursor keys, OpenRouter keys, Bearer tokens and JWTs (v0.9 hygiene)", () => {
+    const cursor = "key_" + "b".repeat(40);
+    const openrouter = "sk-or-v1-" + "c".repeat(40);
+    const jwt = "eyJ" + "a".repeat(20) + "." + "b".repeat(20) + "." + "c".repeat(20);
+    expect(redactSecrets(cursor)).toBe("[redacted]");
+    expect(redactSecrets(openrouter)).toBe("[redacted]");
+    expect(redactSecrets(jwt)).toBe("[redacted]");
+    expect(redactSecrets("Authorization: Bearer " + "d".repeat(40))).toContain("[redacted]");
+    expect(containsSecretLikeToken(cursor)).toBe(true);
+    expect(containsSecretLikeToken(jwt)).toBe(true);
+    // Length-gated: ordinary prose must not be redacted.
+    expect(containsSecretLikeToken("Bearer of good news")).toBe(false);
+    expect(containsSecretLikeToken("the key_ to success")).toBe(false);
+  });
+
   it("rejects unsafe CLAUDEXOR_CONFIG_DIR overrides", () => {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     try {

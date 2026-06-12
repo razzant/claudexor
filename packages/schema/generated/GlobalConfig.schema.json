@@ -71,6 +71,36 @@
                 "profile_only"
               ],
               "default": "mirror_native"
+            },
+            "auth_preference": {
+              "type": "string",
+              "enum": [
+                "subscription",
+                "api_key",
+                "auto"
+              ],
+              "default": "auto"
+            },
+            "fallback": {
+              "type": "object",
+              "properties": {
+                "on_quota_exhaustion": {
+                  "type": "string",
+                  "enum": [
+                    "subscription_to_api",
+                    "harness_to_harness",
+                    "both",
+                    "off"
+                  ],
+                  "default": "both"
+                },
+                "on_money_exhaustion": {
+                  "$ref": "#/definitions/GlobalConfig/properties/routing/properties/fallback/properties/on_quota_exhaustion",
+                  "default": "both"
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
             }
           },
           "additionalProperties": false,
@@ -238,6 +268,10 @@
                   }
                 ],
                 "default": null
+              },
+              "auth_preference": {
+                "$ref": "#/definitions/GlobalConfig/properties/routing/properties/auth_preference",
+                "default": "auto"
               }
             },
             "additionalProperties": false

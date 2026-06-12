@@ -19,14 +19,10 @@
           "type": "string",
           "enum": [
             "ask",
-            "explore",
-            "agent",
-            "best_of_n",
-            "max_attempts",
-            "until_clean",
             "plan",
-            "create",
-            "readonly_audit"
+            "audit",
+            "agent",
+            "orchestrate"
           ]
         },
         "requested_access": {

@@ -92,9 +92,22 @@ export class DaemonServer {
       this.server.once("error", reject);
       this.server.listen(this.opts.socketPath, () => resolve());
     });
+    // Resume any queued jobs re-enqueued from a previous session (see load()).
+    void this.drain();
   }
 
   async stop(): Promise<void> {
+    // Graceful shutdown: abort in-flight runs so the runner cancels their harness
+    // children and settles each job (no orphaned processes / "running" zombies in
+    // jobs.json), then persist and close the listener.
+    for (const controller of this.controllers.values()) {
+      try {
+        controller.abort();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.persist();
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
@@ -239,11 +252,15 @@ export class DaemonServer {
     const saved = readJsonSafe<JobRecord[]>(this.opts.persistPath);
     if (!saved) return;
     for (const rec of saved) {
-      // Only genuinely in-flight states become interrupted on restart;
-      // `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web policy) that the
-      // review queue must keep across daemon restarts.
-      if (rec.state === "running" || rec.state === "queued") rec.state = "interrupted";
+      // A fresh process cannot resume an in-memory RUN, so a `running` job becomes
+      // interrupted (honest). `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web
+      // policy) the review queue must keep across restarts.
+      if (rec.state === "running") rec.state = "interrupted";
       this.records.set(rec.id, rec);
+      // A `queued` job never started; its params are persisted, so RE-ENQUEUE it
+      // on restart (drain() runs after start()) instead of silently dropping
+      // pending work to interrupted.
+      if (rec.state === "queued") this.queue.push(rec.id);
     }
   }
 

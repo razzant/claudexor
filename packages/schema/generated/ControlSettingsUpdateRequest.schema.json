@@ -71,6 +71,26 @@
         "clearMaxUsdPerDay": {
           "type": "boolean"
         },
+        "authPreference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ]
+        },
+        "fallbackOnQuotaExhaustion": {
+          "type": "string",
+          "enum": [
+            "subscription_to_api",
+            "harness_to_harness",
+            "both",
+            "off"
+          ]
+        },
+        "fallbackOnMoneyExhaustion": {
+          "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/fallbackOnQuotaExhaustion"
+        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {
@@ -163,6 +183,9 @@
                   "cached",
                   "live"
                 ]
+              },
+              "authPreference": {
+                "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/authPreference"
               }
             },
             "additionalProperties": false

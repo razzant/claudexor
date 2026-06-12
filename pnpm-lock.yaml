@@ -50,15 +50,6 @@ importers:
 
   packages/acp-server: {}
 
-  packages/adapter-protocol:
-    dependencies:
-      '@claudexor/core':
-        specifier: workspace:*
-        version: link:../core
-      '@claudexor/schema':
-        specifier: workspace:*
-        version: link:../schema
-
   packages/arbitration:
     dependencies:
       '@claudexor/schema':
@@ -360,6 +351,9 @@ importers:
       '@claudexor/gateway':
         specifier: workspace:*
         version: link:../gateway
+      '@claudexor/interview':
+        specifier: workspace:*
+        version: link:../interview
       '@claudexor/policy':
         specifier: workspace:*
         version: link:../policy

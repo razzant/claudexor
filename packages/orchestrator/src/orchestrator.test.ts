@@ -135,8 +135,8 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "best_of_n", harnesses: ["fake-success"], n: 2 });
-    expect(res.mode).toBe("best_of_n");
+    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "agent", harnesses: ["fake-success"], n: 2 });
+    expect(res.mode).toBe("agent");
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.status).toBe("no_op");
     // the winner is always present in the returned candidates (incl. a synthesis candidate)
@@ -149,7 +149,7 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["fake-success"], attempts: 3 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], attempts: 3 });
     expect(res.status).toBe("no_op");
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
@@ -160,7 +160,7 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "until_clean", harnesses: ["fake-fail-tests"] });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", untilClean: true, harnesses: ["fake-fail-tests"] });
     // The identical-repair-prompt loop detector stops the run as exhausted
     // (3rd identical prompt) before the slower stall detector can mark it failed.
     expect(res.status).toBe("exhausted");
@@ -177,16 +177,21 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
 
-  it("stops spawning queued candidates once the budget hard cap is hit (parallel wave finishes)", async () => {
+  it("enforces the budget cap mid-flight: no candidate beyond the wave spawns and the cap abort is evidenced", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.005 });
-    // Candidates run in a bounded parallel wave (cap 4). Each fake spends 0.01
-    // (> 0.005 cap), so the first wave settles into the hard tier and the
-    // queued slots beyond the wave must be skipped, never spawned.
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 6 });
+    // Each fake streams 0.01 usage (> 0.005 cap). With amount-bearing holds the
+    // FIRST usage event already drives the tier hard: in-flight candidates abort
+    // mid-stream (no silent overshoot), pre-start wave slots are skipped, and the
+    // queued slots beyond the parallel wave (a05, a06) are never spawned.
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 6 });
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
-    expect(primary.length).toBe(4);
+    expect(primary.length).toBeGreaterThanOrEqual(1);
+    expect(primary.length).toBeLessThanOrEqual(4);
+    expect(primary.some((c) => c.attemptId === "a05" || c.attemptId === "a06")).toBe(false);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toMatch(/hard cap/);
   });
 
   it("capability-gates candidates: a non-implementing harness is dropped from an implement race", async () => {
@@ -196,7 +201,7 @@ describe("Orchestrator", () => {
       ["fake-success", createFakeHarness("fake-success")],
     ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish", "fake-success"], n: 2 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["raw-ish", "fake-success"], n: 2 });
     // Primary candidates (a01..) must all be the implementing harness; raw-ish is excluded.
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBe(2);
@@ -227,15 +232,39 @@ describe("Orchestrator", () => {
     };
     const registry = new Map<string, HarnessAdapter>([["codex", adapterA], ["claude", adapterB]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["codex", "claude"], primaryHarness: "claude", model: "model-x", n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["codex", "claude"], primaryHarness: "claude", model: "model-x", n: 1 });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(res.candidates[0]?.harnessId).toBe("claude");
     expect(seen[0]?.model).toBe("model-x");
     expect(taskYaml).toContain("portfolio: balanced");
   });
 
-  it("persists frozen spec provenance in the task contract", async () => {
+  it("resolves a frozen SpecPack: provenance AND content (criteria/non-goals/task graph) reach the contract", async () => {
     const repo = await initRepo();
+    const specPath = join(repo, "spec.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        schema_version: 2,
+        id: "spec-123",
+        version: 1,
+        created_at: new Date().toISOString(),
+        intent: { raw: "implement the widget" },
+        summary: "widget work",
+        success_criteria: [{ id: "AC-1", behavior: "widget renders", required: true }],
+        non_goals: ["no redesign"],
+        forbidden_approaches: ["no global state"],
+        decided_tradeoffs: [],
+        constraints: { allowed_paths: [], forbidden_paths: [], protected_paths: [], compatibility: [], style: [] },
+        tests: [],
+        tasks: [
+          { id: "t1", title: "scaffold", depends_on: [] },
+          { id: "t2", title: "wire", depends_on: ["t1"] },
+        ],
+        open_questions: [],
+        frozen: true,
+      }),
+    );
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
     const res = await orch.run({
@@ -245,12 +274,27 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       specId: "spec-123",
       specHash: "sha256:abc",
-      specPath: "/tmp/spec.json",
+      specPath,
     });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("id: spec-123");
     expect(taskYaml).toContain("hash: sha256:abc");
-    expect(taskYaml).toContain("path: /tmp/spec.json");
+    // Spec CONTENT now reaches the contract (the previously-dead pipeline):
+    expect(taskYaml).toContain("widget renders");
+    expect(taskYaml).toContain("no redesign");
+    expect(taskYaml).toContain("no global state");
+    // ...including the topologically-ordered task graph.
+    expect(taskYaml).toContain("task_graph");
+    expect(taskYaml.indexOf("t1")).toBeGreaterThan(-1);
+  });
+
+  it("fails loudly when the spec path cannot be resolved (no silent unspecced contract)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(
+      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], specPath: join(repo, "missing-spec.json") }),
+    ).rejects.toThrow(/failed to resolve frozen SpecPack/);
   });
 
   it("rejects a primary harness outside the selected eligible pool", async () => {
@@ -282,7 +326,7 @@ describe("Orchestrator", () => {
       },
     };
     const orch = new Orchestrator({ registry: new Map([["leaky", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["leaky"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["leaky"], n: 1 });
     // The leaky candidate is refused before any artifact persists; with zero
     // working candidates the run fails with the ROOT CAUSE (no corpse review,
     // no empty final patch pretending to be a work product).
@@ -298,7 +342,7 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["raw-ish"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["raw-ish"], n: 1 });
     expect(res.status).toBe("failed");
     expect(res.summary).toMatch(/perform 'implement'/);
     expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(/perform 'implement'/);
@@ -465,7 +509,7 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "explore", harnesses: ["fake-success"], n: 2 });
+    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "audit", swarm: true, harnesses: ["fake-success"], n: 2 });
     expect(res.status).toBe("success");
     expect(res.candidates).toHaveLength(2);
     expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
@@ -482,13 +526,13 @@ describe("Orchestrator", () => {
 
     // A failing gate must make the candidate red (gates are no longer vacuous).
     const failed = await orch.run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, tests: ["exit 1"],
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, tests: ["exit 1"],
     });
     expect(failed.candidates[0]?.status).toBe("red");
 
     // A passing gate keeps the candidate green.
     const passed = await orch.run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, tests: ["true"],
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, tests: ["true"],
     });
     expect(passed.candidates[0]?.status).toBe("green");
   });
@@ -516,7 +560,7 @@ describe("Orchestrator", () => {
     };
     const registry = new Map<string, HarnessAdapter>([["throwing", throwing]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["throwing"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["throwing"], n: 1 });
     expect(res.status).toBe("failed");
     expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("attempts/a01/attempt.yaml");
@@ -534,7 +578,7 @@ describe("Orchestrator", () => {
       registry,
       reviewerModels: { openai: "o-cheap-model", anthropic: "a-cheap-model" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1 });
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("o-cheap-model");
     expect(reviewYaml).toContain("a-cheap-model");
@@ -577,7 +621,7 @@ describe("Orchestrator", () => {
       reviewerModels: { openai: "o-review", anthropic: "opus" },
       reviewerEfforts: { anthropic: "max" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1 });
     expect(seen).toEqual(
       expect.arrayContaining([
         { id: "rev-openai", model: "o-review", effort: null },
@@ -603,7 +647,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "x",
-      mode: "max_attempts",
+      mode: "agent",
       harnesses: ["fake-success"],
       attempts: 1,
       tests: ["true"],
@@ -679,7 +723,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "change README.md to OK",
-      mode: "best_of_n",
+      mode: "agent",
       harnesses: ["writer"],
       n: 1,
       tests: ["grep -qx OK README.md"],
@@ -693,7 +737,7 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["realish", realLikeAdapter("realish")]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", n: 2 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", n: 2 });
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.candidates.every((c) => c.harnessId === "realish")).toBe(true);
   });
@@ -817,7 +861,7 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "x",
-      mode: "best_of_n",
+      mode: "agent",
       harnesses: ["fake-success"],
       n: 1,
       onHarnessEvent: () => {
@@ -835,7 +879,7 @@ describe("Orchestrator", () => {
     ac.abort();
     const plan = await orch.run({ repoRoot: repo, prompt: "x", mode: "plan", harnesses: ["fake-success"], signal: ac.signal });
     expect(plan.status).toBe("cancelled");
-    const race = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 2, signal: ac.signal });
+    const race = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 2, signal: ac.signal });
     expect(race.status).toBe("cancelled");
   });
 
@@ -856,7 +900,7 @@ describe("Orchestrator", () => {
       const res = await orch.run({
         repoRoot: dir,
         prompt: "x",
-        mode: "max_attempts",
+        mode: "agent",
         harnesses: ["fake-success"],
         attempts: 2,
         inPlace: true,
@@ -881,7 +925,7 @@ describe("Orchestrator", () => {
       const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
       const orch = new Orchestrator({ registry, reviewers: reviewers() });
       await expect(
-        orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 1, access: "full" }),
+        orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, access: "full" }),
       ).rejects.toThrow(/allow_full_access/);
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -921,7 +965,7 @@ describe("Orchestrator", () => {
       // No explicit --max-usd: the configured default cap must bind (each fake
       // candidate costs 0.01 > 0.005, so the wave settles into the hard tier
       // and queued slots are denied — same shape as the explicit-cap test).
-      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["fake-success"], n: 6 });
+      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 6 });
       const contract = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
       expect(contract).toContain("max_usd: 0.005");
       const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
@@ -956,7 +1000,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
   it("stamps a strictly monotonic seq on every run event", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
-    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1 });
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1 });
     const events = readRunEvents(res.runDir);
     expect(events.length).toBeGreaterThan(3);
     for (const [idx, ev] of events.entries()) {
@@ -974,10 +1018,10 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     ];
     const askRegistry = new Map<string, HarnessAdapter>([["asker", askAdapter("asker", answer)]]);
 
-    const race = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1 });
+    const race = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1 });
     expectOutputReadyBeforeTerminal(race.runDir);
 
-    const converge = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "max_attempts", harnesses: ["impl"], attempts: 1 });
+    const converge = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], attempts: 1 });
     expectOutputReadyBeforeTerminal(converge.runDir);
 
     const ask = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({ repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["asker"] });
@@ -1003,7 +1047,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       },
     };
     const res = await new Orchestrator({ registry: new Map([["crasher", crashing]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["crasher"], n: 2,
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["crasher"], n: 2,
     });
     expect(res.status).toBe("failed");
     expect(res.summary).toContain("adapter exploded");
@@ -1026,7 +1070,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     writeFileSync(join(dir, "notes.txt"), "pre-existing file\n");
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
     const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: dir, prompt: "x", mode: "best_of_n", harnesses: ["impl"], n: 1,
+      repoRoot: dir, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1,
     });
     expect(existsSync(join(dir, ".git"))).toBe(true);
     const gitignore = readFileSync(join(dir, ".gitignore"), "utf8");
@@ -1075,7 +1119,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       },
     };
     const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
       onInteraction: async (ctx) => ({
         interaction_id: ctx.request.interaction_id,
         answers: [{ question_id: "q1", selected_labels: ["vanilla"], free_text: null }],
@@ -1116,7 +1160,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       },
     };
     const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
       interactionTimeoutMs: 50,
       onInteraction: () => new Promise(() => {}), // never answers
     });
@@ -1156,7 +1200,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     const controller = new AbortController();
     const startedAt = Date.now();
     const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "best_of_n", harnesses: ["asker"], n: 1,
+      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
       interactionTimeoutMs: 60_000, // the wait must NOT sit this out
       signal: controller.signal,
       // Abort only once the question is actually parked (a wall-clock timer

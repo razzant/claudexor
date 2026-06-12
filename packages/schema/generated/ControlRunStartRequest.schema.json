@@ -12,14 +12,10 @@
           "type": "string",
           "enum": [
             "ask",
-            "explore",
-            "agent",
-            "best_of_n",
-            "max_attempts",
-            "until_clean",
             "plan",
-            "create",
-            "readonly_audit"
+            "audit",
+            "agent",
+            "orchestrate"
           ],
           "default": "agent"
         },
@@ -162,6 +158,15 @@
             }
           ]
         },
+        "untilClean": {
+          "type": "boolean"
+        },
+        "swarm": {
+          "type": "boolean"
+        },
+        "create": {
+          "type": "boolean"
+        },
         "maxUsd": {
           "anyOf": [
             {
@@ -213,6 +218,27 @@
         "specHash": {
           "type": "string",
           "minLength": 1
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parentRunId": {
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+        },
+        "sessionId": {
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+        },
+        "rehost": {
+          "type": "boolean"
+        },
+        "authPreference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ]
         }
       },
       "additionalProperties": false

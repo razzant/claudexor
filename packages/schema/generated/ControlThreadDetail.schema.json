@@ -1,0 +1,269 @@
+{
+  "$ref": "#/definitions/ControlThreadDetail",
+  "definitions": {
+    "ControlThreadDetail": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "repoRoot": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "ask",
+                "plan",
+                "audit",
+                "agent",
+                "orchestrate"
+              ]
+            },
+            "authPreference": {
+              "type": "string",
+              "enum": [
+                "subscription",
+                "api_key",
+                "auto"
+              ],
+              "default": "auto"
+            },
+            "primaryHarness": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "portfolio": {
+              "type": "string",
+              "enum": [
+                "daily-rich",
+                "balanced",
+                "cheapest",
+                "strongest",
+                "burn",
+                "subscription-first",
+                "api-overflow",
+                "conserve-claude",
+                "conserve-codex"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "active",
+                "blocked",
+                "closed"
+              ],
+              "default": "active"
+            },
+            "runIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "default": []
+            },
+            "headRunId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "needsHuman": {
+              "type": "boolean",
+              "default": false
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "createdAt",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "threadId": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "harnessId": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "providerFamily": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "anthropic",
+                  "google",
+                  "cursor",
+                  "opencode",
+                  "xai",
+                  "local",
+                  "unknown"
+                ],
+                "default": "unknown"
+              },
+              "nativeSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "observedModel": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "authMode": {
+                "type": "string",
+                "enum": [
+                  "local_session",
+                  "api_key",
+                  "unknown"
+                ],
+                "default": "unknown"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "live",
+                  "stale",
+                  "rebound"
+                ],
+                "default": "live"
+              },
+              "turnCount": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              }
+            },
+            "required": [
+              "id",
+              "threadId",
+              "harnessId"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "threadId": {
+                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "parentRunId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "sessionId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "initial",
+                  "followup",
+                  "decision",
+                  "orchestrate"
+                ],
+                "default": "followup"
+              },
+              "prompt": {
+                "type": "string",
+                "default": ""
+              },
+              "state": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "threadId",
+              "createdAt"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccessProfile, ExternalContextPolicy, Id, Intent, ProviderFamily } from "./primitives.js";
+import { AccessProfile, AuthPreference, ExternalContextPolicy, Id, Intent, ProviderFamily } from "./primitives.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z.enum(["exact", "native", "observed", "manual", "unknown"]);
@@ -64,6 +64,12 @@ export const HarnessCapabilities = z.object({
    * bidirectional stream-json control protocol today; honest false elsewhere.
    */
   interactive: z.boolean().default(false),
+  /**
+   * The harness can play the autonomous `orchestrate` brain intent (A3): plan
+   * multi-harness work over the typed tool belt. NOT a privileged role — routed
+   * like reviewers via doctor + capability + quota headroom.
+   */
+  orchestrate: z.boolean().default(false),
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
 });
@@ -221,6 +227,16 @@ export const HarnessRunSpec = z.object({
   effort_hint: EffortHint.nullable().default(null),
   max_usd: z.number().nullable().default(null),
   max_turns: z.number().int().nullable().default(null),
+  /**
+   * Which auth route the attempt should use. `auto` = subscription-first with
+   * api_key fallback; adapters seed native session vs inject the key accordingly.
+   */
+  auth_preference: AuthPreference.default("auto"),
+  /**
+   * Native CLI session id to resume into (codex `exec resume`, claude `--resume`,
+   * cursor `agent --resume`, opencode `run --session`). Null starts a fresh session.
+   */
+  resume_session_id: z.string().nullable().default(null),
   env: z.record(z.string(), z.string()).default({}),
   output_schema: z.unknown().optional(),
   extra: z.record(z.string(), z.unknown()).default({}),
@@ -331,6 +347,18 @@ export const HarnessEvent = z.object({
     })
     .optional(),
   observed_model: z.string().optional(),
+  /**
+   * Typed rate-limit / quota signal. Adapters set this in their parse layer when
+   * the native CLI reports a 429 / quota / overload (adapter knowledge is allowed);
+   * the budget layer projects it WITHOUT regex over model/CLI prose. Replaces the
+   * old string-matching governance in budget/observe.ts.
+   */
+  rate_limit: z
+    .object({
+      resets_at: z.string().nullable().default(null),
+      retry_delay_ms: z.number().int().nonnegative().nullable().default(null),
+    })
+    .optional(),
   error: z.string().optional(),
   payload: z.record(z.string(), z.unknown()).optional(),
 });

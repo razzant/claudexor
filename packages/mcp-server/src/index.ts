@@ -106,26 +106,32 @@ export class McpServer {
 
 export type RunnerFn = (params: any) => Promise<unknown>;
 
-/** Default Claudexor tool surface for MCP. */
+/** Default Claudexor tool surface for MCP (v0.9: 5 canonical modes + strategy flags). */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   const promptSchema = {
     type: "object",
-    properties: { prompt: { type: "string" }, harness: { type: "string" }, n: { type: "number" } },
+    properties: {
+      prompt: { type: "string" },
+      harness: { type: "string" },
+      n: { type: "number" },
+      repoPath: { type: "string", description: "Absolute path of the target project (defaults to the server cwd)." },
+    },
     required: ["prompt"],
   };
-  const mk = (name: string, description: string, mode: string): McpTool => ({
+  const mk = (name: string, description: string, params: Record<string, unknown>): McpTool => ({
     name,
     description,
     inputSchema: promptSchema,
-    handler: async (args) => JSON.stringify(await runner({ ...args, mode }), null, 2),
+    handler: async (args) => JSON.stringify(await runner({ ...args, ...params }), null, 2),
   });
   return [
-    mk("claudexor_ask", "Answer a question through a read-only selected harness route.", "ask"),
-    mk("claudexor_explore", "Run a bounded read-only exploration and verified synthesis.", "explore"),
-    mk("claudexor_run", "Run a task in Agent mode and return the WorkProduct summary.", "agent"),
-    mk("claudexor_race", "Best-of-N tournament with cross-family review.", "best_of_n"),
-    mk("claudexor_plan", "Produce a read-only plan.", "plan"),
-    mk("claudexor_create", "Create a new project from scratch.", "create"),
+    mk("claudexor_ask", "Answer a question through a read-only selected harness route.", { mode: "ask" }),
+    mk("claudexor_explore", "Run a bounded read-only exploration and verified synthesis.", { mode: "audit", swarm: true }),
+    mk("claudexor_run", "Run a task in Agent mode and return the WorkProduct summary.", { mode: "agent" }),
+    mk("claudexor_race", "Best-of-N race (agent --n) with cross-family review.", { mode: "agent", race: true }),
+    mk("claudexor_plan", "Produce a read-only plan.", { mode: "plan" }),
+    mk("claudexor_create", "Create a new project from scratch.", { mode: "agent", create: true }),
+    mk("claudexor_orchestrate", "Brain: produce a typed orchestration plan over the tool belt.", { mode: "orchestrate" }),
     {
       name: "claudexor_status",
       description: "Return Claudexor/runtime status.",

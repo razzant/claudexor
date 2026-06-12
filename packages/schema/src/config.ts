@@ -1,11 +1,24 @@
 import { z } from "zod";
-import { AccessProfile, ExternalContextPolicy } from "./primitives.js";
+import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { DeliveryPolicy } from "./workproduct.js";
 import { Portfolio } from "./budget.js";
 
 export const RoutingPolicy = z.enum(["auto", "primary", "portfolio"]);
 export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
+
+/** What to do when the preferred auth route's quota/money is exhausted. */
+export const FallbackMode = z.enum(["subscription_to_api", "harness_to_harness", "both", "off"]);
+export type FallbackMode = z.infer<typeof FallbackMode>;
+
+/** Auto-fallback policy (every harness supports both subscription and api_key). */
+export const FallbackConfig = z
+  .object({
+    on_quota_exhaustion: FallbackMode.default("both"),
+    on_money_exhaustion: FallbackMode.default("both"),
+  })
+  .default({});
+export type FallbackConfig = z.infer<typeof FallbackConfig>;
 
 export const SecretRef = z.object({
   ref: z.string().min(1),
@@ -82,6 +95,10 @@ export const GlobalConfig = z.object({
       eligible_harnesses: z.array(z.string()).default([]),
       default_model: z.string().nullable().default(null),
       env_inheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
+      /** Default auth route preference (subscription/api_key/auto). */
+      auth_preference: AuthPreference.default("auto"),
+      /** Auto-fallback policy on quota/money exhaustion (never silent). */
+      fallback: FallbackConfig,
     })
     .default({}),
   budget: z
@@ -106,6 +123,8 @@ export const GlobalConfig = z.object({
         web: ExternalContextPolicy.default("auto"),
         native_options: z.record(z.string(), z.unknown()).default({}),
         auth_ref: SecretRef.nullable().default(null),
+        /** Per-harness auth route preference; overrides routing.auth_preference. */
+        auth_preference: AuthPreference.default("auto"),
       }),
     )
     .default({}),

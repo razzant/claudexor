@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
@@ -44,6 +44,53 @@ export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = t
   } catch {
     /* best-effort: codex will surface an auth error if this did not take */
   }
+}
+
+/** The user's real codex home (native ChatGPT/subscription session lives here). */
+export function defaultNativeCodexHome(): string {
+  const override = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+  if (override && override.trim()) return override;
+  return join(homedir(), ".codex");
+}
+
+/**
+ * Seed the user's NATIVE codex session (`auth.json`, ChatGPT/subscription mode)
+ * into an isolated CODEX_HOME so a Max/Pro subscriber with NO API key can run
+ * inside a Claudexor envelope. This is the "subscription-first must actually
+ * work" fix: previously the scoped empty CODEX_HOME hid the native session and
+ * the run failed demanding an API key.
+ *
+ * Copies ONLY if the scoped auth is absent and a native `auth.json` exists; never
+ * overwrites (codex refreshes the token in place). Returns true when scoped auth
+ * is present afterwards. No-op when not isolated or no native session exists.
+ */
+export function ensureCodexNativeAuth(
+  env?: Record<string, string>,
+  nativeHome: string = defaultNativeCodexHome(),
+): boolean {
+  const home = env?.["CODEX_HOME"];
+  if (!home) return false;
+  const dest = join(home, "auth.json");
+  if (existsSync(dest)) return true; // already seeded (api or native)
+  const src = join(nativeHome, "auth.json");
+  if (!existsSync(src)) return false;
+  try {
+    mkdirSync(home, { recursive: true });
+    copyFileSync(src, dest);
+    try {
+      chmodSync(dest, 0o600);
+    } catch {
+      /* best-effort: perms */
+    }
+    return existsSync(dest);
+  } catch {
+    return false;
+  }
+}
+
+/** True when a native codex session exists and can be seeded into an envelope. */
+function nativeCodexSeedable(): boolean {
+  return existsSync(join(defaultNativeCodexHome(), "auth.json"));
 }
 
 function sandboxArgs(access: AccessProfile): string[] {
@@ -132,8 +179,17 @@ function redactCodexDoctorDetail(text: string): string {
   return redactSecrets(text).slice(0, 500);
 }
 
-export function codexExecArgs(spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt">): string[] {
-  const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
+export function codexExecArgs(
+  spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt"> & {
+    resume_session_id?: string | null;
+  },
+): string[] {
+  // Resume a native codex session as a follow-up turn (`codex exec resume <id>`),
+  // so a thread's later moves continue the same conversation instead of restarting.
+  const head = spec.resume_session_id
+    ? ["exec", "resume", spec.resume_session_id, "--json"]
+    : ["exec", "--json"];
+  const args = [...head, ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
@@ -196,6 +252,7 @@ export function createCodexAdapter(): HarnessAdapter {
           verify: true,
           compare: true,
           synthesize: true,
+          orchestrate: true,
           shell: true,
           read_files: true,
           edit_files: true,
@@ -203,7 +260,7 @@ export function createCodexAdapter(): HarnessAdapter {
           structured_events: true,
           structured_output: true,
           json_schema_output: false,
-          resume: false,
+          resume: true,
           cancel: true,
           mcp: true,
           plugins: true,
@@ -214,9 +271,9 @@ export function createCodexAdapter(): HarnessAdapter {
         },
         capability_profile: {
           execution_surfaces: [
-            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
+            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_followup: true },
           ],
-          session: { resume_latest: false, resume_by_id: false },
+          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
           output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
           auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
@@ -239,25 +296,30 @@ export function createCodexAdapter(): HarnessAdapter {
       }
       const apiKey = hasApiKey();
       const authed = await loggedIn();
-      const smoke = apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: "no API key fallback available" };
-      const ok = smoke.ok;
-      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"];
+      // Native session readiness is FIRST-CLASS: a logged-in subscription whose
+      // auth.json we can seed into the envelope is `ok` with no paid API smoke.
+      // (Bible: a stored key STRING alone is still not proof -> api-key route
+      // keeps the isolated smoke.) This is what makes subscription-first real.
+      const nativeReady = authed && nativeCodexSeedable();
+      const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
+      const ok = nativeReady || smoke.ok;
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit", "orchestrate"];
       return ConformanceReportSchema.parse({
         harness_id: "codex",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
-          { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available" : "isolated Claudexor envelopes require an openai key fallback" },
-          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : "fail", detail: smoke.detail },
+          { id: "native_session", status: nativeReady ? "pass" : "fail", detail: nativeReady ? "native codex session seedable into envelope" : authed ? "logged in but ~/.codex/auth.json not found" : "not logged in (run `codex login`)" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available (api-key fallback)" : "no openai key fallback" },
+          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : nativeReady ? "skip" : apiKey ? "fail" : "skip", detail: smoke.detail },
         ],
         enabled_intents: ok ? allIntents : [],
         disabled_intents: ok ? [] : allIntents,
         reasons: ok
           ? []
-          : authed || apiKey
+          : apiKey
             ? [`isolated Codex API-key smoke failed: ${smoke.detail}`]
-            : ["not authenticated (run `codex login` for native use or store openai API key fallback for Claudexor runs)"],
+            : ["not authenticated (run `codex login` for native/subscription use, or store an openai API key fallback)"],
       });
     },
 
@@ -274,37 +336,52 @@ export function createCodexAdapter(): HarnessAdapter {
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const nativeAuthed = await loggedIn();
   const key = codexApiKey();
-  const scopedHomeNeedsAuth = Boolean(spec.env?.["CODEX_HOME"]) && !hasScopedCodexAuth(spec.env);
-  if (scopedHomeNeedsAuth && !key) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: "isolated CODEX_HOME requires a stored OpenAI API key fallback; native codex login cannot be reused inside this envelope",
+  const preferApi = spec.auth_preference === "api_key";
+  const scopedHome = Boolean(spec.env?.["CODEX_HOME"]);
+  const scopedHomeNeedsAuth = scopedHome && !hasScopedCodexAuth(spec.env);
+
+  // Seed credentials into the scoped CODEX_HOME. BOTH auth routes are supported
+  // with auto-fallback: `subscription` seeds the native session (auth.json copied
+  // from ~/.codex — the fix that makes subscription-first actually work inside an
+  // envelope); `api_key` seeds the OpenAI key. Order follows auth_preference, and
+  // each falls back to the other so a run is not stranded when one source is gone.
+  if (scopedHomeNeedsAuth) {
+    const trySub = (): boolean => (nativeAuthed ? ensureCodexNativeAuth(spec.env as Record<string, string>) : false);
+    const tryKey = (): boolean => {
+      if (!key) return false;
+      ensureCodexApiAuth(spec.env, true);
+      return hasScopedCodexAuth(spec.env);
     };
-    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-    return;
+    const seeded = preferApi ? tryKey() || trySub() : trySub() || tryKey();
+    if (!seeded) {
+      yield {
+        type: "error",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        error:
+          "no usable codex auth for this envelope: native session not seedable (run `codex login`) and no OpenAI API key fallback available",
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
   }
+
+  // Codex authenticates from the seeded auth.json (never an env key), so scrub
+  // EVERY provider secret + base-URL redirect from the child — including other
+  // providers' keys (the cross-provider leak fix), via the single core table.
   const env: Record<string, string | null | undefined> = {
     ...spec.env,
-    OPENAI_API_KEY: null,
-    CODEX_API_KEY: null,
-    CLAUDEXOR_CODEX_API_KEY: null,
-    // An inherited base-URL override could redirect traffic that carries seeded credentials.
-    OPENAI_BASE_URL: null,
+    ...providerScrubEnv(),
   };
 
-  // Key-only auth parity with claude: a non-envelope run (no scoped CODEX_HOME)
-  // without native login would otherwise have no credentials at all, because
-  // codex ignores OPENAI_API_KEY without an auth.json. Seed a private temporary
-  // CODEX_HOME instead of touching the user's real ~/.codex.
+  // Non-envelope run (no scoped CODEX_HOME) without native login: seed a private
+  // temporary CODEX_HOME with the api key (codex ignores OPENAI_API_KEY without an
+  // auth.json) instead of touching the user's real ~/.codex.
   let tempCodexHome: string | null = null;
-  if (!spec.env?.["CODEX_HOME"] && !nativeAuthed && key) {
+  if (!scopedHome && !nativeAuthed && key) {
     tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
     env["CODEX_HOME"] = tempCodexHome;
     ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
-  } else {
-    ensureCodexApiAuth(spec.env, !nativeAuthed || scopedHomeNeedsAuth);
   }
 
   const args = codexExecArgs(spec);

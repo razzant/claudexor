@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
@@ -63,6 +64,59 @@ async function authStatusOk(): Promise<boolean> {
 
 function anthropicApiKey(): string | null {
   return process.env.CLAUDEXOR_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
+}
+
+/** A stored/long-lived Claude Code OAuth (`claude setup-token`) for headless subscription auth. */
+function claudeOAuthToken(): string | null {
+  if (process.env.CLAUDEXOR_DISABLE_STORED_SECRETS === "1") return process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
+  return resolveSecret("claude_oauth") || process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
+}
+
+/** The user's real Claude config dir (native subscription session lives here). */
+export function defaultNativeClaudeConfigDir(): string {
+  const override = process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
+  if (override && override.trim()) return override;
+  return join(homedir(), ".claude");
+}
+
+/**
+ * Seed the user's NATIVE Claude session (`.credentials.json`, subscription OAuth)
+ * into an isolated CLAUDE_CONFIG_DIR so a Pro/Max subscriber with NO API key can
+ * run inside a Claudexor envelope. Copies only if scoped creds are absent and a
+ * native credentials file exists; never overwrites. Returns true when scoped
+ * creds are present afterwards.
+ *
+ * Caveats encoded by the caller: `ANTHROPIC_API_KEY` takes precedence over the
+ * OAuth session, and `--bare` disables it — so the subscription route must set
+ * neither.
+ */
+export function ensureClaudeNativeAuth(
+  env?: Record<string, string>,
+  nativeDir: string = defaultNativeClaudeConfigDir(),
+): boolean {
+  const dir = env?.["CLAUDE_CONFIG_DIR"];
+  if (!dir) return false;
+  const dest = join(dir, ".credentials.json");
+  if (existsSync(dest)) return true;
+  const src = join(nativeDir, ".credentials.json");
+  if (!existsSync(src)) return false;
+  try {
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(src, dest);
+    try {
+      chmodSync(dest, 0o600);
+    } catch {
+      /* best-effort perms */
+    }
+    return existsSync(dest);
+  } catch {
+    return false;
+  }
+}
+
+/** True when a native Claude session exists and can be seeded into an envelope. */
+function nativeClaudeSeedable(): boolean {
+  return existsSync(join(defaultNativeClaudeConfigDir(), ".credentials.json"));
 }
 
 async function smokeIsolatedApiKey(): Promise<{ ok: boolean; detail: string }> {
@@ -135,7 +189,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           structured_events: true,
           structured_output: true,
           json_schema_output: false,
-          resume: false,
+          resume: true,
           cancel: true,
           mcp: true,
           plugins: true,
@@ -144,15 +198,16 @@ export function createClaudeAdapter(): HarnessAdapter {
           max_turns: true,
           tool_lists: true,
           interactive: true,
+          orchestrate: true,
           quota_signal: "observed",
           usage_signal: "exact",
         },
         capability_profile: {
           execution_surfaces: [
             { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
-            { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true },
+            { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true, supports_followup: true },
           ],
-          session: { resume_latest: false, resume_by_id: false },
+          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
           output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
           auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
@@ -175,25 +230,29 @@ export function createClaudeAdapter(): HarnessAdapter {
       }
       const apiKey = anthropicApiKey() !== null;
       const authed = await authStatusOk();
-      const smoke = apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: "no API key fallback available" };
-      const ok = smoke.ok;
-      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit"];
+      // Native subscription readiness is FIRST-CLASS: a logged-in session whose
+      // .credentials.json we can seed into the envelope is `ok` with no paid API
+      // smoke. A stored OAuth token (claude setup-token) is also native-ready.
+      const nativeReady = (authed && nativeClaudeSeedable()) || claudeOAuthToken() !== null;
+      const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
+      const ok = nativeReady || smoke.ok;
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit", "orchestrate"];
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
-          { id: "auth", status: authed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available" : "isolated Claudexor envelopes require an anthropic key fallback" },
-          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : "fail", detail: smoke.detail },
+          { id: "native_session", status: nativeReady ? "pass" : "fail", detail: nativeReady ? "native Claude session seedable into envelope" : authed ? "logged in but ~/.claude/.credentials.json not found" : "not logged in (run `claude /login` or store a setup-token)" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available (api-key fallback)" : "no anthropic key fallback" },
+          { id: "isolated_api_smoke", status: smoke.ok ? "pass" : nativeReady ? "skip" : apiKey ? "fail" : "skip", detail: smoke.detail },
         ],
         enabled_intents: ok ? allIntents : [],
         disabled_intents: ok ? [] : allIntents,
         reasons: ok
           ? []
-          : authed || apiKey
+          : apiKey
             ? [`isolated Claude API-key smoke failed: ${smoke.detail}`]
-            : ["not authenticated (run `claude /login` for native use or store anthropic API key fallback for Claudexor runs)"],
+            : ["not authenticated (run `claude /login` for native/subscription use, or store an anthropic API key fallback)"],
       });
     },
 
@@ -210,7 +269,7 @@ export function createClaudeAdapter(): HarnessAdapter {
 /** Claude's native names for web-permissioned tools. This knowledge lives ONLY in the adapter. */
 const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
 
-export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false): string[] {
+export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, suppressBare = false): string[] {
   // Interactive sessions deliver the prompt as a stream-json user message on
   // stdin (the control protocol's transport); one-shot runs keep the prompt arg.
   // `--permission-prompt-tool stdio` is the live-verified switch that routes
@@ -222,8 +281,12 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false): st
   if (spec.model_hint) args.push("--model", spec.model_hint);
   if (spec.effort_hint) args.push("--effort", spec.effort_hint);
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
+  // Resume a native Claude session as a follow-up turn of the same conversation.
+  if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
   args.push(...toolPermissionArgs(spec));
-  if (spec.extra?.["bare"] === true) args.push("--bare");
+  // `--bare` disables OAuth/keychain auth, so it is mutually exclusive with the
+  // subscription (native session) route — suppress it there or the run 401s.
+  if (spec.extra?.["bare"] === true && !suppressBare) args.push("--bare");
   return args;
 }
 
@@ -257,23 +320,59 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
 async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const channel: InteractionChannel | undefined = interactionChannelFromSpec(spec);
   const interactive = channel !== undefined;
-  const args = claudeArgsForSpec(spec, interactive);
   const nativeAuthed = await authStatusOk();
   const key = anthropicApiKey();
-  const scopedConfigNeedsAuth = Boolean(spec.env?.["CLAUDE_CONFIG_DIR"]);
-  if (scopedConfigNeedsAuth && !key) {
+  const oauthToken = claudeOAuthToken();
+  const preferApi = spec.auth_preference === "api_key";
+  const scopedConfig = Boolean(spec.env?.["CLAUDE_CONFIG_DIR"]);
+
+  // Choose the auth route (BOTH supported, auto-fallback). Subscription seeds the
+  // native session (credentials copy) or uses a stored OAuth token; api_key sets
+  // ANTHROPIC_API_KEY. ANTHROPIC_API_KEY overrides OAuth and --bare disables it,
+  // so the subscription route sets neither (and suppresses --bare).
+  let seededCreds = false;
+  const trySub = (): boolean => {
+    if (scopedConfig && nativeAuthed && ensureClaudeNativeAuth(spec.env as Record<string, string>)) {
+      seededCreds = true;
+      return true;
+    }
+    return (!scopedConfig && nativeAuthed) || oauthToken !== null;
+  };
+  const canKey = key !== null;
+  const route: "subscription" | "api_key" | null = preferApi
+    ? canKey
+      ? "api_key"
+      : trySub()
+        ? "subscription"
+        : null
+    : trySub()
+      ? "subscription"
+      : canKey
+        ? "api_key"
+        : null;
+
+  if (route === null) {
     yield {
       type: "error",
       session_id: spec.session_id,
       ts: nowIso(),
-      error: "isolated CLAUDE_CONFIG_DIR requires a stored Anthropic API key fallback; native Claude login cannot be reused inside this envelope",
+      error:
+        "no usable claude auth for this envelope: native session not seedable (run `claude /login` or store a setup-token) and no Anthropic API key fallback available",
     };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
-  const env: Record<string, string | null | undefined> = { ...spec.env };
-  for (const name of CLAUDE_PROVIDER_ENV_DENYLIST) env[name] = null;
-  if ((!nativeAuthed || scopedConfigNeedsAuth) && key) env.ANTHROPIC_API_KEY = key;
+
+  const useSubscription = route === "subscription";
+  const args = claudeArgsForSpec(spec, interactive, useSubscription);
+  // Scrub EVERY provider secret (incl. OpenAI/others — the cross-provider leak
+  // fix) via the single core table, then re-add only the var this route needs.
+  const env: Record<string, string | null | undefined> = { ...spec.env, ...providerScrubEnv() };
+  if (route === "api_key" && key) {
+    env.ANTHROPIC_API_KEY = key;
+  } else if (route === "subscription" && !seededCreds && oauthToken) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+  }
 
   yield* runCliHarness({
     bin: BIN,

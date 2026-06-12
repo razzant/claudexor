@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { Id } from "./primitives.js";
+import { FallbackReason, Id } from "./primitives.js";
+import { AuthMode } from "./budget.js";
 
 export const RunEventType = z.enum([
   "run.created",
@@ -15,6 +16,11 @@ export const RunEventType = z.enum([
   "route.fallback.started",
   "route.fallback.completed",
   "route.fallback.exhausted",
+  /** A subscription->API (or harness->harness) auth switch driven by a typed
+   * quota/money signal. Distinct from a plain harness rotation; never silent. */
+  "route.fallback.auth_switched",
+  /** A thread re-hosted onto a different harness; payload is SessionReboundLineage. */
+  "session.rebound",
   "interaction.requested",
   "interaction.answered",
   "interaction.timeout",
@@ -39,6 +45,23 @@ export const RunEventType = z.enum([
   "run.failed",
 ]);
 export type RunEventType = z.infer<typeof RunEventType>;
+
+/**
+ * Typed payload for `route.fallback.*` events. The orchestrator validates this
+ * before stamping it onto the (otherwise free-form) RunEvent.payload, so a
+ * fallback/auth-switch is always evidence-backed and surfaced as a warning,
+ * never an invisible info line.
+ */
+export const RouteFallbackPayload = z.object({
+  from_harness: z.string().nullable().default(null),
+  to_harness: z.string().nullable().default(null),
+  from_auth_mode: AuthMode.default("unknown"),
+  to_auth_mode: AuthMode.default("unknown"),
+  reason: FallbackReason.default("manual"),
+  attempt_id: z.string().nullable().default(null),
+  error_summary: z.string().nullable().default(null),
+});
+export type RouteFallbackPayload = z.infer<typeof RouteFallbackPayload>;
 
 /** Append-only event record (one JSONL line). */
 export const RunEvent = z.object({

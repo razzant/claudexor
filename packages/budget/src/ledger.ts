@@ -22,6 +22,12 @@ export interface ReserveInput {
   modelHint?: string | null;
   maxUsd?: number | null;
   reason?: string[];
+  /**
+   * Estimated USD the unit may spend, held against the cap until settled. Holds
+   * make concurrent in-flight units visible to `tier()` so a parallel race wave
+   * cannot blow past `max_usd` between settlements.
+   */
+  estimateUsd?: number;
 }
 
 export interface ReserveResult {
@@ -43,6 +49,8 @@ export function promptFingerprint(prompt: string): string {
  */
 export class BudgetLedger {
   private readonly leases = new Map<string, BudgetLease>();
+  /** Outstanding USD holds for reserved-but-unsettled leases (amount-bearing). */
+  private readonly holds = new Map<string, number>();
   private readonly observations: BudgetObservation[] = [];
   private readonly promptCounts = new Map<string, number>();
   private spendUsd = 0;
@@ -58,11 +66,19 @@ export class BudgetLedger {
     return new BudgetLedger(limits, this.thresholds, this);
   }
 
+  private outstandingHolds(): number {
+    let sum = 0;
+    for (const v of this.holds.values()) sum += v;
+    return sum;
+  }
+
   tier(): CircuitTier {
     const cap = this.limits.maxUsd ?? null;
     const localTier = ((): CircuitTier => {
       if (cap === null || cap <= 0) return "ok";
-      const ratio = this.spendUsd / cap;
+      // Settled spend + outstanding in-flight holds: a parallel wave of
+      // streaming candidates counts against the cap BEFORE settlement.
+      const ratio = (this.spendUsd + this.outstandingHolds()) / cap;
       if (ratio >= this.thresholds.hard) return "hard";
       if (ratio >= this.thresholds.downgrade) return "downgrade";
       if (ratio >= this.thresholds.soft) return "soft";
@@ -90,12 +106,47 @@ export class BudgetLedger {
       state: "reserved",
     });
     this.leases.set(lease.lease_id, lease);
+    if (typeof input.estimateUsd === "number" && input.estimateUsd > 0) {
+      this.setHold(lease.lease_id, input.estimateUsd);
+    }
     return { granted: true, tier, lease };
+  }
+
+  /**
+   * Raise a lease's hold to the cost streamed so far (never lowers it). Call from
+   * the usage-event stream so `tier()` reflects in-flight spend mid-attempt.
+   */
+  updateHold(leaseId: string, streamedUsd: number): void {
+    if (!this.leases.has(leaseId)) return;
+    const current = this.holds.get(leaseId) ?? 0;
+    if (streamedUsd > current) this.setHold(leaseId, streamedUsd);
+  }
+
+  private setHold(leaseId: string, usd: number): void {
+    const prev = this.holds.get(leaseId) ?? 0;
+    this.holds.set(leaseId, usd);
+    this.parent?.adjustRollupHold(leaseId, usd - prev);
+  }
+
+  private adjustRollupHold(leaseId: string, deltaUsd: number): void {
+    const key = `child:${leaseId}`;
+    const prev = this.holds.get(key) ?? 0;
+    const next = Math.max(0, prev + deltaUsd);
+    if (next === 0) this.holds.delete(key);
+    else this.holds.set(key, next);
+    this.parent?.adjustRollupHold(leaseId, deltaUsd);
+  }
+
+  private clearHold(leaseId: string): void {
+    const held = this.holds.get(leaseId) ?? 0;
+    this.holds.delete(leaseId);
+    if (held > 0) this.parent?.adjustRollupHold(leaseId, -held);
   }
 
   settle(leaseId: string, actualUsd: number): void {
     const lease = this.leases.get(leaseId);
     if (lease) lease.state = "settled";
+    this.clearHold(leaseId);
     this.spendUsd += actualUsd;
     this.parent?.addRollupSpend(actualUsd);
   }
@@ -103,6 +154,7 @@ export class BudgetLedger {
   cancel(leaseId: string): void {
     const lease = this.leases.get(leaseId);
     if (lease) lease.state = "cancelled";
+    this.clearHold(leaseId);
   }
 
   private addRollupSpend(usd: number): void {

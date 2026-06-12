@@ -861,11 +861,13 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
       { status: 400 },
     );
   }
-  // Live (in-place) isolation is only honored by convergence modes; accepting
-  // it elsewhere would silently run an envelope while claiming live semantics.
-  if (parsed.execution?.isolation === "live" && mode !== "max_attempts" && mode !== "until_clean") {
+  // Live (in-place) isolation is only honored by the convergence strategies
+  // (agent + attempts / until_clean flags); accepting it elsewhere would
+  // silently run an envelope while claiming live semantics.
+  const convergence = mode === "agent" && (parsed.untilClean === true || (parsed.attempts !== undefined && parsed.attempts !== null));
+  if (parsed.execution?.isolation === "live" && !convergence) {
     throw Object.assign(
-      new Error(`execution.isolation='live' is only supported for convergence modes (max_attempts|until_clean), not '${mode}'`),
+      new Error(`execution.isolation='live' is only supported for agent convergence runs (--attempts or --until-clean), not '${mode}'`),
       { status: 400 },
     );
   }
@@ -1130,10 +1132,14 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
       ? [{ kind: "answer" as const, path: "final/answer.md" }]
       : mode === "plan"
         ? [{ kind: "plan" as const, path: "final/plan.md" }]
-        : mode === "explore"
-          ? [{ kind: "report" as const, path: "final/explore.md" }, { kind: "summary" as const, path: "final/summary.md" }]
-          : mode === "readonly_audit"
-            ? [{ kind: "report" as const, path: "final/report.md" }, { kind: "summary" as const, path: "final/summary.md" }]
+        : mode === "audit"
+          ? [
+              { kind: "report" as const, path: "final/report.md" },
+              { kind: "report" as const, path: "final/explore.md" },
+              { kind: "summary" as const, path: "final/summary.md" },
+            ]
+          : mode === "orchestrate"
+            ? [{ kind: "report" as const, path: "final/orchestration.md" }, { kind: "summary" as const, path: "final/summary.md" }]
             : [
                 { kind: "summary" as const, path: "final/summary.md" },
                 { kind: "patch" as const, path: "final/patch.diff" },

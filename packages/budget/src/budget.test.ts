@@ -27,6 +27,34 @@ describe("BudgetLedger", () => {
     expect(parent.tier()).toBe("hard");
   });
 
+  it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
+    const led = new BudgetLedger({ maxUsd: 1.0 });
+    const r = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 0.2 });
+    expect(r.granted).toBe(true);
+    // Streamed cost raises the hold; the tier sees it BEFORE settlement.
+    led.updateHold(r.lease?.lease_id ?? "", 0.95);
+    expect(led.tier()).toBe("downgrade");
+    led.updateHold(r.lease?.lease_id ?? "", 1.2);
+    expect(led.tier()).toBe("hard");
+    // updateHold never lowers a hold.
+    led.updateHold(r.lease?.lease_id ?? "", 0.1);
+    expect(led.tier()).toBe("hard");
+    // Settling replaces the hold with the actual spend (no double count).
+    led.settle(r.lease?.lease_id ?? "", 0.5);
+    expect(led.spend()).toBeCloseTo(0.5, 8);
+    expect(led.tier()).toBe("ok");
+  });
+
+  it("rolls child holds up to the parent and clears them on cancel", () => {
+    const parent = new BudgetLedger({ maxUsd: 1.0 });
+    const child = parent.child({ maxUsd: 10 });
+    const r = child.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 1.0 });
+    expect(parent.tier()).toBe("hard"); // the hold is visible at the parent cap
+    child.cancel(r.lease?.lease_id ?? "");
+    expect(parent.tier()).toBe("ok");
+    expect(parent.spend()).toBe(0);
+  });
+
   it("detects prompt loops by fingerprint", () => {
     const led = new BudgetLedger();
     const fp = promptFingerprint("Fix   the bug\n");
@@ -76,14 +104,14 @@ describe("router", () => {
     expect(best?.harnessId).toBe("sub");
   });
 
-  it("excludes a rate-limited harness via observed cooldown", () => {
+  it("excludes a rate-limited harness via the typed rate_limit signal", () => {
     const led = new BudgetLedger();
     const obs = observationFromEvent("codex", {
       type: "error",
       session_id: "s",
       ts: new Date().toISOString(),
       error: "rate limited",
-      payload: { resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+      rate_limit: { resets_at: new Date(Date.now() + 3_600_000).toISOString(), retry_delay_ms: null },
     });
     expect(obs?.kind).toBe("rate_limited");
     led.observe(obs as NonNullable<typeof obs>);
@@ -91,11 +119,21 @@ describe("router", () => {
     expect(selectHarness([cand("codex", "openai")], { portfolio: "daily-rich", ledger: led })).toBeNull();
   });
 
-  it("rate-limit detector is conservative (no spurious cooldown)", () => {
+  it("only the typed rate_limit field trips a cooldown (no regex governance over prose)", () => {
     const ts = new Date().toISOString();
+    // Error PROSE alone never trips a cooldown here — detection is the adapter's
+    // job and arrives as the typed field; the budget layer just projects it.
+    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })).toBeNull();
     expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "received 429 items" })).toBeNull();
-    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "the quota field is missing" })).toBeNull();
-    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })?.kind).toBe("rate_limited");
-    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "UsageLimitExceeded" })?.kind).toBe("rate_limited");
+    // The typed field drives the observation; a retry_delay_ms becomes the cooldown.
+    const obs = observationFromEvent("x", {
+      type: "error",
+      session_id: "s",
+      ts,
+      error: "rate limited",
+      rate_limit: { resets_at: null, retry_delay_ms: 1000 },
+    });
+    expect(obs?.kind).toBe("rate_limited");
+    expect(obs?.cooldown_until).toBeTruthy();
   });
 });

@@ -54,11 +54,16 @@ export function priceForModel(model: string | null | undefined): Price {
 export function estimateCodexCostUsd(model: string | null | undefined, usage: TokenUsage): number | undefined {
   const input = usage.input_tokens ?? 0;
   const output = usage.output_tokens ?? 0;
-  const cached = usage.cached_input_tokens ?? 0;
+  // Codex usage reports cached_input_tokens as a SUBSET of input_tokens (the
+  // total prompt), matching OpenAI usage semantics. Clamp defensively.
+  const cached = Math.min(usage.cached_input_tokens ?? 0, input);
   if (input === 0 && output === 0 && cached === 0) return undefined;
   const p = priceForModel(model);
-  // Cached tokens are billed at the cached rate; treat input_tokens as the
-  // non-cached prompt portion (codex already separates cached_input_tokens).
-  const usd = (input / 1e6) * p.input + (output / 1e6) * p.output + (cached / 1e6) * p.cached;
+  // Bill the non-cached prompt portion at the input rate and the cached subset
+  // at the (cheaper) cached rate. Previously the cached tokens were billed
+  // twice (once inside input_tokens at the full input rate, once at the cached
+  // rate), over-reporting codex spend by up to ~4x on cache-heavy turns.
+  const nonCached = Math.max(0, input - cached);
+  const usd = (nonCached / 1e6) * p.input + (output / 1e6) * p.output + (cached / 1e6) * p.cached;
   return Number.isFinite(usd) ? usd : undefined;
 }

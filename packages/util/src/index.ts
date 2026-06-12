@@ -138,12 +138,19 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bghs_[A-Za-z0-9]{20,}\b/g,
   /\bghu_[A-Za-z0-9]{20,}\b/g,
   /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
+  /\bsk-or-v1-[A-Za-z0-9]{20,}\b/g,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\bAIza[A-Za-z0-9_-]{30,}\b/g,
   /\bxai-[A-Za-z0-9_-]{20,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  // Cursor API keys (key_<hex>); OpenRouter keys (sk-or-v1-... handled above).
+  /\bkey_[A-Za-z0-9]{20,}\b/g,
+  // Bearer tokens (length-gated to avoid redacting prose like "Bearer of news").
+  /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi,
+  // JWTs (header.payload.signature) — anthropic/cursor/openai OAuth tokens.
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b/g,
 ];
 
 /**

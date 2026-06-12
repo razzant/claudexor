@@ -1,0 +1,85 @@
+{
+  "$ref": "#/definitions/ControlRunDecisionRequest",
+  "definitions": {
+    "ControlRunDecisionRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "accept_clean_patch",
+            "rerun_with_feedback",
+            "accept_risk",
+            "override_needs_human"
+          ]
+        },
+        "findingIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "feedback": {
+          "type": "string"
+        },
+        "acceptedRisks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "applyMode": {
+          "type": "string",
+          "enum": [
+            "artifact_only",
+            "apply",
+            "branch",
+            "commit",
+            "pr"
+          ]
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "original_project"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "project"
+                },
+                "root": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "root"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

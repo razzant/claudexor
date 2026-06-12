@@ -4,6 +4,12 @@ import { nowIso, redactSecrets } from "@claudexor/util";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
+// Native codex error phrasing that indicates a rate-limit / quota condition.
+// This regex lives in the ADAPTER (native-output translation is its job), not
+// in the budget/governance layer.
+const CODEX_RATE_LIMIT_RE =
+  /rate.?limit|usage.?limit|usagelimitexceeded|too many requests|quota[ _-]?(?:exceeded|exhausted|reached)|(?:http|status|code)[ :/]?429|429 too many/i;
+
 /**
  * Map a single Codex `exec --json` JSONL object to normalized HarnessEvents.
  * Codex event names: thread.*, turn.*, item.started|updated|completed, error.
@@ -17,7 +23,8 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   const type = obj?.type;
 
   if (type === "thread.started") {
-    return [{ type: "started", session_id: sessionId, ts, payload: { thread_id: obj.thread_id } }];
+    // Expose the native session id uniformly so the engine can record it for resume.
+    return [{ type: "started", session_id: sessionId, ts, payload: { thread_id: obj.thread_id, native_session_id: obj.thread_id } }];
   }
   if (type === "turn.completed") {
     const u = obj.usage ?? {};
@@ -41,15 +48,16 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     return [{ type: "thinking", session_id: sessionId, ts, text: "turn started", payload: { turn_id: obj.turn_id } }];
   }
   if (type === "error") {
-    return [
-      {
-        type: "error",
-        session_id: sessionId,
-        ts,
-        error: typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error"),
-        payload: obj,
-      },
-    ];
+    const message = typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error");
+    const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
+    // Adapter-layer parsing of codex's native error text into a TYPED rate-limit
+    // signal. The budget layer reads this typed field instead of regex-matching
+    // model/CLI prose (Bible: no regex governance).
+    if (CODEX_RATE_LIMIT_RE.test(message)) {
+      const resets = typeof obj.resets_at === "string" ? obj.resets_at : null;
+      ev.rate_limit = { resets_at: resets, retry_delay_ms: null };
+    }
+    return [ev];
   }
   if (type === "item.started" || type === "item.updated") {
     const item = obj.item ?? {};

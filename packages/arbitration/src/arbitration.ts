@@ -29,8 +29,19 @@ function requiredGatesPassed(c: CandidateEvidence): boolean {
   return required.length === 0 ? true : required.every((g) => g.status === "passed");
 }
 
+/**
+ * Acceptance coverage fraction. Zero configured success criteria is zero
+ * acceptance EVIDENCE (0, never a vacuous 1), mirroring `effectiveTestFraction`.
+ * Since all candidates in a tournament share one contract, a 0 here is a neutral
+ * tie axis (no relative penalty) — it only removes the false "100%" claim.
+ */
 function acceptanceFraction(c: CandidateEvidence): number {
-  return c.acceptanceTotal > 0 ? c.acceptanceCovered.length / c.acceptanceTotal : 1;
+  return c.acceptanceTotal > 0 ? c.acceptanceCovered.length / c.acceptanceTotal : 0;
+}
+
+/** Human label for acceptance evidence: honest "n/a" when no criteria exist. */
+function acceptanceLabel(c: CandidateEvidence): string {
+  return c.acceptanceTotal > 0 ? `${(acceptanceFraction(c) * 100).toFixed(0)}%` : "n/a";
 }
 
 function openBlockerCount(c: CandidateEvidence): number {
@@ -154,8 +165,10 @@ function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseCompariso
 /**
  * Evidence-first arbitration. Ranks candidates lexicographically by hard gates,
  * acceptance coverage, accepted blockers, (held-out-authoritative) tests, clean
- * review, simplicity, cost, latency — LLM judgment is reserved for ties only
- * (caller-provided), never overriding hard evidence.
+ * review, simplicity, cost, latency. When the top two candidates are an EXACT
+ * tie on every evidence axis, the winner is chosen deterministically by route
+ * order and that tie is DISCLOSED in the decision (final_checks) — there is no
+ * hidden LLM tie-break, so the choice is never silently presented as decisive.
  */
 export function arbitrate(
   candidates: CandidateEvidence[],
@@ -179,6 +192,9 @@ export function arbitrate(
   const ranking = [...candidates].sort((a, b) => compareTuples(scoreTuple(a), scoreTuple(b)));
   const winner = ranking[0] as CandidateEvidence;
   const runnerUp = ranking[1];
+  // An exact tie on every evidence axis: the winner is the first in route order.
+  // Disclose it instead of presenting the pick as evidence-decisive.
+  const tiedWithRunnerUp = runnerUp ? compareTuples(scoreTuple(winner), scoreTuple(runnerUp)) === 0 : false;
 
   const requiredOk = requiredGatesPassed(winner);
   const blockerCount = openBlockerCount(winner);
@@ -234,12 +250,15 @@ export function arbitrate(
     winner: winner.attemptId,
     status,
     outcome,
-    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${(acceptanceFraction(winner) * 100).toFixed(0)}%, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
+    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
     final_checks: [
       `required gates ${requiredGatesPassed(winner) ? "passed" : "FAILED"}`,
       `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
+      ...(tiedWithRunnerUp
+        ? [`tie: winner chosen by route order (no distinguishing evidence vs ${runnerUp?.label ?? "runner-up"})`]
+        : []),
     ],
     evidence_facts: [
       `diff ${hasDiff ? "non-empty" : "empty"}`,

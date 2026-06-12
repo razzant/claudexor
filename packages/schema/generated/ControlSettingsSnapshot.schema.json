@@ -73,6 +73,36 @@
                 "profile_only"
               ],
               "default": "mirror_native"
+            },
+            "authPreference": {
+              "type": "string",
+              "enum": [
+                "subscription",
+                "api_key",
+                "auto"
+              ],
+              "default": "auto"
+            },
+            "fallback": {
+              "type": "object",
+              "properties": {
+                "onQuotaExhaustion": {
+                  "type": "string",
+                  "enum": [
+                    "subscription_to_api",
+                    "harness_to_harness",
+                    "both",
+                    "off"
+                  ],
+                  "default": "both"
+                },
+                "onMoneyExhaustion": {
+                  "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/fallback/properties/onQuotaExhaustion",
+                  "default": "both"
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
             }
           },
           "additionalProperties": false,
@@ -206,6 +236,10 @@
                 "type": "object",
                 "additionalProperties": {},
                 "default": {}
+              },
+              "authPreference": {
+                "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/authPreference",
+                "default": "auto"
               }
             },
             "additionalProperties": false

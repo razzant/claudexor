@@ -64,7 +64,8 @@
               "synthesize",
               "arbitrate",
               "explain",
-              "audit"
+              "audit",
+              "orchestrate"
             ]
           },
           "default": []

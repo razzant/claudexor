@@ -50,17 +50,16 @@ export const ProviderFamily = z.enum([
 ]);
 export type ProviderFamily = z.infer<typeof ProviderFamily>;
 
-export const ModeKind = z.enum([
-  "ask",
-  "explore",
-  "agent",
-  "best_of_n",
-  "max_attempts",
-  "until_clean",
-  "plan",
-  "create",
-  "readonly_audit",
-]);
+/**
+ * Canonical modes (v0.9 collapse, BREAKING): the 9 v0.8 ids shrank to 5
+ * intents-on-a-thread. The old engine strategies became FLAGS, not modes:
+ * `best_of_n` -> agent + n, `max_attempts` -> agent + attempts,
+ * `until_clean` -> agent + until_clean, `create` -> agent + create,
+ * `explore` -> audit + swarm, `readonly_audit` -> audit. Old ids hard-error
+ * at every wire boundary (Bible: modes are canonical and breaking, never
+ * silent aliases). `orchestrate` is the autonomous brain intent (A3).
+ */
+export const ModeKind = z.enum(["ask", "plan", "audit", "agent", "orchestrate"]);
 export type ModeKind = z.infer<typeof ModeKind>;
 
 /** Canonical intents a harness can be assigned. Roles are intents, never fixed classes. */
@@ -77,6 +76,7 @@ export const Intent = z.enum([
   "arbitrate",
   "explain",
   "audit",
+  "orchestrate",
 ]);
 export type Intent = z.infer<typeof Intent>;
 
@@ -89,3 +89,30 @@ export type Intent = z.infer<typeof Intent>;
  */
 export const DirtyPolicy = z.enum(["refuse", "include", "stash", "copy", "snapshot"]);
 export type DirtyPolicy = z.infer<typeof DirtyPolicy>;
+
+/**
+ * A user's preferred auth route for a harness, thread, or the orchestrate brain.
+ * `subscription` = native/OAuth session; `api_key` = a stored API key; `auto`
+ * lets the engine pick subscription-first and fall back per policy. This is a
+ * preference, not a secret — the actual key refs live in global/trust config.
+ */
+export const AuthPreference = z.enum(["subscription", "api_key", "auto"]);
+export type AuthPreference = z.infer<typeof AuthPreference>;
+
+/**
+ * Typed reason an auto-fallback (route/auth switch) or session re-host happened.
+ * Fallback decisions are driven by typed budget/quota signals and events, never
+ * by regex over model/CLI prose (Bible: no regex governance).
+ */
+export const FallbackReason = z.enum([
+  "quota_exhausted",
+  "money_exhausted",
+  "subscription_exhausted",
+  "rate_limited",
+  "harness_error",
+  "stall",
+  "web_evidence_unsatisfied",
+  "fallback_model",
+  "manual",
+]);
+export type FallbackReason = z.infer<typeof FallbackReason>;

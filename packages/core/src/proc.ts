@@ -54,7 +54,27 @@ export async function* spawnProcess(
     cwd: opts.cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
+    // Put the child in its own process group so we can signal the WHOLE tree.
+    // Harnesses spawn grandchildren (shell tools, MCP servers); without this a
+    // cancel/timeout signals only the direct child and grandchildren leak,
+    // keep writing to the worktree, or hang the run forever.
+    detached: true,
   });
+
+  // Signal the child's process GROUP (negative pid) so grandchildren die too;
+  // fall back to the direct child if the group is already gone.
+  const killTree = (signal: NodeJS.Signals): void => {
+    try {
+      if (typeof child.pid === "number") process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      try {
+        child.kill(signal);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
 
   // A child can exit before/while stdin is written (e.g. a failing `git apply`).
   // Without a handler the resulting EPIPE becomes an unhandled 'error' event and
@@ -121,35 +141,22 @@ export async function* spawnProcess(
 
   let timer: NodeJS.Timeout | undefined;
   if (opts.timeoutMs && opts.timeoutMs > 0) {
-    timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    }, opts.timeoutMs);
+    timer = setTimeout(() => killTree("SIGKILL"), opts.timeoutMs);
   }
 
   let killTimer: NodeJS.Timeout | undefined;
   const requestCancel = (): void => {
     if (finished) return;
-    try {
-      child.kill(opts.cancelSignal ?? "SIGINT");
-    } catch {
-      /* already gone */
-    }
+    killTree(opts.cancelSignal ?? "SIGINT");
     const killDelay = opts.cancelKillDelayMs ?? 1_000;
     if (killDelay >= 0 && !killTimer) {
+      // Escalate to SIGKILL of the whole group if the cooperative signal is
+      // ignored. NOT unref'd: the escalation must actually fire (a prior
+      // unref let an ignoring child outlive the parent). It is cleared on a
+      // clean finish below.
       killTimer = setTimeout(() => {
-        if (!finished) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            /* already gone */
-          }
-        }
+        if (!finished) killTree("SIGKILL");
       }, killDelay);
-      killTimer.unref();
     }
   };
   const abortSignal = opts.abortSignal;

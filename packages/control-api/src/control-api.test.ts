@@ -794,8 +794,8 @@ describe("DaemonControlApiServer", () => {
     const cases: { mode: string; path: string; kind: string; text: string }[] = [
       { mode: "ask", path: "final/answer.md", kind: "answer", text: "Answer: 4" },
       { mode: "plan", path: "final/plan.md", kind: "plan", text: "# Plan" },
-      { mode: "explore", path: "final/explore.md", kind: "report", text: "# Explore" },
-      { mode: "readonly_audit", path: "final/report.md", kind: "report", text: "# Audit" },
+      { mode: "audit", swarm: true, path: "final/explore.md", kind: "report", text: "# Explore" },
+      { mode: "audit", path: "final/report.md", kind: "report", text: "# Audit" },
     ];
     for (const c of cases) {
       const { daemon, record } = fakeDaemon();

@@ -32,8 +32,30 @@ export const ConvergencePredicate = z.object({
   require_no_accepted_fix_first_open: z.boolean().default(true),
   require_final_cross_family_clean_review: z.boolean().default(true),
   require_final_diff_stable_after_review: z.boolean().default(true),
+  /**
+   * Block convergence while an accepted NEEDS_HUMAN escalation is still open.
+   * Closes the v0.8 hole where, with cross-family clean review disabled, a run
+   * could converge to success with an open NEEDS_HUMAN finding.
+   */
+  require_no_accepted_needs_human_open: z.boolean().default(true),
 });
 export type ConvergencePredicate = z.infer<typeof ConvergencePredicate>;
+
+/** One node of the spec-derived task graph (A3); edges are `depends_on`. */
+export const TaskGraphNode = z.object({
+  id: Id,
+  title: z.string().default(""),
+  depends_on: z.array(Id).default([]),
+});
+export type TaskGraphNode = z.infer<typeof TaskGraphNode>;
+
+/** A topologically-ordered task graph built from a frozen SpecPack's tasks. */
+export const TaskGraph = z.object({
+  nodes: z.array(TaskGraphNode).default([]),
+  /** Topological execution order (node ids); empty when there are no tasks. */
+  order: z.array(Id).default([]),
+});
+export type TaskGraph = z.infer<typeof TaskGraph>;
 
 /**
  * Immutable contract describing a single run. Built once, hashed, never mutated.
@@ -65,6 +87,8 @@ export const TaskContract = z.object({
   non_goals: z.array(z.string()).default([]),
   forbidden_approaches: z.array(z.string()).default([]),
   decided_tradeoffs: z.array(z.string()).default([]),
+  /** Spec-derived task graph (A3); null until a frozen SpecPack with tasks is resolved. */
+  task_graph: TaskGraph.nullable().default(null),
   constraints: TaskConstraints.default({}),
   tests: z.object({ commands: z.array(TestCommand).default([]) }).default({ commands: [] }),
   delivery: DeliveryPolicy.default({}),

@@ -5,6 +5,7 @@ import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema"
 import { runCapture, WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso } from "@claudexor/util";
 import {
+  branchDelete,
   diffStaged,
   isGitRepo,
   revParse,
@@ -244,7 +245,7 @@ export class WorkspaceManager {
         return "";
       }
     }
-    return diffStaged(env.worktree_path);
+    return diffStaged(env.worktree_path, env.base_sha ?? undefined);
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {
@@ -257,6 +258,16 @@ export class WorkspaceManager {
       } catch {
         /* best-effort */
       }
+      // Delete the per-attempt branch so re-attempts with the same ids don't
+      // collide on `worktree add -b`, and the user's repo doesn't accumulate
+      // permanent claudexor/<task>/<attempt> branches (the v0.8 leak).
+      if (env.branch_name && env.branch_name !== "inplace") {
+        try {
+          await branchDelete(this.repoRoot, env.branch_name);
+        } catch {
+          /* best-effort */
+        }
+      }
     }
     // Remove only the scoped envelope base (worktree + scoped home/env/logs/artifacts/
     // baseline, including any seeded credentials), derived from task/attempt ids.
@@ -265,6 +276,20 @@ export class WorkspaceManager {
     // dispose() from ever deleting the live tree.
     try {
       rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    // Prune the now-empty per-task parent dir (envelopeBase = <task>/<attempt>),
+    // guarded to stay strictly inside the workspaces dir.
+    try {
+      const taskDir = join(this.workspacesDir(), env.task_id);
+      if (
+        taskDir.startsWith(this.workspacesDir() + sep) &&
+        existsSync(taskDir) &&
+        readdirSync(taskDir).length === 0
+      ) {
+        rmSync(taskDir, { recursive: true, force: true });
+      }
     } catch {
       /* best-effort */
     }

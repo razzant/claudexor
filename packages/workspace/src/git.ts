@@ -1,9 +1,19 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCapture, WorkspaceError } from "@claudexor/core";
 
 export async function git(repo: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const r = await runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000 });
+  return { code: r.code, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** `git` with extra environment (e.g. a scratch GIT_INDEX_FILE for snapshots). */
+async function gitEnv(
+  repo: string,
+  args: string[],
+  env: Record<string, string>,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const r = await runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, env });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -97,11 +107,59 @@ export async function statusPorcelain(repo: string): Promise<string> {
   return (await git(repo, ["status", "--porcelain"])).stdout;
 }
 
-/** Create a dangling commit capturing tracked working-tree changes; null if clean. */
+/**
+ * Capture the full dirty working tree (tracked AND untracked) as a dangling
+ * commit; null if clean. Plain `git stash create` captures only TRACKED
+ * changes, silently dropping the user's new-but-unstaged files from the run's
+ * base. We instead seed a scratch index from HEAD, `add -A` into it (which
+ * respects .gitignore, so run artifacts stay out), and commit-tree the result.
+ */
 export async function stashCreate(repo: string): Promise<string | null> {
-  const r = await git(repo, ["stash", "create"]);
-  const sha = r.stdout.trim();
-  return sha.length > 0 ? sha : null;
+  const status = await statusPorcelain(repo);
+  // Claudexor's own run/workspace artifacts are never part of the user's dirty
+  // state (concurrent envelope creation materializes `.claudexor/workspaces/...`
+  // inside the repo); snapshotting them would bake run artifacts into the base.
+  const meaningful = status
+    .split("\n")
+    .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
+    .filter((p) => p.length > 0 && !p.startsWith(".claudexor"));
+  if (meaningful.length === 0) return null;
+  const head = await git(repo, ["rev-parse", "HEAD"]);
+  if (head.code !== 0) throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
+  const headSha = head.stdout.trim();
+  // Unique per call: concurrent envelope creates (a best_of_n wave) must never
+  // collide on the scratch index (same pid + same millisecond is real).
+  const tmpIndex = join(repo, ".git", `claudexor-snapshot-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const env: Record<string, string> = {
+    GIT_INDEX_FILE: tmpIndex,
+    GIT_AUTHOR_NAME: "Claudexor",
+    GIT_AUTHOR_EMAIL: "noreply@claudexor.local",
+    GIT_COMMITTER_NAME: "Claudexor",
+    GIT_COMMITTER_EMAIL: "noreply@claudexor.local",
+  };
+  try {
+    const read = await gitEnv(repo, ["read-tree", "HEAD"], env);
+    if (read.code !== 0) throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
+    const add = await gitEnv(repo, ["add", "-A", "--", ".", ":(exclude).claudexor", ":(exclude).claudexor-review-evidence"], env);
+    if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
+    const writeTree = await gitEnv(repo, ["write-tree"], env);
+    if (writeTree.code !== 0) throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
+    const tree = writeTree.stdout.trim();
+    const commit = await gitEnv(
+      repo,
+      ["commit-tree", tree, "-p", headSha, "-m", "claudexor: dirty worktree snapshot (incl. untracked)"],
+      env,
+    );
+    if (commit.code !== 0) throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
+    const sha = commit.stdout.trim();
+    return sha.length > 0 ? sha : null;
+  } finally {
+    try {
+      rmSync(tmpIndex, { force: true });
+    } catch {
+      /* scratch index cleanup is best-effort */
+    }
+  }
 }
 
 export async function worktreeAdd(repo: string, path: string, branch: string, baseSha: string): Promise<void> {
@@ -117,9 +175,30 @@ export async function worktreePrune(repo: string): Promise<void> {
   await git(repo, ["worktree", "prune"]);
 }
 
-/** Stage everything (so untracked files appear) and return the diff vs the base commit. */
-export async function diffStaged(worktreePath: string): Promise<string> {
+/** Delete a local branch (best-effort GC of per-attempt claudexor/* branches). */
+export async function branchDelete(repo: string, branch: string): Promise<void> {
+  await git(repo, ["branch", "-D", branch]);
+}
+
+/**
+ * Stage everything (so untracked files appear) and return the diff vs the
+ * recorded BASE sha — NOT the worktree HEAD. A harness that commits inside the
+ * worktree (Claude Code does this routinely) advances HEAD; diffing vs HEAD
+ * would then hide the committed work and report an empty no-op diff, silently
+ * losing the candidate's real output. Diffing the staged tree vs base_sha
+ * captures all net change since the run started regardless of intermediate
+ * commits. Git op failures throw loudly instead of masquerading as "no changes".
+ */
+export async function diffStaged(worktreePath: string, baseSha?: string): Promise<string> {
   await runCapture("rm", ["-rf", ".claudexor-review-evidence"], { cwd: worktreePath, timeoutMs: 10_000 }).catch(() => null);
-  await git(worktreePath, ["add", "-A"]);
-  return (await git(worktreePath, ["diff", "--cached"])).stdout;
+  const add = await git(worktreePath, ["add", "-A"]);
+  if (add.code !== 0) {
+    throw new WorkspaceError(`git add -A failed during diff capture: ${add.stderr.trim()}`);
+  }
+  const target = baseSha && baseSha.length > 0 ? baseSha : "HEAD";
+  const diff = await git(worktreePath, ["diff", "--cached", target]);
+  if (diff.code !== 0) {
+    throw new WorkspaceError(`git diff --cached ${target} failed during diff capture: ${diff.stderr.trim()}`);
+  }
+  return diff.stdout;
 }

@@ -84,6 +84,51 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.home_dir)).toBe(false);
     expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
   });
+
+  it("captures committed-by-harness work in the diff (vs base_sha, not worktree HEAD)", async () => {
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-commit", attemptId: "a01", baseRef: "HEAD" });
+    // Simulate a harness that COMMITS its work inside the worktree (Claude Code does this
+    // routinely). Diffing vs HEAD would now be empty (work is committed, no index delta);
+    // diffing vs base_sha must still surface it, or the candidate's output is silently lost.
+    writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
+    await git(env.worktree_path, ["add", "-A"]);
+    await git(env.worktree_path, ["-c", "user.email=h@h.dev", "-c", "user.name=Harness", "commit", "-m", "harness work"]);
+    const diff = await mgr.diff(env);
+    expect(diff).toContain("feature.ts");
+    expect(diff).toContain("export const x = 1;");
+    await mgr.dispose(env);
+  });
+
+  it("deletes the per-attempt branch on dispose so a same-id re-attempt does not collide", async () => {
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+    const env1 = await mgr.create({ taskId: "task-gc", attemptId: "a01", baseRef: "HEAD" });
+    const branch = env1.branch_name;
+    expect((await git(repo, ["rev-parse", "--verify", branch])).code).toBe(0);
+    await mgr.dispose(env1);
+    // Branch is gone (no permanent claudexor/* leak)...
+    expect((await git(repo, ["rev-parse", "--verify", branch])).code).not.toBe(0);
+    // ...the empty per-task dir was pruned...
+    expect(existsSync(join(repo, ".claudexor", "workspaces", "task-gc"))).toBe(false);
+    // ...and a re-attempt with the SAME ids succeeds (previously collided on worktree add -b).
+    const env2 = await mgr.create({ taskId: "task-gc", attemptId: "a01", baseRef: "HEAD" });
+    expect(existsSync(env2.worktree_path)).toBe(true);
+    await mgr.dispose(env2);
+  });
+
+  it("snapshot dirty policy includes UNTRACKED files (no silent drop)", async () => {
+    const repo = await initRepo();
+    // Only an untracked file is dirty: `git stash create` would have ignored it
+    // entirely (tracked-only), dropping it from the run base. The temp-index
+    // snapshot must carry it through.
+    writeFileSync(join(repo, "untracked.txt"), "fresh\n");
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-snap", attemptId: "a01", dirtyPolicy: "snapshot" });
+    expect(existsSync(join(env.worktree_path, "untracked.txt"))).toBe(true);
+    await mgr.dispose(env);
+  });
 });
 
 describe("ensureGitRepository", () => {

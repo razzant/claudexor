@@ -1,0 +1,102 @@
+{
+  "$ref": "#/definitions/Session",
+  "definitions": {
+    "Session": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
+          "$ref": "#/definitions/Session/properties/id"
+        },
+        "harness_id": {
+          "$ref": "#/definitions/Session/properties/id"
+        },
+        "provider_family": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic",
+            "google",
+            "cursor",
+            "opencode",
+            "xai",
+            "local",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "native_session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "auth_mode": {
+          "type": "string",
+          "enum": [
+            "local_session",
+            "api_key",
+            "unknown"
+          ],
+          "default": "unknown"
+        },
+        "resume_kind": {
+          "type": "string",
+          "enum": [
+            "resume_by_id",
+            "resume_latest",
+            "rehost",
+            "none"
+          ],
+          "default": "none"
+        },
+        "last_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Session/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "last_observed_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "live",
+            "stale",
+            "rebound"
+          ],
+          "default": "live"
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "updated_at": {
+          "$ref": "#/definitions/Session/properties/created_at"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "harness_id",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

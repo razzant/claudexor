@@ -1,0 +1,74 @@
+{
+  "$ref": "#/definitions/ThreadTurn",
+  "definitions": {
+    "ThreadTurn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
+          "$ref": "#/definitions/ThreadTurn/properties/id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadTurn/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadTurn/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadTurn/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "initial",
+            "followup",
+            "decision",
+            "orchestrate"
+          ],
+          "default": "followup"
+        },
+        "prompt": {
+          "type": "string",
+          "default": ""
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

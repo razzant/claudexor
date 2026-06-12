@@ -176,6 +176,31 @@
         "observed_model": {
           "type": "string"
         },
+        "rate_limit": {
+          "type": "object",
+          "properties": {
+            "resets_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "retry_delay_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false
+        },
         "error": {
           "type": "string"
         },

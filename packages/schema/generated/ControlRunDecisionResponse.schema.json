@@ -1,0 +1,34 @@
+{
+  "$ref": "#/definitions/ControlRunDecisionResponse",
+  "definitions": {
+    "ControlRunDecisionResponse": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "requeued",
+            "rejected",
+            "unsupported"
+          ]
+        },
+        "newRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

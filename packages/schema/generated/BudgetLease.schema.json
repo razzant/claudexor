@@ -28,7 +28,8 @@
             "synthesize",
             "arbitrate",
             "explain",
-            "audit"
+            "audit",
+            "orchestrate"
           ]
         },
         "harness_id": {

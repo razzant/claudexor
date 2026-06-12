@@ -1,0 +1,111 @@
+{
+  "$ref": "#/definitions/ControlThread",
+  "definitions": {
+    "ControlThread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "repoRoot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "plan",
+            "audit",
+            "agent",
+            "orchestrate"
+          ]
+        },
+        "authPreference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ],
+          "default": "auto"
+        },
+        "primaryHarness": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "portfolio": {
+          "type": "string",
+          "enum": [
+            "daily-rich",
+            "balanced",
+            "cheapest",
+            "strongest",
+            "burn",
+            "subscription-first",
+            "api-overflow",
+            "conserve-claude",
+            "conserve-codex"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "blocked",
+            "closed"
+          ],
+          "default": "active"
+        },
+        "runIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ControlThread/properties/id"
+          },
+          "default": []
+        },
+        "headRunId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlThread/properties/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "needsHuman": {
+          "type": "boolean",
+          "default": false
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

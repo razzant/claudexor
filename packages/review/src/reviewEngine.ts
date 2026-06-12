@@ -187,6 +187,14 @@ ${runtimePrompt}
       }
     } catch (err) {
       reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
+      // Budget truth: a reviewer that streamed paid tokens then timed out/failed
+      // still spent money. Fold the partial cost into the ledger (the success
+      // path adds out.costUsd above; these paths are mutually exclusive).
+      const partial = err as { partialCostUsd?: number; partialCostEstimated?: boolean };
+      if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
+        reviewSpendUsd += partial.partialCostUsd;
+        if (partial.partialCostEstimated) reviewSpendEstimated = true;
+      }
       writeParseError(artifact, { error: reviewerError });
     }
 
@@ -302,13 +310,16 @@ async function collectReviewerOutput(
   let settled = false;
   let timedOut = false;
   let firstEventTime: string | null = null;
+  // Reviewer spend tracked at function scope so a timed-out/failed reviewer still
+  // contributes its PARTIAL cost to the ledger (budget truth). It is attached to
+  // the thrown error so the caller can fold it in.
+  let costUsd = 0;
+  let costEstimated = false;
 
   const consume = (async (): Promise<ReviewerOutput> => {
     let text = "";
     let observedModel: string | undefined;
     let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
-    let costUsd = 0;
-    let costEstimated = false;
     for await (const ev of iter) {
       const eventTime = nowIso();
       appendLine(artifact.eventsPath, JSON.stringify(redactValue(ev)));
@@ -384,7 +395,12 @@ async function collectReviewerOutput(
         duration_ms: durationMs,
         message: `Reviewer timed out after ${timeoutMs}ms`,
       });
-      reject(new Error(`Reviewer timed out after ${timeoutMs}ms`));
+      reject(
+        Object.assign(new Error(`Reviewer timed out after ${timeoutMs}ms`), {
+          partialCostUsd: costUsd,
+          partialCostEstimated: costEstimated,
+        }),
+      );
     }, Math.max(1, timeoutMs));
   });
 
@@ -408,6 +424,12 @@ async function collectReviewerOutput(
         at: failedAt,
         duration_ms: durationMs,
         message,
+      });
+    }
+    if (err && typeof err === "object") {
+      Object.assign(err as Record<string, unknown>, {
+        partialCostUsd: costUsd,
+        partialCostEstimated: costEstimated,
       });
     }
     throw err;

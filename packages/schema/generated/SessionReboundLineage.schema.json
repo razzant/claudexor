@@ -1,0 +1,84 @@
+{
+  "$ref": "#/definitions/SessionReboundLineage",
+  "definitions": {
+    "SessionReboundLineage": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harness_id": {
+          "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
+        },
+        "from_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "to_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "summary": {
+          "type": "string",
+          "default": ""
+        },
+        "contract_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "open_tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "diff_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "quota_exhausted",
+            "money_exhausted",
+            "subscription_exhausted",
+            "rate_limited",
+            "harness_error",
+            "stall",
+            "web_evidence_unsatisfied",
+            "fallback_model",
+            "manual"
+          ],
+          "default": "manual"
+        }
+      },
+      "required": [
+        "thread_id",
+        "harness_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

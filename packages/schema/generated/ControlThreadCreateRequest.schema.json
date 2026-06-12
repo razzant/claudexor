@@ -1,0 +1,80 @@
+{
+  "$ref": "#/definitions/ControlThreadCreateRequest",
+  "definitions": {
+    "ControlThreadCreateRequest": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "project"
+                },
+                "root": {
+                  "type": "string"
+                },
+                "context": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "deep"
+                  ],
+                  "default": "auto"
+                }
+              },
+              "required": [
+                "kind",
+                "root"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "default": {
+            "kind": "none"
+          }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "plan",
+            "audit",
+            "agent",
+            "orchestrate"
+          ]
+        },
+        "authPreference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ]
+        },
+        "primaryHarness": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

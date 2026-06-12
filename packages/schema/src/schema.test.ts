@@ -2,16 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   ControlHarnessSetupRequest,
   ControlHarnessSetupResponse,
+  ControlRunDecisionRequest,
   ControlRunStartRequest,
   ControlSetupJob,
   ControlSetupJobConfirmRequest,
   ControlSetupJobCreateRequest,
   ControlSpecFreezeRequest,
   ControlSpecQuestionsRequest,
+  ControlThread,
   HarnessManifest,
+  HarnessRunSpec,
+  OrchestrateContract,
   ReviewFinding,
   RouteProof,
+  Session,
+  SessionReboundLineage,
   TaskContract,
+  Thread,
+  ThreadTurn,
   isBlocking,
 } from "./index.js";
 
@@ -105,7 +113,7 @@ describe("Control API schemas", () => {
   it("accepts reviewer effort overrides on run start requests", () => {
     const req = ControlRunStartRequest.parse({
       prompt: "review it",
-      mode: "best_of_n",
+      mode: "agent",
       scope: { kind: "project", root: "/repo" },
       reviewerEfforts: { anthropic: "max", openai: "xhigh" },
     });
@@ -115,7 +123,7 @@ describe("Control API schemas", () => {
     expect(() =>
       ControlRunStartRequest.parse({
         prompt: "legacy",
-        mode: "best_of_n",
+        mode: "agent",
         repoRoot: "/repo",
       }),
     ).toThrow();
@@ -182,5 +190,98 @@ describe("Control API schemas", () => {
     expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" })).toThrow();
     expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, contextMode: "off" })).toThrow();
     expect(() => ControlSpecFreezeRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, inPlace: true, plan: "x" })).toThrow();
+  });
+});
+
+describe("v0.9 threads / sessions / orchestrate / decision", () => {
+  it("parses a Thread with defaults (SSOT entity)", () => {
+    const t = Thread.parse({
+      schema_version: 2,
+      id: "th-1",
+      created_at: "2026-06-12T00:00:00Z",
+      updated_at: "2026-06-12T00:00:00Z",
+    });
+    expect(t.state).toBe("active");
+    expect(t.auth_preference).toBe("auto");
+    expect(t.portfolio).toBe("subscription-first");
+    expect(t.repo).toBeNull();
+    expect(t.run_ids).toEqual([]);
+  });
+
+  it("parses a Session as a re-hostable cache pointer", () => {
+    const s = Session.parse({
+      id: "se-1",
+      thread_id: "th-1",
+      harness_id: "codex",
+      created_at: "2026-06-12T00:00:00Z",
+      updated_at: "2026-06-12T00:00:00Z",
+    });
+    expect(s.native_session_id).toBeNull();
+    expect(s.auth_mode).toBe("unknown");
+    expect(s.resume_kind).toBe("none");
+    expect(s.state).toBe("live");
+  });
+
+  it("parses a ThreadTurn and a SessionReboundLineage", () => {
+    const turn = ThreadTurn.parse({ id: "tn-1", thread_id: "th-1", created_at: "2026-06-12T00:00:00Z" });
+    expect(turn.kind).toBe("followup");
+    const reb = SessionReboundLineage.parse({ thread_id: "th-1", harness_id: "claude", reason: "harness_error" });
+    expect(reb.reason).toBe("harness_error");
+    expect(reb.open_tasks).toEqual([]);
+  });
+
+  it("defaults the orchestrate tool belt to all six tools", () => {
+    const c = OrchestrateContract.parse({ thread_id: "th-1", goal: "ship v0.9" });
+    expect(c.tool_belt).toEqual(["start_run", "race", "status", "answer_question", "apply", "review"]);
+    expect(c.autonomy).toBe("suggest");
+  });
+
+  it("carries auth_preference + resume_session_id on a HarnessRunSpec", () => {
+    const spec = HarnessRunSpec.parse({ session_id: "se-1", intent: "implement", prompt: "go", cwd: "/repo" });
+    expect(spec.auth_preference).toBe("auto");
+    expect(spec.resume_session_id).toBeNull();
+  });
+
+  it("accepts thread linkage + authPreference on a run start request", () => {
+    const req = ControlRunStartRequest.parse({
+      prompt: "follow up",
+      mode: "agent",
+      threadId: "th-1",
+      parentRunId: "run-0",
+      sessionId: "se-1",
+      authPreference: "subscription",
+      rehost: true,
+    });
+    expect(req.threadId).toBe("th-1");
+    expect(req.authPreference).toBe("subscription");
+    expect(req.rehost).toBe(true);
+  });
+
+  it("validates a typed review decision (unblock) request, rejecting unknown keys", () => {
+    const d = ControlRunDecisionRequest.parse({ action: "accept_risk", findingIds: ["f-1"], acceptedRisks: ["protected path"] });
+    expect(d.action).toBe("accept_risk");
+    expect(d.findingIds).toEqual(["f-1"]);
+    expect(() => ControlRunDecisionRequest.parse({ action: "bogus" })).toThrow();
+    expect(() => ControlRunDecisionRequest.parse({ action: "apply", surprise: 1 })).toThrow();
+  });
+
+  it("projects a ControlThread with a needs-me flag", () => {
+    const ct = ControlThread.parse({ id: "th-1", createdAt: "x", updatedAt: "y", needsHuman: true });
+    expect(ct.needsHuman).toBe(true);
+    expect(ct.authPreference).toBe("auto");
+    expect(ct.state).toBe("active");
+  });
+
+  it("defaults the new convergence + task_graph fields on a TaskContract", () => {
+    const tc = TaskContract.parse({
+      task_id: "t-1",
+      created_at: "2026-06-12T00:00:00Z",
+      repo: { root: "/repo", base_ref: "main" },
+      schema_version: 2,
+      mode: { kind: "agent" },
+      user_intent: { raw: "do the thing" },
+    });
+    expect(tc.convergence.require_no_accepted_needs_human_open).toBe(true);
+    expect(tc.task_graph).toBeNull();
   });
 });

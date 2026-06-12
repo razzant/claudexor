@@ -4,3 +4,4 @@ export * from "./proc.js";
 export * from "./runloop.js";
 export * from "./conformance.js";
 export * from "./doctor.js";
+export * from "./env-scope.js";

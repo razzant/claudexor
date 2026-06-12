@@ -46,7 +46,7 @@ function orchestratorRunner() {
   return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null>; signal?: AbortSignal }) => {
     if (p?.mode === "__status") return { harnesses: [...buildRegistry().keys()] };
     return orch.run({
-      repoRoot: process.cwd(),
+      repoRoot: typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd(),
       prompt: String(p?.prompt ?? ""),
       mode: p?.mode ?? "agent",
       harnesses: p?.harness ? [String(p.harness)] : undefined,
@@ -55,7 +55,10 @@ function orchestratorRunner() {
       externalContextPolicy: p?.externalContextPolicy ? ExternalContextPolicy.parse(String(p.externalContextPolicy)) : undefined,
       model: p?.model ? String(p.model) : undefined,
       effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
-      n: typeof p?.n === "number" ? p.n : undefined,
+      n: typeof p?.n === "number" ? p.n : p?.race === true ? 2 : undefined,
+      untilClean: p?.untilClean === true,
+      swarm: p?.swarm === true,
+      create: p?.create === true,
       onEvent: hooks?.onEvent,
       onInteraction: hooks?.onInteraction,
       signal: hooks?.signal,
@@ -79,13 +82,14 @@ Usage:
   claudexor init                          Scaffold repo-local config (.claudexor/config.yaml)
   claudexor doctor [--harness <id>] [--all]   Detect + conformance-test harnesses
   claudexor ask "<question>" [opts]       Read-only answer/explanation route
-  claudexor explore "<question>" [opts]   Read-only research swarm / verified synthesis
   claudexor run "<prompt>" [opts]         Run a task (default mode: agent)
-  claudexor race "<prompt>" [--n N]       Best-of-N tournament with cross-family review
+  claudexor race "<prompt>" [--n N]       Best-of-N race (agent --n) with cross-family review
   claudexor plan "<prompt>"               Read-only planning report
+  claudexor orchestrate "<goal>"          Brain: typed orchestration plan over the tool belt
   claudexor spec "<prompt>" [--answers file]  Multi-harness plan grounding -> quiz -> frozen SpecPack
-  claudexor create "<prompt>"             Create-from-scratch via current envelope pipeline
+  claudexor create "<prompt>"             Create-from-scratch (agent --create)
   claudexor audit | map                   Read-only repo audit / map
+  claudexor explore "<question>"          Read-only research swarm (audit --swarm)
   claudexor inspect <run_id>              Inspect a run's decision + artifacts
   claudexor follow <run_id> [--json]      Live-tail a daemon run (replay + push; answer questions in the TTY)
   claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
@@ -102,9 +106,12 @@ Usage:
 
 Options:
   --harness <id[,id...]>   Force harness(es)
-  --mode <mode>            ask | explore | agent | best_of_n | max_attempts | until_clean | plan | create | readonly_audit
-  --n <N>                  Candidates for Best-of-N
-  --attempts <N>           Max attempts (max_attempts mode)
+  --mode <mode>            ask | plan | audit | agent | orchestrate (strategies are flags, not modes)
+  --n <N>                  Race width (agent): N isolated candidates + cross-review
+  --attempts <N>           Convergence cap (agent): repair loop up to N attempts
+  --until-clean            Convergence (agent): iterate until the review/gates are clean
+  --swarm                  Research swarm (audit): bounded read-only explorer fan-out
+  --create                 Create-from-scratch intent (agent)
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
@@ -123,17 +130,7 @@ Options:
   --json                   Machine-readable JSON output
 `;
 
-const MODES = new Set<ModeKind>([
-  "ask",
-  "explore",
-  "agent",
-  "best_of_n",
-  "max_attempts",
-  "until_clean",
-  "plan",
-  "create",
-  "readonly_audit",
-]);
+const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
 
 /** Accept hyphenated spellings for canonical ids (until-clean, max-attempts). */
 function normalizeMode(s: string): ModeKind {
@@ -218,7 +215,12 @@ function reviewerEfforts(args: ParsedArgs): Record<string, EffortHint> | undefin
   return parseReviewerEffortMap(flagStr(args, "reviewer-effort"));
 }
 
-async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Promise<number> {
+async function orchestrate(
+  args: ParsedArgs,
+  mode: ModeKind,
+  json: boolean,
+  forced: { swarm?: boolean; create?: boolean; race?: boolean } = {},
+): Promise<number> {
   const rawPrompt = args._.slice(1).join(" ").trim();
   const specPath = flagStr(args, "spec");
   const spec = specPath ? SpecPackSchema.parse(JSON.parse(readFileSync(specPath, "utf8"))) : null;
@@ -244,7 +246,7 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
         ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
       ].join("\n")
     : rawPrompt;
-  if (!prompt && mode !== "readonly_audit") {
+  if (!prompt && mode !== "audit") {
     process.stderr.write('claudexor: missing prompt\n');
     return 2;
   }
@@ -290,8 +292,11 @@ async function orchestrate(args: ParsedArgs, mode: ModeKind, json: boolean): Pro
       harnesses: harnessList(args),
       primaryHarness: flagStr(args, "primary-harness"),
       portfolio: portfolio?.success ? portfolio.data : undefined,
-      n: nFlag,
+      n: forced.race === true ? (nFlag ?? 2) : nFlag,
       attempts: attemptsFlag ?? null,
+      untilClean: flagBool(args, "until-clean"),
+      swarm: forced.swarm === true || flagBool(args, "swarm"),
+      create: forced.create === true || flagBool(args, "create"),
       tests,
       maxUsd: maxUsd ?? null,
       access: resolvedAccess,
@@ -438,10 +443,10 @@ function primaryOutputForCli(root: string, mode?: ModeKind): { kind: string; pat
       ? [{ kind: "answer", path: "final/answer.md" }]
       : mode === "plan"
         ? [{ kind: "plan", path: "final/plan.md" }]
-        : mode === "explore"
-          ? [{ kind: "report", path: "final/explore.md" }, { kind: "summary", path: "final/summary.md" }]
-          : mode === "readonly_audit"
-            ? [{ kind: "report", path: "final/report.md" }, { kind: "summary", path: "final/summary.md" }]
+        : mode === "audit"
+          ? [{ kind: "report", path: "final/report.md" }, { kind: "report", path: "final/explore.md" }, { kind: "summary", path: "final/summary.md" }]
+          : mode === "orchestrate"
+            ? [{ kind: "report", path: "final/orchestration.md" }, { kind: "summary", path: "final/summary.md" }]
             : [{ kind: "summary", path: "final/summary.md" }, { kind: "patch", path: "final/patch.diff" }];
   for (const candidate of candidates) {
     const text = readTextSafe(join(root, candidate.path));
@@ -724,13 +729,24 @@ function isManagedSecretName(name: string): boolean {
 
 /** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
 const KNOWN_FLAGS = new Set([
-  "harness", "mode", "n", "attempts", "test", "max-usd", "reviewer-model", "reviewer-effort",
+  "harness", "mode", "n", "attempts", "until-clean", "swarm", "create",
+  "test", "max-usd", "reviewer-model", "reviewer-effort",
   "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place",
   "answers", "previous", "spec", "json", "all", "dry-run", "from-env",
+  "help", "version",
 ]);
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  // --version / --help are standard CLI affordances, not unknown flags.
+  if (flagBool(args, "version")) {
+    process.stdout.write(`${CLI_VERSION}\n`);
+    return 0;
+  }
+  if (flagBool(args, "help")) {
+    process.stdout.write(HELP);
+    return 0;
+  }
   const unknownFlags = Object.keys(args.flags).filter((f) => !KNOWN_FLAGS.has(f));
   if (unknownFlags.length > 0) {
     process.stderr.write(`claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)\n`);
@@ -776,14 +792,14 @@ async function main(): Promise<number> {
           process.stderr.write(`claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
           return 2;
         }
-        if ((mode === "agent" || mode === "ask" || mode === "explore") && flagStr(args, "spec")) {
-          process.stderr.write("claudexor: --spec requires a gated mode; use 'claudexor race --spec <file>' or 'claudexor run --mode max-attempts --spec <file>'\n");
+        if ((mode === "ask" || mode === "audit") && flagStr(args, "spec")) {
+          process.stderr.write("claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'\n");
           return 2;
         }
         return orchestrate(args, mode, json);
       }
-      if (flagStr(args, "spec")) {
-        process.stderr.write("claudexor: --spec requires an explicit gated mode; use 'claudexor race --spec <file>' or 'claudexor run --mode max-attempts --spec <file>'\n");
+      if (flagStr(args, "spec") && !flagBool(args, "until-clean") && intFlag(args, "attempts") === undefined && intFlag(args, "n") === undefined) {
+        process.stderr.write("claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'\n");
         return 2;
       }
       return orchestrate(args, "agent", json);
@@ -793,10 +809,13 @@ async function main(): Promise<number> {
       return orchestrate(args, "ask", json);
 
     case "explore":
-      return orchestrate(args, "explore", json);
+      return orchestrate(args, "audit", json, { swarm: true });
 
     case "race":
-      return orchestrate(args, "best_of_n", json);
+      return orchestrate(args, "agent", json, { race: true });
+
+    case "orchestrate":
+      return orchestrate(args, "orchestrate", json);
 
     case "plan":
       return orchestrate(args, "plan", json);
@@ -805,11 +824,11 @@ async function main(): Promise<number> {
       return specCommand(args, json);
 
     case "create":
-      return orchestrate(args, "create", json);
+      return orchestrate(args, "agent", json, { create: true });
 
     case "audit":
     case "map":
-      return orchestrate(args, "readonly_audit", json);
+      return orchestrate(args, "audit", json);
 
     case "daemon":
       return daemonCommand(args, json);
