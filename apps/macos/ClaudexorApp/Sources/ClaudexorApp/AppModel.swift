@@ -797,7 +797,7 @@ final class AppModel {
             let result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,
-                n: flags.defaultN,
+                n: mode == .bestOfN ? (flags.defaultN ?? 2) : nil,
                 attempts: mode == .maxAttempts ? 3 : nil,
                 untilClean: flags.untilClean ? true : nil,
                 swarm: flags.swarm ? true : nil,

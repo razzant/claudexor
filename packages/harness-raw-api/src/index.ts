@@ -57,6 +57,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           verify: false,
           compare: true,
           synthesize: true,
+          orchestrate: true,
           shell: false,
           read_files: false,
           edit_files: false,
@@ -107,7 +108,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
         ],
         // No native edit tools: planner/reviewer roles only.
-        enabled_intents: ["plan", "spec", "review", "compare", "synthesize", "explain"],
+        enabled_intents: ["plan", "spec", "review", "compare", "synthesize", "explain", "orchestrate"],
         disabled_intents: ["implement", "create_from_scratch", "repair", "verify"],
         reasons: ["key present but route unproven (no isolated smoke)"],
       });

@@ -122,18 +122,27 @@ export function createCursorAdapter(): HarnessAdapter {
       // proven readiness. Only a passing native session probe yields "ok";
       // key-only setups are degraded until an isolated smoke exists for cursor.
       const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "synthesize", "explain", "audit"];
+      // Write-class intents run in isolated envelopes with a scoped HOME where
+      // the native cursor session is unreachable — they REQUIRE the key
+      // fallback. Native-only auth honestly enables only the non-envelope
+      // (read-only) intents so doctor-ok can never precede a guaranteed run
+      // failure (readiness/routing contract).
+      const readOnlyIntents = ["plan", "spec", "review", "verify", "compare", "synthesize", "explain", "audit"];
+      const enabled = nativeAuthed ? (apiKey ? allIntents : readOnlyIntents) : [];
       return ConformanceReportSchema.parse({
         harness_id: "cursor",
         status: nativeAuthed ? "ok" : apiKey ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
           { id: "auth", status: nativeAuthed ? "pass" : "fail" },
-          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "cursor secret/env available (unproven without isolated smoke)" : "no cursor key fallback" },
+          { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "cursor secret/env available (unproven without isolated smoke)" : "no cursor key fallback (write/envelope intents disabled)" },
         ],
-        enabled_intents: nativeAuthed ? allIntents : [],
-        disabled_intents: nativeAuthed ? [] : allIntents,
+        enabled_intents: enabled,
+        disabled_intents: allIntents.filter((i) => !enabled.includes(i)),
         reasons: nativeAuthed
-          ? []
+          ? apiKey
+            ? []
+            : ["native session only: isolated envelope (write) intents need a stored Cursor API key fallback"]
           : apiKey
             ? ["cursor key present but unproven: no isolated smoke exists for cursor key-only auth"]
             : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],

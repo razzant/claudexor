@@ -2720,7 +2720,9 @@ export class Orchestrator {
       `Keep the plan minimal and budget-aware. Do not propose tools outside the belt.`,
     ].join("\n");
     return this.runReadOnlyReport(
-      { ...input, prompt: brainPrompt },
+      // The executed pool is pinned to the PLANNED pool (no double doctor
+      // resolution drift between the prompt's claims and the actual route).
+      { ...input, harnesses: input.harnesses ?? (pool.length > 0 ? pool : undefined), prompt: brainPrompt },
       {
         mode: "orchestrate",
         swarm: false,

@@ -63,9 +63,10 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/core`: adapter interface, shared CLI run loop, process helpers,
   doctor runner, typed errors. Default write modes are orchestrator/envelope
   paths, not direct live-tree execution.
-- `packages/orchestrator`: Ask, Explore, Agent, Best-of-N, convergence, Plan,
-  Create, and Read-only Audit orchestration; owns run telemetry and policy
-  gates (trust, risk, protected paths).
+- `packages/orchestrator`: the five canonical mode pipelines (ask, plan, audit,
+  agent, orchestrate) with strategy flags (race width, attempt caps,
+  until-clean, swarm, create); owns run telemetry and policy gates (trust,
+  risk, protected paths).
 - `packages/gateway`: harness discovery, capability gating, default available
   harness resolution.
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that

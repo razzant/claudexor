@@ -428,7 +428,7 @@ struct SettingsScreen: View {
                             .help("Default cap for runs. Composer per-run cap can still override it.")
                         TextField("Max USD per day", text: $maxUsdPerDay)
                             .textFieldStyle(.roundedBorder)
-                            .help("User-level per-day budget cap. Empty means no configured cap.")
+                            .help("Display threshold for the Budget view (listed-run spend vs this value). NOT an enforced engine cap — persistent day ledgers do not exist yet.")
                     }
                     if !runCapValid || !dayCapValid {
                         Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")

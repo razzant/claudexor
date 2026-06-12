@@ -21,6 +21,11 @@ describe("cursor adapter conformance fixtures", () => {
       expect(stats.statuslessToolResults).toBe(0);
       expect(stats.errorToolResults).toBeGreaterThan(0);
       expect(stats.usageEvents).toBeGreaterThan(0);
+      if (name.startsWith("session-resume")) {
+        // v0.9 contract: the native session id is surfaced for thread resume.
+        const started = events.find((e) => (e as { type?: string }).type === "started") as { payload?: Record<string, unknown> } | undefined;
+        expect(started?.payload?.["native_session_id"]).toBeTruthy();
+      }
     });
   }
 });
