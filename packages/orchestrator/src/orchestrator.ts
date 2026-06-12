@@ -2685,7 +2685,7 @@ export class Orchestrator {
   private async runOrchestrate(input: RunInput): Promise<OrchestratorResult> {
     // "Doctor-verified" must mean status ok — degraded key-present routes are
     // excluded from the pool the brain plans over (readiness honesty).
-    const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot });
+    const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
     const crossFamily = pool.length >= 2;
     const goal = input.prompt || "Plan the next move for this repository.";
     const brainPrompt = [

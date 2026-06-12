@@ -188,6 +188,9 @@ private struct TurnCard: View {
     @Environment(AppModel.self) private var model
     let turn: ThreadTurnInfo
     @State private var actionError: String?
+    /// Set after a successful accept-risk decision so the apply affordance
+    /// appears immediately; the SERVER gate still owns whether apply succeeds.
+    @State private var riskAccepted = false
 
     private var run: TaskRun? { turn.runId.flatMap { model.task($0) } }
 
@@ -212,10 +215,12 @@ private struct TurnCard: View {
                     }
                     .buttonStyle(.link)
                 }
-                if run.status == .blocked || run.status == .needsReview {
+                if (run.status == .blocked || run.status == .needsReview) && !riskAccepted {
                     decisionBar(run)
                 }
-                if run.status == .succeeded && !run.diff.isEmpty {
+                // Apply appears for green runs AND for blocked runs the operator
+                // just unblocked (the server gate remains the authority).
+                if (run.status == .succeeded && !run.diff.isEmpty) || riskAccepted {
                     applyBar(run)
                 }
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
@@ -240,7 +245,10 @@ private struct TurnCard: View {
     private func decisionBar(_ run: TaskRun) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
             Button("Accept risk & unblock") {
-                Task { actionError = await model.decide(runId: run.id, action: "accept_risk", acceptedRisks: ["operator accepted via thread"]) }
+                Task {
+                    actionError = await model.decide(runId: run.id, action: "accept_risk", acceptedRisks: ["operator accepted via thread"])
+                    if actionError == nil { riskAccepted = true }
+                }
             }
             .help("Records an auditable operator decision bound to this exact patch, then allows apply")
             Button("Rerun with feedback…") {

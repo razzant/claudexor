@@ -93,10 +93,16 @@ export class HarnessGateway {
    * (key present but unproven) are excluded — claims of "doctor-verified"
    * availability must never include them.
    */
-  async doctorOkReal(spec: DoctorSpec = { cwd: process.cwd() }): Promise<string[]> {
+  async doctorOkReal(spec: DoctorSpec = { cwd: process.cwd() }, intent?: Intent): Promise<string[]> {
     const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
     return statuses
-      .filter((s) => s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.length > 0)
+      .filter(
+        (s) =>
+          s.manifest?.kind !== "fake" &&
+          s.status === "ok" &&
+          s.enabledIntents.length > 0 &&
+          (intent === undefined || s.enabledIntents.includes(intent)),
+      )
       .map((s) => s.id);
   }
 }

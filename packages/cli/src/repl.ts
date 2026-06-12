@@ -64,11 +64,16 @@ function parseReplLine(line: string): ReplTurnSpec | { command: "thread" | "new"
  * context reset. Thread state shares the daemon's durable ThreadStore.
  */
 export async function runRepl(repoRoot: string): Promise<number> {
-  const threads = new ThreadStore(join(daemonDir(), "threads.json"));
+  // The REPL runs the engine IN-PROCESS and keeps its own thread store file:
+  // ThreadStore has no cross-process locking, so sharing the daemon's
+  // threads.json would let two writers clobber each other's conversations.
+  // REPL threads are local to the terminal session by design (the daemon/app
+  // SSOT stays single-writer).
+  const threads = new ThreadStore(join(daemonDir(), "threads-repl.json"));
   let thread = threads.createThread({ title: `repl ${new Date().toISOString().slice(0, 16)}`, repoRoot });
   const orch = new Orchestrator({ registry: buildRegistry() });
 
-  process.stdout.write(`claudexor REPL — thread ${thread.id} on ${repoRoot}\nType /help for commands.\n`);
+  process.stdout.write(`claudexor REPL — thread ${thread.id} on ${repoRoot} (terminal-local thread store)\nType /help for commands.\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
   rl.prompt();
 

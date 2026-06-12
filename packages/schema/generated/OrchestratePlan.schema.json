@@ -1,0 +1,47 @@
+{
+  "$ref": "#/definitions/OrchestratePlan",
+  "definitions": {
+    "OrchestratePlan": {
+      "type": "object",
+      "properties": {
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "enum": [
+                  "start_run",
+                  "race",
+                  "status",
+                  "answer_question",
+                  "apply",
+                  "review"
+                ]
+              },
+              "args": {
+                "type": "object",
+                "additionalProperties": {},
+                "default": {}
+              },
+              "why": {
+                "type": "string",
+                "default": ""
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tool_calls"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

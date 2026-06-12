@@ -123,12 +123,13 @@ building a hard dependency.
 
 ## External Harness Adapters
 
-External adapters can be implemented out of tree and driven over JSON-RPC stdio.
-The adapter protocol currently covers discovery, doctor/capability reporting,
-run, review, and cancel style operations. Native capabilities may expose richer
-surfaces, such as Codex app-server JSON-RPC or Claude stream-json stdin, but do
-not assume resume, estimate, live steering, or structured output support unless
-the current protocol, capability profile, and adapter doctor output prove it for
+The out-of-tree JSON-RPC adapter-protocol package was REMOVED in v0.9 as dead
+code (zero importers). External adapter authors currently integrate in-tree by
+implementing the `HarnessAdapter` contract from `@claudexor/core` (discovery,
+doctor/capability reporting, run, review, cancel). Native capabilities may
+expose richer surfaces, such as Codex app-server JSON-RPC or Claude stream-json
+stdin, but do not assume resume, estimate, live steering, or structured output
+support unless the capability profile and adapter doctor output prove it for
 the active run.
 
 Discovery/manifests describe static capabilities and possible auth sources.

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Session, SessionReboundLineage, Thread, ThreadTurn } from "@claudexor/schema";
+import type { Session, Thread, ThreadTurn } from "@claudexor/schema";
 import {
   SCHEMA_VERSION,
   Session as SessionSchema,
@@ -164,31 +164,4 @@ export class ThreadStore {
     this.persist();
   }
 
-  /**
-   * Re-host a thread onto a different harness: mark other sessions stale and
-   * return the typed lossy lineage for the `session.rebound` event (the new
-   * harness has no native memory of the old conversation — disclosed, never silent).
-   */
-  rebindSessions(threadId: string, toHarnessId: string, summary: string, reason: SessionReboundLineage["reason"]): SessionReboundLineage {
-    const sessions = this.sessionsForThread(threadId);
-    const from = sessions.find((s) => s.harness_id !== toHarnessId && s.state === "live");
-    for (const s of sessions) {
-      if (s.harness_id !== toHarnessId && s.state === "live") {
-        s.state = "rebound";
-        s.updated_at = nowIso();
-      }
-    }
-    this.persist();
-    return {
-      thread_id: threadId,
-      harness_id: toHarnessId,
-      from_session_id: from?.id ?? null,
-      to_session_id: null,
-      summary,
-      contract_ref: null,
-      open_tasks: [],
-      diff_state: null,
-      reason,
-    };
-  }
 }

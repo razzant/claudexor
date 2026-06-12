@@ -12,12 +12,34 @@ needs better permissions, streaming, output readiness, budget truth, tool
 diagnostics, setup status, or harness settings, the contract belongs first in
 schema/orchestrator/control API/CLI and only then in UI.
 
+## Chat/Session-First (v0.9)
+
+The conversation is the primary object. A Thread is the Claudexor-owned
+conversation; runs are its turns; the vendor CLI session is a re-hostable cache.
+Read-only turns (ask/plan/audit/orchestrate) resume each routed harness's own
+native session (codex `exec resume`, claude `--resume`) so "plan, then
+continue" is one conversation. Write (agent) turns execute in fresh isolated
+envelopes where a native session is not portable — the engine emits a typed
+`session.rebound` disclosure and continuity rides on the thread prompt plus
+repo state. Modes collapsed to five intents (`ask`, `plan`, `audit`, `agent`,
+`orchestrate`); engine strategies (race width, attempt caps, repair-to-clean,
+research swarm, create-from-scratch) are flags on a mode, never modes.
+
+Auth is subscription-first and honest: native codex/claude sessions are seeded
+into envelopes so a Max/Pro user with NO API key is fully routable; explicit
+`subscription`/`api_key` preferences fall back with a typed
+`route.fallback.auth_switched` disclosure, never silently. A blocked
+NEEDS_HUMAN run is unblocked only through a typed, audited, patch-hash-bound
+operator decision held by the server; the `orchestrate` brain is an intent
+routed like reviewers that produces a typed tool-belt plan, not a privileged
+harness.
+
 ## Harnesses Are Tools, Not Roles
 
 A harness is an execution surface. A role is an intent: `explain`, `plan`,
 `implement`, `repair`, `review`, `verify`, `compare`, `synthesize`, `arbitrate`,
-or `audit`. Claudexor routes only when discovery, doctor, enabled intents,
-capability profile, and access support all agree. Manifest auth source
+`audit`, or `orchestrate`. Claudexor routes only when discovery, doctor, enabled
+intents, capability profile, and access support all agree. Manifest auth source
 availability is not readiness; isolated smoke and doctor checks decide whether a
 harness is routable.
 

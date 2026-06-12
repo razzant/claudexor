@@ -205,7 +205,11 @@ artifact when one exists.
 
 Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8). Each
 explorer writes a per-attempt event stream and a findings markdown artifact.
-The final artifacts include `final/explore.md`, `final/explore-findings.yaml`,
+Orchestrate runs write `final/orchestration.md` (the brain's markdown plan)
+plus `final/orchestration.yaml` — the TYPED `OrchestratePlan` artifact extracted
+from the report's fenced JSON block and validated against the tool belt; a
+missing/invalid block writes `final/orchestration_parse_error.md` and is
+disclosed in the summary. Explore final artifacts include `final/explore.md`, `final/explore-findings.yaml`,
 and `final/omissions.md`. Partial explorer failures are recorded as omissions
 when at least one explorer succeeds; if all explorers fail, the run emits
 `run.failed` with `final/failure.yaml`.

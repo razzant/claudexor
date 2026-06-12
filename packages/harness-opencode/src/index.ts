@@ -81,7 +81,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           structured_events: true,
           structured_output: true,
           json_schema_output: false,
-          resume: false,
+          resume: true,
           cancel: false,
           mcp: true,
           plugins: true,
