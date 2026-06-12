@@ -236,7 +236,7 @@ future verified host-side-effect mode is explicitly selected.
 ## Integrations
 
 Claudexor can be driven by other tools through CLI JSON on supported commands, the
-local daemon/control API, MCP, ACP, and external JSON-RPC adapter protocol. These
+local daemon/control API, MCP, and ACP (the external JSON-RPC adapter-protocol package was removed in v0.9 as dead code). These
 surfaces are beta and capability-gated; integrations should not assume every
 subcommand has JSON output or every harness supports live steering.
 

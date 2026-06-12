@@ -582,6 +582,8 @@ export class DaemonControlApiServer {
         if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
         const repoRoot = applyTargetRoot(body.target ?? { kind: "original_project" }, rec);
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
+        const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+        if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
         const gateError = applyGateError(rec, patch, repoRoot);
         if (gateError) return this.json(res, 409, { error: gateError });
         const delivered = await deliver(repoRoot, patch, { mode: body.applyMode ?? "apply" });

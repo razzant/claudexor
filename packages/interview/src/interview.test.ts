@@ -52,7 +52,7 @@ describe("InterviewEngine", () => {
     expect(spec.interview.questions).toHaveLength(1);
     expect(spec.interview.answers).toHaveLength(1);
 
-    const contract = specPackToTaskContract(spec, { repoRoot: "/tmp/repo", mode: "agent", untilClean: true });
+    const contract = specPackToTaskContract(spec, { repoRoot: "/tmp/repo", mode: "agent" });
     expect(contract.user_intent.raw).toBe("add storage");
     expect(contract.success_criteria[0]?.text).toContain("THE SYSTEM SHALL");
     expect(contract.tests.commands[0]?.command).toBe("pnpm test");

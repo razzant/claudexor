@@ -25,6 +25,8 @@ import type {
 import {
   DEFAULT_ORCHESTRATE_TOOL_BELT,
   HarnessRunSpec,
+  OrchestratePlan as OrchestratePlanSchema,
+  type OrchestratePlan as OrchestratePlanT,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
@@ -3053,6 +3055,23 @@ export class Orchestrator {
         ].join("\n")
       : (succeeded[0]?.report ?? "(no output)");
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
+    // orchestrate: the brain's plan is a TYPED artifact, not just prose. Extract
+    // the required fenced JSON block, validate it against the tool belt, and
+    // persist final/orchestration.yaml; a missing/invalid block is disclosed in
+    // the summary and events (suggest autonomy: the plan is the work product).
+    let typedPlanNote = "";
+    if (opts.mode === "orchestrate") {
+      const extracted = extractOrchestratePlan(report);
+      if (extracted.plan) {
+        store.writeYaml(join(paths.finalDir, "orchestration.yaml"), extracted.plan);
+        log.emit("output.ready", { kind: "report", path: "final/orchestration.yaml" });
+        typedPlanNote = `\n- Typed plan: final/orchestration.yaml (${extracted.plan.tool_calls.length} tool call(s))`;
+      } else {
+        store.writeText(join(paths.finalDir, "orchestration_parse_error.md"), `# Typed plan missing\n\n${extracted.error}\n`);
+        log.emit("output.ready", { kind: "report", path: "final/orchestration_parse_error.md", state: "diagnostic" });
+        typedPlanNote = `\n- Typed plan: MISSING (${extracted.error}); the markdown plan above is the only artifact`;
+      }
+    }
     this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, succeeded[0]?.attemptId ?? null);
     log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}` });
     if (opts.swarm) {
@@ -3067,7 +3086,7 @@ export class Orchestrator {
       store.writeText(join(paths.finalDir, "omissions.md"), `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`);
     }
     const harnessLabel = attempts.map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`).join(", ");
-    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: success\n\n${report}\n`);
+    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: success${typedPlanNote}\n\n${report}\n`);
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
@@ -3089,6 +3108,25 @@ export class Orchestrator {
       summary: redactSecrets(report).slice(0, 400),
       candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
     };
+  }
+}
+
+/**
+ * Extract + validate the brain's typed plan from its markdown report (the
+ * fenced ```json block the orchestrate prompt requires). Structured-output
+ * parsing, not governance: validity is decided by the OrchestratePlan schema.
+ */
+function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
+  const fence = /```json\s*\n([\s\S]*?)\n```/g;
+  let lastBlock: string | null = null;
+  for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;
+  if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
+  try {
+    const parsed = OrchestratePlanSchema.safeParse(JSON.parse(lastBlock));
+    if (!parsed.success) return { plan: null, error: `plan block failed schema validation: ${parsed.error.issues[0]?.message ?? "invalid"}` };
+    return { plan: parsed.data, error: "" };
+  } catch (err) {
+    return { plan: null, error: `plan block is not valid JSON: ${safeErrorMessage(err)}` };
   }
 }
 

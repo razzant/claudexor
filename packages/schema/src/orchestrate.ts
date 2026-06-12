@@ -48,3 +48,22 @@ export const OrchestrateContract = z.object({
   autonomy: OrchestrateAutonomy.default("suggest"),
 });
 export type OrchestrateContract = z.infer<typeof OrchestrateContract>;
+
+/** One suggested tool invocation in a brain plan (suggest autonomy: the engine validates, the user executes). */
+export const OrchestratePlanCall = z.object({
+  tool: OrchestrateToolName,
+  args: z.record(z.string(), z.unknown()).default({}),
+  why: z.string().default(""),
+});
+export type OrchestratePlanCall = z.infer<typeof OrchestratePlanCall>;
+
+/**
+ * The TYPED orchestration plan extracted from the brain's report (the fenced
+ * JSON block the orchestrate prompt requires). Persisted as
+ * `final/orchestration.yaml`; a missing/invalid block is disclosed in the
+ * summary, never silently dropped.
+ */
+export const OrchestratePlan = z.object({
+  tool_calls: z.array(OrchestratePlanCall).min(1),
+});
+export type OrchestratePlan = z.infer<typeof OrchestratePlan>;

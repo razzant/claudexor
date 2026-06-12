@@ -12,7 +12,6 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
-| Adapter protocol | JSON-RPC-over-stdio protocol for external harness adapters. | Beta. Implemented methods are the source of truth. |
 
 ## CLI
 

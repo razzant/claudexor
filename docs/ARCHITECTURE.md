@@ -51,7 +51,7 @@ became flags, not modes:
   with two or more it may plan cross-family race/review.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
-`audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
+`readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
 are NOT aliases: they hard-error at every wire boundary.
 
 ## 3. Package Map

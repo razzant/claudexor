@@ -744,7 +744,16 @@ final class AppModel {
         guard let client else { return }
         selectedThreadId = id
         do {
-            selectedThreadDetail = try await client.threadDetail(id: id)
+            let detail = try await client.threadDetail(id: id)
+            selectedThreadDetail = detail
+            // Hydrate run details for the most recent turns so the conversation
+            // can offer decision/apply actions (diff/findings) without requiring
+            // a manual visit to each run's detail screen first.
+            for turn in detail.turns.suffix(5) {
+                if let runId = turn.runId, liveTasks.contains(where: { $0.id == runId }) {
+                    await loadRunDetail(runId)
+                }
+            }
         } catch {
             threadStatus = "Could not load thread: \(error)"
         }
