@@ -4,7 +4,7 @@ Harbor drives an agent inside each task's isolated container. This adapter insta
 Node + the Claude Code and Codex CLIs + the Claudexor control plane, then runs Claudexor
 in INTERNAL ORCHESTRATION mode against the live ``/app`` tree:
 
-    claudexor run --in-place --mode max-attempts --harness <h> --access full <instruction>
+    claudexor run --in-place --attempts N --harness <h> --access full <instruction>
 
 i.e. one harness implements in place, a DIFFERENT provider family reviews the live
 tree, and Claudexor repairs until the cross-family review is clean or the bounded
@@ -199,8 +199,6 @@ class ClaudexorAgent(BaseInstalledAgent):
         flags = [
             "run",
             "--in-place",
-            "--mode",
-            "max-attempts",
             "--attempts",
             str(self._attempts),
             "--harness",
