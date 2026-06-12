@@ -152,9 +152,14 @@ class ClaudexorAgent(BaseInstalledAgent):
                 # Serialize pnpm io: high-parallelism fd polling trips a racy epoll
                 # EEXIST assert (libuv) on colima's virtiofs/QEMU stack.
                 "export UV_THREADPOOL_SIZE=4\n"
-                "pnpm install --frozen-lockfile --ignore-scripts --network-concurrency=2 --child-concurrency=1\n"
+                # pnpm completes ("Done in Ns") then ABORTS in libuv teardown on
+                # colima's stack — tolerate the exit crash and verify artifacts
+                # EXPLICITLY (fail loudly when the work is actually missing).
+                "pnpm install --frozen-lockfile --ignore-scripts || true\n"
+                "test -d node_modules/.pnpm || { echo 'pnpm install did not materialize node_modules'; exit 1; }\n"
                 # Serialize the build so only one tsc runs at a time (low peak memory).
-                "pnpm build -- --concurrency=1\n"
+                "pnpm build -- --concurrency=1 || true\n"
+                "test -f packages/cli/dist/cli.js || { echo 'build did not produce cli.js'; exit 1; }\n"
             ),
             env=install_env,
             timeout_sec=1800,
