@@ -186,15 +186,37 @@ export function codexExecArgs(
 ): string[] {
   // Resume a native codex session as a follow-up turn (`codex exec resume <id>`),
   // so a thread's later moves continue the same conversation instead of restarting.
-  const head = spec.resume_session_id
-    ? ["exec", "resume", spec.resume_session_id, "--json"]
-    : ["exec", "--json"];
-  const args = [...head, ...sandboxArgs(spec.access), "--skip-git-repo-check"];
+  // LIVE-VERIFIED (codex 0.137): the resume subcommand does NOT accept --sandbox;
+  // sandboxing must ride as `-c sandbox_mode="..."` config overrides there.
+  if (spec.resume_session_id) {
+    const args = ["exec", "resume", spec.resume_session_id, "--json", ...sandboxConfigArgs(spec.access), "--skip-git-repo-check"];
+    if (spec.model_hint) args.push("-m", spec.model_hint);
+    if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
+    args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
+    args.push(spec.prompt);
+    return args;
+  }
+  const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   args.push(spec.prompt);
   return args;
+}
+
+/** Sandbox as `-c sandbox_mode=...` config (the only spelling `exec resume` accepts). */
+function sandboxConfigArgs(access: AccessProfile): string[] {
+  switch (access) {
+    case "readonly":
+      return ["-c", 'sandbox_mode="read-only"'];
+    case "workspace_write":
+      return ["-c", 'sandbox_mode="workspace-write"'];
+    case "full":
+    case "external_sandbox_full":
+      return ["-c", 'sandbox_mode="danger-full-access"'];
+    case "inherit_native":
+      return [];
+  }
 }
 
 /**
