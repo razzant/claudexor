@@ -547,10 +547,15 @@ export class DaemonControlApiServer {
       }
 
       if (body.action === "accept_risk" || body.action === "override_needs_human") {
-        // The override exists to unblock NON-success terminals; a succeeded run
-        // applies directly and must not accumulate misleading risk records.
-        if (rec.state === "succeeded") {
-          return this.json(res, 409, { error: "run already succeeded; apply it directly (no risk override needed)" });
+        // The override exists to unblock a BLOCKED run (the only state the
+        // apply gate honors it for); recording one elsewhere would claim an
+        // apply permission that does not exist.
+        if (rec.state !== "blocked") {
+          return this.json(res, 409, {
+            error: rec.state === "succeeded"
+              ? "run already succeeded; apply it directly (no risk override needed)"
+              : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
+          });
         }
         const patch = readPatch(rec);
         if (patch === null) return this.json(res, 409, { error: "no patch artifact; there is nothing to unblock for apply" });

@@ -389,13 +389,15 @@ export class Orchestrator {
    */
   private sessionSpecFields(input: RunInput, harnessId: string): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
     const cfg = this.config(input.repoRoot)?.global;
-    const configured = (v?: "subscription" | "api_key" | "auto"): "subscription" | "api_key" | undefined =>
+    const explicit = (v?: "subscription" | "api_key" | "auto"): "subscription" | "api_key" | undefined =>
       v && v !== "auto" ? v : undefined;
     return {
+      // "auto" at ANY level falls through (thread turns send the thread default
+      // "auto" as a per-run value; it must not shadow a configured preference).
       auth_preference:
-        input.authPreference ??
-        configured(cfg?.harnesses?.[harnessId]?.auth_preference) ??
-        configured(cfg?.routing?.auth_preference) ??
+        explicit(input.authPreference) ??
+        explicit(cfg?.harnesses?.[harnessId]?.auth_preference) ??
+        explicit(cfg?.routing?.auth_preference) ??
         "auto",
       resume_session_id: input.resumeSessions?.[harnessId] ?? null,
     };

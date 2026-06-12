@@ -51,7 +51,7 @@ became flags, not modes:
   with two or more it may plan cross-family race/review.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
-`readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
+`audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
 are NOT aliases: they hard-error at every wire boundary.
 
 ## 3. Package Map
@@ -105,7 +105,7 @@ Routing is `Pool + Primary + Portfolio`:
 - `portfolio` is recorded in `TaskContract.budget.portfolio`, default
   `subscription-first`.
 
-Single-route read-only modes (`ask`, `readonly_audit`) choose one route from the
+Single-route read-only modes (`ask`, `audit`) choose one route from the
 eligible pool, primary first. `Agent` is a one-candidate envelope run. `explore`
 expands a bounded read-only pool (default width 4, capped at 8). Best-of-N
 expands the eligible pool over N candidates. Convergence rotates compatible
@@ -274,7 +274,10 @@ artifact/delivery facade:
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (the chat/session-first
   conversation SSOT; threads carry run lineage + native harness sessions)
 - `POST /threads/:id/turns` (a follow-up turn: enqueues a run anchored to the
-  thread; the engine resumes each routed harness's own native CLI session)
+  thread. Read-only turns resume each routed harness's own native CLI session;
+  write/agent turns run in fresh isolated envelopes — the native session is not
+  portable into a scoped harness home — with a typed `session.rebound`
+  disclosure; continuity rides on the thread prompt + repo state)
 - `POST /runs/:id/decision` (typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;

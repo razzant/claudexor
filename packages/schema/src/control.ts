@@ -10,7 +10,6 @@ import {
   ProviderFamily,
 } from "./primitives.js";
 import { AuthMode, Portfolio } from "./budget.js";
-import { } from "./config.js";
 import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";

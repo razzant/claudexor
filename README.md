@@ -60,14 +60,18 @@ Unknown modes fail loudly. The old strategy mode ids (`best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`) and the
 pre-v0.8 ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
 
-Chat is the normal loop: `claudexor` with no arguments opens a REPL where each
-turn resumes the routed harness's own native CLI session (codex `exec resume`,
-claude `--resume`) — plan first, then continue, in ONE conversation.
+Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
+thread. Read-only turns (ask/plan/audit/orchestrate) RESUME the routed
+harness's own native CLI session (codex `exec resume`, claude `--resume`) —
+plan first, then keep asking, in ONE conversation. Write (agent) turns run in
+fresh isolated envelopes where the native session is not portable: the engine
+emits a typed `session.rebound` disclosure and continuity rides on the thread
+prompt plus repo state (envelope-per-session lifetime is future work).
 
 Examples:
 
 ```bash
-claudexor                       # REPL: a thread of turns with native resume
+claudexor                       # REPL: a thread of turns (read-only turns resume natively)
 claudexor ask "2+2?"
 claudexor ask "google the latest release notes" --web auto
 claudexor explore "map this repo's auth and run storage"   # = audit --swarm
@@ -143,7 +147,7 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 
 - `POST /runs`
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
-- `POST /threads/:id/turns` (follow-up turn; native harness sessions resume)
+- `POST /threads/:id/turns` (follow-up turn; read-only turns resume native sessions, write turns run fresh with a `session.rebound` disclosure)
 - `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /events` (global live-only run-event multiplex)
@@ -299,8 +303,9 @@ cd ../ClaudexorApp && swift build
 
 - **v0.9.0** — chat/session-first + harness-agnostic truth: modes collapse 9→5
   (`ask`/`plan`/`audit`/`agent`/`orchestrate`; strategies are flags); threads
-  with native session resume across turns (codex `exec resume`, claude
-  `--resume`) plus a no-args CLI REPL; subscription auth pass-through into
+  with native session resume across read-only turns (codex `exec resume`,
+  claude `--resume`; write turns run fresh envelopes with a typed
+  `session.rebound` disclosure) plus a no-args CLI REPL; subscription auth pass-through into
   envelopes (native codex/claude sessions work with NO API key) with both auth
   routes and auto-fallback; typed operator decisions unblock NEEDS_HUMAN runs
   through the apply gate (patch-hash-bound, audited); the `orchestrate` brain
