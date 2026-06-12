@@ -233,6 +233,15 @@ class ClaudexorAgent(BaseInstalledAgent):
             'printf \'{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\\n\' "$OPENAI_API_KEY" '
             '> "$HOME/.codex/auth.json"; fi'
         )
+        # v0.9 trust gate: `--access full` requires a user-local trust allow for
+        # the repo (sha256 of the repo root path, first 16 hex chars). The
+        # benchmark container IS the sandbox (IS_SANDBOX=1), so granting full
+        # access to /app here is the intended Harbor parity.
+        seed_trust = (
+            "mkdir -p \"$HOME/.claudexor/trust\" && "
+            "h=$(printf %s /app | sha256sum | cut -c1-16) && "
+            "printf 'allow_full_access: true\\n' > \"$HOME/.claudexor/trust/$h.yaml\""
+        )
         # Always exit 0: Terminal-Bench scores the container STATE via hidden tests, not
         # the agent's exit code. A non-converged Claudexor run still leaves valid work in
         # /app; let the verifier judge it. Claudexor's own status lives in the artifacts.
@@ -243,6 +252,7 @@ class ClaudexorAgent(BaseInstalledAgent):
         return (
             "cd /app\n"
             f"{seed_codex_auth}\n"
+            f"{seed_trust}\n"
             f"{cmd} || true\n"
             f"{export_artifacts}\n"
         )
