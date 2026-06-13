@@ -217,9 +217,21 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
       updated_at: "2026-06-12T00:00:00Z",
     });
     expect(s.native_session_id).toBeNull();
-    expect(s.auth_mode).toBe("unknown");
+    expect(s.last_observed_model).toBeNull();
     expect(s.resume_kind).toBe("none");
     expect(s.state).toBe("live");
+  });
+
+  it("defaults a Thread to an in-place workspace", () => {
+    const t = Thread.parse({
+      schema_version: 2,
+      id: "th-1",
+      created_at: "2026-06-12T00:00:00Z",
+      updated_at: "2026-06-12T00:00:00Z",
+    });
+    expect(t.workspace.mode).toBe("in_place");
+    expect(t.workspace.worktree_path).toBeNull();
+    expect(t.state).toBe("active");
   });
 
   it("parses a ThreadTurn and a SessionReboundLineage", () => {
@@ -242,20 +254,21 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     expect(spec.resume_session_id).toBeNull();
   });
 
-  it("accepts thread linkage + authPreference on a run start request", () => {
+  it("accepts thread linkage + planRunId + authPreference on a run start request", () => {
     const req = ControlRunStartRequest.parse({
       prompt: "follow up",
       mode: "agent",
       threadId: "th-1",
       parentRunId: "run-0",
-      sessionId: "se-1",
+      planRunId: "run-plan-1",
       authPreference: "subscription",
     });
     expect(req.threadId).toBe("th-1");
+    expect(req.planRunId).toBe("run-plan-1");
     expect(req.authPreference).toBe("subscription");
-    // `rehost` was removed until its behavior ships (staged-field rule): the
-    // strict DTO rejects it LOUDLY instead of accepting a no-op flag.
-    expect(() => ControlRunStartRequest.parse({ prompt: "x", mode: "agent", rehost: true })).toThrow(/rehost/);
+    // `sessionId` was removed (it had no consumer — staged-field rule): the strict
+    // DTO now rejects it LOUDLY instead of accepting a no-op field.
+    expect(() => ControlRunStartRequest.parse({ prompt: "x", mode: "agent", sessionId: "se-1" })).toThrow(/sessionId/);
   });
 
   it("validates a typed review decision (unblock) request, rejecting unknown keys", () => {

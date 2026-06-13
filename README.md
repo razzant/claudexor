@@ -147,7 +147,9 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 
 - `POST /runs`
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
-- `POST /threads/:id/turns` (follow-up turn; read-only turns resume native sessions, write turns run fresh with a `session.rebound` disclosure)
+- `PATCH /threads/:id` (rename / archive a thread)
+- `POST /threads/:id/turns` (follow-up turn; turns run in-place in the project — or the thread's worktree for an isolated thread — so the native session resumes and the next turn sees the work; a best-of-N race runs isolated candidates and auto-applies the winner)
+- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
 - `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /events` (global live-only run-event multiplex)

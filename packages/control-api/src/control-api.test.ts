@@ -138,13 +138,6 @@ describe("DaemonControlApiServer", () => {
     const { daemon, record } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-"));
     let enqueued: Record<string, unknown> | undefined;
-    const wrapped: DaemonFacadeClient = {
-      ...daemon,
-      async enqueue(params: unknown) {
-        enqueued = params as Record<string, unknown>;
-        return daemon.enqueue(params);
-      },
-    };
     // Minimal in-memory thread service double (the daemon's ThreadStore contract).
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
@@ -155,6 +148,7 @@ describe("DaemonControlApiServer", () => {
       repo: { root: repo, base_ref: "HEAD" },
       title: "test thread",
       mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
       portfolio: "subscription-first",
@@ -163,6 +157,23 @@ describe("DaemonControlApiServer", () => {
       state: "active",
     };
     const turns: Record<string, unknown>[] = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        const job = await daemon.enqueue(params);
+        // Simulate the daemon runner binding the started run to its pre-created
+        // turn (single-writer: control-api creates the turn, runner binds it).
+        const turnId = (params as { turnId?: string }).turnId;
+        if (turnId) {
+          const turn = turns.find((t) => t["id"] === turnId);
+          if (turn) turn["run_id"] = record.runId;
+          (threadObj["run_ids"] as string[]).push(record.runId);
+          threadObj["head_run_id"] = record.runId;
+        }
+        return job;
+      },
+    };
     const services: DaemonControlApiOptions["services"] = {
       createThread: async () => threadObj,
       listThreads: async () => ({ threads: [threadObj] }),
@@ -170,10 +181,9 @@ describe("DaemonControlApiServer", () => {
         expect(id).toBe("th-1");
         return { thread: threadObj, sessions: [], turns };
       },
-      addThreadTurn: async (id, runId, prompt) => {
-        const turn = { id: "tn-1", thread_id: id, run_id: runId, parent_run_id: null, session_id: null, kind: "followup", prompt, created_at: now };
+      createThreadTurn: async (id, prompt, opts) => {
+        const turn = { id: "tn-1", thread_id: id, run_id: null, parent_run_id: opts.parentRunId ?? null, plan_run_id: opts.planRunId ?? null, kind: opts.kind ?? "followup", prompt, created_at: now };
         turns.push(turn);
-        threadObj["head_run_id"] = runId;
         return turn;
       },
     };

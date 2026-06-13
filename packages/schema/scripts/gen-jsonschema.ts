@@ -67,6 +67,9 @@ import {
   ControlRunDecisionResponse,
   ControlThread,
   ControlThreadCreateRequest,
+  ControlThreadUpdateRequest,
+  ControlThreadApplyRequest,
+  ControlThreadApplyResponse,
   ControlThreadDetail,
   ControlThreadListResponse,
 } from "../src/index.js";
@@ -139,6 +142,9 @@ const schemas = {
   ControlRunDecisionResponse,
   ControlThread,
   ControlThreadCreateRequest,
+  ControlThreadUpdateRequest,
+  ControlThreadApplyRequest,
+  ControlThreadApplyResponse,
   ControlThreadListResponse,
   ControlThreadDetail,
 } as const;

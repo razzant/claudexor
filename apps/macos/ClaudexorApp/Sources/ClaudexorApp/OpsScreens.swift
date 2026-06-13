@@ -255,7 +255,6 @@ struct SettingsScreen: View {
     @State private var maxUsdPerRun = ""
     @State private var maxUsdPerDay = ""
     @State private var interactionTimeoutMinutes = ""
-    @AppStorage("claudexor.reducedVisualEffects") private var reducedVisualEffects = false
     private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var dayCapValid: Bool { parseOptionalDouble(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var interactionTimeoutValid: Bool {
@@ -289,15 +288,7 @@ struct SettingsScreen: View {
                         ForEach(AppearanceMode.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    Toggle(isOn: $reducedVisualEffects) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Reduce ambient glow motion").font(.callout)
-                            Text("Keeps the Liquid Glass/chrome style but freezes and softens the mesh backdrop.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
-                    .toggleStyle(.switch).tint(Theme.accent)
-                    Text("Liquid Glass stays on navigation/chrome; dense content uses opaque surfaces for contrast.")
+                    Text("The window is matte glass — the desktop shows faintly through it. Code and diffs stay on a solid surface for contrast. Reduce Transparency falls back to a solid backdrop.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 settingsGroup("Current Project", "folder") {

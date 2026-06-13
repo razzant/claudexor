@@ -37,6 +37,9 @@ export const RunEventType = z.enum([
   "synthesis.started",
   "arbitration.completed",
   "work_product.emitted",
+  /** A race/agent winner's patch was auto-applied to the live in-place tree
+   * (or the apply was attempted and failed). Payload: {applied, patch_sha256, detail}. */
+  "work_product.adopted",
   "control.requested",
   "control.applied",
   "control.rejected",
@@ -74,6 +77,9 @@ export const RunEvent = z.object({
   ts: z.string(),
   run_id: Id,
   task_id: Id,
+  /** Thread this run is a turn of, when any. Lets the global event multiplex
+   * route live progress to a chat surface without a reverse job lookup. */
+  thread_id: Id.optional(),
   type: RunEventType,
   payload: z.record(z.string(), z.unknown()).default({}),
 });

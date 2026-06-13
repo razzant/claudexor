@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCapture, WorkspaceError } from "@claudexor/core";
 
@@ -128,8 +129,10 @@ export async function stashCreate(repo: string): Promise<string | null> {
   if (head.code !== 0) throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
   const headSha = head.stdout.trim();
   // Unique per call: concurrent envelope creates (a best_of_n wave) must never
-  // collide on the scratch index (same pid + same millisecond is real).
-  const tmpIndex = join(repo, ".git", `claudexor-snapshot-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  // collide on the scratch index (same pid + same millisecond is real). It lives
+  // in the OS temp dir, NOT under `<repo>/.git` — in a linked worktree `.git` is
+  // a FILE (gitdir pointer), so a scratch path there fails (review #8).
+  const tmpIndex = join(tmpdir(), `claudexor-snapshot-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const env: Record<string, string> = {
     GIT_INDEX_FILE: tmpIndex,
     GIT_AUTHOR_NAME: "Claudexor",
@@ -162,6 +165,28 @@ export async function stashCreate(repo: string): Promise<string | null> {
   }
 }
 
+/**
+ * Capture the CURRENT working-tree state (tracked + untracked, minus `.claudexor`)
+ * as a commit sha — always returns one. Dirty trees become a dangling snapshot
+ * commit (via `stashCreate`); a clean tree resolves to HEAD. This is the per-turn
+ * diff base for in-place threads: snapshot at turn start, snapshot at turn end,
+ * `diffTrees(base, end)` yields exactly that turn's net change (pre-existing dirty
+ * state is folded into `base`, so the reviewer never sees prior turns' edits).
+ */
+export async function snapshotTree(repo: string): Promise<string> {
+  const snap = await stashCreate(repo);
+  return snap ?? (await revParse(repo, "HEAD"));
+}
+
+/** Net diff between two tree-ish shas (used for in-place per-turn diffs). */
+export async function diffTrees(repo: string, baseSha: string, endSha: string): Promise<string> {
+  const r = await git(repo, ["diff", baseSha, endSha]);
+  if (r.code !== 0) {
+    throw new WorkspaceError(`git diff ${baseSha} ${endSha} failed: ${r.stderr.trim()}`);
+  }
+  return r.stdout;
+}
+
 export async function worktreeAdd(repo: string, path: string, branch: string, baseSha: string): Promise<void> {
   const r = await git(repo, ["worktree", "add", "-b", branch, path, baseSha]);
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
@@ -169,6 +194,28 @@ export async function worktreeAdd(repo: string, path: string, branch: string, ba
 
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
+}
+
+/**
+ * Apply a unified diff to a tree with a 3-way merge (race-winner adoption into
+ * the live in-place tree). Throws loudly on conflict so the caller can disclose
+ * `adopted:false` and offer a manual apply — the work is never silently lost.
+ */
+export async function applyPatch(repo: string, diff: string): Promise<void> {
+  if (!diff.trim()) return;
+  // OS temp dir, not `<repo>/.git` (a worktree's `.git` is a file — review #9).
+  const patchFile = join(tmpdir(), `claudexor-adopt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.patch`);
+  try {
+    writeFileSync(patchFile, diff, "utf8");
+    const r = await git(repo, ["apply", "--3way", "--whitespace=nowarn", patchFile]);
+    if (r.code !== 0) throw new WorkspaceError(`git apply --3way failed: ${r.stderr.trim()}`);
+  } finally {
+    try {
+      rmSync(patchFile, { force: true });
+    } catch {
+      /* best-effort patch-file cleanup */
+    }
+  }
 }
 
 export async function worktreePrune(repo: string): Promise<void> {

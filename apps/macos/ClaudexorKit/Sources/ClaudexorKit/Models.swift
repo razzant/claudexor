@@ -102,6 +102,8 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let title: String?
     public let repoRoot: String?
     public let mode: String?
+    /// in_place (default) mutates the live tree; isolated keeps a thread worktree.
+    public let workspaceMode: String?
     public let authPreference: String?
     public let primaryHarness: String?
     public let state: String?
@@ -110,6 +112,33 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let needsHuman: Bool
     public let createdAt: String
     public let updatedAt: String
+}
+
+/// Honest terminal outcome of a run (projected from work_product.yaml): answers
+/// "what did this turn actually do?" — `plan` means a plan, NO files changed.
+public struct RunResult: Codable, Sendable, Equatable {
+    public struct DiffStat: Codable, Sendable, Equatable {
+        public let files: Int
+        public let additions: Int
+        public let deletions: Int
+    }
+    public let kind: String          // patch | answer | plan | report | none
+    public let diffStat: DiffStat?
+    public let blockers: Int
+    public let adopted: Bool?
+}
+
+/// Compact run state embedded on a thread turn (so the chat renders without N+1).
+public struct TurnRunCard: Codable, Sendable, Equatable {
+    public let state: String
+    public let mode: String?
+    public let strategy: String?
+    public let n: Int?
+    public let result: RunResult?
+    public let spendUsd: Double?
+    public let outputReadyState: String?
+    public let waitingOnUser: Bool?
+    public let finishedAt: String?
 }
 
 public struct ThreadSessionInfo: Codable, Sendable, Identifiable, Equatable {
@@ -126,9 +155,12 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     public let threadId: String
     public let runId: String?
     public let parentRunId: String?
+    /// Set when this turn implements an approved plan from an earlier run.
+    public let planRunId: String?
     public let kind: String?
     public let prompt: String
-    public let state: String?
+    /// Embedded run card (state + honest outcome) so the chat renders without N+1.
+    public let run: TurnRunCard?
     public let createdAt: String
 }
 
@@ -146,17 +178,49 @@ public struct CreateThreadRequest: Codable, Sendable {
     public var title: String?
     public var scope: RunScope
     public var mode: String?
+    /// in_place (default) or isolated — how this thread's turns touch files.
+    public var workspace: String?
     public var authPreference: String?
     public var primaryHarness: String?
 
     public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
-                authPreference: String? = nil, primaryHarness: String? = nil) {
+                workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil) {
         self.title = title
         self.scope = scope
         self.mode = mode
+        self.workspace = workspace
         self.authPreference = authPreference
         self.primaryHarness = primaryHarness
     }
+}
+
+/// Body for PATCH /threads/:id — rename and/or archive (open|closed).
+public struct UpdateThreadRequest: Codable, Sendable {
+    public var title: String?
+    public var state: String?
+    public init(title: String? = nil, state: String? = nil) {
+        self.title = title
+        self.state = state
+    }
+}
+
+/// Body for POST /threads/:id/apply — deliver an isolated thread's worktree diff.
+public struct ThreadApplyRequest: Codable, Sendable {
+    public var mode: String
+    public var branch: String?
+    public var message: String?
+    public init(mode: String = "apply", branch: String? = nil, message: String? = nil) {
+        self.mode = mode
+        self.branch = branch
+        self.message = message
+    }
+}
+
+public struct ThreadApplyResponse: Codable, Sendable {
+    public let applied: Bool
+    public let status: String
+    public let headMoved: Bool
+    public let detail: String?
 }
 
 /// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.
@@ -170,10 +234,12 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var swarm: Bool?
     public var create: Bool?
     public var maxUsd: Double?
+    /// Implement an approved plan from an earlier turn (forces agent mode).
+    public var planRunId: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
-                maxUsd: Double? = nil) {
+                maxUsd: Double? = nil, planRunId: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -183,6 +249,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.swarm = swarm
         self.create = create
         self.maxUsd = maxUsd
+        self.planRunId = planRunId
     }
 }
 
@@ -360,6 +427,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let webMode: String?
     public let webEvidence: WebEvidence?
     public let outputReadyState: String?
+    /// Honest terminal outcome (patch/answer/plan/report/none + diffstat/adopted).
+    public let result: RunResult?
     /// True while at least one harness question awaits the user's answer.
     public let waitingOnUser: Bool?
     public let route: RouteInfo?

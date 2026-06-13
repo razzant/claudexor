@@ -11,14 +11,10 @@
         "harness_id": {
           "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
         },
-        "from_session_id": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
-            },
-            {
-              "type": "null"
-            }
+        "from_native_session_id": {
+          "type": [
+            "string",
+            "null"
           ],
           "default": null
         },
@@ -69,9 +65,11 @@
             "stall",
             "web_evidence_unsatisfied",
             "fallback_model",
+            "not_portable",
+            "auth_unavailable",
             "manual"
           ],
-          "default": "manual"
+          "default": "not_portable"
         }
       },
       "required": [

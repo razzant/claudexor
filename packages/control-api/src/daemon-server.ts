@@ -28,6 +28,7 @@ import {
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
+  ControlRunResult,
   ControlPrimaryOutput,
   ControlTimelineEvent,
   ControlBudgetSnapshot,
@@ -41,10 +42,14 @@ import {
   ControlRunDecisionResponse,
   ControlThread,
   ControlThreadCreateRequest,
+  ControlThreadUpdateRequest,
+  ControlThreadApplyRequest,
+  ControlThreadApplyResponse,
   ControlThreadDetail,
   ControlThreadListResponse,
   ControlSession,
   ControlThreadTurn,
+  ControlTurnRunCard,
   DecisionRecord,
   ModeKind,
   Portfolio,
@@ -115,7 +120,12 @@ export interface DaemonControlApiOptions {
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
-    addThreadTurn?: (id: string, runId: string | null, prompt: string, kind?: unknown, parentRunId?: string | null) => Promise<unknown>;
+    /** Single-writer turn creation (run_id bound later by the daemon runner). */
+    createThreadTurn?: (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null }) => Promise<unknown>;
+    /** Rename / archive a thread. */
+    updateThread?: (id: string, patch: { title?: string; state?: string }) => Promise<unknown>;
+    /** Deliver an isolated thread's accumulated worktree diff to the project. */
+    applyThread?: (id: string, opts: { mode: string; branch?: string; message?: string }) => Promise<unknown>;
   };
 }
 
@@ -344,6 +354,7 @@ export class DaemonControlApiServer {
           title: parsed.title,
           repoRoot,
           mode: parsed.mode,
+          workspace: parsed.workspace,
           authPreference: parsed.authPreference,
           primaryHarness: parsed.primaryHarness ?? null,
         });
@@ -372,13 +383,60 @@ export class DaemonControlApiServer {
       try {
         const detail = await svc(decodeURIComponent(threadDetailMatch[1] as string));
         const runs = await this.opts.daemon.list();
-        const states = new Map(runs.map((r) => [r.runId ?? r.id, r.state]));
+        const byRun = new Map(runs.map((r) => [r.runId ?? r.id, r]));
         const thread = detail.thread as { head_run_id?: string | null };
+        // Build a run card per turn so the chat renders the conversation (state +
+        // honest outcome) from this one response — no N+1 run-detail fetch.
+        const cards = new Map<string, ControlTurnRunCard>();
+        for (const turn of detail.turns as { run_id?: string | null }[]) {
+          const runId = turn.run_id ?? null;
+          if (runId && !cards.has(runId)) {
+            const rec = byRun.get(runId);
+            if (rec) cards.set(runId, turnRunCard(this.summarizeRunLive(rec)));
+          }
+        }
+        const headState = byRun.get(thread.head_run_id ?? "")?.state;
         return this.json(res, 200, ControlThreadDetail.parse({
-          thread: projectThread(detail.thread, states.get(thread.head_run_id ?? "") === "blocked"),
+          thread: projectThread(detail.thread, headState === "blocked"),
           sessions: detail.sessions.map(projectSession),
-          turns: detail.turns.map((t) => projectTurn(t, states)),
+          turns: detail.turns.map((t) => projectTurn(t, cards)),
         }));
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
+    // PATCH /threads/:id — rename / archive (open|closed).
+    if (method === "PATCH" && threadDetailMatch) {
+      const svc = this.opts.services?.updateThread;
+      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const patch = ControlThreadUpdateRequest.parse(raw);
+        const thread = await svc(decodeURIComponent(threadDetailMatch[1] as string), { title: patch.title, state: patch.state });
+        return this.json(res, 200, projectThread(thread, false));
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+    }
+
+    // POST /threads/:id/apply — deliver an isolated thread's accumulated worktree
+    // diff to the project (in-place threads write the live tree directly, so they
+    // never need this).
+    const threadApplyMatch = /^\/threads\/([^/]+)\/apply$/.exec(path);
+    if (method === "POST" && threadApplyMatch) {
+      const detailSvc = this.opts.services?.threadDetail;
+      const applySvc = this.opts.services?.applyThread;
+      if (!detailSvc || !applySvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const body = ControlThreadApplyRequest.parse(raw);
+        const result = await applySvc(decodeURIComponent(threadApplyMatch[1] as string), { mode: body.mode, branch: body.branch, message: body.message });
+        return this.json(res, 200, ControlThreadApplyResponse.parse(result));
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
@@ -388,61 +446,97 @@ export class DaemonControlApiServer {
     const threadTurnMatch = /^\/threads\/([^/]+)\/turns$/.exec(path);
     if (method === "POST" && threadTurnMatch) {
       const detailSvc = this.opts.services?.threadDetail;
-      const turnSvc = this.opts.services?.addThreadTurn;
-      if (!detailSvc || !turnSvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      const createTurnSvc = this.opts.services?.createThreadTurn;
+      if (!detailSvc || !createTurnSvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
-      // Per-thread serialization: concurrent turns on one thread would race the
-      // head_run_id lineage (check-then-act across awaits). Chain them.
-      const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
-      const turnWork = previous.catch(() => undefined).then(async () => {
+      // Read the body BEFORE chaining: a request body is a one-shot stream, so
+      // reading it inside the chain would block on the previous turn and could
+      // time out (#19). Parse/secret-scan eagerly, then serialize the rest.
+      let body: Record<string, unknown>;
       try {
-        const detail = await detailSvc(threadId);
-        const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null };
-        const body = (await this.readBody(req)) as Record<string, unknown>;
+        body = ((await this.readBody(req)) ?? {}) as Record<string, unknown>;
         assertNoInlineSecretValues(body);
-        // The turn body is a reduced run-start: thread anchors scope/mode/auth;
-        // the body may override strategy flags per turn (plan -> implement etc.).
-        const params = normalizeRunStart(
-          ControlRunStartRequest.parse({
-            ...body,
-            scope: thread.repo ? { kind: "project", root: thread.repo.root } : { kind: "none" },
-            mode: typeof body["mode"] === "string" ? body["mode"] : thread.mode,
-            threadId,
-            parentRunId: thread.head_run_id ?? undefined,
-            authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
-            ...(thread.primary_harness && body["primaryHarness"] === undefined ? { primaryHarness: thread.primary_harness } : {}),
-          }),
-        );
-        const parentRunId = thread.head_run_id ?? null;
-        const job = await this.opts.daemon.enqueue(params);
-        const rec = await this.waitForRunStart(job.id);
-        if (rec.runId && rec.runDir) {
-          const turn = await turnSvc(threadId, rec.runId, String(params.prompt ?? ""), "followup", parentRunId);
-          return this.json(res, 200, {
-            ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
-            turnId: (turn as { id?: string }).id,
-            threadId,
-          });
-        }
-        // FAIL LOUDLY instead of recording a turn that can never reconcile: a
-        // run id that arrives after this wait would leave a permanent
-        // null-linked turn and later turns would resume from the OLD head.
-        // The job stays canonical in the daemon; the client should cancel or
-        // retry the turn once the queue drains.
-        if (!TERMINAL_STATES.has(rec.state)) {
-          await this.opts.daemon.cancel(rec.id).catch(() => undefined);
-          return this.json(res, 503, {
-            error: "the engine queue did not start the turn within the wait window; the queued job was cancelled — retry the turn",
-            jobId: rec.id,
-          });
-        }
-        return this.json(res, 500, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
+      // Per-thread serialization: concurrent turns on one thread would race the
+      // head_run_id lineage (check-then-act across awaits). Chain them.
+      const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
+      const turnWork = previous.catch(() => undefined).then(async () => {
+        try {
+          const detail = await detailSvc(threadId);
+          const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null; run_ids?: string[]; workspace?: { mode?: string } };
+          let prompt = String(body["prompt"] ?? "");
+          let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;
+          const planRunId = typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
+          // "Implement plan": prefix the approved plan from an earlier turn into
+          // the prompt and force agent mode. The plan run must belong to THIS
+          // thread (no cross-thread artifact reads).
+          if (planRunId) {
+            if (!(thread.run_ids ?? []).includes(planRunId)) {
+              throw Object.assign(new Error(`planRunId ${planRunId} is not a turn of this thread`), { status: 400 });
+            }
+            const planText = await this.readRunArtifactText(planRunId, "final/plan.md");
+            if (!planText || !planText.trim()) {
+              // Fail loudly: "Implement plan" with an unreadable plan must NOT
+              // silently run the bare prompt as agent (review r2 #7).
+              throw Object.assign(new Error(`plan run ${planRunId} has no readable final/plan.md to implement`), { status: 400 });
+            }
+            prompt = `Implement the following approved plan. Deviate only where the code contradicts it, and say so.\n\n${planText}\n\n## Additional instruction\n${prompt}`.trim();
+            mode = "agent";
+          }
+          // Agent turns run "live" in the execution tree (in-place project or the
+          // thread worktree — the runner resolves which from thread.workspace).
+          const isolation = mode === "agent" ? "live" : "envelope";
+          const params = normalizeRunStart(
+            ControlRunStartRequest.parse({
+              ...body,
+              prompt,
+              scope: thread.repo ? { kind: "project", root: thread.repo.root } : { kind: "none" },
+              mode,
+              execution: { isolation },
+              threadId,
+              parentRunId: thread.head_run_id ?? undefined,
+              planRunId: planRunId ?? undefined,
+              authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
+              ...(thread.primary_harness && body["primaryHarness"] === undefined ? { primaryHarness: thread.primary_harness } : {}),
+            }),
+          );
+          // Single-writer: create the turn (run_id=null) BEFORE enqueue and pass
+          // its id in the params; the daemon runner binds the started run to it.
+          // This means a queued-but-not-yet-started turn is still recorded, so we
+          // NEVER cancel the job on a wait timeout (the old #18 race).
+          const turn = (await createTurnSvc(threadId, prompt, {
+            // No explicit kind: the store auto-detects initial vs followup so the
+            // FIRST turn of a thread is "initial", not "followup" (review #4).
+            parentRunId: thread.head_run_id ?? null,
+            planRunId,
+          })) as { id: string };
+          const job = await this.opts.daemon.enqueue({ ...params, turnId: turn.id });
+          const rec = await this.waitForRunStart(job.id);
+          if (rec.runId && rec.runDir) {
+            return this.json(res, 200, {
+              ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
+              turnId: turn.id,
+              threadId,
+            });
+          }
+          // The turn IS recorded (turnId) and the job is canonical in the daemon;
+          // the runner binds the run when it starts. Return 202 without cancelling.
+          return this.json(res, 202, { jobId: rec.id, turnId: turn.id, threadId, state: rec.state });
+        } catch (err) {
+          const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+          return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        }
       });
-      this.threadTurnChains.set(threadId, turnWork.then(() => undefined, () => undefined));
+      // Drop the chain entry once settled so the Map cannot grow unbounded
+      // across a thread's lifetime (#19 micro-leak). The entry references itself
+      // so a newer turn that replaced it is never deleted out from under.
+      const entry: Promise<void> = turnWork.then(() => undefined, () => undefined).finally(() => {
+        if (this.threadTurnChains.get(threadId) === entry) this.threadTurnChains.delete(threadId);
+      });
+      this.threadTurnChains.set(threadId, entry);
       return turnWork;
     }
 
@@ -609,23 +703,23 @@ export class DaemonControlApiServer {
       } catch (err) {
         return this.json(res, 400, { error: `cannot rebuild run params for rerun: ${err instanceof Error ? err.message : String(err)}` });
       }
-      const job = await this.opts.daemon.enqueue(params);
+      // A thread-anchored rerun is a TURN of that conversation. Single-writer:
+      // create the decision turn (run_id=null) BEFORE enqueue and pass its id, so
+      // the daemon runner binds the rerun and head_run_id/needsHuman move off the
+      // old blocked head — no post-hoc turn that could fail to reconcile.
+      const threadId = typeof p["threadId"] === "string" ? p["threadId"] : null;
+      const createTurnSvc = this.opts.services?.createThreadTurn;
+      let rerunTurnId: string | undefined;
+      if (threadId && createTurnSvc) {
+        const turn = (await createTurnSvc(threadId, String(params.prompt ?? ""), {
+          kind: "decision",
+          parentRunId: rec.runId ?? rec.id,
+        })) as { id: string };
+        rerunTurnId = turn.id;
+      }
+      const job = await this.opts.daemon.enqueue({ ...params, ...(rerunTurnId ? { turnId: rerunTurnId } : {}) });
       const newRec = await this.waitForRunStart(job.id);
       appendRunAuditEvent(rec, "control.applied", { decision: body.action, new_run_id: newRec.runId ?? newRec.id });
-      // A thread-anchored rerun is a TURN of that conversation: record it (kind
-      // "decision") so head_run_id/needsHuman move off the old blocked head.
-      const threadId = typeof p["threadId"] === "string" ? p["threadId"] : null;
-      const turnSvc = this.opts.services?.addThreadTurn;
-      if (threadId && turnSvc && newRec.runId) {
-        const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
-        const chained = previous
-          .catch(() => undefined)
-          .then(async () => {
-            await turnSvc(threadId, newRec.runId ?? null, String(params.prompt ?? ""), "decision");
-          });
-        this.threadTurnChains.set(threadId, chained.then(() => undefined, () => undefined));
-        await chained.catch(() => undefined);
-      }
       return this.json(res, 200, ControlRunDecisionResponse.parse({
         accepted: true,
         status: "requeued",
@@ -892,6 +986,17 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
+  /** Read a run's text artifact (e.g. final/plan.md) for the "Implement plan" turn. */
+  private async readRunArtifactText(runId: string, rel: string): Promise<string | null> {
+    const rec = await this.findRun(runId);
+    if (!rec) return null;
+    try {
+      return readRawTextArtifact(rec, rel);
+    } catch {
+      return null;
+    }
+  }
+
   private readonly summaryCache = new Map<string, { fingerprint: string; summary: ControlRunSummary }>();
 
   /**
@@ -1097,11 +1202,13 @@ function readNewLines(path: string, offset: number, carry: string): { lines: str
 function projectThread(raw: unknown, needsHuman: boolean): ControlThread {
   const t = raw as Record<string, unknown>;
   const repo = t["repo"] as { root?: string } | null;
+  const workspace = t["workspace"] as { mode?: string } | undefined;
   return ControlThread.parse({
     id: t["id"],
     title: t["title"] ?? null,
     repoRoot: repo?.root ?? null,
     mode: t["mode"],
+    workspaceMode: workspace?.mode ?? "in_place",
     authPreference: t["auth_preference"] ?? "auto",
     primaryHarness: t["primary_harness"] ?? null,
     portfolio: t["portfolio"],
@@ -1123,12 +1230,26 @@ function projectSession(raw: unknown): ControlSession {
     providerFamily: s["provider_family"] ?? "unknown",
     nativeSessionId: s["native_session_id"] ?? null,
     observedModel: s["last_observed_model"] ?? null,
-    authMode: s["auth_mode"] ?? "unknown",
     state: s["state"] ?? "live",
   });
 }
 
-function projectTurn(raw: unknown, states: Map<string, string>): ControlThreadTurn {
+/** Project a run summary down to the compact card embedded on a thread turn. */
+function turnRunCard(summary: ControlRunSummary): ControlTurnRunCard {
+  return ControlTurnRunCard.parse({
+    state: summary.state,
+    mode: summary.mode,
+    strategy: summary.strategy ?? null,
+    n: summary.n,
+    result: summary.result,
+    spendUsd: summary.spendUsd ?? null,
+    outputReadyState: summary.outputReadyState,
+    waitingOnUser: summary.waitingOnUser,
+    finishedAt: summary.finishedAt ?? null,
+  });
+}
+
+function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>): ControlThreadTurn {
   const t = raw as Record<string, unknown>;
   const runId = (t["run_id"] as string | null) ?? null;
   return ControlThreadTurn.parse({
@@ -1136,10 +1257,12 @@ function projectTurn(raw: unknown, states: Map<string, string>): ControlThreadTu
     threadId: t["thread_id"],
     runId,
     parentRunId: t["parent_run_id"] ?? null,
-    sessionId: t["session_id"] ?? null,
+    planRunId: t["plan_run_id"] ?? null,
     kind: t["kind"] ?? "followup",
     prompt: t["prompt"] ?? "",
-    state: runId ? states.get(runId) : undefined,
+    // Embedded run card so the chat renders the whole conversation (state +
+    // honest outcome) from this one response — no N+1 run-detail fetch per turn.
+    run: runId ? cards.get(runId) ?? null : null,
     createdAt: t["created_at"],
   });
 }
@@ -1161,10 +1284,13 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
   // Live (in-place) isolation is only honored by the convergence strategies
   // (agent + attempts / until_clean flags); accepting it elsewhere would
   // silently run an envelope while claiming live semantics.
-  const convergence = mode === "agent" && (parsed.untilClean === true || (parsed.attempts !== undefined && parsed.attempts !== null));
-  if (parsed.execution?.isolation === "live" && !convergence) {
+  // Live (in-place) isolation runs the harness directly in the execution tree
+  // (the live project for an in-place thread, or the thread's worktree for an
+  // isolated thread; also CLI convergence --in-place). It is an agent-only
+  // concept — read-only modes have nothing to mutate.
+  if (parsed.execution?.isolation === "live" && mode !== "agent") {
     throw Object.assign(
-      new Error(`execution.isolation='live' is only supported for agent convergence runs (--attempts or --until-clean), not '${mode}'`),
+      new Error(`execution.isolation='live' is only supported for agent runs, not '${mode}'`),
       { status: 400 },
     );
   }
@@ -1269,6 +1395,9 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("final/explore.md"),
     mtime("final/report.md"),
     mtime("final/patch.diff"),
+    // The honest outcome (result kind / diffstat / adopted) is projected from
+    // work_product.yaml; a summary cached before it landed must invalidate.
+    mtime("final/work_product.yaml"),
   ].join("|");
 }
 
@@ -1280,6 +1409,31 @@ function strategyFromParams(p: Record<string, unknown>): "race" | "attempts" | "
   if (p["swarm"] === true) return "swarm";
   if (typeof p["n"] === "number" && p["n"] > 1) return "race";
   return null;
+}
+
+/**
+ * Honest terminal outcome, projected from final/work_product.yaml's meta (the
+ * orchestrator-owned record of what the turn produced). Answers the v0.9 "is the
+ * game done?" gap: plan runs report kind=plan with a null diffStat (no files
+ * changed), patches report a real diffStat, and a race-adopted patch reports
+ * adopted=true.
+ */
+function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
+  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+  const meta = (wp?.meta ?? {}) as Record<string, unknown>;
+  const kindRaw = meta["result_kind"];
+  const kind = kindRaw === "patch" || kindRaw === "answer" || kindRaw === "plan" || kindRaw === "report" ? kindRaw : "none";
+  const ds = meta["diffstat"] as { files?: unknown; additions?: unknown; deletions?: unknown } | undefined;
+  const diffStat =
+    ds && typeof ds.files === "number"
+      ? { files: ds.files, additions: typeof ds.additions === "number" ? ds.additions : 0, deletions: typeof ds.deletions === "number" ? ds.deletions : 0 }
+      : null;
+  return ControlRunResult.parse({
+    kind,
+    diffStat,
+    blockers: typeof meta["blockers"] === "number" ? meta["blockers"] : 0,
+    adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : null,
+  });
 }
 
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
@@ -1330,6 +1484,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     webEvidence,
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(rec),
+    result: controlRunResult(rec),
     route: controlRoute(telemetry, p),
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
     specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
@@ -1461,6 +1616,10 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
           : mode === "orchestrate"
             ? [{ kind: "report" as const, path: "final/orchestration.md" }, { kind: "summary" as const, path: "final/summary.md" }]
             : [
+                // An agent answer-only turn (empty diff + prose) writes final/answer.md;
+                // it must win over the arbitration summary so the chat shows the answer,
+                // not "# Run … no_op … Candidates …" (review #1).
+                { kind: "answer" as const, path: "final/answer.md" },
                 { kind: "summary" as const, path: "final/summary.md" },
                 { kind: "patch" as const, path: "final/patch.diff" },
               ];

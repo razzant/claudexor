@@ -33,7 +33,7 @@
           ],
           "default": null
         },
-        "session_id": {
+        "plan_run_id": {
           "anyOf": [
             {
               "$ref": "#/definitions/ThreadTurn/properties/id"
@@ -49,8 +49,7 @@
           "enum": [
             "initial",
             "followup",
-            "decision",
-            "orchestrate"
+            "decision"
           ],
           "default": "followup"
         },

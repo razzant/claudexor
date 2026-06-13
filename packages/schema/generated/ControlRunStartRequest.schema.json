@@ -223,10 +223,13 @@
           "type": "string",
           "minLength": 1
         },
+        "turnId": {
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+        },
         "parentRunId": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
         },
-        "sessionId": {
+        "planRunId": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
         },
         "authPreference": {

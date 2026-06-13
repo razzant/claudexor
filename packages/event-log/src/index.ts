@@ -26,6 +26,12 @@ export class EventLog {
      * must never break a run, so sink errors are swallowed.
      */
     private readonly onEmit?: (event: RunEvent) => void,
+    /**
+     * Thread this run is a turn of, when any. Stamped on every event so the
+     * global event multiplex can route live progress to a chat surface without
+     * a reverse job lookup.
+     */
+    private readonly threadId?: string,
   ) {
     this.nextSeq = lastSeqInFile(path) + 1;
     activeEventLogs.set(path, this);
@@ -47,6 +53,7 @@ export class EventLog {
       ts: nowIso(),
       run_id: this.runId,
       task_id: this.taskId,
+      ...(this.threadId ? { thread_id: this.threadId } : {}),
       type,
       payload: redactEventValue(payload),
     });

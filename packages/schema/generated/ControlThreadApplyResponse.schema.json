@@ -1,0 +1,41 @@
+{
+  "$ref": "#/definitions/ControlThreadApplyResponse",
+  "definitions": {
+    "ControlThreadApplyResponse": {
+      "type": "object",
+      "properties": {
+        "applied": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "branched",
+            "committed",
+            "pr_opened",
+            "empty",
+            "conflict",
+            "rejected"
+          ]
+        },
+        "headMoved": {
+          "type": "boolean",
+          "default": false
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "applied",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

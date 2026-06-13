@@ -49,11 +49,10 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 final class AppModel {
     var health: Health = .connecting
     var endpoint: String = ""
-    var route: SidebarRoute = .overview
+    var route: SidebarRoute = .threads
     var appearance: AppearanceMode = .dark {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
     }
-    var composerPresented = false
     var authSheetHarness: HarnessFamily?
     var projectRoot: String = "" {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
@@ -61,11 +60,6 @@ final class AppModel {
     var projectContextMode: String = "auto" {
         didSet { UserDefaults.standard.set(projectContextMode, forKey: "claudexor.projectContextMode") }
     }
-
-    /// App-wide search query. Declared once on the NavigationSplitView (per WWDC25 "Build a
-    /// SwiftUI app with the new design") so the toolbar search affordance is identical on every
-    /// screen; list screens filter their content by this text.
-    var searchQuery = ""
 
     /// Sample data is OFF by default and lives behind an explicit toggle, so live state is
     /// never silently mixed with mock content. When off, surfaces the engine doesn't expose
@@ -145,6 +139,8 @@ final class AppModel {
     private var snapshotLoadDepth: [String: Int] = [:]
     /// Stream envelopes deferred while a snapshot load is in flight.
     private var deferredEnvelopes: [String: [BusEnvelope]] = [:]
+    /// Live chat transcript per run (thinking / tools / messages folded from SSE).
+    var transcripts: [String: TranscriptReducer] = [:]
     /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
     /// plain ISO8601DateFormatter parses none of them. Try fractional first.
     private static let eventDateFormatterFractional: ISO8601DateFormatter = {
@@ -174,19 +170,13 @@ final class AppModel {
         case "dark": appearance = .dark
         default: break
         }
-        // Dev/QA only: jump straight to a screen for deterministic screenshots, with
-        // sample data on so the screens are populated. No effect unless the env var is set.
+        // Dev/QA only: open a run's inspector for deterministic screenshots. No
+        // effect unless the env var is set. (The other v0.9 debug routes pointed
+        // at screens removed in the v0.10 chat-first collapse — review #14.)
         if ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_ROUTE"] != nil { demoMode = true }
         switch ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_ROUTE"] {
-        case "tasks": route = .tasks
         case "task": route = .task("run-7f3a91")
         case "convergence": route = .task("run-2bd180")
-        case "interview": route = .interview
-        case "review": route = .review
-        case "budget": route = .budget
-        case "harnesses": route = .harnesses
-        case "settings": route = .settings
-        case "composer": composerPresented = true
         default: break
         }
         projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
@@ -602,7 +592,6 @@ final class AppModel {
                   portfolio: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", web: String = "auto",
                   tests: [String] = [], repoRootOverride: String? = nil) async {
-        composerPresented = false
         guard mode != .unknown else {
             settingsStatus = "This run used a legacy mode id the engine no longer accepts; relaunch it with a current intent."
             return
@@ -766,6 +755,14 @@ final class AppModel {
         }
     }
 
+    /// Enter the DRAFT state: no thread selected, so the composer's first message
+    /// materializes a fresh thread (on the Current Project). This is "New Thread".
+    func startDraftThread() {
+        selectedThreadId = nil
+        selectedThreadDetail = nil
+        threadStatus = nil
+    }
+
     func newThread(title: String?) async {
         guard let client else {
             threadStatus = "Engine offline: reconnect before creating a thread."
@@ -781,41 +778,80 @@ final class AppModel {
         }
     }
 
-    /// Send a follow-up turn; the engine resumes each harness's native session
-    /// (plan -> implement is one conversation, not a context reset).
-    func sendTurn(threadId: String, prompt: String, mode: RunMode) async {
+    /// Send from the composer. If no thread is selected (the empty/draft state),
+    /// the FIRST message MATERIALIZES a thread on the Current Project — an empty
+    /// chat composer is never a silent no-op (the v0.9 bug). Returns once sent.
+    /// Returns true when the turn was accepted by the engine (so the composer can
+    /// clear its text). A POST-send thread reload failure does NOT make this false
+    /// (the turn is already on the server) — that would risk a duplicate send (#12).
+    @discardableResult
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil) async -> Bool {
+        var threadId = selectedThreadId
+        if threadId == nil {
+            await newThread(title: nil)
+            threadId = selectedThreadId
+            guard threadId != nil else { return false } // newThread set threadStatus on failure
+        }
+        guard let tid = threadId else { return false }
+        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId)
+    }
+
+    /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
+    /// session resumes (plan -> implement is one conversation).
+    @discardableResult
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil) async -> Bool {
         guard let client else {
-            threadStatus = "Engine offline: reconnect before sending a turn."
-            return
+            threadStatus = "Engine offline — reconnect before sending."
+            return false
         }
         guard mode != .unknown else {
-            threadStatus = "This run used a legacy mode id; pick an intent from the composer instead."
-            return
+            threadStatus = "Unknown mode — pick an intent from the composer."
+            return false
         }
         let flags = mode.strategyFlags
+        let result: RunStartResult
         do {
-            let result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
+            result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,
                 n: mode == .bestOfN ? (flags.defaultN ?? 2) : nil,
                 attempts: mode == .maxAttempts ? 3 : nil,
                 untilClean: flags.untilClean ? true : nil,
                 swarm: flags.swarm ? true : nil,
-                create: flags.create ? true : nil
+                create: flags.create ? true : nil,
+                planRunId: planRunId
             ))
-            if case .started(let info) = result {
-                threadStatus = nil
-                await refreshRuns()
-                await openThread(threadId)
-                // Follow the new run live in the conversation.
-                stream(runId: info.runId)
-            } else {
-                threadStatus = "Turn queued; the engine is busy."
-            }
         } catch let GatewayError.queueBusy(message) {
             threadStatus = "Engine busy: \(message)"
+            return false   // the turn did NOT land — let the composer keep the text
         } catch {
-            threadStatus = "Turn failed: \(error)"
+            threadStatus = userMessage(for: error)
+            return false
+        }
+        // The turn is ACCEPTED here. Anything below (refresh/reload) is best-effort
+        // presentation; its failure must NOT be read as a send failure.
+        threadStatus = nil
+        await refreshRuns()
+        await openThread(threadId)
+        if case .started(let info) = result {
+            stream(runId: info.runId)
+        }
+        return true
+    }
+
+    /// Human-readable message for a gateway error (never a raw Swift dump in the UI).
+    func userMessage(for error: Error) -> String {
+        switch error {
+        case GatewayError.http(let status, _):
+            if status == 501 { return "This engine build does not support threads. Update Claudexor." }
+            if status == 404 { return "The engine is out of date — restart the daemon." }
+            return "Request failed (HTTP \(status))."
+        case GatewayError.queueBusy(let message):
+            return "Engine busy: \(message)"
+        case is URLError:
+            return "Cannot reach the engine — is the daemon running?"
+        default:
+            return "Something went wrong. Try again."
         }
     }
 
@@ -1257,13 +1293,24 @@ final class AppModel {
                     for try await env in client.globalEvents() {
                         let runId = env.event["run_id"]?.stringValue ?? ""
                         guard !runId.isEmpty else { continue }
+                        let type = env.event["type"]?.stringValue ?? ""
+                        let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
+                        // Live thread updates: events carry thread_id, so an event for
+                        // the OPEN thread refreshes its conversation. On run.created we
+                        // also start streaming the just-started run — this is how a
+                        // QUEUED (202) turn (which returned no runId) goes live (D4).
+                        if let threadId = env.event["thread_id"]?.stringValue, !threadId.isEmpty {
+                            if threadId == self.selectedThreadId, (type == "run.created" || isTerminalEvent) {
+                                await self.openThread(threadId)
+                                if type == "run.created", self.streamTasks[runId] == nil { self.stream(runId: runId) }
+                            }
+                            if isTerminalEvent { await self.refreshThreads() }
+                        }
                         if !self.liveTasks.contains(where: { $0.id == runId }) {
                             // A run this app has never seen (e.g. CLI-started).
                             await self.refreshRuns()
                             continue
                         }
-                        let type = env.event["type"]?.stringValue ?? ""
-                        let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
                         if self.streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" {
                             await self.loadRunDetail(runId)
                         }
@@ -1306,6 +1353,10 @@ final class AppModel {
             deferredEnvelopes[runId, default: []].append(env)
             return
         }
+        // Fold the live transcript (the chat shows working progress — reasoning +
+        // tools — as it happens, not just the final answer).
+        var reducer = transcripts[runId] ?? TranscriptReducer()
+        if reducer.apply(env) { transcripts[runId] = reducer }
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let type = env.event["type"]?.stringValue ?? env.kind
         let payload = env.event["payload"] ?? env.event

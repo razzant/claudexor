@@ -35,15 +35,6 @@
           ],
           "default": null
         },
-        "auth_mode": {
-          "type": "string",
-          "enum": [
-            "local_session",
-            "api_key",
-            "unknown"
-          ],
-          "default": "unknown"
-        },
         "resume_kind": {
           "type": "string",
           "enum": [
@@ -53,17 +44,6 @@
             "none"
           ],
           "default": "none"
-        },
-        "last_attempt_id": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Session/properties/id"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "last_observed_model": {
           "type": [

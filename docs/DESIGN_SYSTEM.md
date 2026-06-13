@@ -13,12 +13,15 @@ workflow), and [`CHECKLISTS.md`](CHECKLISTS.md) (visual QA gates).
 
 ## 1. North star
 
-Claudexor is an expressive, native **mission-control** for autonomous AI coding agents:
-a structured spec interview turns a vague task into a frozen ТЗ (SpecPack), then
-agents run autonomously for hours-to-days across multiple parallel projects, with a
-human reviewing and approving the results. The feel is a **Liquid Glass showcase** —
-beautiful, alive, and unmistakably native — while staying legible for developers new
-to Claudexor and instantly familiar to users of Codex App and Claude Code.
+Claudexor is a native **chat-first cockpit** over multiple coding harnesses (Codex,
+Claude Code, Cursor, OpenCode): ONE screen — a thread list, the conversation, and a
+persistent composer. You just type; the first message starts a thread; turns run
+in-place so the next turn sees the work; a run's detail opens in the trailing
+inspector. Its single real differentiator from a bare harness is multi-vendor
+**race + review** with the winner adopted into the tree. It must feel instantly
+familiar to users of Claude Code / Cursor / Codex, with honest run outcomes and a
+calm, native, matte-glass surface (the desktop shows faintly through the window;
+nothing animates when idle).
 
 Three design commitments:
 
@@ -200,16 +203,19 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 ## 4. App shell & information architecture
 
-- Mental model: **Project → Spec (ТЗ) → Run → Candidates**.
-- Single window, **`NavigationSplitView`** three-region (Codex-style):
-  - **Sidebar (glass):** Projects, each expanding to its Specs/Runs; a top-level
-    **Portfolio** item (cross-project mission control) and status filter (running /
-    needs-review / blocked / done).
-  - **Content (frosted cards over the glow; code solid):** the active surface —
-    spec interview, run composer, the mission-control dashboard, diff/review, etc.
-  - **Inspector (`.inspector`, glass):** context for the selection — findings, route
-    proof, evidence, budget, run metadata.
-- Detachable pop-out windows are out of scope for v1 (single-window decision).
+- Mental model (v0.10, chat-first): **Thread → Turns → (run) Outcome**. A thread is
+  the conversation; each turn is a run; the honest outcome (answer / plan / patch)
+  lives on the turn.
+- Single window, **three regions**:
+  - **Thread list (glass sidebar):** the conversations, with a needs-you marker;
+    "New" enters the draft state (the first message materializes the thread).
+  - **Conversation (frosted cards; code solid):** the turns — prompt, live
+    transcript (reasoning + tool calls), honest outcome (plan badge / diffstat /
+    winner adopted), decision/apply actions, and the always-live composer.
+  - **Run inspector (`.inspector`, glass):** the selected run's detail — diff,
+    timeline, review findings, candidates, diagnostics, budget.
+- Budget, Harness Doctor, and preferences live in the Settings scene (⌘,), not in
+  the main window. Detachable pop-out windows remain out of scope.
 
 ---
 
@@ -231,16 +237,13 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
     default, raw native details expand inline, and code/log text sits on `surface/code`.
   - **"What changed since you last looked"** marker + an **attention state** (working /
     blocked / needs-permission / done).
-- **Spec interview (quiz cards).** Hierarchical, AI-generated question cards: single/multi
-  choice + free text, tier progress, `NEEDS_CLARIFICATION` chips, deep-link citations into
-  code. It is Plan/draft-owned, not a permanent top-level sidebar item.
-- **Run composer.** Mode (`Ask`, `Explore`, `Agent`, `Best-of-N`, `Max Attempts`,
-  `Until Clean`, `Plan`, `Create`, `Read-only Audit`), Current Project,
-  Project Context (`Auto`/`Deep` when a project is selected; internal `Off` only for
-  no-project Ask), harness multiselect as eligible pool
-  (family-colored), Primary harness, Portfolio, model hint, N, budget cap, access profile,
-  gates/tests. Default mode is `Ask`. Project-aware modes are disabled until Current
-  Project is selected; Ask can run without a project.
+- **Chat composer (v0.10).** Always live: a text field + an intent picker. Default
+  is `Agent` (the model decides whether to answer or edit). Project intents (Plan,
+  Race ×N, Audit) need a Current Project; a no-project thread is `Ask`-only. The
+  first message in the draft state materializes the thread. No separate full
+  composer, no spec-interview screen, no 9-mode picker — engine strategies (race
+  width, until-clean) are flags, and the canonical modes are FIVE
+  (`ask`/`plan`/`audit`/`agent`/`orchestrate`).
 - **Markdown output surfaces.** Outcome, reports, plans, summaries, and diagnostics
   render native markdown with BLOCK structure: headings get heading type
   styles, paragraphs stay separated (never collapsed into one run-on line),

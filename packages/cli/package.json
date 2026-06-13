@@ -36,6 +36,7 @@
     "@claudexor/harness-raw-api": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/secrets": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/util": "workspace:*",
+    "@claudexor/workspace": "workspace:*"
   }
 }

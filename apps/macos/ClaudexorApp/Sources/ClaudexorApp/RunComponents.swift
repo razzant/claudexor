@@ -37,7 +37,6 @@ struct PhasePipelineView: View {
         let idx = done ? Phase.allCases.count : active.rawValue + 1
         return HStack(spacing: Theme.Spacing.sm) {
             Image(systemName: done ? "checkmark.circle.fill" : active.glyph)
-                .symbolEffect(.pulse, options: .repeating, isActive: !done && !reduceMotion)
                 .foregroundStyle(done ? Theme.status(.succeeded) : Theme.accent)
             Text(done ? "Complete" : active.label).font(.caption.weight(.medium))
             Spacer(minLength: Theme.Spacing.sm)
@@ -60,7 +59,6 @@ struct PhasePipelineView: View {
                     .frame(width: 26, height: 26)
                 Image(systemName: done ? "checkmark" : phase.glyph)
                     .font(.caption2.weight(.semibold))
-                    .symbolEffect(.pulse, options: .repeating, isActive: current && !reduceMotion)
                     .foregroundStyle(current ? Theme.accent : (done ? Theme.status(.succeeded) : .secondary))
             }
             Text(phase.label)
@@ -100,7 +98,6 @@ private struct PlanRow: View {
         HStack(alignment: .top, spacing: Theme.Spacing.md) {
             Image(systemName: item.state.glyph)
                 .foregroundStyle(item.state.color)
-                .symbolEffect(.pulse, options: .repeating, isActive: item.state == .active && !reduceMotion)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)

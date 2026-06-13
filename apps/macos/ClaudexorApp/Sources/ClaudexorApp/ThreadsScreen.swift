@@ -12,10 +12,14 @@ struct ThreadsScreen: View {
     @State private var composerText = ""
     @State private var composerMode: RunMode = .agent
 
-    /// Project-aware intents need a project scope; a no-project thread only asks.
+    /// Project-aware intents need a project scope. A selected thread uses its own
+    /// repo; in the DRAFT state (no thread selected yet) the first turn will be
+    /// created on the Current Project, so the project intents are available too.
     private var threadHasProject: Bool {
-        guard let id = model.selectedThreadId, let t = model.threads.first(where: { $0.id == id }) else { return false }
-        return t.repoRoot?.isEmpty == false
+        if let id = model.selectedThreadId, let t = model.threads.first(where: { $0.id == id }) {
+            return t.repoRoot?.isEmpty == false
+        }
+        return !model.normalizedProjectRoot.isEmpty
     }
 
     var body: some View {
@@ -36,11 +40,11 @@ struct ThreadsScreen: View {
                 Text("Threads").font(.headline)
                 Spacer()
                 Button {
-                    Task { await model.newThread(title: nil) }
+                    model.startDraftThread()
                 } label: {
-                    Label("New", systemImage: "plus")
+                    Label("New", systemImage: "square.and.pencil")
                 }
-                .help("Start a new thread on the Current Project")
+                .help("New thread — the first message starts it (on the Current Project)")
             }
             .padding([.horizontal, .top], Theme.Spacing.md)
 
@@ -109,9 +113,9 @@ struct ThreadsScreen: View {
                 }
             } else {
                 ContentUnavailableView(
-                    "Pick a thread",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Or start a new one. Turns resume native harness sessions — plan first, then continue in the same conversation.")
+                    "Start a thread",
+                    systemImage: "bubble.left.and.text.bubble.right",
+                    description: Text("Type below to begin. Turns run in-place so the next turn sees the work — plan, then implement, in one conversation.")
                 )
                 .frame(maxHeight: .infinity)
             }
@@ -162,20 +166,19 @@ struct ThreadsScreen: View {
                 .frame(width: 170)
                 .help(threadHasProject
                       ? "The intent for the next turn; strategies (race width, until-clean) are flags on the same conversation"
-                      : "This thread has no project: only Ask is available (pick a Current Project, then start a new thread)")
+                      : "No Current Project — only Ask (read-only) is available. Pick a project in Settings to plan/agent/race.")
                 Spacer()
-                Button {
-                    model.composerPresented = true
-                } label: {
-                    Label("Full composer", systemImage: "slider.horizontal.3")
+                if model.selectedThreadId == nil {
+                    Text(threadHasProject
+                         ? "New thread on \(URL(fileURLWithPath: model.normalizedProjectRoot).lastPathComponent)"
+                         : "New ask-only thread (no project)")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderless)
-                .help("The thread composer is a quick-send; open the full composer for routing, budget, access, and gates")
             }
             .onAppear { if !threadHasProject { composerMode = .ask } }
             .onChange(of: model.selectedThreadId) { if !threadHasProject { composerMode = .ask } }
             HStack(alignment: .bottom, spacing: Theme.Spacing.sm) {
-                TextField("Message this thread… (plan first, then continue — same native session)", text: $composerText, axis: .vertical)
+                TextField("Message… (the first message starts a thread)", text: $composerText, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...6)
                     .onSubmit(send)
@@ -184,19 +187,26 @@ struct ThreadsScreen: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.selectedThreadId == nil)
-                .help("Send the turn (⌘↩)")
+                .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Send (⌘↩)")
             }
         }
         .padding(Theme.Spacing.md)
         .background(.bar)
     }
 
+    /// The composer is ALWAYS live: with no thread selected, the first message
+    /// materializes one (on the Current Project). No silent no-op (the v0.9 bug).
+    /// The text is cleared only after a successful send, restored on failure.
     private func send() {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let threadId = model.selectedThreadId else { return }
+        guard !text.isEmpty else { return }
+        let mode = composerMode
         composerText = ""
-        Task { await model.sendTurn(threadId: threadId, prompt: text, mode: composerMode) }
+        Task {
+            let sent = await model.composerSend(prompt: text, mode: mode)
+            if !sent { composerText = text } // restore ONLY if the engine rejected it
+        }
     }
 }
 
@@ -210,6 +220,9 @@ private struct TurnCard: View {
     /// Set after a successful accept-risk decision so the apply affordance
     /// appears immediately; the SERVER gate still owns whether apply succeeds.
     @State private var riskAccepted = false
+    /// Set after a successful apply so the apply buttons can't be clicked twice
+    /// (the SERVER gate is still the source of truth; this is a local guard).
+    @State private var applied = false
 
     private var run: TaskRun? { turn.runId.flatMap { model.task($0) } }
 
@@ -234,6 +247,18 @@ private struct TurnCard: View {
                     }
                     .buttonStyle(.link)
                 }
+                // Live transcript: the harness's reasoning + tool calls as they
+                // happen (folded from SSE), so the chat shows working progress —
+                // not just a status pill and a final answer.
+                if let runId = turn.runId, let blocks = model.transcripts[runId]?.blocks, !blocks.isEmpty {
+                    TranscriptView(blocks: blocks)
+                }
+                // Honest outcome (the v0.9 "is the game done?" fix): a plan turn
+                // says "no files changed" and offers to implement it; a patch shows
+                // its diffstat (and whether a race winner was auto-applied).
+                if let result = turn.run?.result {
+                    outcomeRow(result)
+                }
                 // Server-derived: a persisted operator decision (from ANY surface,
                 // surviving reloads) unblocks apply; `riskAccepted` only bridges
                 // the moment between decide() and the refreshed run detail.
@@ -241,7 +266,10 @@ private struct TurnCard: View {
                 if (run.status == .blocked || run.status == .needsReview) && !unblocked {
                     decisionBar(run)
                 }
-                if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
+                if applied {
+                    Label("Applied to project", systemImage: "checkmark.seal.fill")
+                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
+                } else if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
                     applyBar(run)
                 }
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
@@ -251,7 +279,7 @@ private struct TurnCard: View {
                         .lineLimit(8)
                         .textSelection(.enabled)
                 }
-            } else if let state = turn.state {
+            } else if let state = turn.run?.state {
                 Text(state).font(.caption).foregroundStyle(.secondary)
             }
             if let actionError {
@@ -260,6 +288,37 @@ private struct TurnCard: View {
         }
         .padding(Theme.Spacing.md)
         .cardSurface()
+    }
+
+    /// The honest terminal outcome of this turn (what it actually did).
+    @ViewBuilder
+    private func outcomeRow(_ result: RunResult) -> some View {
+        switch result.kind {
+        case "plan":
+            HStack(spacing: Theme.Spacing.sm) {
+                Label("Plan — no files changed", systemImage: "list.bullet.rectangle")
+                    .font(.caption).foregroundStyle(.secondary)
+                if result.blockers > 0 {
+                    Label("\(result.blockers) blocker\(result.blockers == 1 ? "" : "s")", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Spacer()
+                Button("Implement plan") {
+                    guard let runId = turn.runId else { return }
+                    Task { await model.composerSend(prompt: "Implement this plan.", mode: .agent, planRunId: runId) }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .help("Run an agent turn that implements this plan")
+            }
+        case "patch":
+            if let d = result.diffStat {
+                Label("\(d.files) file\(d.files == 1 ? "" : "s") · +\(d.additions) −\(d.deletions)\(result.adopted == true ? " · applied" : "")",
+                      systemImage: "plusminus")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        default:
+            EmptyView()
+        }
     }
 
     /// Review-queue actions ON the turn (the "apply: human_review" fix).
@@ -289,16 +348,84 @@ private struct TurnCard: View {
     private func applyBar(_ run: TaskRun) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
             Button("Apply patch") {
-                Task { actionError = await model.applyRun(runId: run.id) }
+                Task {
+                    actionError = await model.applyRun(runId: run.id)
+                    if actionError == nil { applied = true }   // hide buttons; no double-apply
+                }
             }
             .help("Applies the reviewed patch to the original project (server-gated)")
             Button("Apply as branch") {
-                Task { actionError = await model.applyRun(runId: run.id, mode: "branch") }
+                Task {
+                    actionError = await model.applyRun(runId: run.id, mode: "branch")
+                    if actionError == nil { applied = true }
+                }
             }
             .help("Applies onto a new branch")
             Spacer()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
+    }
+}
+
+/// Renders a turn's live transcript: reasoning (collapsible), tool calls (compact
+/// mono rows with a status glyph), and assistant messages. Built from the
+/// `TranscriptReducer` fold of the SSE stream (v0.10 Р7).
+private struct TranscriptView: View {
+    let blocks: [TranscriptBlock]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            ForEach(blocks) { block in
+                switch block {
+                case .thinking(_, let text):
+                    DisclosureGroup {
+                        Text(text)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Label("Thinking", systemImage: "brain")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                case .tool(_, let tool):
+                    HStack(spacing: 6) {
+                        Image(systemName: glyph(tool.status))
+                            .foregroundStyle(color(tool.status))
+                            .font(.caption2)
+                        Text(tool.name).font(.caption.monospaced().weight(.medium))
+                        if let target = tool.target, !target.isEmpty {
+                            Text(target).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        if let code = tool.exitCode, code != 0 {
+                            Text("exit \(code)").font(.caption2).foregroundStyle(Theme.status(.failed))
+                        }
+                    }
+                case .message(_, let text):
+                    Text(text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func glyph(_ s: ToolBlock.Status) -> String {
+        switch s {
+        case .running: return "circle.dotted"
+        case .ok: return "checkmark.circle.fill"
+        case .error: return "xmark.circle.fill"
+        }
+    }
+    private func color(_ s: ToolBlock.Status) -> Color {
+        switch s {
+        case .running: return .secondary
+        case .ok: return Theme.status(.succeeded)
+        case .error: return Theme.status(.failed)
+        }
     }
 }

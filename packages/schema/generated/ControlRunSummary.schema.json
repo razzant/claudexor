@@ -352,6 +352,67 @@
           ],
           "default": "pending"
         },
+        "result": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "patch",
+                "answer",
+                "plan",
+                "report",
+                "none"
+              ],
+              "default": "none"
+            },
+            "diffStat": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "files": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "additions": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "deletions": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "files",
+                    "additions",
+                    "deletions"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blockers": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "adopted": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
         "waitingOnUser": {
           "type": "boolean",
           "default": false

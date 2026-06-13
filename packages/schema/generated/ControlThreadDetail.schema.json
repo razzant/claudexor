@@ -35,6 +35,14 @@
                 "orchestrate"
               ]
             },
+            "workspaceMode": {
+              "type": "string",
+              "enum": [
+                "in_place",
+                "isolated"
+              ],
+              "default": "in_place"
+            },
             "authPreference": {
               "type": "string",
               "enum": [
@@ -69,7 +77,6 @@
               "type": "string",
               "enum": [
                 "active",
-                "blocked",
                 "closed"
               ],
               "default": "active"
@@ -152,15 +159,6 @@
                 ],
                 "default": null
               },
-              "authMode": {
-                "type": "string",
-                "enum": [
-                  "local_session",
-                  "api_key",
-                  "unknown"
-                ],
-                "default": "unknown"
-              },
               "state": {
                 "type": "string",
                 "enum": [
@@ -169,11 +167,6 @@
                   "rebound"
                 ],
                 "default": "live"
-              },
-              "turnCount": {
-                "type": "integer",
-                "minimum": 0,
-                "default": 0
               }
             },
             "required": [
@@ -218,7 +211,7 @@
                 ],
                 "default": null
               },
-              "sessionId": {
+              "planRunId": {
                 "anyOf": [
                   {
                     "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
@@ -234,8 +227,7 @@
                 "enum": [
                   "initial",
                   "followup",
-                  "decision",
-                  "orchestrate"
+                  "decision"
                 ],
                 "default": "followup"
               },
@@ -243,8 +235,150 @@
                 "type": "string",
                 "default": ""
               },
-              "state": {
-                "type": "string"
+              "run": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "queued",
+                          "running",
+                          "blocked",
+                          "succeeded",
+                          "no_op",
+                          "ungated",
+                          "review_not_run",
+                          "failed",
+                          "cancelled",
+                          "interrupted",
+                          "exhausted",
+                          "not_converged"
+                        ]
+                      },
+                      "mode": {
+                        "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/mode"
+                      },
+                      "strategy": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "race",
+                              "attempts",
+                              "until_clean",
+                              "swarm",
+                              "create"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "n": {
+                        "type": "integer"
+                      },
+                      "result": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "patch",
+                              "answer",
+                              "plan",
+                              "report",
+                              "none"
+                            ],
+                            "default": "none"
+                          },
+                          "diffStat": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "files": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "additions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "deletions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                },
+                                "required": [
+                                  "files",
+                                  "additions",
+                                  "deletions"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "blockers": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0
+                          },
+                          "adopted": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "additionalProperties": false,
+                        "default": {}
+                      },
+                      "spendUsd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "outputReadyState": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "finalizing",
+                          "ready",
+                          "diagnostic"
+                        ],
+                        "default": "pending"
+                      },
+                      "waitingOnUser": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "finishedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "createdAt": {
                 "type": "string"

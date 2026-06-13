@@ -203,4 +203,89 @@ import Testing
         #expect(old.lastSeq == 0)
         #expect(old.pendingInteractions.isEmpty)
     }
+
+    // MARK: - v0.10 chat-first DTOs
+
+    @Test func threadTurnDecodesEmbeddedRunCardAndOutcome() throws {
+        let json = #"""
+        {"id":"tn-1","threadId":"th-1","runId":"run-1","planRunId":null,"kind":"initial","prompt":"make a game",
+         "run":{"state":"succeeded","mode":"plan","result":{"kind":"plan","diffStat":null,"blockers":1,"adopted":null},
+                "outputReadyState":"ready","waitingOnUser":false},
+         "createdAt":"t"}
+        """#
+        let turn = try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(json.utf8))
+        #expect(turn.run?.result?.kind == "plan")
+        #expect(turn.run?.result?.diffStat == nil)       // plan: NO files changed
+        #expect(turn.run?.result?.blockers == 1)
+        #expect(turn.run?.state == "succeeded")
+        // Legacy turn without the run card stays decodable.
+        let legacy = #"{"id":"tn-0","threadId":"th-1","prompt":"hi","createdAt":"t"}"#
+        let old = try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(legacy.utf8))
+        #expect(old.run == nil)
+    }
+
+    @Test func createThreadRequestEncodesWorkspace() throws {
+        let body = CreateThreadRequest(scope: .project(root: "/p"), workspace: "isolated")
+        let data = try JSONEncoder().encode(body)
+        let s = String(decoding: data, as: UTF8.self)
+        #expect(s.contains("\"workspace\":\"isolated\""))
+    }
+
+    @Test func threadApplyResponseDecodes() throws {
+        let json = #"{"applied":true,"status":"applied","headMoved":false,"detail":null}"#
+        let r = try JSONDecoder().decode(ThreadApplyResponse.self, from: Data(json.utf8))
+        #expect(r.applied)
+        #expect(r.status == "applied")
+    }
+
+    // MARK: - TranscriptReducer
+
+    private func env(_ seq: Int, _ json: String) -> BusEnvelope {
+        let value = try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        // The real per-run SSE sets kind to the event NAME, not "run"; the reducer
+        // must discriminate on event["type"], so we pass the realistic kind here.
+        return BusEnvelope(seq: seq, kind: value["type"]?.stringValue ?? "message", event: value)
+    }
+
+    @Test func reducerMatchesToolResultToCallByUseId() {
+        var r = TranscriptReducer()
+        r.apply(env(1, #"{"type":"harness.event","payload":{"type":"tool_call","tool":{"name":"bash","use_id":"u1","target":"pnpm test"}}}"#))
+        r.apply(env(2, #"{"type":"harness.event","payload":{"type":"tool_result","tool":{"name":"bash","use_id":"u1","status":"ok","exit_code":0}}}"#))
+        #expect(r.blocks.count == 1)
+        if case .tool(_, let b) = r.blocks[0] {
+            #expect(b.name == "bash")
+            #expect(b.status == .ok)
+            #expect(b.exitCode == 0)
+        } else { Issue.record("expected a tool block") }
+    }
+
+    @Test func reducerMergesThinkingAndIsIdempotent() {
+        var r = TranscriptReducer()
+        r.apply(env(1, #"{"type":"harness.event","payload":{"type":"thinking","text":"step one"}}"#))
+        r.apply(env(2, #"{"type":"harness.event","payload":{"type":"thinking","text":"step two"}}"#))
+        r.apply(env(2, #"{"type":"harness.event","payload":{"type":"thinking","text":"step two"}}"#)) // replay
+        r.apply(env(3, #"{"type":"harness.event","payload":{"type":"message","text":"the answer"}}"#))
+        #expect(r.blocks.count == 2)   // merged thinking + one message (replay ignored)
+        if case .thinking(_, let text) = r.blocks[0] { #expect(text == "step one\nstep two") } else { Issue.record("expected thinking") }
+        if case .message(_, let text) = r.blocks[1] { #expect(text == "the answer") } else { Issue.record("expected message") }
+    }
+
+    @Test func reducerIgnoresNonHarnessEnvelopes() {
+        var r = TranscriptReducer()
+        r.apply(env(1, #"{"type":"run.completed","payload":{"status":"success"}}"#))
+        #expect(r.blocks.isEmpty)
+    }
+
+    @Test func reducerSurvivesACapTrimWithAnOpenTool() {
+        // Regression r2 #5: after the block window trims, the open-tool index maps
+        // must shift (not clear) so a later result doesn't corrupt blocks or crash.
+        var r = TranscriptReducer(cap: 4)
+        var seq = 1
+        r.apply(env(seq, #"{"type":"harness.event","payload":{"type":"tool_call","tool":{"name":"bash","use_id":"u1"}}}"#)); seq += 1
+        for _ in 0..<6 { r.apply(env(seq, "{\"type\":\"harness.event\",\"payload\":{\"type\":\"message\",\"text\":\"m\(seq)\"}}")); seq += 1 }
+        r.apply(env(seq, #"{"type":"harness.event","payload":{"type":"tool_result","tool":{"name":"bash","use_id":"u1","status":"ok"}}}"#))
+        #expect(r.trimmed > 0)
+        let toolBlocks = r.blocks.filter { if case .tool = $0 { return true }; return false }
+        #expect(toolBlocks.count <= 1)   // no duplicate tool block
+    }
 }

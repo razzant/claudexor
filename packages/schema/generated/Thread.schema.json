@@ -92,6 +92,35 @@
           ],
           "default": "subscription-first"
         },
+        "workspace": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "in_place",
+                "isolated"
+              ],
+              "default": "in_place"
+            },
+            "worktree_path": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "base_sha": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
         "run_ids": {
           "type": "array",
           "items": {
@@ -114,7 +143,6 @@
           "type": "string",
           "enum": [
             "active",
-            "blocked",
             "closed"
           ],
           "default": "active"

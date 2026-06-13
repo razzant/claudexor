@@ -37,6 +37,14 @@
                   "orchestrate"
                 ]
               },
+              "workspaceMode": {
+                "type": "string",
+                "enum": [
+                  "in_place",
+                  "isolated"
+                ],
+                "default": "in_place"
+              },
               "authPreference": {
                 "type": "string",
                 "enum": [
@@ -71,7 +79,6 @@
                 "type": "string",
                 "enum": [
                   "active",
-                  "blocked",
                   "closed"
                 ],
                 "default": "active"

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Design tokens — the Swift projection of `docs/DESIGN_SYSTEM.md`, aligned with Apple's
 /// Liquid Glass era rules (WWDC25 "Build a SwiftUI app with the new design" + "Adopting
@@ -172,22 +173,20 @@ private struct CardSurfaceModifier: ViewModifier {
         // A second TIGHT contact shadow gives dark cards an ambient-occlusion
         // "lift" on the moving glow mesh (the soft shadow alone washed out and
         // the cards read flat/dated in Dark Mode).
-        let contactColor = Color.black.opacity(dark ? 0.35 : 0.10)
+        // v0.10: ONE soft shadow per card (the contact shadow was dropped — over a
+        // STATIC backdrop the second shadow only cost frames, it didn't read).
         let base = content
             .background {
                 if reduceTransparency {
                     shape.fill(Theme.surfaceRaised)
-                        .shadow(color: contactColor, radius: 3, x: 0, y: 1)
                         .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
                 } else {
-                    // The shadow is cast by the card SHAPE (not the composite
-                    // view) so translucent fills never double-shadow the text.
-                    shape.fill(.regularMaterial)
-                        .shadow(color: contactColor, radius: 3, x: 0, y: 1)
+                    // The shadow is cast by the card SHAPE (not the composite view)
+                    // so the translucent fill never double-shadows the text.
+                    shape.fill(.thinMaterial)
                         .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
-                    // Raised dark veil (0.40 -> 0.60): cards must read as solid
-                    // floating surfaces over the glow, not melt into the mesh.
-                    shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.50 : 0.60) : 0.55))
+                    // Light raised veil so cards read as surfaces over the glass.
+                    shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.45 : 0.55) : 0.50))
                 }
             }
 
@@ -270,79 +269,47 @@ extension View {
     }
 }
 
-// MARK: - Glow backdrop (app-wide ambient light the glass refracts)
+// MARK: - Window backdrop (behind-window matte glass; the desktop shows through)
 
-/// A calm, muted, always-moving "command center" backdrop. It is mounted once at
-/// the RootView level so the content area has one continuous glow instead of
-/// competing per-screen background-extension layers.
-/// Honors Reduce Motion (static) and Reduce Transparency (solid graphite).
-/// Brand-only hues (steel-blue / sky / indigo) — never harness/status.
-struct GlowBackground: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// The app-wide backdrop. v0.10 replaced the always-animating 60fps MeshGradient
+/// (the real cause of the low frame rate on idle) with a STATIC behind-window
+/// material: the desktop shows through the main window like frosted glass, and
+/// nothing animates when the app is idle. Honors Reduce Transparency (solid).
+struct GlassBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("claudexor.reducedVisualEffects") private var reducedVisualEffects = false
 
     var body: some View {
         if reduceTransparency {
             Theme.surfaceBase
-        } else if reduceMotion || reducedVisualEffects {
-            ZStack { Theme.surfaceBase; mesh(0).opacity(reducedVisualEffects ? 0.55 : 1) }
         } else {
-            TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { ctx in
-                ZStack { Theme.surfaceBase; mesh(ctx.date.timeIntervalSinceReferenceDate) }
-            }
+            BehindWindowMaterial()
         }
     }
+}
 
-    /// One animated MeshGradient over graphite: a gentle brand glow up top that melts
-    /// smoothly into the base at the bottom (the falloff is in the mesh itself, so there's
-    /// no harsh overlay band). Edge/center control points drift for visible, calm motion;
-    /// corners stay pinned. Muted enough to preserve content contrast everywhere.
-    private func mesh(_ t: TimeInterval) -> some View {
-        // MeshGradient expects stable edge geometry. Letting boundary points drift outside
-        // 0...1 produces the hard diagonal cutouts seen near hidden titlebars/split views.
-        // Keep edges on their edges; only the center moves in two dimensions.
-        func clamp(_ v: Float) -> Float { min(0.96, max(0.04, v)) }
-        func top(_ x: Float, _ ax: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), 0)
+/// A behind-window `NSVisualEffectView` so the desktop is faintly visible through
+/// the window (within-window SwiftUI materials only blur in-app content). It also
+/// makes its host window non-opaque so the blend reaches the desktop.
+private struct BehindWindowMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.blendingMode = .behindWindow
+        v.material = .underWindowBackground
+        v.state = .active
+        return v
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        DispatchQueue.main.async {
+            guard let win = nsView.window else { return }
+            win.isOpaque = false
+            win.backgroundColor = .clear
         }
-        func left(_ y: Float, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(0, clamp(y + Float(cos(t * 0.34 + ph) * ay)))
-        }
-        func right(_ y: Float, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(1, clamp(y + Float(cos(t * 0.34 + ph) * ay)))
-        }
-        func bottom(_ x: Float, _ ax: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), 1)
-        }
-        func center(_ x: Float, _ y: Float, _ ax: Double, _ ay: Double, _ ph: Double) -> SIMD2<Float> {
-            SIMD2(clamp(x + Float(sin(t * 0.40 + ph) * ax)), clamp(y + Float(cos(t * 0.34 + ph) * ay)))
-        }
-        let dark = scheme == .dark
-        func c(_ color: Color, _ o: Double) -> Color { color.opacity(dark ? o : o * 0.7) }
-        let a = Theme.accent, hi = Theme.brandGlowHi, lo = Theme.brandGlowLo, clear = Color.clear
-        return MeshGradient(
-            width: 3, height: 3,
-            points: [
-                SIMD2(0, 0), top(0.5, 0.16, 1.0), SIMD2(1, 0),
-                left(0.5, 0.16, 2.0), center(0.5, 0.5, 0.20, 0.14, 3.0), right(0.5, 0.16, 4.0),
-                SIMD2(0, 1), bottom(0.5, 0.16, 5.0), SIMD2(1, 1),
-            ],
-            colors: [
-                c(a, 0.30), c(hi, 0.34), c(a, 0.24),
-                c(a, 0.11), c(lo, 0.13), c(hi, 0.11),
-                clear, clear, clear,
-            ]
-        )
     }
 }
 
 extension View {
-    /// Deprecated screen-level glow hook. The actual ambient layer now lives once
-    /// in `RootView`; keeping this helper as identity avoids multiple
-    /// `backgroundExtensionEffect()` layers that caused hard side cutouts.
-    func glowBackdrop() -> some View {
-        self
-    }
+    /// Deprecated screen-level glow hook, kept as identity so existing call sites
+    /// compile; the single window backdrop now lives in `RootView`.
+    func glowBackdrop() -> some View { self }
 }

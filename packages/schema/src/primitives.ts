@@ -113,6 +113,11 @@ export const FallbackReason = z.enum([
   "stall",
   "web_evidence_unsatisfied",
   "fallback_model",
+  /** A native vendor session could not be carried into an isolated envelope
+   * turn (write/race candidate runs fresh; continuity rides on the tree). */
+  "not_portable",
+  /** No usable auth source for the route (native session + api key both absent). */
+  "auth_unavailable",
   "manual",
 ]);
 export type FallbackReason = z.infer<typeof FallbackReason>;

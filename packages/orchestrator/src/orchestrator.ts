@@ -29,7 +29,9 @@ import {
   type OrchestrateContract as OrchestrateContractT,
   OrchestratePlan as OrchestratePlanSchema,
   type OrchestratePlan as OrchestratePlanT,
+  FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
+  SessionReboundLineage as SessionReboundLineageSchema,
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
   ReviewFinding as ReviewFindingSchema,
@@ -45,7 +47,7 @@ import { HarnessUnavailableError } from "@claudexor/core";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import { buildContextPack, preflightEvidence, writeEvidencePacket } from "@claudexor/context";
-import { WorkspaceManager, ensureGitRepository } from "@claudexor/workspace";
+import { WorkspaceManager, applyPatch, ensureGitRepository } from "@claudexor/workspace";
 import { HarnessGateway } from "@claudexor/gateway";
 import {
   type GateSpec,
@@ -91,6 +93,14 @@ export interface OrchestratorDeps {
 
 export interface RunInput {
   repoRoot: string;
+  /**
+   * Tree the harness actually executes in, when different from `repoRoot`.
+   * `repoRoot` always anchors config/artifacts/contract (the project); for an
+   * ISOLATED thread the turn runs in the thread's persistent worktree, so
+   * `executionRoot` points there while artifacts still land under the project.
+   * Defaults to `repoRoot` (in-place threads and ordinary runs).
+   */
+  executionRoot?: string;
   prompt: string;
   mode?: ModeKind;
   contextMode?: "off" | "auto" | "deep";
@@ -139,7 +149,7 @@ export interface RunInput {
    */
   resumeSessions?: Record<string, string>;
   /** Called when a harness emits its native session id (recorded for future resume). */
-  onSessionObserved?: (harnessId: string, nativeSessionId: string) => void;
+  onSessionObserved?: (harnessId: string, nativeSessionId: string, observedModel?: string | null) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
   onEvent?: (event: RunEvent) => void;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
@@ -195,6 +205,9 @@ interface CandidateRun {
   harnessId: string;
   label: string;
   diff: string;
+  /** Concatenated assistant message text — the answer when the turn changed no
+   * files (a pure question-answer move on an agent thread). */
+  answerText?: string;
   /** Filesystem tree reviewers must inspect for this candidate. */
   reviewCwd?: string;
   gates: GateResult[];
@@ -391,6 +404,12 @@ export class Orchestrator {
    * resume id (A2). Preference precedence: explicit per-run > per-harness
    * config > global routing config > auto.
    */
+  /** The tree the harness reads/operates in: the thread worktree for an isolated
+   * thread, else the project. Config/artifacts/contract stay anchored to repoRoot. */
+  private execRootOf(input: RunInput): string {
+    return input.executionRoot ?? input.repoRoot;
+  }
+
   private sessionSpecFields(input: RunInput, harnessId: string): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
     const cfg = this.config(input.repoRoot)?.global;
     const explicit = (v?: "subscription" | "api_key" | "auto"): "subscription" | "api_key" | undefined =>
@@ -413,7 +432,7 @@ export class Orchestrator {
     const nid = ev.payload?.["native_session_id"];
     if (typeof nid === "string" && nid.length > 0) {
       try {
-        input.onSessionObserved(harnessId, nid);
+        input.onSessionObserved(harnessId, nid, ev.observed_model ?? null);
       } catch {
         /* observer errors must never fail the run */
       }
@@ -427,6 +446,11 @@ export class Orchestrator {
    */
   private observeAuthSwitch(log: EventLog | undefined, harnessId: string, attemptId: string, ev: HarnessEvent): void {
     if (!log || ev.type !== "message" || ev.payload?.["auth_switched"] !== true) return;
+    // An auth_switched marker always means the preferred auth route was
+    // unavailable and the harness fell back — so the honest typed reason is
+    // `auth_unavailable`, not the old hardcoded `manual`. An adapter may still
+    // override with a more specific typed reason in the payload.
+    const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
     try {
       log.emit(
         "route.fallback.auth_switched",
@@ -435,7 +459,7 @@ export class Orchestrator {
           to_harness: harnessId,
           from_auth_mode: ev.payload?.["from_auth_mode"],
           to_auth_mode: ev.payload?.["to_auth_mode"],
-          reason: "manual",
+          reason: overrideReason.success ? overrideReason.data : "auth_unavailable",
           attempt_id: attemptId,
         }) as unknown as Record<string, unknown>,
       );
@@ -972,6 +996,14 @@ export class Orchestrator {
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelHint, effortHint);
+    // In-place envelopes mutate the live tree under the user's native environment
+    // (no scoped HOME), so the vendor's own session store is reachable: the turn
+    // RESUMES the native CLI session (real continuity, like the read-only paths).
+    // Isolated envelopes (race candidates) get a fresh scoped home where that
+    // session id cannot exist — they run fresh, with a typed session.rebound
+    // disclosure, never a deterministic session-not-found failure.
+    const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
+    const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id) : undefined;
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
@@ -988,25 +1020,27 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       max_usd: routed.settings?.maxUsd ?? null,
-      // Envelope runs get a FRESH scoped harness home (CODEX_HOME/CLAUDE_CONFIG_DIR),
-      // so a native session id recorded earlier cannot exist there: never ask the
-      // CLI to resume it (deterministic session-not-found), and disclose the lossy
-      // continuation below instead of failing or silently pretending continuity.
-      ...(runInput ? { auth_preference: this.sessionSpecFields(runInput, adapter.id).auth_preference } : {}),
-      env: wsm.envFor(envelope),
+      ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
+      ...(inPlaceEnvelope && sessionFields?.resume_session_id
+        ? { resume_session_id: sessionFields.resume_session_id }
+        : {}),
+      // Scoped harness home only for isolated envelopes; in-place runs use the
+      // native environment so the resumed vendor session is actually reachable.
+      ...(inPlaceEnvelope ? {} : { env: wsm.envFor(envelope) }),
     });
-    if (runInput?.resumeSessions?.[adapter.id]) {
-      log?.emit("session.rebound", {
-        thread_id: runInput.threadId ?? null,
-        harness_id: adapter.id,
-        from_session_id: runInput.resumeSessions[adapter.id],
-        to_session_id: null,
-        summary: "isolated envelope turn runs fresh: the native session is not portable into a scoped harness home; continuity rides on the thread prompt + repo state",
-        contract_ref: null,
-        open_tasks: [],
-        diff_state: null,
-        reason: "manual",
-      });
+    if (!inPlaceEnvelope && runInput?.threadId && sessionFields?.resume_session_id) {
+      log?.emit(
+        "session.rebound",
+        SessionReboundLineageSchema.parse({
+          thread_id: runInput.threadId,
+          harness_id: adapter.id,
+          from_native_session_id: sessionFields.resume_session_id,
+          to_session_id: null,
+          summary:
+            "isolated envelope turn runs fresh: the native session is not portable into a scoped harness home; continuity rides on the thread prompt + repo state",
+          reason: "not_portable",
+        }) as unknown as Record<string, unknown>,
+      );
     }
     if (signal) spec.extra["abortSignal"] = signal;
     if (interaction) spec.extra["interactionChannel"] = interaction;
@@ -1015,6 +1049,7 @@ export class Orchestrator {
     let costEstimated = false;
     let harnessErrored = false;
     const errors: string[] = [];
+    const messageParts: string[] = [];
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
       contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live",
@@ -1033,9 +1068,12 @@ export class Orchestrator {
           if (signal?.aborted) break;
           const safeEv = redactHarnessEvent(ev);
           safeInvoke(onHarnessEvent, safeEv);
-          // Deliberately NOT observing native session ids here: an envelope-born
-          // session lives in the scoped home that dispose() deletes — recording
-          // it would poison the thread's resume map with unreachable ids.
+          // In-place turns run in the live tree under the native environment, so
+          // the session they emit IS reachable for the next turn: record it. An
+          // ISOLATED envelope-born session lives in the scoped home that dispose()
+          // deletes, so observing it would poison the thread resume map with
+          // unreachable ids — skip it there.
+          if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
           this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
           observeAttemptTelemetry(telemetry, safeEv);
           if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -1063,6 +1101,9 @@ export class Orchestrator {
             harnessErrored = true;
             errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
           }
+          // Capture assistant prose so an answer-only turn (no file changes) still
+          // has an honest output artifact instead of an empty "succeeded".
+          if (safeEv.type === "message" && safeEv.text) pushUniqueText(messageParts, safeEv.text);
           // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
           const obs = observationFromEvent(adapter.id, safeEv);
           if (obs) ledger.observe(obs);
@@ -1119,6 +1160,7 @@ export class Orchestrator {
       harnessId: adapter.id,
       label,
       diff,
+      answerText: messageParts.join("\n").trim() || undefined,
       reviewCwd: envelope.worktree_path,
       gates,
       cost,
@@ -1299,8 +1341,12 @@ export class Orchestrator {
     const contract = this.buildContract(input, taskId, mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
-    const wsm = new WorkspaceManager(input.repoRoot);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
+    // The execution root is the tree the harness mutates: the project itself for
+    // in-place threads/ordinary runs, or the thread's persistent worktree for an
+    // isolated thread. Config/artifacts/contract stay anchored to repoRoot.
+    const execRoot = input.executionRoot ?? input.repoRoot;
+    const wsm = new WorkspaceManager(execRoot);
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
@@ -1312,7 +1358,9 @@ export class Orchestrator {
     // A non-git project folder is initialized automatically (gitignore seed +
     // baseline commit), announced in the timeline — never a refusal, never a
     // silent mutation (user-locked decision, comparator: Codex requires git).
-    const gitPreconditionError = await this.ensureWriteModeGitBoundary(input.repoRoot, log, store, paths, runId, mode);
+    // For an isolated thread the execution root is already a git worktree, so
+    // this is a no-op there; for in-place it ensures the live project is git.
+    const gitPreconditionError = await this.ensureWriteModeGitBoundary(execRoot, log, store, paths, runId, mode);
     if (gitPreconditionError) {
       return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: gitPreconditionError, candidates: [] };
     }
@@ -1417,6 +1465,11 @@ export class Orchestrator {
           baseRef: contract.repo.base_ref,
           dirtyPolicy: "snapshot",
           accessProfile: candidateAccess,
+          // A single-candidate turn (agent n=1) on an in-place/isolated thread
+          // runs directly in the execution tree so the next turn sees its work
+          // and the native session resumes. Race candidates (n>1) always stay in
+          // isolated envelopes; the winner is auto-adopted into the tree after.
+          inPlace: input.inPlace === true && slots.length === 1,
         });
         const run = await this.runCandidateInEnvelope(
           slot.routed,
@@ -1601,6 +1654,10 @@ export class Orchestrator {
     log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
     let evidences: CandidateEvidence[];
     try {
+      // №25: reviewRuns internally SKIPS the paid reviewer call for empty-diff
+      // candidates ("привет" in agent mode no longer burns two reviewers on
+      // "(empty diff)"). Candidates still flow through arbitration/gates so the
+      // no_op/answer outcome and gate failures are unchanged.
       evidences = await this.reviewRuns(workingRuns, reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log, ledger, taskId);
     } catch (err) {
       // Review preflight/evidence failures end TERMINALLY with artifacts —
@@ -1703,12 +1760,57 @@ export class Orchestrator {
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       const patchSha256 = sha256(winnerRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
+      const wstats = diffStats(winnerRun.diff);
+      const hasDiff = winnerRun.diff.trim().length > 0;
+      const winnerEvidence = evidences.find((e) => e.attemptId === winnerRun.attemptId);
+      const blockers = winnerEvidence ? winnerEvidence.findings.filter((f) => isBlocking(f)).length : 0;
+      // An empty-diff winner that produced prose is an ANSWER (the chat shows it
+      // and the honest result_kind is "answer", not a misleading "patch").
+      const winnerAnswer = winnerRun.answerText?.trim() ?? "";
+      const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
+      if (!hasDiff && winnerAnswer.length > 0) {
+        store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
+      }
+      // Р8: a single-candidate in-place turn already mutated the live tree (its
+      // diff IS the live change). A race (n>1) ran candidates in isolated
+      // envelopes, so the winner's patch must be ADOPTED into the live tree for
+      // the next turn to see it. Blockers / non-success stop adoption; a failed
+      // apply (the user edited the tree mid-race) is disclosed, never lost.
+      // A clean terminal to adopt is success OR ungated (review passed but no
+      // test gates were configured to certify it) — never blocked/failed/no_op.
+      const adoptable = status === "success" || status === "ungated";
+      let adopted: boolean | null = null;
+      if (input.inPlace === true && adoptable && winnerRun.diff.trim().length > 0) {
+        if (slots.length === 1) {
+          adopted = true; // already live
+        } else {
+          try {
+            await applyPatch(execRoot, winnerRun.diff);
+            adopted = true;
+            log.emit("work_product.adopted", { applied: true, patch_sha256: patchSha256, winner: winnerRun.attemptId });
+          } catch (err) {
+            adopted = false;
+            log.emit("work_product.adopted", { applied: false, patch_sha256: patchSha256, detail: safeErrorMessage(err) });
+          }
+        }
+      }
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: input.create === true ? "new_repo" : "patch",
         source_task_id: taskId,
         producer_attempt_id: winnerRun.attemptId,
-        meta: { harness_id: winnerRun.harnessId, synthesis: synth, mode, review_verified: actualReviewVerified, budget_stopped: budgetStopped, patch_sha256: patchSha256 },
+        meta: {
+          harness_id: winnerRun.harnessId,
+          synthesis: synth,
+          mode,
+          review_verified: actualReviewVerified,
+          budget_stopped: budgetStopped,
+          patch_sha256: patchSha256,
+          result_kind: resultKind,
+          diffstat: { files: wstats.paths.length, additions: wstats.additions, deletions: wstats.deletions },
+          blockers,
+          adopted,
+        },
       });
       store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, { ...result.decision, status }, evidences, synth.reason, actualReviewVerified));
       // A non-success run's summary/patch is diagnostic context, not an applyable green output.
@@ -1885,10 +1987,15 @@ export class Orchestrator {
     for (const run of runs) {
       const candidateCwd = run.reviewCwd ?? cwd;
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
+      // №25: a candidate that changed NO files has nothing to review — never
+      // spend a reviewer panel on "(empty diff)" ("привет" in agent mode used to
+      // cost two reviewers). It still flows through policy gates and arbitration
+      // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
+      const hasDiff = run.diff.trim().length > 0;
       // Reviewer panels spend real money: reserve before, settle the observed cost.
-      const reviewLease = ledger?.reserve({ taskId: taskId ?? "task", attemptId: run.attemptId, intent: "review", harnessId: "review-panel" });
+      const reviewLease = hasDiff ? ledger?.reserve({ taskId: taskId ?? "task", attemptId: run.attemptId, intent: "review", harnessId: "review-panel" }) : undefined;
       const result =
-        reviewers.length > 0 && (reviewLease?.granted ?? true)
+        hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
           ? await reviewCandidate({
               candidateLabel: run.label,
               diff: run.diff,
@@ -1972,8 +2079,8 @@ export class Orchestrator {
     const contract = this.buildContract(input, taskId, mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
-    const wsm = new WorkspaceManager(input.repoRoot);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
+    const wsm = new WorkspaceManager(this.execRootOf(input));
     const readiness = new ReadinessLedger();
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
@@ -2381,6 +2488,29 @@ export class Orchestrator {
   }
 
   /** plan mode: multi-harness planning -> aggregate -> (optional) plan review -> SpecPack. Read-only. */
+  /**
+   * Wrap the user's goal in an explicit "plan, do not implement" instruction.
+   * Without this the raw prompt ("make a racing game") reaches the harness with
+   * only a read-only sandbox, so the model tries to BUILD it and dumps code into
+   * the plan when writes are blocked — the v0.9 "HTML in the plan" bug. The
+   * read-only access still enforces it; this gives the model the right job.
+   */
+  private planPrompt(goal: string): string {
+    return [
+      `You are planning, NOT implementing. Explore the repository read-only and produce a plan another agent will execute later. Do not write files or output full implementations.`,
+      ``,
+      `## Goal`,
+      goal,
+      ``,
+      `## Required output (markdown)`,
+      `1. Approach — 2-3 sentences on how you'd solve this.`,
+      `2. Steps — a numbered list; each step names the file(s) it touches and what changes.`,
+      `3. Risks & edge cases.`,
+      `4. Open questions — anything ambiguous that needs a decision before implementation.`,
+      `Keep it concise. Reference real paths you found. Do NOT paste large code blocks; describe the change instead.`,
+    ].join("\n");
+  }
+
   private async runPlan(input: RunInput): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -2389,7 +2519,7 @@ export class Orchestrator {
     const contract = this.buildContract(input, taskId, "plan");
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
 
@@ -2450,8 +2580,8 @@ export class Orchestrator {
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: "plan",
-        prompt: input.prompt + contextSection,
-        cwd: input.repoRoot,
+        prompt: this.planPrompt(input.prompt) + contextSection,
+        cwd: this.execRootOf(input),
         access: "readonly",
         ...this.sessionSpecFields(input, adapter.id),
         external_context_policy: knobs.webPolicy,
@@ -2576,6 +2706,7 @@ export class Orchestrator {
 
     const reviewers = await this.resolveReviewers(input.repoRoot);
     let ambiguities: ReviewFinding[] = [];
+    let reviewFindings: ReviewFinding[] = [];
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
       writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(plan review — no code diff)\n" });
@@ -2588,10 +2719,11 @@ export class Orchestrator {
           diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
           evidenceDir: reviewDir,
           artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
-          cwd: input.repoRoot,
+          cwd: this.execRootOf(input),
           reviewers,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });
+        reviewFindings = res.findings;
         ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
         store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
         ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd ?? 0);
@@ -2604,25 +2736,50 @@ export class Orchestrator {
     }
 
     const failedPlanners = planAttempts.filter((p) => p.status !== "success");
-    const specPack = [
-      `# SpecPack (plan ${runId})`,
+    // ALL review findings are shown (severity-marked), so a BLOCK like "the
+    // requested feature is not delivered" is visible on the plan itself — not
+    // silently filtered down to spec_gap/NEEDS_HUMAN the way v0.9 hid it.
+    const blockingFindings = reviewFindings.filter((f) => isBlocking(f));
+    const sevMark: Record<string, string> = { BLOCK: "🔴 BLOCK", FIX_FIRST: "🟠 FIX_FIRST", NEEDS_HUMAN: "🟠 NEEDS_HUMAN" };
+    const planDoc = [
+      `# Plan`,
       "",
-      `## Intent\n${redactSecrets(input.prompt)}`,
+      `## Goal`,
+      redactSecrets(input.prompt),
       "",
-      `## Plans (${plans.length}/${planAttempts.length} harness${planAttempts.length === 1 ? "" : "es"})`,
-      ...plans.map((p) => `\n### ${p.id}\n${redactSecrets(p.text)}`),
+      `## Plan${plans.length > 1 ? "s" : ""} (${plans.length}/${planAttempts.length} planner${planAttempts.length === 1 ? "" : "s"})`,
+      ...plans.map((p) => `\n### Plan — ${p.id}\n${redactSecrets(p.text)}`),
+      ...(reviewFindings.length > 0
+        ? ["", "## Review findings", ...reviewFindings.map((f) => `- ${sevMark[f.severity] ?? f.severity}: ${redactSecrets(f.claim)}`)]
+        : []),
+      ...(ambiguities.length > 0 ? ["", "## Open questions", ...ambiguities.map((a) => `- ${redactSecrets(a.claim)}`)] : []),
       ...(failedPlanners.length > 0
         ? ["", "## Planner omissions", ...failedPlanners.map((p) => `- ${p.attemptId} / ${p.harnessId} ${p.status}: ${p.error}`)]
         : []),
       "",
-      "## Open questions / ambiguities (resolve interactively before `claudexor run`)",
-      ambiguities.length > 0 ? ambiguities.map((a) => `- ${a.claim}`).join("\n") : "- (none surfaced by plan review; the live user interview is the interactive layer)",
     ].join("\n");
-    store.writeText(join(paths.finalDir, "plan.md"), specPack + "\n");
+    store.writeText(join(paths.finalDir, "plan.md"), planDoc + "\n");
+    // A plan is a delivered work product (a report), even with risks — parity
+    // with the other read-only modes (removes the "only successful mode with no
+    // work_product" anomaly). result_kind=plan tells surfaces NO files changed.
+    store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+      id: newId("wp"),
+      kind: "report",
+      source_task_id: taskId,
+      producer_attempt_id: planAttempts.find((p) => p.status === "success")?.attemptId ?? null,
+      meta: {
+        mode: "plan",
+        result_kind: "plan",
+        planners: plans.length,
+        diffstat: { files: 0, additions: 0, deletions: 0 },
+        blockers: blockingFindings.length,
+        adopted: null,
+      },
+    });
     // Canonical summary artifact (parity with every other mode's final/ layout).
     store.writeText(
       join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (plan)\n\n- Status: success\n- Planners: ${plans.length}/${planAttempts.length} succeeded\n- Plan: final/plan.md\n- Open questions: ${ambiguities.length}\n${failedPlanners.length > 0 ? `- Omissions: ${failedPlanners.map((p) => `${p.harnessId} ${p.status}`).join(", ")}\n` : ""}`,
+      `# Run ${runId} (plan)\n\n- Status: success (plan only — no files changed)\n- Planners: ${plans.length}/${planAttempts.length} succeeded\n- Plan: final/plan.md\n- Review blockers: ${blockingFindings.length}\n- Open questions: ${ambiguities.length}\n${failedPlanners.length > 0 ? `- Omissions: ${failedPlanners.map((p) => `${p.harnessId} ${p.status}`).join(", ")}\n` : ""}`,
     );
     this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, planAttempts.find((p) => p.status === "success")?.attemptId ?? null);
     log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
@@ -2635,7 +2792,7 @@ export class Orchestrator {
       status: "success",
       winner: null,
       runDir: paths.root,
-      summary: `SpecPack from ${plans.length} harness plan(s); ${ambiguities.length} open question(s).`,
+      summary: `Plan from ${plans.length} planner(s); ${blockingFindings.length} blocker(s), ${ambiguities.length} open question(s).`,
       candidates: planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: p.status })),
     };
   }
@@ -2722,7 +2879,15 @@ export class Orchestrator {
     return this.runReadOnlyReport(
       // The executed pool is pinned to the PLANNED pool (no double doctor
       // resolution drift between the prompt's claims and the actual route).
-      { ...input, harnesses: input.harnesses ?? (pool.length > 0 ? pool : undefined), prompt: brainPrompt },
+      // The brain must NOT resume or overwrite the thread's conversational
+      // session — it speaks its own tool-belt framing, not the user's chat.
+      {
+        ...input,
+        resumeSessions: undefined,
+        onSessionObserved: undefined,
+        harnesses: input.harnesses ?? (pool.length > 0 ? pool : undefined),
+        prompt: brainPrompt,
+      },
       {
         mode: "orchestrate",
         swarm: false,
@@ -2749,7 +2914,7 @@ export class Orchestrator {
     const contract = this.buildContract({ ...input, prompt: opts.contractIntent ?? prompt }, taskId, opts.mode);
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent);
+    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
 
@@ -2823,6 +2988,11 @@ export class Orchestrator {
     const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
     let fallbackOpen = false;
     let budgetStopped = false;
+    // №15: in a swarm the same harness appears in several slots; resuming the
+    // ONE native session id from all of them races the vendor's session store
+    // (and is semantically wrong — N explorers continuing one conversation).
+    // Grant resume to the first slot of each harness only; the rest run fresh.
+    const resumeGranted = new Set<string>();
 
     const runReadonlyAttempt = async (routed: RoutedAdapter, idx: number, modelOverride?: string): Promise<void> => {
       const adapter = routed.adapter;
@@ -2838,13 +3008,17 @@ export class Orchestrator {
       const explorerPrompt = (opts.swarm
         ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
         : prompt) + contextSection;
+      const sessionFields = this.sessionSpecFields(input, adapter.id);
+      const grantResume = sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
+      if (grantResume) resumeGranted.add(adapter.id);
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: opts.intent,
         prompt: explorerPrompt,
-        cwd: input.repoRoot,
+        cwd: this.execRootOf(input),
         access: "readonly",
-        ...this.sessionSpecFields(input, adapter.id),
+        auth_preference: sessionFields.auth_preference,
+        resume_session_id: grantResume ? sessionFields.resume_session_id : null,
         external_context_policy: knobs.webPolicy,
         tool_permission_policy: {
           web: knobs.webPolicy,

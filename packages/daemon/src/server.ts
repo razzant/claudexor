@@ -270,10 +270,40 @@ export class DaemonServer {
     }
   }
 
-  /** Schedule queued jobs up to the concurrency limit (non-blocking). */
+  private threadIdOf(rec: JobRecord): string | undefined {
+    const p = rec.params as { threadId?: unknown } | null | undefined;
+    return p && typeof p.threadId === "string" ? p.threadId : undefined;
+  }
+
+  /**
+   * Schedule queued jobs up to the concurrency limit (non-blocking).
+   *
+   * One active run per thread: a thread is a linear conversation and an in-place
+   * turn mutates the live tree, so two concurrent turns on the same thread would
+   * race the same files. We pick the first queued job whose thread is idle rather
+   * than always taking the head; thread-less jobs (CLI/MCP) keep running in
+   * parallel as before. drain() re-runs on every completion, so a thread's next
+   * turn starts as soon as its previous one settles.
+   */
   private drain(): void {
     while (this.active < this.maxConcurrent && this.queue.length > 0) {
-      const id = this.queue.shift() as string;
+      const busyThreads = new Set(
+        [...this.records.values()]
+          .filter((r) => r.state === "running")
+          .map((r) => this.threadIdOf(r))
+          .filter((t): t is string => !!t),
+      );
+      let pickIdx = -1;
+      for (let i = 0; i < this.queue.length; i++) {
+        const rec = this.records.get(this.queue[i]);
+        const tid = rec ? this.threadIdOf(rec) : undefined;
+        if (!rec || !tid || !busyThreads.has(tid)) {
+          pickIdx = i;
+          break;
+        }
+      }
+      if (pickIdx === -1) break; // every queued job waits on a busy thread
+      const id = this.queue.splice(pickIdx, 1)[0];
       const rec = this.records.get(id);
       if (!rec) continue;
       if (this.cancelled.has(id)) {

@@ -62,6 +62,13 @@
             "orchestrate"
           ]
         },
+        "workspace": {
+          "type": "string",
+          "enum": [
+            "in_place",
+            "isolated"
+          ]
+        },
         "authPreference": {
           "type": "string",
           "enum": [

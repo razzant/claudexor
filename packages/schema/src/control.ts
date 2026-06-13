@@ -9,12 +9,12 @@ import {
   OutputReadyState,
   ProviderFamily,
 } from "./primitives.js";
-import { AuthMode, Portfolio } from "./budget.js";
+import { Portfolio } from "./budget.js";
 import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
-import { ThreadState, ThreadTurnKind } from "./thread.js";
+import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 
 export const RunScopeContext = z.enum(["auto", "deep"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
@@ -65,9 +65,13 @@ export const ControlRunStartRequest = z
     specHash: ContentHash.optional(),
     /** Thread/session linkage (A2): a run is a turn inside a thread. */
     threadId: Id.optional(),
+    /** Pre-created turn to bind this run to (single-writer: control-api creates
+     * the turn, the daemon runner binds the started run id to it). */
+    turnId: Id.optional(),
     parentRunId: Id.optional(),
-    sessionId: Id.optional(),
-    /** Re-host the thread onto the routed harness (serialize + session.rebound). */
+    /** When set, this turn implements an approved plan: the engine prefixes the
+     * parent plan run's final/plan.md into the prompt (mode is forced to agent). */
+    planRunId: Id.optional(),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional(),
   })
@@ -279,6 +283,29 @@ export const ControlRouteInfo = z.object({
 });
 export type ControlRouteInfo = z.infer<typeof ControlRouteInfo>;
 
+/**
+ * Honest terminal outcome of a run, projected from final/work_product.yaml and
+ * the presence of final/answer.md. Answers "what did this turn actually do?" so
+ * a chat surface never shows a green "succeeded" next to nothing (the v0.9 plan
+ * bug): `kind:"plan"` means a plan was produced and NO files changed; `diffStat`
+ * is null unless a patch exists; `adopted` is true when a race winner was
+ * auto-applied to the live in-place tree.
+ */
+export const ControlRunResult = z.object({
+  kind: z.enum(["patch", "answer", "plan", "report", "none"]).default("none"),
+  diffStat: z
+    .object({
+      files: z.number().int().nonnegative(),
+      additions: z.number().int().nonnegative(),
+      deletions: z.number().int().nonnegative(),
+    })
+    .nullable()
+    .default(null),
+  blockers: z.number().int().nonnegative().default(0),
+  adopted: z.boolean().nullable().default(null),
+});
+export type ControlRunResult = z.infer<typeof ControlRunResult>;
+
 export const ControlRunSummary = z.object({
   jobId: z.string(),
   runId: z.string(),
@@ -309,6 +336,8 @@ export const ControlRunSummary = z.object({
   webEvidence: ControlWebEvidence.default({}),
   toolPermissionPolicy: z.record(z.string(), z.unknown()).optional(),
   outputReadyState: OutputReadyState.default("pending"),
+  /** Honest terminal outcome (what the turn did): patch/answer/plan/report/none. */
+  result: ControlRunResult.default({}),
   /** True while at least one interaction.requested has no answered/timeout. */
   waitingOnUser: z.boolean().default(false),
   /** Route evidence from telemetry; null when no telemetry exists (legacy). */
@@ -530,6 +559,8 @@ export const ControlThread = z.object({
   title: z.string().nullable().default(null),
   repoRoot: z.string().nullable().default(null),
   mode: ModeKind.optional(),
+  /** How turns touch files (in-place live tree vs isolated worktree). */
+  workspaceMode: WorkspaceMode.default("in_place"),
   authPreference: AuthPreference.default("auto"),
   primaryHarness: z.string().nullable().default(null),
   portfolio: Portfolio.optional(),
@@ -550,21 +581,38 @@ export const ControlSession = z.object({
   providerFamily: ProviderFamily.default("unknown"),
   nativeSessionId: z.string().nullable().default(null),
   observedModel: z.string().nullable().default(null),
-  authMode: AuthMode.default("unknown"),
   state: z.enum(["live", "stale", "rebound"]).default("live"),
-  turnCount: z.number().int().nonnegative().default(0),
 });
 export type ControlSession = z.infer<typeof ControlSession>;
+
+/**
+ * Compact run state embedded on a turn so a chat surface renders the whole
+ * conversation from one GET /threads/:id (no N+1 run-detail fetch per turn).
+ */
+export const ControlTurnRunCard = z.object({
+  state: ControlRunState,
+  mode: ModeKind.optional(),
+  strategy: z.enum(["race", "attempts", "until_clean", "swarm", "create"]).nullable().optional(),
+  n: z.number().int().optional(),
+  result: ControlRunResult.default({}),
+  spendUsd: z.number().nullable().optional(),
+  outputReadyState: OutputReadyState.default("pending"),
+  waitingOnUser: z.boolean().default(false),
+  finishedAt: z.string().nullable().default(null),
+});
+export type ControlTurnRunCard = z.infer<typeof ControlTurnRunCard>;
 
 export const ControlThreadTurn = z.object({
   id: Id,
   threadId: Id,
   runId: Id.nullable().default(null),
   parentRunId: Id.nullable().default(null),
-  sessionId: Id.nullable().default(null),
+  /** Set when this turn implements an approved plan from an earlier run. */
+  planRunId: Id.nullable().default(null),
   kind: ThreadTurnKind.default("followup"),
   prompt: z.string().default(""),
-  state: z.string().optional(),
+  /** Embedded run card (outcome/state) so the chat renders without N+1 fetches. */
+  run: ControlTurnRunCard.nullable().default(null),
   createdAt: z.string(),
 });
 export type ControlThreadTurn = z.infer<typeof ControlThreadTurn>;
@@ -574,11 +622,40 @@ export const ControlThreadCreateRequest = z
     title: z.string().optional(),
     scope: RunScope.default({ kind: "none" }),
     mode: ModeKind.optional(),
+    workspace: WorkspaceMode.optional(),
     authPreference: AuthPreference.optional(),
     primaryHarness: z.string().optional(),
   })
   .strict();
 export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateRequest>;
+
+/** Mutate a thread's title and/or open/closed state (rename, archive). */
+export const ControlThreadUpdateRequest = z
+  .object({
+    title: z.string().optional(),
+    state: ThreadState.optional(),
+  })
+  .strict();
+export type ControlThreadUpdateRequest = z.infer<typeof ControlThreadUpdateRequest>;
+
+/** Apply an isolated thread's accumulated worktree diff to the project. */
+export const ControlThreadApplyRequest = z
+  .object({
+    mode: z.enum(["apply", "branch", "commit", "pr"]).default("apply"),
+    branch: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .strict();
+export type ControlThreadApplyRequest = z.infer<typeof ControlThreadApplyRequest>;
+
+export const ControlThreadApplyResponse = z.object({
+  applied: z.boolean(),
+  status: z.enum(["applied", "branched", "committed", "pr_opened", "empty", "conflict", "rejected"]),
+  /** True when the project HEAD moved past the thread base since the thread started. */
+  headMoved: z.boolean().default(false),
+  detail: z.string().nullable().default(null),
+});
+export type ControlThreadApplyResponse = z.infer<typeof ControlThreadApplyResponse>;
 
 export const ControlThreadListResponse = z.object({
   threads: z.array(ControlThread).default([]),

@@ -42,6 +42,8 @@
             "stall",
             "web_evidence_unsatisfied",
             "fallback_model",
+            "not_portable",
+            "auth_unavailable",
             "manual"
           ],
           "default": "manual"

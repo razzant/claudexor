@@ -136,6 +136,9 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+      '@claudexor/workspace':
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/config:
     dependencies:

@@ -49,7 +49,9 @@ Core endpoints:
 - `POST /runs`
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
-- `POST /threads/:id/turns` (follow-up turn; read-only turns resume native sessions, write turns run fresh with a `session.rebound` disclosure)
+- `PATCH /threads/:id` (rename / archive a thread)
+- `POST /threads/:id/turns` (follow-up turn; turns run in-place — project or thread worktree — so the native session resumes and the next turn sees the work; a race runs isolated candidates and auto-applies the winner)
+- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
 - `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
 - `GET /events` (global live-only run-event multiplex, no replay)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)

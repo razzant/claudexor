@@ -243,6 +243,18 @@ is reserved for explicit stateful external adapters, such as Terminal-Bench
 containers where runtime state is the deliverable and cannot be merged from a
 patch. It is not surfaced in the macOS app and is not the default mutation path.
 
+Thread turns (v0.10) run IN-PLACE: an agent turn executes directly in the
+execution tree (the live project for an `in_place` thread, or the thread's
+persistent worktree for an `isolated` thread; `RunInput.executionRoot`), so the
+routed harness resumes its own native CLI session and the next turn sees the
+work — no `session.rebound` for these. A best-of-N race still runs candidates in
+throwaway envelopes from the tree's current state and AUTO-ADOPTS the winner's
+patch into the execution tree (`git apply --3way`, disclosed via
+`work_product.adopted`); a conflict leaves `adopted:false` and offers a manual
+apply, never losing work. Blockers (NEEDS_HUMAN / non-clean terminal) stop
+adoption. An isolated thread's accumulated worktree diff is delivered to the
+project on demand via `POST /threads/:id/apply`.
+
 ### Best-of-N / Create
 
 Each candidate gets its own `WorkspaceEnvelope`. The orchestrator reserves
@@ -259,9 +271,18 @@ eligible harness rotation.
 
 ### Plan
 
-Runs eligible planners read-only, stores per-harness plans, cross-reviews when
-reviewers are available, and writes `final/plan.md`. The spec interview is
-Plan/draft-owned, not a permanent top-level app sidebar concept.
+Runs eligible planners read-only with an explicit "plan, do not implement"
+instruction wrapped around the goal (so the model produces a plan instead of
+trying to build it and dumping code when writes are blocked), stores per-harness
+plans, cross-reviews when reviewers are available, and writes `final/plan.md` —
+an honest `# Plan` document (goal, per-planner plans, ALL review findings with
+severity so a BLOCK like "feature not delivered" is visible, open questions). It
+also writes `final/work_product.yaml` with `result_kind: plan` and a null
+diffstat, so a surface reports "plan only — no files changed" rather than a green
+"succeeded" over nothing. A follow-up turn implements it via the `planRunId`
+field (the engine prefixes the approved plan into the next agent turn's prompt).
+The spec interview is Plan/draft-owned, not a permanent top-level app sidebar
+concept.
 
 ### Read-only Audit
 
@@ -277,12 +298,21 @@ artifact/delivery facade:
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /events` (global live-only run-event multiplex)
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (the chat/session-first
-  conversation SSOT; threads carry run lineage + native harness sessions)
+  conversation SSOT; threads carry run lineage + native harness sessions). A
+  thread declares a `workspace.mode`: `in_place` (default) mutates the live
+  project tree; `isolated` keeps a persistent git worktree per thread.
+- `PATCH /threads/:id` (rename / archive a thread: title + open/closed state)
 - `POST /threads/:id/turns` (a follow-up turn: enqueues a run anchored to the
-  thread. Read-only turns resume each routed harness's own native CLI session;
-  write/agent turns run in fresh isolated envelopes — the native session is not
-  portable into a scoped harness home — with a typed `session.rebound`
-  disclosure; continuity rides on the thread prompt + repo state)
+  thread. Agent turns run IN-PLACE in the execution tree — the live project for
+  an in-place thread, or the thread's worktree for an isolated thread — so the
+  routed harness resumes its own native CLI session and the next turn sees the
+  work. A best-of-N race runs candidates in isolated envelopes and auto-applies
+  the winner to the execution tree (a typed `session.rebound` disclosure covers
+  those isolated candidates). A `planRunId` body field implements an approved
+  plan from an earlier turn)
+- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree
+  diff to the project; in-place threads write the project directly and never
+  need this)
 - `POST /runs/:id/decision` (typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;

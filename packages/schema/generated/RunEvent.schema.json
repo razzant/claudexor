@@ -19,6 +19,9 @@
         "task_id": {
           "$ref": "#/definitions/RunEvent/properties/run_id"
         },
+        "thread_id": {
+          "$ref": "#/definitions/RunEvent/properties/run_id"
+        },
         "type": {
           "type": "string",
           "enum": [
@@ -53,6 +56,7 @@
             "synthesis.started",
             "arbitration.completed",
             "work_product.emitted",
+            "work_product.adopted",
             "control.requested",
             "control.applied",
             "control.rejected",

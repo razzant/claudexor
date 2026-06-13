@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/ControlThreadApplyRequest",
+  "definitions": {
+    "ControlThreadApplyRequest": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "apply",
+            "branch",
+            "commit",
+            "pr"
+          ],
+          "default": "apply"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

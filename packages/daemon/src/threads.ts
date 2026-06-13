@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Session, Thread, ThreadTurn } from "@claudexor/schema";
+import type { Session, Thread, ThreadTurn, WorkspaceMode } from "@claudexor/schema";
 import {
   SCHEMA_VERSION,
   Session as SessionSchema,
@@ -19,8 +19,22 @@ export interface CreateThreadInput {
   title?: string;
   repoRoot?: string | null;
   mode?: Thread["mode"];
+  /** in_place (default) mutates the live tree; isolated keeps a thread worktree. */
+  workspace?: WorkspaceMode;
   authPreference?: Thread["auth_preference"];
   primaryHarness?: string | null;
+}
+
+export interface CreateTurnInput {
+  kind?: ThreadTurn["kind"];
+  parentRunId?: string | null;
+  /** Set when this turn implements an approved plan from an earlier run. */
+  planRunId?: string | null;
+}
+
+export interface UpdateThreadInput {
+  title?: string;
+  state?: Thread["state"];
 }
 
 /**
@@ -38,24 +52,52 @@ export class ThreadStore {
 
   private load(): void {
     if (!existsSync(this.path)) return;
+    let raw: Partial<ThreadStoreState>;
     try {
-      const raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<ThreadStoreState>;
-      // Per-record leniency: ONE invalid/migrated record must not wipe the
-      // whole conversation history — skip it, keep the rest.
-      const keep = <T>(items: unknown[] | undefined, schema: { safeParse(v: unknown): { success: boolean; data?: T } }): T[] =>
-        (items ?? []).flatMap((item) => {
-          const parsed = schema.safeParse(item);
-          return parsed.success && parsed.data !== undefined ? [parsed.data] : [];
-        });
-      this.state = {
-        threads: keep(raw.threads, ThreadSchema),
-        sessions: keep(raw.sessions, SessionSchema),
-        turns: keep(raw.turns, ThreadTurnSchema),
-      };
+      raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<ThreadStoreState>;
     } catch {
       // A corrupt store must not brick the daemon; threads are recoverable
       // from run artifacts, so start empty rather than crash-looping.
       this.state = { threads: [], sessions: [], turns: [] };
+      return;
+    }
+    // Per-record leniency: ONE invalid record must not wipe the whole history.
+    // A record stamped by a different schema_version is forward-migrated first
+    // (additive fields are covered by zod defaults); only a genuinely
+    // unparseable record is dropped — and then the original file is backed up
+    // and the loss is logged, so a schema change never SILENTLY erases history.
+    let dropped = 0;
+    const keep = <T>(items: unknown[] | undefined, schema: { safeParse(v: unknown): { success: boolean; data?: T } }): T[] =>
+      (items ?? []).flatMap((item) => {
+        let parsed = schema.safeParse(item);
+        if (!parsed.success && item && typeof item === "object") {
+          // Forward-migrate: bump schema_version AND coerce enum values removed in
+          // v0.10 (Thread.state "blocked" -> "active", ThreadTurnKind "orchestrate"
+          // -> "followup") so a pre-v0.10 record is migrated, not dropped (D5).
+          const rec = item as Record<string, unknown>;
+          const migrated: Record<string, unknown> = { ...rec, schema_version: SCHEMA_VERSION };
+          if (migrated["state"] === "blocked") migrated["state"] = "active";
+          if (migrated["kind"] === "orchestrate") migrated["kind"] = "followup";
+          parsed = schema.safeParse(migrated);
+        }
+        if (parsed.success && parsed.data !== undefined) return [parsed.data];
+        dropped++;
+        return [];
+      });
+    this.state = {
+      threads: keep(raw.threads, ThreadSchema),
+      sessions: keep(raw.sessions, SessionSchema),
+      turns: keep(raw.turns, ThreadTurnSchema),
+    };
+    if (dropped > 0) {
+      try {
+        writeFileSync(`${this.path}.bak`, JSON.stringify(raw, null, 2), { mode: 0o600 });
+        console.error(
+          `[claudexor] threads store: ${dropped} record(s) unparseable after migration; original backed up to ${this.path}.bak`,
+        );
+      } catch {
+        /* best-effort backup */
+      }
     }
   }
 
@@ -75,13 +117,39 @@ export class ThreadStore {
       updated_at: now,
       repo: input.repoRoot ? { root: input.repoRoot, base_ref: "HEAD" } : null,
       title: input.title ?? null,
-      mode: input.mode ?? "agent",
+      // Default mode follows the scope: a no-project thread can only Ask
+      // (read-only), so it must NOT default to agent (which would 400 on the
+      // first turn for lack of a project root). A project thread defaults to agent.
+      mode: input.mode ?? (input.repoRoot ? "agent" : "ask"),
+      // An isolated workspace needs a git project for its worktree; a no-project
+      // thread is always in_place (review #6 — never persist a doomed config).
+      workspace: { mode: input.repoRoot ? input.workspace ?? "in_place" : "in_place", worktree_path: null, base_sha: null },
       auth_preference: input.authPreference ?? "auto",
       primary_harness: input.primaryHarness ?? null,
     });
     this.state.threads.push(thread);
     this.persist();
     return thread;
+  }
+
+  /** Rename and/or open/close (archive) a thread. */
+  updateThread(id: string, patch: UpdateThreadInput): Thread {
+    const thread = this.getThread(id);
+    if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+    if (patch.title !== undefined) thread.title = patch.title;
+    if (patch.state !== undefined) thread.state = patch.state;
+    thread.updated_at = nowIso();
+    this.persist();
+    return thread;
+  }
+
+  /** Persist the resolved isolated worktree path + base sha for a thread. */
+  setThreadWorktree(id: string, worktreePath: string, baseSha: string): void {
+    const thread = this.getThread(id);
+    if (!thread) return;
+    thread.workspace = { ...thread.workspace, worktree_path: worktreePath, base_sha: baseSha };
+    thread.updated_at = nowIso();
+    this.persist();
   }
 
   listThreads(): Thread[] {
@@ -109,17 +177,28 @@ export class ThreadStore {
     return map;
   }
 
-  /** Record a turn (a run enqueued inside a thread). `parentRunId` should be
-   * captured by the caller BEFORE enqueue awaits so concurrent turns cannot
-   * both claim the same stale head. */
-  addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup", parentRunId?: string | null): ThreadTurn {
+  /**
+   * Create a turn BEFORE its run is enqueued (run_id is bound later via
+   * `bindTurnRun`). This is the single-writer entry point: the control API and
+   * the daemon runner both create here, so a run is recorded on its thread
+   * exactly once — there is no second "POST /runs with threadId silently skips
+   * the turn" path. `parentRunId` is captured here (head at creation time), so
+   * concurrent turns cannot both claim the same stale head.
+   */
+  createTurn(threadId: string, prompt: string, input: CreateTurnInput = {}): ThreadTurn {
     const thread = this.getThread(threadId);
     if (!thread) throw Object.assign(new Error(`no such thread: ${threadId}`), { status: 404 });
+    // Count TURNS, not run_ids: run_ids is only filled at bindTurnRun (which lags
+    // the runner), so a second turn created before the first binds would also see
+    // an empty run_ids and wrongly claim "initial" (review #5).
+    const existingTurns = this.state.turns.filter((t) => t.thread_id === threadId).length;
+    const kind: ThreadTurn["kind"] = input.kind ?? (existingTurns === 0 ? "initial" : "followup");
     const turn = ThreadTurnSchema.parse({
       id: newId("tn"),
       thread_id: threadId,
-      run_id: runId,
-      parent_run_id: parentRunId !== undefined ? parentRunId : thread.head_run_id,
+      run_id: null,
+      parent_run_id: input.parentRunId !== undefined ? input.parentRunId : thread.head_run_id,
+      plan_run_id: input.planRunId ?? null,
       kind,
       // The durable conversation store is read back into UIs: redact at the
       // persist boundary exactly like jobs.json / events.jsonl do.
@@ -127,23 +206,43 @@ export class ThreadStore {
       created_at: nowIso(),
     });
     this.state.turns.push(turn);
-    if (runId) {
-      thread.run_ids.push(runId);
-      thread.head_run_id = runId;
-    }
+    // First prompt names the thread (no LLM): cheap, honest, editable via rename.
+    if (!thread.title) thread.title = turn.prompt.split("\n")[0].slice(0, 60);
     thread.updated_at = nowIso();
     this.persist();
     return turn;
   }
 
+  /** Bind a started run to its turn and advance the thread head (runner-owned). */
+  bindTurnRun(turnId: string, runId: string): void {
+    const turn = this.state.turns.find((t) => t.id === turnId);
+    if (!turn) return;
+    turn.run_id = runId;
+    const thread = this.getThread(turn.thread_id);
+    if (thread) {
+      if (!thread.run_ids.includes(runId)) thread.run_ids.push(runId);
+      thread.head_run_id = runId;
+      thread.updated_at = nowIso();
+    }
+    this.persist();
+  }
+
+  /** Convenience: create a turn and bind its run in one call (CLI/runner path). */
+  addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup", parentRunId?: string | null): ThreadTurn {
+    const turn = this.createTurn(threadId, prompt, { kind, parentRunId });
+    if (runId) this.bindTurnRun(turn.id, runId);
+    return this.state.turns.find((t) => t.id === turn.id) ?? turn;
+  }
+
   /** Record/refresh the native CLI session a harness emitted for this thread. */
-  recordSession(threadId: string, harnessId: string, nativeSessionId: string): void {
+  recordSession(threadId: string, harnessId: string, nativeSessionId: string, observedModel?: string | null): void {
     const existing = this.state.sessions.find((s) => s.thread_id === threadId && s.harness_id === harnessId);
     const now = nowIso();
     if (existing) {
       existing.native_session_id = nativeSessionId;
       existing.state = "live";
       existing.resume_kind = "resume_by_id";
+      if (observedModel) existing.last_observed_model = observedModel;
       existing.updated_at = now;
     } else {
       this.state.sessions.push(
@@ -152,6 +251,7 @@ export class ThreadStore {
           thread_id: threadId,
           harness_id: harnessId,
           native_session_id: nativeSessionId,
+          last_observed_model: observedModel ?? null,
           resume_kind: "resume_by_id",
           state: "live",
           created_at: now,

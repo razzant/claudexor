@@ -7,8 +7,10 @@ import { ensureDir, newId, nowIso } from "@claudexor/util";
 import {
   branchDelete,
   diffStaged,
+  diffTrees,
   isGitRepo,
   revParse,
+  snapshotTree,
   statusPorcelain,
   stashCreate,
   worktreeAdd,
@@ -106,17 +108,22 @@ export class WorkspaceManager {
     };
     const ports = await allocatePorts(opts.ports ?? 0);
 
-    // In-place mode: mutate the live repoRoot directly (no git, no worktree). Used
+    // In-place mode: mutate the live repoRoot directly (no isolated worktree).
+    // Used for thread turns (chat-first: the next turn sees this one's work) and
     // for stateful external environments where runtime state is the deliverable.
+    // For a git project we record a per-turn snapshot sha so diff() captures only
+    // THIS turn's net change; a non-git folder falls back to a cpSync baseline.
     if (opts.inPlace) {
-      this.snapshotBaseline(base);
+      const gitRepo = await isGitRepo(this.repoRoot);
+      const baseSha = gitRepo ? await snapshotTree(this.repoRoot) : null;
+      if (!gitRepo) this.snapshotBaseline(base);
       return WorkspaceEnvelopeSchema.parse({
         id: newId("env"),
         task_id: opts.taskId,
         attempt_id: opts.attemptId,
         repo_root: this.repoRoot,
         base_ref: opts.baseRef ?? "HEAD",
-        base_sha: null,
+        base_sha: baseSha,
         worktree_path: this.repoRoot,
         branch_name: "inplace",
         env_dir: envDir,
@@ -240,10 +247,16 @@ export class WorkspaceManager {
   }
 
   async diff(env: WorkspaceEnvelope): Promise<string> {
-    // In-place: there is no git worktree. Diff the best-effort baseline snapshot
-    // against the live tree; if no baseline was captured, return empty (reviewers
-    // read the live tree directly, and arbitration treats diffSize as optional).
+    // In-place: there is no isolated worktree. For a git project, diff the
+    // per-turn base snapshot against a fresh end snapshot — net change of THIS
+    // turn only, untracked included, prior dirty state folded into base.
     if (env.worktree_path === env.repo_root) {
+      if (env.base_sha) {
+        const end = await snapshotTree(env.repo_root);
+        return diffTrees(env.repo_root, env.base_sha, end);
+      }
+      // Non-git fallback: diff the best-effort cpSync baseline against the live
+      // tree; if no baseline was captured, return empty (reviewers read the tree).
       const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
       if (!existsSync(baseline)) return "";
       try {

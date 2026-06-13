@@ -32,7 +32,7 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudexor.app"
 
-VERSION="${CLAUDEXOR_VERSION:-0.9.0}"
+VERSION="${CLAUDEXOR_VERSION:-0.10.0}"
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 
 # On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be

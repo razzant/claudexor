@@ -280,14 +280,39 @@ public final class GatewayClient: Sendable {
         if status == 200 {
             return .started(try Self.decoder.decode(RunStartInfo.self, from: data))
         }
-        if status == 503 {
-            // The server cancelled a turn that did not start within the wait
-            // window (no silent null-linked turns); surface it as transient.
-            struct BusyBody: Decodable { let error: String?; let jobId: String? }
-            let body = try? Self.decoder.decode(BusyBody.self, from: data)
-            throw GatewayError.queueBusy(message: body?.error ?? "engine queue is busy — retry the turn")
+        if status == 202 {
+            // The turn IS recorded (turnId) but its run had not started within the
+            // wait window; the runner binds it when it starts. Treat as queued —
+            // never lost, never cancelled (the v0.9 30s race is gone).
+            return .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
         }
         throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+    }
+
+    /// Rename / archive a thread (PATCH /threads/:id).
+    public func updateThread(id: String, body: UpdateThreadRequest) async throws -> ThreadSummary {
+        var req = request("threads/\(id)", method: "PATCH")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadSummary.self, from: data)
+    }
+
+    /// Deliver an isolated thread's accumulated worktree diff to its project.
+    public func applyThread(id: String, body: ThreadApplyRequest) async throws -> ThreadApplyResponse {
+        var req = request("threads/\(id)/apply", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadApplyResponse.self, from: data)
     }
 
     public func setSecret(name: String, value: String) async throws {

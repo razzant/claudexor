@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureGitRepository, git, isGitRepo } from "./git.js";
+import { applyPatch, ensureGitRepository, git, isGitRepo, snapshotTree } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
+import { ensureThreadWorktree } from "./thread-tree.js";
 
 async function initRepo(): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), "claudexor-ws-"));
@@ -83,6 +84,76 @@ describe("WorkspaceManager", () => {
     // ...but the scoped envelope base (home + baseline) is removed.
     expect(existsSync(env.home_dir)).toBe(false);
     expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
+  });
+
+  it("in-place on a GIT repo: per-turn diff shows only this turn's net change", async () => {
+    const repo = await initRepo();
+    // A prior turn already left an uncommitted edit in the live tree.
+    writeFileSync(join(repo, "prior.txt"), "from an earlier turn\n");
+    const mgr = new WorkspaceManager(repo);
+
+    // This turn's envelope snapshots the current (dirty) tree as its base.
+    const env = await mgr.create({ taskId: "th-1", attemptId: "turn-2", inPlace: true });
+    expect(env.worktree_path).toBe(repo);
+    expect(env.base_sha).not.toBeNull(); // git mode records a snapshot sha
+
+    // The harness mutates the live tree in place.
+    writeFileSync(join(repo, "added.txt"), "this turn\n");
+    writeFileSync(join(repo, "README.md"), "# test\nthis turn edit\n");
+    const diff = await mgr.diff(env);
+    expect(diff).toContain("added.txt");
+    expect(diff).toContain("this turn edit");
+    // Pre-existing dirty state was folded into the base, so it is NOT this turn's change.
+    expect(diff).not.toContain("prior.txt");
+    await mgr.dispose(env);
+    // dispose never deletes the live tree in in-place mode.
+    expect(existsSync(join(repo, "added.txt"))).toBe(true);
+  });
+
+  it("ensureThreadWorktree creates a reusable isolated worktree off the project snapshot", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, "live.txt"), "uncommitted project state\n");
+    const first = await ensureThreadWorktree(repo, "th-iso");
+    expect(first.created).toBe(true);
+    expect(existsSync(join(first.path, ".git"))).toBe(true);
+    // The worktree is seeded from the snapshot, so it carries the uncommitted state.
+    expect(existsSync(join(first.path, "live.txt"))).toBe(true);
+    // Reuse returns the same path without recreating.
+    const second = await ensureThreadWorktree(repo, "th-iso");
+    expect(second.created).toBe(false);
+    expect(second.path).toBe(first.path);
+    expect(second.baseSha).toBe(first.baseSha);
+    // Self-ignore seeded so the user's own `git add -A` never captures it (D3).
+    expect(readFileSync(join(repo, ".claudexor", ".gitignore"), "utf8")).toBe("*\n");
+  });
+
+  it("snapshotTree + applyPatch work INSIDE a linked worktree (.git is a file there)", async () => {
+    // Regression for review #8/#9: a worktree's `.git` is a FILE (gitdir pointer),
+    // so scratch index / patch paths must NOT live under `<worktree>/.git`.
+    const repo = await initRepo();
+    const wt = await ensureThreadWorktree(repo, "th-wt");
+    // Dirty the worktree, then snapshot it (used to fail with "Not a directory").
+    writeFileSync(join(wt.path, "wt-change.txt"), "edited in worktree\n");
+    const snap = await snapshotTree(wt.path);
+    expect(snap).not.toBe(wt.baseSha); // a real snapshot sha, not a crash
+    const diff = await (new WorkspaceManager(wt.path)).diff(
+      // craft an in-place envelope pointing at the worktree
+      { worktree_path: wt.path, repo_root: wt.path, base_sha: wt.baseSha, task_id: "t", attempt_id: "a" } as never,
+    );
+    expect(diff).toContain("wt-change.txt");
+    // Adopt a patch into the worktree (race-winner path) — must not throw.
+    const patch = "diff --git a/adopted.txt b/adopted.txt\nnew file mode 100644\nindex 0000000..0905ab8\n--- /dev/null\n+++ b/adopted.txt\n@@ -0,0 +1 @@\n+adopted\n";
+    await applyPatch(wt.path, patch);
+    expect(existsSync(join(wt.path, "adopted.txt"))).toBe(true);
+  });
+
+  it("snapshotTree returns HEAD for a clean tree and a new sha for a dirty tree", async () => {
+    const repo = await initRepo();
+    const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    expect(await snapshotTree(repo)).toBe(head); // clean -> HEAD
+    writeFileSync(join(repo, "dirty.txt"), "x\n");
+    const dirty = await snapshotTree(repo);
+    expect(dirty).not.toBe(head); // dirty -> dangling snapshot commit
   });
 
   it("captures committed-by-harness work in the diff (vs base_sha, not worktree HEAD)", async () => {

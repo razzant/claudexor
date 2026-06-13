@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// v0.10 chat-first cockpit: ONE screen. The thread list + conversation IS the
+/// app (ThreadsScreen); a run's detail (diff/timeline/review) opens in the
+/// trailing inspector, not a separate kitchen-sink of tabs. Budget, Harness
+/// Doctor, and preferences live in the Settings scene (⌘,).
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var inspectorPresented = false
@@ -8,33 +12,15 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         ZStack {
-            GlowBackground()
+            GlassBackground()
                 .ignoresSafeArea()
-            NavigationSplitView {
-                SidebarView()
-                    .navigationSplitViewColumnWidth(min: 210, ideal: 244, max: 300)
-            } detail: {
-                ContentRouter()
-                    .navigationTitle(routeTitle)
-                    .inspector(isPresented: $inspectorPresented) {
-                        InspectorRouter()
-                            .inspectorColumnWidth(min: 250, ideal: 300, max: 380)
-                    }
-                    .toolbar { toolbarContent }
-            }
-            .navigationSplitViewStyle(.balanced)
-            .tint(Theme.accent)   // brand owns selection/controls (not the system blue)
-        }
-        // App-wide search declared once on the split view (WWDC25 "Build a SwiftUI app with the
-        // new design") → the toolbar search affordance is identical on every screen instead of
-        // reflowing per-screen.
-        .searchable(text: $model.searchQuery, placement: .toolbar, prompt: "Search")
-        // Search is per-screen in meaning: don't leak one screen's query into the next.
-        .onChange(of: model.route) { _, _ in
-            if !model.searchQuery.isEmpty { model.searchQuery = "" }
-        }
-        .sheet(isPresented: $model.composerPresented) {
-            ComposerView().environment(model)
+            ThreadsScreen()
+                .inspector(isPresented: $inspectorPresented) {
+                    runInspector
+                        .inspectorColumnWidth(min: 320, ideal: 420, max: 560)
+                }
+                .toolbar { toolbarContent }
+                .tint(Theme.accent)
         }
         .sheet(item: $model.authSheetHarness) { family in
             AuthSheet(family: family).environment(model)
@@ -43,167 +29,61 @@ struct RootView: View {
             OnboardingView(completed: $onboardingComplete).environment(model)
                 .interactiveDismissDisabled(true)
         }
+        // Opening a run from a turn reveals its detail in the inspector.
+        .onChange(of: model.route) { _, new in
+            if case .task = new { inspectorPresented = true }
+        }
     }
 
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
+    /// The trailing inspector: the opened run's full detail (diff/timeline/review/
+    /// diagnostics), reusing the existing TaskDetail surface beside the chat.
+    @ViewBuilder private var runInspector: some View {
+        if case .task(let id) = model.route {
+            TaskDetailView(taskId: id)
+        } else {
+            ContentUnavailableView(
+                "No run open",
+                systemImage: "sidebar.trailing",
+                description: Text("Open a run from a turn to inspect its diff, timeline, and review.")
+            )
+        }
+    }
+
+    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            EngineStatusDot()
             Button { Task { await model.connect() } } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .help("Reconnect & refresh runs")
+            .help("Reconnect & refresh")
 
             AppearanceMenu()
 
-            Button {
-                withAnimation(.snappy) { inspectorPresented.toggle() }
-            } label: {
-                Label("Inspector", systemImage: "sidebar.trailing")
+            Button { withAnimation(.snappy) { inspectorPresented.toggle() } } label: {
+                Label("Run inspector", systemImage: "sidebar.trailing")
             }
-            .help("Toggle inspector")
+            .help("Toggle the run inspector")
 
-            Button { model.composerPresented = true } label: {
-                Label("New Task", systemImage: "plus")
+            SettingsLink { Label("Settings", systemImage: "gearshape") }
+                .help("Preferences, budget, harness doctor (⌘,)")
+
+            Button { model.startDraftThread() } label: {
+                Label("New Thread", systemImage: "square.and.pencil")
             }
-            .keyboardShortcut("n", modifiers: .command)
-            .help("Open the full composer")
-        }
-    }
-
-    private var routeTitle: String {
-        switch model.route {
-        case .threads: return "Threads"
-        case .overview: return "Home"
-        case .tasks: return "Tasks"
-        case .task: return model.selectedTask?.title ?? "Task"
-        case .spec: return model.selectedSpec?.title ?? "Spec"
-        case .interview: return "Spec Interview"
-        case .review: return "Review Queue"
-        case .budget: return "Budget"
-        case .harnesses: return "Harness Doctor"
-        case .settings: return "Settings"
+            .help("New thread — the first message starts it")
         }
     }
 }
 
-// MARK: - Content router
-
-private struct ContentRouter: View {
+/// Compact engine-health indicator for the toolbar (replaces the old sidebar footer).
+struct EngineStatusDot: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        Group {
-            switch model.route {
-            case .threads: ThreadsScreen()
-            case .overview: HomeScreen()
-            case .tasks: TasksScreen()
-            case .task(let id): TaskDetailView(taskId: id)
-            case .spec(let id): SpecDetailScreen(specId: id)
-            case .interview: SpecInterviewScreen()
-            case .review: ReviewScreen()
-            case .budget: BudgetScreen()
-            case .harnesses: HarnessesScreen()
-            case .settings: SettingsScreen()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - Inspector router
-
-private struct InspectorRouter: View {
-    @Environment(AppModel.self) private var model
-    var body: some View {
-        if let task = model.selectedTask {
-            TaskInspectorView(task: task)
-        } else {
-            ContextInspectorView()
-        }
-    }
-}
-
-// MARK: - Sidebar (system Liquid Glass: NO custom background; full-row selectable)
-
-struct SidebarView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        @Bindable var model = model
-        List(selection: $model.route) {
-            Section {
-                row("Threads", "bubble.left.and.text.bubble.right", .threads,
-                    badge: model.threads.filter(\.needsHuman).count)
-                row("Home", "house", .overview)
-                row("Tasks", "checklist", .tasks, badge: model.tasks.count)
-                row("Review Queue", "person.2.badge.gearshape", .review,
-                    badge: model.allFindings.count)
-            }
-
-            ForEach(model.projects) { project in
-                Section(project.name) {
-                    ForEach(project.specs) { spec in
-                        specRow(spec)
-                        ForEach(spec.runIds, id: \.self) { runId in
-                            if let task = model.task(runId) { runRow(task) }
-                        }
-                    }
-                }
-            }
-
-            Section("Operations") {
-                row("Budget", "gauge.with.dots.needle.67percent", .budget)
-                row("Harness Doctor", "cpu", .harnesses)
-            }
-        }
-        .navigationTitle("Claudexor")
-        .safeAreaInset(edge: .bottom) { footer }
-    }
-
-    // Full-row selectable nav item (whole row is the click target).
-    private func row(_ title: String, _ glyph: String, _ route: SidebarRoute, badge: Int? = nil) -> some View {
-        Label(title, systemImage: glyph)
-            .badge(badge.flatMap { $0 > 0 ? Text("\($0)") : nil })
-            .tag(route)
-    }
-
-    private func specRow(_ spec: Spec) -> some View {
-        Label {
-            HStack(spacing: Theme.Spacing.xs) {
-                Text(spec.title).lineLimit(1)
-                if spec.frozen {
-                    Text("v\(spec.version)").font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
-        } icon: {
-            Image(systemName: spec.frozen ? "doc.text.fill" : "doc.text")
-                .foregroundStyle(spec.frozen ? Theme.accent : .secondary)
-        }
-        .tag(SidebarRoute.spec(spec.id))   // unique identity: never alias to a run's tag
-    }
-
-    private func runRow(_ task: TaskRun) -> some View {
-        Label {
-            Text(task.title).lineLimit(1).font(.callout)
-        } icon: {
-            Image(systemName: task.status.glyph).foregroundStyle(task.status.color)
-        }
-        .tag(SidebarRoute.task(task.id))
-    }
-
-    private var footer: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            Image(systemName: model.health.glyph)
-                .imageScale(.small)
-                .foregroundStyle(model.health == .connected ? Theme.status(.succeeded) : (model.health == .connecting ? Theme.status(.running) : .secondary))
-                .symbolEffect(.pulse, options: .repeating, isActive: model.health == .connecting && !reduceMotion)
-            Text(model.health == .connected ? "Engine · \(model.endpoint)" : model.health.label)
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            Spacer()
-        }
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.vertical, Theme.Spacing.sm)
-        .accessibilityLabel("Engine \(model.health.label)")
+        Image(systemName: model.health.glyph)
+            .imageScale(.medium)
+            .foregroundStyle(model.health == .connected ? Theme.status(.succeeded)
+                             : (model.health == .connecting ? Theme.status(.running) : .secondary))
+            .help(model.health == .connected ? "Engine · \(model.endpoint)" : model.health.label)
     }
 }
 

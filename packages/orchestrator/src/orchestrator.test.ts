@@ -67,6 +67,37 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
   };
 }
 
+/** An implementer that writes a REAL file, so the candidate has a non-empty diff
+ * and the reviewer panel actually runs (empty-diff candidates skip paid review). */
+function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: family,
+        // Implement-only: it must NOT also qualify as a reviewer (else it would
+        // review its own candidate and crowd out a real cross-family reviewer).
+        capabilities: { implement: true, structured_events: true },
+        access_profiles_supported: ["workspace_write"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+      writeFileSync(join(spec.cwd, "CHANGED.txt"), "real change\n");
+      yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+      yield { type: "usage", session_id: spec.session_id, ts, usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
 /** A reviewer/planner-only adapter (like raw-api): cannot implement/edit. */
 function noImplementAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
@@ -570,7 +601,7 @@ describe("Orchestrator", () => {
   it("applies a per-family reviewer model override (cheaper reviewer)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
-      ["fake-success", createFakeHarness("fake-success")],
+      ["fake-impl", diffImplementer("fake-impl")],
       ["rev-openai", realLikeAdapter("rev-openai", "openai")],
       ["rev-anthropic", realLikeAdapter("rev-anthropic", "anthropic")],
     ]);
@@ -578,7 +609,7 @@ describe("Orchestrator", () => {
       registry,
       reviewerModels: { openai: "o-cheap-model", anthropic: "a-cheap-model" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("o-cheap-model");
     expect(reviewYaml).toContain("a-cheap-model");
@@ -612,7 +643,7 @@ describe("Orchestrator", () => {
       };
     }
     const registry = new Map<string, HarnessAdapter>([
-      ["fake-success", createFakeHarness("fake-success")],
+      ["fake-impl", diffImplementer("fake-impl")],
       ["rev-openai", reviewer("rev-openai", "openai")],
       ["rev-anthropic", reviewer("rev-anthropic", "anthropic")],
     ]);
@@ -621,7 +652,7 @@ describe("Orchestrator", () => {
       reviewerModels: { openai: "o-review", anthropic: "opus" },
       reviewerEfforts: { anthropic: "max" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1 });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
     expect(seen).toEqual(
       expect.arrayContaining([
         { id: "rev-openai", model: "o-review", effort: null },
@@ -657,6 +688,88 @@ describe("Orchestrator", () => {
     expect(reviewYaml).toContain("requested_effort: max");
     expect(reviewYaml).toContain("findings:");
     expect(reviewYaml).toContain("route_proofs:");
+  });
+
+  it("in-place agent turn runs in the LIVE tree and resumes the native session (v0.10 chat)", async () => {
+    const repo = await initRepo();
+    let sawResume: string | null | undefined;
+    const impl: HarnessAdapter = {
+      id: "impl",
+      async discover() {
+        return HarnessManifest.parse({ id: "impl", display_name: "impl", kind: "local_cli", provider_family: "local", capabilities: { implement: true, structured_events: true }, access_profiles_supported: ["workspace_write"] });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "impl", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        sawResume = spec.resume_session_id; // in-place turns pass the native resume id
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "impl-model", payload: { native_session_id: "vendor-sess-9" } };
+        writeFileSync(join(spec.cwd, "LIVE.txt"), "in place\n");
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const observed: Record<string, string> = {};
+    const orch = new Orchestrator({ registry: new Map([["impl", impl]]), reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo, prompt: "edit it", mode: "agent", harnesses: ["impl"], n: 1,
+      inPlace: true, threadId: "th-1", resumeSessions: { impl: "vendor-sess-prev" },
+      onSessionObserved: (h, nid) => { observed[h] = nid; },
+    });
+    // The file landed in the LIVE project tree (no isolated worktree), and the
+    // candidate ran in-place (spec.cwd === repo).
+    expect(existsSync(join(repo, "LIVE.txt"))).toBe(true);
+    // In-place turns RESUME the native session and RECORD the new one.
+    expect(sawResume).toBe("vendor-sess-prev");
+    expect(observed["impl"]).toBe("vendor-sess-9");
+    expect(res.mode).toBe("agent");
+  });
+
+  it("race auto-adopts the winner's patch into the live in-place tree (Р8)", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["a", diffImplementer("a", "local")], ["b", diffImplementer("b", "openai")]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["a", "b"], n: 2, inPlace: true });
+    // No test gates configured -> a clean candidate terminates "ungated"; it is
+    // still adopted into the live tree (review passed, nothing to certify).
+    expect(["success", "ungated"]).toContain(res.status);
+    // Candidates ran in ISOLATED envelopes (n>1); the winner was adopted into the
+    // LIVE tree so the next turn sees it.
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("adopted: true");
+  });
+
+  it("plan mode writes an honest plan (no SpecPack) that surfaces review findings", async () => {
+    const repo = await initRepo();
+    // A reviewer that BLOCKs: the plan must still surface it, not hide it.
+    const blocker: ReviewerSpec = {
+      providerFamily: "anthropic",
+      adapter: {
+        id: "rev-block",
+        async discover() { return HarnessManifest.parse({ id: "rev-block", display_name: "rev-block", kind: "local_cli", provider_family: "anthropic", capabilities: { review: true } }); },
+        async doctor() { return ConformanceReport.parse({ harness_id: "rev-block", status: "ok", enabled_intents: ["review"] }); },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield { type: "started", session_id: spec.session_id, ts, observed_model: "rev-block-model" };
+          yield { type: "message", session_id: spec.session_id, ts, text: '```json\n[{"severity":"BLOCK","category":"deploy","claim":"the requested feature is not delivered"}]\n```' };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([["fake-success", createFakeHarness("fake-success")]]), reviewers: [blocker] });
+    const res = await orch.run({ repoRoot: repo, prompt: "make a racing game", mode: "plan", harnesses: ["fake-success"] });
+    expect(res.status).toBe("success");
+    const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
+    expect(plan).toContain("# Plan");
+    expect(plan).not.toContain("SpecPack");
+    expect(plan).toContain("## Review findings");
+    expect(plan).toContain("the requested feature is not delivered"); // BLOCK is visible, not hidden
+    // Plan is a work product (report) with result_kind=plan: NO files changed.
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("result_kind: plan");
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {

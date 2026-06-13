@@ -1,6 +1,4 @@
 import { createInterface, type Interface } from "node:readline";
-import { join } from "node:path";
-import { ThreadStore, daemonDir } from "@claudexor/daemon";
 import { Orchestrator } from "@claudexor/orchestrator";
 import type { ModeKind } from "@claudexor/schema";
 import { buildRegistry } from "./registry.js";
@@ -19,9 +17,10 @@ const REPL_HELP = `claudexor REPL — a thread of turns over your harnesses
   /new [title]      start a new thread
   /help             this help
   /quit             exit
-Read-only turns (ask/plan/audit/orchestrate) RESUME each harness's own native
-CLI session; agent/write turns run fresh isolated envelopes with a typed
-session.rebound disclosure (continuity = thread prompt + repo state).`;
+Turns run "in-place" in the project (or the thread's worktree), so each harness
+RESUMES its own native CLI session and the next turn sees the previous turn's
+work. A best-of-N race runs candidates in isolated envelopes and auto-applies
+the winner.`;
 
 interface ReplTurnSpec {
   mode: ModeKind;
@@ -95,8 +94,16 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
     return json;
   };
 
-  let thread = await api("POST", "/threads", { title: `repl ${new Date().toISOString().slice(0, 16)}`, scope: { kind: "project", root: repoRoot } });
-  process.stdout.write(`claudexor REPL — thread ${thread.id} on ${repoRoot} (daemon-backed; visible in the app)\nType /help for commands.\n`);
+  // Lazy thread: a bare `claudexor` that the user immediately quits must NOT
+  // litter the app with an empty "repl <date>" thread (the v0.9 leak). The
+  // thread is created on the first real turn (or an explicit /new), and titled
+  // by its first prompt server-side.
+  let thread: any = null;
+  const ensureThread = async (title?: string): Promise<any> => {
+    if (!thread) thread = await api("POST", "/threads", { ...(title ? { title } : {}), scope: { kind: "project", root: repoRoot } });
+    return thread;
+  };
+  process.stdout.write(`claudexor REPL on ${repoRoot} (daemon-backed; the thread appears in the app on your first message)\nType /help for commands.\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
   rl.prompt();
 
@@ -110,10 +117,16 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
       if (parsed.command === "quit") break;
       if (parsed.command === "help") process.stdout.write(REPL_HELP + "\n");
       if (parsed.command === "new") {
-        thread = await api("POST", "/threads", { title: parsed.arg || undefined, scope: { kind: "project", root: repoRoot } });
+        thread = null;
+        thread = await ensureThread(parsed.arg || undefined);
         process.stdout.write(`new thread ${thread.id}\n`);
       }
       if (parsed.command === "thread") {
+        if (!thread) {
+          process.stdout.write("no thread yet — send a message to start one\n");
+          rl.prompt();
+          continue;
+        }
         try {
           const detail = await api("GET", `/threads/${encodeURIComponent(thread.id)}`);
           process.stdout.write(`thread ${detail.thread.id} (${detail.thread.title ?? "untitled"})\n`);
@@ -132,7 +145,8 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
       continue;
     }
     try {
-      const started = await api("POST", `/threads/${encodeURIComponent(thread.id)}/turns`, {
+      const active = await ensureThread();
+      const started = await api("POST", `/threads/${encodeURIComponent(active.id)}/turns`, {
         prompt: parsed.prompt,
         mode: parsed.mode,
         ...(parsed.race ? { n: 2 } : {}),
@@ -161,15 +175,16 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
 }
 
 async function runLocalRepl(repoRoot: string): Promise<number> {
-  // No daemon: in-process engine with a TERMINAL-LOCAL thread store. ThreadStore
-  // has no cross-process locking, so the daemon's threads.json stays
-  // single-writer; local REPL threads are not visible to the app by design.
-  const threads = new ThreadStore(join(daemonDir(), "threads-repl.json"));
-  let thread = threads.createThread({ title: `repl ${new Date().toISOString().slice(0, 16)}`, repoRoot });
+  // No daemon: in-process engine with EPHEMERAL, in-memory continuity. There is
+  // no durable thread store here (the daemon owns threads.json single-writer);
+  // native session ids are kept in memory for this process so plan->continue
+  // still resumes within the session, and nothing is persisted/shared.
   const orch = new Orchestrator({ registry: buildRegistry() });
+  let sessions = new Map<string, string>();
+  const localTurns: { runId: string | null; status: string; prompt: string }[] = [];
 
   process.stdout.write(
-    `claudexor REPL — thread ${thread.id} on ${repoRoot} (local engine; start the daemon to share threads with the app)\nType /help for commands.\n`,
+    `claudexor REPL on ${repoRoot} (local engine; ephemeral thread — start the daemon to persist/share with the app)\nType /help for commands.\n`,
   );
   const rl: Interface = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
   rl.prompt();
@@ -184,15 +199,14 @@ async function runLocalRepl(repoRoot: string): Promise<number> {
       if (parsed.command === "quit") break;
       if (parsed.command === "help") process.stdout.write(REPL_HELP + "\n");
       if (parsed.command === "new") {
-        thread = threads.createThread({ title: parsed.arg || undefined, repoRoot });
-        process.stdout.write(`new thread ${thread.id}\n`);
+        sessions = new Map();
+        localTurns.length = 0;
+        process.stdout.write("new ephemeral thread\n");
       }
       if (parsed.command === "thread") {
-        const turns = threads.turnsFor(thread.id);
-        const sessions = threads.sessionsForThread(thread.id);
-        process.stdout.write(`thread ${thread.id} (${thread.title ?? "untitled"})\n`);
-        for (const t of turns) process.stdout.write(`  turn ${t.id} run=${t.run_id ?? "-"} :: ${t.prompt.slice(0, 80)}\n`);
-        for (const s of sessions) process.stdout.write(`  session ${s.harness_id} native=${s.native_session_id ?? "-"} state=${s.state}\n`);
+        process.stdout.write(`ephemeral thread — ${localTurns.length} turn(s)\n`);
+        for (const t of localTurns) process.stdout.write(`  run=${t.runId ?? "-"} [${t.status}] :: ${t.prompt.slice(0, 80)}\n`);
+        for (const [harnessId, nativeId] of sessions) process.stdout.write(`  session ${harnessId} native=${nativeId}\n`);
       }
       rl.prompt();
       continue;
@@ -208,16 +222,15 @@ async function runLocalRepl(repoRoot: string): Promise<number> {
         prompt: parsed.prompt,
         mode: parsed.mode,
         n: parsed.race ? 2 : undefined,
-        threadId: thread.id,
-        resumeSessions: threads.resumeMap(thread.id),
-        onSessionObserved: (harnessId, nativeSessionId) => threads.recordSession(thread.id, harnessId, nativeSessionId),
+        resumeSessions: Object.fromEntries(sessions),
+        onSessionObserved: (harnessId, nativeSessionId) => sessions.set(harnessId, nativeSessionId),
         onHarnessEvent: (ev) => {
           if (ev.type === "message" && ev.text) process.stdout.write(ev.text.endsWith("\n") ? ev.text : ev.text + "\n");
           else if (ev.type === "tool_call" && ev.tool) process.stdout.write(`  [tool] ${ev.tool.name}${ev.tool.target ? `: ${ev.tool.target}` : ""}\n`);
           else if (ev.type === "error" && ev.error) process.stdout.write(`  [error] ${ev.error}\n`);
         },
       });
-      threads.addTurn(thread.id, res.runId, parsed.prompt);
+      localTurns.push({ runId: res.runId, status: res.status, prompt: parsed.prompt });
       process.stdout.write(`\n[turn done] status=${res.status} run=${res.runId}\n${res.summary ? res.summary.split("\n").slice(0, 6).join("\n") + "\n" : ""}`);
     } catch (err) {
       process.stdout.write(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);

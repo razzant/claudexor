@@ -1,0 +1,21 @@
+{
+  "$ref": "#/definitions/ControlThreadUpdateRequest",
+  "definitions": {
+    "ControlThreadUpdateRequest": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "closed"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

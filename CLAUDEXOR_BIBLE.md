@@ -102,17 +102,25 @@ owned, not a permanent top-level app identity.
 
 ## 9. macOS UX Must Be Native, Honest, And Familiar
 
-Users of Codex App, Claude Code, Cursor, and OpenCode should understand the app
-quickly: composer-first, visible modes, harness chips, live timeline, task
-outcome, diagnostics, review queue, and settings. Compact controls need hover
-help, blocking sheets need obvious exit affordances, and money input must be
-typed precisely rather than dragged on a slider. Liquid Glass belongs to
-navigation/chrome/floating composer; ordinary content cards float on frosted
-system materials (the `cardSurface` recipe — never `glassEffect` lensing);
-code, diffs, transcripts, tables, and dense small text keep solid
-high-contrast surfaces, and Reduce Transparency falls back to solid fills.
-Glow and motion are welcome, but black/white cutout artifacts, janky
-transitions, glass-behind-code, and decorative UI that obscures state are bugs.
+v0.10 is CHAT-FIRST: ONE screen — a thread list, the conversation, and a
+persistent composer. Users of Claude Code, Cursor, and Codex should feel at
+home: you just type; the first message starts a thread; turns run in-place so
+the next turn sees the work; a run's detail (diff/timeline/review) opens in the
+trailing inspector, not a separate kitchen-sink of tabs. The composer is always
+live — an empty chat is never a silent no-op. Every turn shows its HONEST
+outcome: a plan says "no files changed" and offers to implement it; a patch
+shows its diffstat; a race shows the adopted winner. Working progress
+(reasoning + tool calls) streams into the turn as it happens.
+
+The window is matte glass — the desktop shows faintly through it (behind-window
+material; Reduce Transparency falls back to a solid backdrop). There is NO
+always-animating backdrop and NO perpetual pulsing: idle means zero animation
+(the v0.9 60fps mesh + repeating symbol effects were the real cause of the low
+frame rate). Liquid Glass belongs to navigation/chrome/the composer; content
+cards use one frosted material with a single soft shadow; code, diffs,
+transcripts, and dense text keep solid high-contrast surfaces. Money is typed,
+never a slider. Decorative UI that obscures state, glass-behind-code, and janky
+transitions are bugs.
 
 ## 10. Settings Are Preferences, Not Brochures
 

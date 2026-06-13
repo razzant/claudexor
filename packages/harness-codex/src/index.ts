@@ -469,6 +469,14 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
           if (ev.type === "started" && spec.model_hint && !ev.observed_model) {
             ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
           }
+          // #16: an api_key run uses a TEMPORARY CODEX_HOME that this process
+          // deletes on exit, so the native session it created is gone next turn.
+          // Strip its id from the event so it never poisons the thread resume map
+          // (a later `codex exec resume <ghost>` would deterministically fail).
+          if (ev.type === "started" && tempCodexHome && ev.payload && "native_session_id" in ev.payload) {
+            const { native_session_id: _dropped, ...rest } = ev.payload as Record<string, unknown>;
+            ev.payload = { ...rest, resume_disabled: "ephemeral_codex_home" };
+          }
           if (ev.type === "usage" && ev.usage && ev.usage.cost_usd === undefined) {
             const est = estimateCodexCostUsd(model, ev.usage);
             if (est !== undefined) {

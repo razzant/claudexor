@@ -6,7 +6,9 @@ import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/con
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
-import { noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
+import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
+import { deliver } from "@claudexor/delivery";
+import { containsSecretLikeToken, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig } from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
 import { buildGateway, buildRegistry } from "./registry.js";
@@ -52,15 +54,56 @@ async function main(): Promise<void> {
         reviewerEfforts: p.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined,
       });
       const threadId = typeof p.threadId === "string" && p.threadId ? p.threadId : undefined;
+      // Resolve the execution tree: an ISOLATED thread runs in its persistent
+      // worktree (lazily created); in-place threads and ordinary runs use the
+      // project root. Config/artifacts stay anchored to repoRoot either way.
+      let executionRoot: string | undefined;
+      let inPlace = p.execution.isolation === "live";
+      if (threadId && repoRoot !== NO_PROJECT_ROOT) {
+        const thread = threads.getThread(threadId);
+        if (thread?.workspace.mode === "isolated") {
+          const wt = await ensureThreadWorktree(repoRoot, threadId);
+          executionRoot = wt.path;
+          // Persist the base ONLY on creation: `apply` advances base_sha, and a
+          // later turn must not clobber it back to the worktree HEAD (which never
+          // moves, since turns don't commit) — that would re-apply old work (D2).
+          if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
+          inPlace = true; // isolated turns run in-place WITHIN the worktree
+        }
+      }
+      // Single-writer turn binding: control-api pre-creates the turn and passes
+      // its id, which we bind when the run starts. A thread run WITHOUT a
+      // pre-created turn (a direct POST /runs with threadId) gets its turn
+      // created and bound here, so "a run is always recorded on its thread".
+      const turnId = typeof p.turnId === "string" && p.turnId ? p.turnId : undefined;
+      const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
+        ctx.onRunStart?.(info);
+        if (!threadId) return;
+        try {
+          if (turnId) {
+            threads.bindTurnRun(turnId, info.runId);
+          } else {
+            const turn = threads.createTurn(threadId, String(p.prompt ?? ""), {
+              parentRunId: typeof p.parentRunId === "string" ? p.parentRunId : null,
+            });
+            threads.bindTurnRun(turn.id, info.runId);
+          }
+        } catch {
+          /* turn binding must never fail the run */
+        }
+      };
       return orchestrator.run({
         onEvent: (event) => bus.publish(event),
         onInteraction: (ctx2) => interactions.register(ctx2),
         interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
         threadId,
+        executionRoot,
         // Native session continuity: resume each routed harness's own prior
         // conversation in this thread; record new native ids for future turns.
         resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
-        onSessionObserved: threadId ? (harnessId, nativeSessionId) => threads.recordSession(threadId, harnessId, nativeSessionId) : undefined,
+        onSessionObserved: threadId
+          ? (harnessId, nativeSessionId, observedModel) => threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
+          : undefined,
         authPreference: p.authPreference,
         repoRoot,
         prompt: String(p.prompt ?? ""),
@@ -86,9 +129,9 @@ async function main(): Promise<void> {
         specHash: typeof p.specHash === "string" ? p.specHash : undefined,
         specPath: typeof p.specPath === "string" ? p.specPath : undefined,
         envProfile: typeof p.envProfile === "string" ? p.envProfile : undefined,
-        inPlace: p.execution.isolation === "live",
+        inPlace,
         signal: ctx.signal,
-        onRunStart: ctx.onRunStart,
+        onRunStart,
       });
     },
   });
@@ -171,6 +214,43 @@ function applyHarnessSettingsPatches(
   return next;
 }
 
+/** Deliver an isolated thread's accumulated worktree diff to its project. */
+async function applyThreadDiff(
+  threads: ThreadStore,
+  id: string,
+  opts: { mode: string; branch?: string; message?: string },
+): Promise<{ applied: boolean; status: string; headMoved: boolean; detail: string | null }> {
+  const thread = threads.getThread(id);
+  if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+  const ws = thread.workspace;
+  if (ws.mode !== "isolated" || !ws.worktree_path || !thread.repo) {
+    throw Object.assign(new Error("thread has no isolated worktree to apply (in-place threads write the project directly)"), { status: 400 });
+  }
+  const projectRoot = thread.repo.root;
+  const base = ws.base_sha ?? "HEAD";
+  const patch = await diffStaged(ws.worktree_path, base);
+  if (!patch.trim()) return { applied: false, status: "empty", headMoved: false, detail: "no changes to apply" };
+  if (containsSecretLikeToken(patch)) return { applied: false, status: "rejected", headMoved: false, detail: "patch contains a secret-like token; refusing apply" };
+  // Best-effort: did the PROJECT advance past where this thread branched? (a
+  // warning, not a blocker — git apply --3way still merges or fails loudly.)
+  let headMoved = false;
+  try {
+    const head = (await git(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    const mb = (await git(projectRoot, ["merge-base", "HEAD", base])).stdout.trim();
+    headMoved = mb !== "" && head !== "" && mb !== head;
+  } catch {
+    /* best-effort */
+  }
+  const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as "apply" | "branch" | "commit" | "pr";
+  const delivered = await deliver(projectRoot, patch, { mode, branch: opts.branch, message: opts.message });
+  if (delivered.applied) {
+    // Re-base the thread on the new project state so the next apply diffs only new work.
+    threads.setThreadWorktree(id, ws.worktree_path, await snapshotTree(ws.worktree_path));
+  }
+  const status = !delivered.applied ? "conflict" : mode === "branch" ? "branched" : mode === "commit" ? "committed" : mode === "pr" ? "pr_opened" : "applied";
+  return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
+}
+
 function controlServices(interactions: InteractionRegistry, threads: ThreadStore) {
   const secretStore = new SecretStore();
   const setupJobs = createSetupJobManager();
@@ -187,8 +267,15 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         turns: threads.turnsFor(id) as unknown[],
       };
     },
-    addThreadTurn: async (id: string, runId: string | null, prompt: string, kind?: unknown, parentRunId?: string | null) =>
-      threads.addTurn(id, runId, prompt, (kind ?? "followup") as Parameters<ThreadStore["addTurn"]>[3], parentRunId),
+    createThreadTurn: async (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null }) =>
+      threads.createTurn(id, prompt, {
+        kind: opts.kind as any,
+        parentRunId: opts.parentRunId,
+        planRunId: opts.planRunId,
+      }),
+    updateThread: async (id: string, patch: { title?: string; state?: string }) =>
+      threads.updateThread(id, { title: patch.title, state: patch.state as any }),
+    applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) => applyThreadDiff(threads, id, opts),
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),
     harnesses: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),

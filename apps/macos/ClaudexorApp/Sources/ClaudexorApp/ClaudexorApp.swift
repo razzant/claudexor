@@ -18,7 +18,7 @@ struct ClaudexorApp: App {
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("New Task…") { model.composerPresented = true }
+                Button("New Thread") { model.startDraftThread() }
                     .keyboardShortcut("n", modifiers: .command)
             }
         }

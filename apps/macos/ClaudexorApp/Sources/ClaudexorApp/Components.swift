@@ -10,7 +10,6 @@ struct StatusPill: View {
         HStack(spacing: Theme.Spacing.xs) {
             Image(systemName: status.glyph)
                 .imageScale(.small)
-                .symbolEffect(.pulse, options: .repeating, isActive: status == .running && !reduceMotion)
             if !compact { Text(status.label) }
         }
         .font(.caption.weight(.medium))
@@ -30,7 +29,6 @@ struct FinalizingPill: View {
         HStack(spacing: Theme.Spacing.xs) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .imageScale(.small)
-                .symbolEffect(.rotate, options: .repeating, isActive: !reduceMotion)
             Text("Finalizing…")
         }
         .font(.caption.weight(.medium))
