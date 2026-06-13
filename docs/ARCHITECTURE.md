@@ -112,6 +112,17 @@ expands a bounded read-only pool (default width 4, capped at 8). Best-of-N
 expands the eligible pool over N candidates. Convergence rotates compatible
 harnesses when a stall signature persists.
 
+A thread carries sticky routing so the chat surface stays a thin gateway: a
+`Thread` persists `primary_harness` (which harness answers in chat) and
+`eligible_harnesses` (the pool Race runs — one candidate per harness, so its N is
+the pool size). A turn inherits both unless its request overrides them
+(`POST /threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
+**turn body > thread sticky > engine default** (config `routing.primary_harness`,
+auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
+`primaryHarness` is still only pinned first, and a primary outside the selected
+pool fails loudly. Surfaces just set the sticky values (`POST /threads`,
+`PATCH /threads/:id`) and send DTOs; they never route.
+
 Harness availability is determined by discovery + doctor + capabilities:
 `available` alone is not enough. A harness must be `ok`, expose the required
 intent for the selected mode (`explain` for Ask, `audit` for Explore/Audit,
@@ -300,8 +311,11 @@ artifact/delivery facade:
 - `POST /threads`, `GET /threads`, `GET /threads/:id` (the chat/session-first
   conversation SSOT; threads carry run lineage + native harness sessions). A
   thread declares a `workspace.mode`: `in_place` (default) mutates the live
-  project tree; `isolated` keeps a persistent git worktree per thread.
-- `PATCH /threads/:id` (rename / archive a thread: title + open/closed state)
+  project tree; `isolated` keeps a persistent git worktree per thread. It also
+  carries sticky routing — `primaryHarness` and `eligibleHarnesses` — that its
+  turns inherit.
+- `PATCH /threads/:id` (rename / archive a thread: title + open/closed state;
+  switch the sticky `primaryHarness` / `eligibleHarnesses`)
 - `POST /threads/:id/turns` (a follow-up turn: enqueues a run anchored to the
   thread. Agent turns run IN-PLACE in the execution tree — the live project for
   an in-place thread, or the thread's worktree for an isolated thread — so the
@@ -478,7 +492,9 @@ The macOS app is a native control surface over the control API:
 - Settings edits app preferences and engine defaults exposed by `/settings`,
   including appearance/motion, Current Project, routing/model defaults, budget,
   auth status, and secret refs;
-- sidebar Operations contains live Budget and Harness Doctor;
+- Budget and the Harness Doctor are Settings tabs (not a sidebar Operations
+  section); the chat-first main window is the thread list + conversation, with run
+  detail in the trailing inspector;
 - run detail has explicit `Outcome`, `Timeline`, `Plan`, `Candidates`, `Diff`,
   `Review`, and `Diagnostics` tabs; completed runs open on Outcome, active runs
   on Timeline, and failures without output on Diagnostics;

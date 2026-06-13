@@ -77,6 +77,13 @@
           ],
           "default": null
         },
+        "eligible_harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "portfolio": {
           "type": "string",
           "enum": [

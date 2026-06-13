@@ -8,9 +8,19 @@ import ClaudexorKit
 /// existing TaskDetail surface (a turn links to its run).
 struct ThreadsScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var newThreadTitle = ""
     @State private var composerText = ""
     @State private var composerMode: RunMode = .agent
+    // "⋯" per-turn options (collapsed by default).
+    @State private var showOptions = false
+    @State private var capUsdText = ""
+    @State private var access: AccessProfile = .workspaceWrite
+    @State private var webPolicy = "auto"
+    @State private var untilClean = false
+    @State private var maxAttempts = 3
+
+    /// The harness families offered as a per-thread pool / primary (raw + fake are
+    /// never user-routable in chat — they stay CLI-only, mirroring Settings).
+    static let poolFamilies: [HarnessFamily] = [.codex, .claude, .cursor, .opencode]
 
     /// Project-aware intents need a project scope. A selected thread uses its own
     /// repo; in the DRAFT state (no thread selected yet) the first turn will be
@@ -22,6 +32,35 @@ struct ThreadsScreen: View {
         return !model.normalizedProjectRoot.isEmpty
     }
 
+    /// The harness that will answer in chat (sticky thread primary > global default).
+    private var primaryFamily: HarnessFamily? {
+        model.effectivePrimaryHarness.flatMap { HarnessFamily(rawValue: $0) }
+    }
+    /// The eligible pool (Race runs this); resolved from thread sticky > global.
+    private var poolFamilies: [HarnessFamily] {
+        model.effectiveEligiblePool.compactMap { HarnessFamily(rawValue: $0) }
+    }
+    /// Per-turn options the "⋯" panel collects, mapped onto engine run-start fields.
+    private var currentOptions: TurnOptions {
+        TurnOptions(
+            maxUsd: Double(capUsdText.trimmingCharacters(in: .whitespaces)),
+            access: access == .workspaceWrite ? nil : access.wire,  // workspace_write is the engine default
+            web: webPolicy == "auto" ? nil : webPolicy,
+            untilClean: untilClean,
+            maxAttempts: maxAttempts == 3 ? nil : maxAttempts
+        )
+    }
+
+    /// The per-turn budget field is INVALID when it's non-empty but not a positive
+    /// number. A typo must NOT silently drop the user's cap (the typed-money contract)
+    /// — Send is blocked while invalid, with an inline reason. Empty = no cap (valid).
+    private var capUsdInvalid: Bool {
+        let t = capUsdText.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return false }
+        guard let v = Double(t) else { return true }
+        return v <= 0
+    }
+
     var body: some View {
         HSplitView {
             threadList
@@ -30,23 +69,21 @@ struct ThreadsScreen: View {
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { await model.refreshThreads() }
+        .navigationTitle(navTitle)
+        .navigationSubtitle(navSubtitle)
     }
 
     // MARK: Threads pane
 
     private var threadList: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack {
-                Text("Threads").font(.headline)
-                Spacer()
-                Button {
-                    model.startDraftThread()
-                } label: {
-                    Label("New", systemImage: "square.and.pencil")
-                }
-                .help("New thread — the first message starts it (on the Current Project)")
-            }
-            .padding([.horizontal, .top], Theme.Spacing.md)
+            // No "New" button here — it lives in the toolbar (square.and.pencil); a
+            // second one in the sidebar was a duplicate (В12). The header is just the
+            // section title.
+            Text("Threads")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding([.horizontal, .top], Theme.Spacing.md)
 
             if model.threads.isEmpty {
                 ContentUnavailableView(
@@ -70,18 +107,18 @@ struct ThreadsScreen: View {
     }
 
     private func threadRow(_ thread: ThreadSummary) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            HStack(spacing: Theme.Spacing.xs) {
                 Text(thread.title ?? "Untitled thread").font(.body).lineLimit(1)
                 if thread.needsHuman {
                     Image(systemName: "person.fill.questionmark")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.status(.blocked))
                         .help("This thread is blocked on your decision")
                 }
             }
             Text(threadSubtitle(thread)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, Theme.Spacing.xxs)
     }
 
     private func threadSubtitle(_ thread: ThreadSummary) -> String {
@@ -133,14 +170,22 @@ struct ThreadsScreen: View {
         }
     }
 
+    /// The conversation's window title/subtitle — the thread title lives in the
+    /// ONE system toolbar (no second custom header strip). Empty in the draft state.
+    var navTitle: String { model.currentThread?.title ?? "Claudexor" }
+    var navSubtitle: String {
+        guard let t = model.currentThread else { return "" }
+        return threadSubtitle(t) + " · " + (t.workspaceMode == "isolated" ? "isolated" : "in-place")
+    }
+
     private func sessionsFooter(_ sessions: [ThreadSessionInfo]) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
             Image(systemName: "link").foregroundStyle(.secondary)
             ForEach(sessions) { session in
                 Text("\(session.harnessId)\(session.nativeSessionId != nil ? " · live session" : "")")
                     .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, Theme.Spacing.sm)
+                    .padding(.vertical, Theme.Spacing.xxs)
                     .background(Capsule().fill(.quaternary))
                     .help(session.nativeSessionId.map { "Native session \($0) resumes on the next turn" } ?? "No native session yet")
             }
@@ -148,51 +193,177 @@ struct ThreadsScreen: View {
         }
     }
 
-    /// The persistent composer: chat is the NORMAL loop, not exception handling.
+    /// The persistent composer — ONE floating Liquid-Glass panel (pointer-driven
+    /// lensing; solid fallback under Reduce Transparency). Its contents stay SOLID
+    /// (no glass-on-glass): a controls row (intent + primary + "⋯"), a Messages-style
+    /// field on a solid inset, a prominent Send, and an inline advanced panel that
+    /// morphs in via the GlassEffectContainer. Chat is the NORMAL loop.
     private var composer: some View {
-        VStack(spacing: Theme.Spacing.xs) {
-            HStack(spacing: Theme.Spacing.sm) {
-                Picker("Intent", selection: $composerMode) {
-                    Label("Ask", systemImage: RunMode.ask.glyph).tag(RunMode.ask)
+        GlassEffectContainer(spacing: Theme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                HStack(spacing: Theme.Spacing.sm) {
+                    IntentMenu(selection: $composerMode, projectScoped: threadHasProject)
+                    ProjectChip(name: projectChipName,
+                                bound: model.selectedThreadId != nil,
+                                hasProject: threadHasProject,
+                                recent: model.recentProjects,
+                                onPick: { model.pickProject($0) },
+                                onBrowse: { model.browseProject() })
                     if threadHasProject {
-                        Label("Agent", systemImage: RunMode.agent.glyph).tag(RunMode.agent)
-                        Label("Plan", systemImage: RunMode.plan.glyph).tag(RunMode.plan)
-                        Label("Audit", systemImage: RunMode.readOnlyAudit.glyph).tag(RunMode.readOnlyAudit)
-                        Label("Race ×2", systemImage: RunMode.bestOfN.glyph).tag(RunMode.bestOfN)
-                        Label("Orchestrate", systemImage: RunMode.orchestrate.glyph).tag(RunMode.orchestrate)
+                        PrimaryHarnessChip(current: primaryFamily, pool: poolFamilies) { picked in
+                            Task { await model.setPrimaryHarness(picked?.rawValue) }
+                        }
+                        Button {
+                            showOptions.toggle()
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        .buttonStyle(.glass)
+                        .help("More options: harness pool, budget, access, web, repair strategies")
+                        // Native dismissible popover (В5) — no inline glass-on-glass panel.
+                        .popover(isPresented: $showOptions, arrowEdge: .bottom) { composerOptions }
+                    }
+                    Spacer(minLength: Theme.Spacing.sm)
+                    composerHint
+                }
+                .onAppear { if !threadHasProject { composerMode = .ask } }
+                .onChange(of: model.selectedThreadId) {
+                    if !threadHasProject { composerMode = .ask }
+                    // Per-turn knobs are not sticky — don't carry one thread's budget
+                    // cap / access / web / repair flags into the next thread.
+                    capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
+                    untilClean = false; maxAttempts = 3; showOptions = false
+                }
+                // The no-project gate also fires when the project changes under a draft
+                // (clearing it from Settings, etc.) — fall back to read-only Ask.
+                .onChange(of: threadHasProject) { _, has in
+                    if !has { composerMode = .ask; showOptions = false }
+                }
+
+                HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+                    GlassField(text: $composerText,
+                               placeholder: "Message…  (⌘↩ to send · the first message starts a thread)",
+                               onSubmit: send)
+                    Button("Send", action: send)
+                        .buttonStyle(AccentButtonStyle())
+                        .keyboardShortcut(.return, modifiers: .command)
+                        // Blocked on empty text OR an invalid budget cap — never send a
+                        // turn whose typed cap was silently dropped (typed-money contract).
+                        .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || capUsdInvalid)
+                        .help(capUsdInvalid ? "Fix the budget cap in ⋯ options to send" : "Send (⌘↩)")
+                }
+            }
+            .padding(Theme.Spacing.md)
+            .composerGlass()
+            .padding(Theme.Spacing.md)
+        }
+    }
+
+    /// The composer's project-folder name shown on the chip: an open thread shows
+    /// its bound repo; a draft shows the Current Project (or a "Choose project" CTA).
+    private var projectChipName: String {
+        if model.selectedThreadId != nil, let t = model.currentThread {
+            return t.repoRoot.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "No project"
+        }
+        return model.normalizedProjectRoot.isEmpty
+            ? "Choose project"
+            : URL(fileURLWithPath: model.normalizedProjectRoot).lastPathComponent
+    }
+
+    /// Inline guidance on the controls row: the no-project gate (only Ask works
+    /// without a project — В8) or, in the draft state, where the new thread lands.
+    @ViewBuilder private var composerHint: some View {
+        if capUsdInvalid {
+            // Highest priority: a bad budget cap blocks Send — say so even with the
+            // "⋯" popover closed, so the disabled Send isn't a mystery.
+            Label("Budget cap must be a positive number (in ⋯)", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(.orange).lineLimit(1)
+        } else if !threadHasProject {
+            Text("Pick a project to use Agent · Plan · Race")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .help("Without a project, only Ask (read-only) is available")
+        } else if model.selectedThreadId == nil {
+            Text("New thread on \(URL(fileURLWithPath: model.normalizedProjectRoot).lastPathComponent)")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    /// The advanced options popover ("⋯", В5): clean SOLID sections on the popover's
+    /// own material — harness pool, per-turn budget/access/web, agent repair strategies.
+    private var composerOptions: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            OptionSection(title: "Harness pool — Race runs these; the primary answers in chat") {
+                FlowLayout(spacing: Theme.Spacing.sm) {
+                    ForEach(Self.poolFamilies) { family in
+                        let avail = model.availability(for: family, mode: composerMode)
+                        FilterChip(label: family.label,
+                                   systemImage: avail.available ? family.glyph : "\(family.glyph).slash",
+                                   isActive: poolFamilies.contains(family), tint: family.color) {
+                            togglePool(family)
+                        }
+                        .disabled(!avail.available)
+                        .help(avail.available ? "In the eligible pool" : avail.reason)
                     }
                 }
-                .pickerStyle(.menu)
-                .frame(width: 170)
-                .help(threadHasProject
-                      ? "The intent for the next turn; strategies (race width, until-clean) are flags on the same conversation"
-                      : "No Current Project — only Ask (read-only) is available. Pick a project in Settings to plan/agent/race.")
-                Spacer()
-                if model.selectedThreadId == nil {
-                    Text(threadHasProject
-                         ? "New thread on \(URL(fileURLWithPath: model.normalizedProjectRoot).lastPathComponent)"
-                         : "New ask-only thread (no project)")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }
-            .onAppear { if !threadHasProject { composerMode = .ask } }
-            .onChange(of: model.selectedThreadId) { if !threadHasProject { composerMode = .ask } }
-            HStack(alignment: .bottom, spacing: Theme.Spacing.sm) {
-                TextField("Message… (the first message starts a thread)", text: $composerText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...6)
-                    .onSubmit(send)
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+            OptionRow(label: "Budget") {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text("$").foregroundStyle(.secondary)
+                    TextField("default", text: $capUsdText)
+                        .frame(maxWidth: 90)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                    if capUsdInvalid {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).font(.caption)
+                            .help("Must be a positive number, or empty for the default")
+                    }
                 }
-                .buttonStyle(.borderless)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Send (⌘↩)")
+                .help("Per-turn budget cap (USD). Empty = engine / thread default.")
+            }
+            OptionRow(label: "Access") {
+                Picker("", selection: $access) {
+                    ForEach(AccessProfile.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(composerMode.isReadOnly)
+                .help(composerMode.isReadOnly ? "Read-only intents never write" : "How much this turn may touch")
+            }
+            OptionRow(label: "Web") {
+                Picker("", selection: $webPolicy) {
+                    Text("Auto").tag("auto"); Text("Off").tag("off")
+                    Text("Cached").tag("cached"); Text("Live").tag("live")
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("External-context policy for this turn")
+            }
+            // Repair strategies are single-candidate (the engine routes them to
+            // convergence, NOT a race) — offer them for a plain Agent turn only.
+            if composerMode == .agent {
+                OptionSection(title: "Repair strategies") {
+                    HStack(spacing: Theme.Spacing.xl) {
+                        Toggle("Until clean", isOn: $untilClean).toggleStyle(.switch).tint(Theme.accent)
+                            .help("Keep repairing one candidate until gates/review pass")
+                        // Mutually exclusive: "Until clean" has no fixed cap, so the
+                        // Max-attempts stepper is disabled (and not sent) while it's on
+                        // — the two repair strategies must never be combined ambiguously.
+                        Stepper("Max attempts: \(maxAttempts)", value: $maxAttempts, in: 1...8)
+                            .disabled(untilClean)
+                            .help(untilClean ? "Disabled while Until clean is on (no fixed cap)" : "Hard cap on repair attempts")
+                    }
+                }
             }
         }
-        .padding(Theme.Spacing.md)
-        .background(.bar)
+        .padding(Theme.Spacing.lg)
+        .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
+    }
+
+    private func togglePool(_ family: HarnessFamily) {
+        var pool = model.effectiveEligiblePool
+        if let idx = pool.firstIndex(of: family.rawValue) { pool.remove(at: idx) } else { pool.append(family.rawValue) }
+        Task { await model.setEligiblePool(pool) }
     }
 
     /// The composer is ALWAYS live: with no thread selected, the first message
@@ -201,11 +372,18 @@ struct ThreadsScreen: View {
     private func send() {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        // Guard the cap HERE too, not only on the Send button: ⌘↩ / Return submit
+        // through GlassField.onSubmit calls send() directly, bypassing the disabled
+        // button. Never send a turn whose typed cap was silently dropped to nil.
+        guard !capUsdInvalid else { return }
         let mode = composerMode
+        let options = currentOptions
         composerText = ""
         Task {
-            let sent = await model.composerSend(prompt: text, mode: mode)
-            if !sent { composerText = text } // restore ONLY if the engine rejected it
+            let sent = await model.composerSend(prompt: text, mode: mode, options: options)
+            // Restore ONLY if the engine rejected it AND the user hasn't started
+            // typing the next message in the meantime — never clobber in-flight text.
+            if !sent && composerText.isEmpty { composerText = text }
         }
     }
 }
@@ -223,6 +401,9 @@ private struct TurnCard: View {
     /// Set after a successful apply so the apply buttons can't be clicked twice
     /// (the SERVER gate is still the source of truth; this is a local guard).
     @State private var applied = false
+    /// nil => follow the run state (expanded while running, collapsed when done);
+    /// a user toggle pins it.
+    @State private var transcriptExpanded: Bool?
 
     private var run: TaskRun? { turn.runId.flatMap { model.task($0) } }
 
@@ -246,12 +427,23 @@ private struct TurnCard: View {
                         model.route = .task(run.id)
                     }
                     .buttonStyle(.link)
+                    .help("Open this run in the inspector — diff, timeline, review")
                 }
                 // Live transcript: the harness's reasoning + tool calls as they
                 // happen (folded from SSE), so the chat shows working progress —
-                // not just a status pill and a final answer.
+                // not just a status pill and a final answer. Collapsible: expanded
+                // while the run is live, folds away when it finishes (a user toggle pins it).
                 if let runId = turn.runId, let blocks = model.transcripts[runId]?.blocks, !blocks.isEmpty {
-                    TranscriptView(blocks: blocks)
+                    let live = run.status.isActive
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { transcriptExpanded ?? live },
+                        set: { transcriptExpanded = $0 }
+                    )) {
+                        TranscriptView(blocks: blocks)
+                    } label: {
+                        Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 // Honest outcome (the v0.9 "is the game done?" fix): a plan turn
                 // says "no files changed" and offers to implement it; a patch shows
@@ -287,7 +479,12 @@ private struct TurnCard: View {
             }
         }
         .padding(Theme.Spacing.md)
-        .cardSurface()
+        .cardSurface(hover: run != nil)
+        .contentShape(Rectangle())
+        // Click the card to open the run inspector (the "Open run" link does the
+        // same). Buttons inside the card take the tap first (SwiftUI priority), so
+        // decide/apply/Implement-plan are unaffected.
+        .onTapGesture { if let run { model.route = .task(run.id) } }
     }
 
     /// The honest terminal outcome of this turn (what it actually did).
@@ -404,14 +601,14 @@ private struct TranscriptView: View {
                         }
                     }
                 case .message(_, let text):
-                    Text(text)
-                        .font(.callout)
-                        .textSelection(.enabled)
+                    // Render markdown (headings/lists/code), not flat text — the
+                    // v0.10 chat regression fix (reuses the run-detail renderer).
+                    MarkdownOutputView(markdown: text)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, Theme.Spacing.xxs)
     }
 
     private func glyph(_ s: ToolBlock.Status) -> String {
@@ -427,5 +624,90 @@ private struct TranscriptView: View {
         case .ok: return Theme.status(.succeeded)
         case .error: return Theme.status(.failed)
         }
+    }
+}
+
+/// The PRIMARY harness chip: shows which harness answers in chat (logo + name)
+/// and switches it from the eligible pool. "Auto" lets the engine pick. A bias
+/// hint only — the engine owns routing (orderPool pins primary first).
+struct PrimaryHarnessChip: View {
+    let current: HarnessFamily?
+    let pool: [HarnessFamily]
+    var compact: Bool = false
+    let onPick: (HarnessFamily?) -> Void
+
+    private var tint: Color { current?.color ?? .secondary }
+    private var options: [HarnessFamily] { pool.isEmpty ? ThreadsScreen.poolFamilies : pool }
+
+    var body: some View {
+        Menu {
+            Button { onPick(nil) } label: {
+                Label("Auto", systemImage: "wand.and.stars")
+                if current == nil { Image(systemName: "checkmark") }
+            }
+            Divider()
+            ForEach(options) { f in
+                Button { onPick(f) } label: {
+                    Label(f.label, systemImage: f.glyph)
+                    if current == f { Image(systemName: "checkmark") }
+                }
+            }
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                if let current { HarnessLogo(family: current, size: 13) } else { Image(systemName: "wand.and.stars").imageScale(.small) }
+                if !compact { Text(current?.label ?? "Auto") }
+                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Controls.chipVPadding)
+            .background(tint.opacity(0.14), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool.")
+    }
+}
+
+/// The intent picker (5 modes), styled to the design system with a visible
+/// selection. "Race" runs the eligible pool (engine `agent` + race strategy).
+/// Strategies (until-clean, max-attempts) live in the composer's "⋯" panel.
+struct IntentMenu: View {
+    @Binding var selection: RunMode
+    let projectScoped: Bool
+
+    private var options: [RunMode] {
+        projectScoped ? [.ask, .agent, .plan, .readOnlyAudit, .bestOfN] : [.ask]
+    }
+    private func label(_ m: RunMode) -> String { m == .bestOfN ? "Race" : m.label }
+
+    var body: some View {
+        Menu {
+            ForEach(options) { m in
+                Button {
+                    selection = m
+                } label: {
+                    Label(label(m), systemImage: m.glyph)
+                    if m == selection { Image(systemName: "checkmark") }
+                }
+            }
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: selection.glyph).imageScale(.small)
+                Text(label(selection)).fontWeight(.medium)
+                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Controls.chipVPadding)
+            .selectedChip(active: true, tint: Theme.accent)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(projectScoped
+              ? "Intent for the next turn — Race runs the eligible pool; until-clean / attempts are in ⋯"
+              : "No Current Project — only Ask (read-only) is available.")
     }
 }

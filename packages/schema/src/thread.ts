@@ -70,8 +70,13 @@ export const Thread = z.object({
   mode: ModeKind.default("agent"),
   /** Per-thread auth preference override (subscription/api_key/auto). */
   auth_preference: AuthPreference.default("auto"),
-  /** Sticky orchestrate/primary harness for the thread (re-routable). */
+  /** Sticky orchestrate/primary harness for the thread (re-routable). A bias /
+   * ordering hint, NOT a privileged role — orderPool just pins it first. */
   primary_harness: z.string().nullable().default(null),
+  /** Sticky eligible harness pool for the thread (Race runs this pool, one
+   * candidate per harness). Empty => the engine auto-pools doctor-ok harnesses.
+   * primary_harness, when set, must be a member of this pool when non-empty. */
+  eligible_harnesses: z.array(z.string()).default([]),
   portfolio: Portfolio.default("subscription-first"),
   /** How turns touch files (in-place live tree vs isolated worktree). */
   workspace: ThreadWorkspace.default({}),

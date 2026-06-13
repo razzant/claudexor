@@ -45,8 +45,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = img
         }
         applyDebugSizeIfRequested()
+        // Make the window non-opaque so the behind-window material (GlassBackground)
+        // blends with the DESKTOP, not a solid panel — the Р5 "desktop shows faintly
+        // through the window" look. Done reliably here (the window exists by now);
+        // the previous per-frame guard in the SwiftUI representable never fired.
+        makeWindowsTranslucent()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            MainActor.assumeIsolated { self?.makeWindowsTranslucent() }
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    /// Non-opaque + clear background on titled content windows so the behind-window
+    /// blur reaches the desktop. This runs ONLY at launch (here + one 0.3s retry),
+    /// when just the main WindowGroup window exists — the Settings scene opens later
+    /// (⌘,) and is never reached by this pass, so it keeps its default opaque
+    /// background (the `.titled` check alone would NOT exclude it). Reduce
+    /// Transparency is handled in SwiftUI (`GlassBackground`).
+    @MainActor private func makeWindowsTranslucent() {
+        for win in NSApp.windows where win.contentView != nil && win.styleMask.contains(.titled) {
+            win.isOpaque = false
+            win.backgroundColor = .clear
+        }
+    }
 
     /// Dev/QA only: deterministically size+center the window for screenshot testing at
     /// known aspect ratios. No effect unless CLAUDEXOR_DEBUG_SIZE="WxH" is set.

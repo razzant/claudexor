@@ -47,6 +47,16 @@ Adapters translate native I/O into normalized events. They do not pick winners,
 manage budgets, decide policy, or claim success. Orchestration, evidence,
 review, budget, and delivery remain in the control plane.
 
+A thread carries **sticky routing**: an eligible harness pool (what Race runs —
+one candidate per harness) and an optional primary harness bias (which harness
+answers in chat), both persisted on the thread and switched via
+`PATCH /threads/:id`. Precedence is per-turn body > thread sticky > engine default;
+the engine owns resolution (`orderPool` pins the primary first), and a primary that
+falls outside a non-empty pool is cleared rather than forced — surfaces never invent
+routing. Per-turn policy (access, web, budget cap, repair strategy) rides on the
+turn request as flags, not modes. The primary remains a bias hint, never a
+privileged role.
+
 ## Evidence Model
 
 Claudexor treats evidence as stronger than summaries. Work product is proven by

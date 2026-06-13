@@ -106,6 +106,8 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let workspaceMode: String?
     public let authPreference: String?
     public let primaryHarness: String?
+    /// Sticky eligible pool for the thread (absent on legacy payloads => nil).
+    public let eligibleHarnesses: [String]?
     public let state: String?
     public let runIds: [String]
     public let headRunId: String?
@@ -172,6 +174,11 @@ public struct ThreadDetailResponse: Codable, Sendable {
     public let thread: ThreadSummary
     public let sessions: [ThreadSessionInfo]
     public let turns: [ThreadTurnInfo]
+    public init(thread: ThreadSummary, sessions: [ThreadSessionInfo], turns: [ThreadTurnInfo]) {
+        self.thread = thread
+        self.sessions = sessions
+        self.turns = turns
+    }
 }
 
 public struct CreateThreadRequest: Codable, Sendable {
@@ -182,25 +189,47 @@ public struct CreateThreadRequest: Codable, Sendable {
     public var workspace: String?
     public var authPreference: String?
     public var primaryHarness: String?
+    /// Sticky eligible harness pool for the thread (turns inherit it when unset).
+    public var eligibleHarnesses: [String]?
 
     public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
-                workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil) {
+                workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil,
+                eligibleHarnesses: [String]? = nil) {
         self.title = title
         self.scope = scope
         self.mode = mode
         self.workspace = workspace
         self.authPreference = authPreference
         self.primaryHarness = primaryHarness
+        self.eligibleHarnesses = eligibleHarnesses
     }
 }
 
-/// Body for PATCH /threads/:id — rename and/or archive (open|closed).
-public struct UpdateThreadRequest: Codable, Sendable {
+/// Body for PATCH /threads/:id — rename, archive (open|closed), or switch the
+/// sticky primary harness / eligible pool. Encoded only (request body).
+public struct UpdateThreadRequest: Encodable, Sendable {
     public var title: String?
     public var state: String?
-    public init(title: String? = nil, state: String? = nil) {
+    /// Double-optional: .some(nil) clears primary back to auto; .none leaves unchanged.
+    public var primaryHarness: String??
+    public var eligibleHarnesses: [String]?
+    public init(title: String? = nil, state: String? = nil,
+                primaryHarness: String?? = nil, eligibleHarnesses: [String]? = nil) {
         self.title = title
         self.state = state
+        self.primaryHarness = primaryHarness
+        self.eligibleHarnesses = eligibleHarnesses
+    }
+
+    enum CodingKeys: String, CodingKey { case title, state, primaryHarness, eligibleHarnesses }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(title, forKey: .title)
+        try c.encodeIfPresent(state, forKey: .state)
+        // .some(nil) encodes an explicit JSON null (= clear primary to auto).
+        if let primaryHarness { try c.encode(primaryHarness, forKey: .primaryHarness) }
+        try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
     }
 }
 
@@ -234,12 +263,20 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var swarm: Bool?
     public var create: Bool?
     public var maxUsd: Double?
+    /// Per-turn primary harness override (bias hint; engine pins it first). When
+    /// nil the turn inherits the thread's sticky primary_harness.
+    public var primaryHarness: String?
+    /// Per-turn access profile: readonly | workspace_write | full.
+    public var access: String?
+    /// Per-turn external-context policy: auto | off | cached | live.
+    public var web: String?
     /// Implement an approved plan from an earlier turn (forces agent mode).
     public var planRunId: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
-                maxUsd: Double? = nil, planRunId: String? = nil) {
+                maxUsd: Double? = nil, primaryHarness: String? = nil, access: String? = nil,
+                web: String? = nil, planRunId: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -249,6 +286,9 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.swarm = swarm
         self.create = create
         self.maxUsd = maxUsd
+        self.primaryHarness = primaryHarness
+        self.access = access
+        self.web = web
         self.planRunId = planRunId
     }
 }
@@ -795,15 +835,31 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     public var defaultModel: String??
     public var effort: String??
     public var web: String?
+    public var maxUsd: Double??
+    public var toolsAllow: [String]?
+    public var toolsDeny: [String]?
+    public var fallbackModel: String??
+    public var maxTurns: Int??
+    public var maxRounds: Int??
 
-    public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil) {
+    public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
+                maxUsd: Double?? = nil, toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
+                fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil) {
         self.enabled = enabled
         self.defaultModel = defaultModel
         self.effort = effort
         self.web = web
+        self.maxUsd = maxUsd
+        self.toolsAllow = toolsAllow
+        self.toolsDeny = toolsDeny
+        self.fallbackModel = fallbackModel
+        self.maxTurns = maxTurns
+        self.maxRounds = maxRounds
     }
 
-    enum CodingKeys: String, CodingKey { case enabled, defaultModel, effort, web }
+    enum CodingKeys: String, CodingKey {
+        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -812,6 +868,12 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         if let defaultModel { try c.encode(defaultModel, forKey: .defaultModel) }
         if let effort { try c.encode(effort, forKey: .effort) }
         try c.encodeIfPresent(web, forKey: .web)
+        if let maxUsd { try c.encode(maxUsd, forKey: .maxUsd) }
+        try c.encodeIfPresent(toolsAllow, forKey: .toolsAllow)
+        try c.encodeIfPresent(toolsDeny, forKey: .toolsDeny)
+        if let fallbackModel { try c.encode(fallbackModel, forKey: .fallbackModel) }
+        if let maxTurns { try c.encode(maxTurns, forKey: .maxTurns) }
+        if let maxRounds { try c.encode(maxRounds, forKey: .maxRounds) }
     }
 }
 

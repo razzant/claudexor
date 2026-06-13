@@ -36,8 +36,11 @@ The canonical modes are `ask`, `plan`, `audit`, `agent`, and `orchestrate`
 (five intents-on-a-thread). Engine strategies are FLAGS on a mode, never modes
 of their own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
 (`--until-clean`), research swarm (`audit --swarm`), and create-from-scratch
-(`agent --create`). `Ask` is the default app composer mode and is read-only.
-`Agent` is the default `claudexor run` route. `Orchestrate` is the brain — an
+(`agent --create`). In the v0.10 chat-first cockpit `Agent` is the default app
+composer mode — the harness decides whether to answer or edit the live tree (like
+Codex / Cursor / Claude Code); a no-project thread falls back to read-only `Ask`,
+and `Ask` / `Plan` / `Audit` stay one click away in the intent menu. `Agent` is
+also the default `claudexor run` route. `Orchestrate` is the brain — an
 intent routed like reviewers, never a privileged harness. A thread is the
 Claudexor-owned conversation (runs are its turns); the vendor CLI session is a
 re-hostable cache that later turns resume natively. Old ids (including the
@@ -126,8 +129,10 @@ transitions are bugs.
 
 macOS Settings owns app preferences and engine defaults exposed by the control
 API: current project, appearance, routing, primary harness, model hints, env
-inheritance, budget caps, auth status, and secret refs. Operations screens own
-live Budget, Harness Doctor, Review Queue, and run diagnostics.
+inheritance, budget caps, auth status, and secret refs. The Settings scene also
+hosts live Budget and the Harness Doctor (tabs). Review verdicts and run
+diagnostics live ON the turn and in the run inspector — there is no separate
+Review Queue screen in the v0.10 chat-first cockpit.
 
 ## 11. Delivery Is Server-Owned
 

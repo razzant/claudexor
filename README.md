@@ -117,6 +117,11 @@ Routing is `Pool + Primary + Portfolio`:
 - `--portfolio <id>` records the routing/budget portfolio, default
   `subscription-first`.
 
+In the chat surface this is sticky per thread: a thread remembers which harness
+answers in chat (its primary) and the eligible pool Race competes over. The macOS
+app sets them via `POST /threads` / `PATCH /threads/:id` and may override per turn
+— the engine still owns all routing; the surface only sends the choice.
+
 Harness chips in the macOS app are not decorative toggles: unavailable,
 unauthenticated, degraded, or intent-incompatible harnesses are shown with the
 reason and are gated out of launch.

@@ -238,6 +238,83 @@ import Testing
         #expect(r.status == "applied")
     }
 
+    @Test func createThreadRequestEncodesEligiblePool() throws {
+        let body = CreateThreadRequest(scope: .project(root: "/p"), primaryHarness: "codex", eligibleHarnesses: ["codex", "claude"])
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any]
+        #expect(obj?["primaryHarness"] as? String == "codex")
+        #expect(obj?["eligibleHarnesses"] as? [String] == ["codex", "claude"])
+    }
+
+    @Test func threadTurnRequestEncodesRoutingAndStrategyKnobs() throws {
+        // Every key must already exist on the engine's run-start request (the turn
+        // endpoint .strict()-parses the body) — primary/access/web/n/until-clean.
+        let req = ThreadTurnRequest(prompt: "go", mode: "agent", harnesses: ["codex", "claude"], n: 2,
+                                    attempts: 5, untilClean: true, maxUsd: 0.5, primaryHarness: "claude",
+                                    access: "readonly", web: "off")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect(obj?["primaryHarness"] as? String == "claude")
+        #expect(obj?["access"] as? String == "readonly")
+        #expect(obj?["web"] as? String == "off")
+        #expect(obj?["n"] as? Int == 2)
+        #expect(obj?["untilClean"] as? Bool == true)
+        #expect(obj?["maxUsd"] as? Double == 0.5)
+    }
+
+    @Test func threadTurnRequestOmitsAbsentOptionalKeys() throws {
+        // The turn endpoint is .strict(): absent optionals must NOT serialize as keys.
+        let req = ThreadTurnRequest(prompt: "hi")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect(obj?["prompt"] as? String == "hi")
+        #expect(obj?["primaryHarness"] == nil)
+        #expect(obj?["access"] == nil)
+        #expect(obj?["web"] == nil)
+        #expect(obj?["n"] == nil)
+    }
+
+    @Test func updateThreadRequestEncodesPrimaryAndPoolIncludingClear() throws {
+        // Switch: explicit primary + pool.
+        let switchBody = UpdateThreadRequest(primaryHarness: .some("claude"), eligibleHarnesses: ["claude", "cursor"])
+        let s = try JSONSerialization.jsonObject(with: JSONEncoder().encode(switchBody)) as? [String: Any]
+        #expect(s?["primaryHarness"] as? String == "claude")
+        #expect(s?["eligibleHarnesses"] as? [String] == ["claude", "cursor"])
+        // Clear primary to auto: .some(nil) -> explicit JSON null (NSNull), key present.
+        let clearBody = UpdateThreadRequest(primaryHarness: .some(nil))
+        let c = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clearBody)) as? [String: Any]
+        #expect(c?.keys.contains("primaryHarness") == true)
+        #expect(c?["primaryHarness"] is NSNull)
+        // Untouched: .none omits the key entirely (leave unchanged).
+        let renameBody = UpdateThreadRequest(title: "x")
+        let r = try JSONSerialization.jsonObject(with: JSONEncoder().encode(renameBody)) as? [String: Any]
+        #expect(r?["primaryHarness"] == nil)
+    }
+
+    @Test func harnessSettingsPatchEncodesFullPerHarnessFields() throws {
+        let patch = HarnessSettingsPatch(enabled: true, maxUsd: .some(1.5), toolsAllow: ["bash"],
+                                         toolsDeny: ["net"], fallbackModel: .some("gpt-5-mini"))
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
+        #expect(obj?["enabled"] as? Bool == true)
+        #expect(obj?["maxUsd"] as? Double == 1.5)
+        #expect(obj?["toolsAllow"] as? [String] == ["bash"])
+        #expect(obj?["toolsDeny"] as? [String] == ["net"])
+        #expect(obj?["fallbackModel"] as? String == "gpt-5-mini")
+        // .some(nil) clears the cap (explicit JSON null); .none omits.
+        let clear = HarnessSettingsPatch(maxUsd: .some(nil))
+        let cobj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clear)) as? [String: Any]
+        #expect(cobj?.keys.contains("maxUsd") == true)
+        #expect(cobj?["maxUsd"] is NSNull)
+        #expect(cobj?["toolsAllow"] == nil)
+    }
+
+    @Test func threadSummaryDecodesEligiblePoolLegacyTolerant() throws {
+        let rich = #"{"id":"th-1","title":"t","repoRoot":"/p","mode":"agent","workspaceMode":"in_place","authPreference":"auto","primaryHarness":"codex","eligibleHarnesses":["codex","claude"],"state":"active","runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"t","updatedAt":"t"}"#
+        let t = try JSONDecoder().decode(ThreadSummary.self, from: Data(rich.utf8))
+        #expect(t.eligibleHarnesses == ["codex", "claude"])
+        // Legacy payload (no eligibleHarnesses key) decodes with nil, not a throw.
+        let legacy = #"{"id":"th-0","title":null,"repoRoot":null,"mode":null,"workspaceMode":null,"authPreference":null,"primaryHarness":null,"state":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"t","updatedAt":"t"}"#
+        let old = try JSONDecoder().decode(ThreadSummary.self, from: Data(legacy.utf8))
+        #expect(old.eligibleHarnesses == nil)
+    }
+
     // MARK: - TranscriptReducer
 
     private func env(_ seq: Int, _ json: String) -> BusEnvelope {

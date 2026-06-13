@@ -38,9 +38,11 @@ enum Theme {
     // this + neutral graphite. Strong non-brand hues are reserved for harness + status.
 
     static let accent = Color(dark: (0.45, 0.57, 0.82), light: (0.26, 0.40, 0.72))
-    /// Cool tonal companions for the brand aurora ONLY (not semantic, never on controls).
-    static let brandGlowHi = Color(dark: (0.52, 0.68, 0.92), light: (0.40, 0.56, 0.86))
-    static let brandGlowLo = Color(dark: (0.30, 0.34, 0.58), light: (0.26, 0.30, 0.52))
+    /// Accent tuned as a SOLID fill behind WHITE text (the Send button). The plain
+    /// `accent` is calibrated as a tint/stroke/link color and only reaches ~3.1:1
+    /// against white in Dark Mode (below WCAG AA 4.5:1); this deeper variant clears
+    /// 4.5:1 in BOTH themes for white-on-accent prominent buttons. Never used as a tint.
+    static let accentSolid = Color(dark: (0.30, 0.45, 0.78), light: (0.20, 0.36, 0.70))
 
     // MARK: Per-harness family colors — used ONLY in harness UI (candidate chips, dots,
     // race lanes, per-harness budget, route proof). Aligned to each brand's identity color
@@ -98,6 +100,16 @@ enum Theme {
         static let contentMaxWidth: CGFloat = 1040
         /// Reading & forms (interview, settings) — a narrower, more legible measure.
         static let readableMaxWidth: CGFloat = 860
+        /// The composer "⋯" options popover — a readable column for the option rows.
+        static let composerOptionsWidth: CGFloat = 380
+    }
+
+    /// Vertical padding for capsule chips (intent / primary / project). Between
+    /// `Spacing.xs` (4) and `Spacing.sm` (8): the scale has no 5–7 step, and a
+    /// caption-height pill reads cramped at 4 and loose at 8. One named token so the
+    /// chips stay identical and there are no off-scale literals scattered in views.
+    enum Controls {
+        static let chipVPadding: CGFloat = 5
     }
 
     // MARK: Corner-radius scale (one ladder; nested controls < cards < heroes).
@@ -259,16 +271,6 @@ extension View {
     }
 }
 
-// MARK: - Glass helper (CHROME ONLY: floating composer / floating actions)
-
-extension View {
-    /// Genuine Liquid Glass for the navigation/chrome layer only (a floating composer or
-    /// action). System-provided glass (sidebar/toolbar/inspector/sheets) needs no helper.
-    func chromeGlass(_ shape: some Shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), interactive: Bool = true) -> some View {
-        self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
-    }
-}
-
 // MARK: - Window backdrop (behind-window matte glass; the desktop shows through)
 
 /// The app-wide backdrop. v0.10 replaced the always-animating 60fps MeshGradient
@@ -288,8 +290,13 @@ struct GlassBackground: View {
 }
 
 /// A behind-window `NSVisualEffectView` so the desktop is faintly visible through
-/// the window (within-window SwiftUI materials only blur in-app content). It also
-/// makes its host window non-opaque so the blend reaches the desktop.
+/// the window (within-window SwiftUI materials only blur in-app content).
+///
+/// Window opacity is owned by `AppDelegate.makeWindowsTranslucent()` (set reliably
+/// once the window exists) and the SwiftUI `.containerBackground(.clear, for: .window)`
+/// on `RootView` — NOT here. A previous per-update guard in this representable tried
+/// to flip `isOpaque` and never reliably fired (the desktop stayed hidden), so this
+/// view is now PURE blur with no window side effects.
 private struct BehindWindowMaterial: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
@@ -299,13 +306,7 @@ private struct BehindWindowMaterial: NSViewRepresentable {
         return v
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        DispatchQueue.main.async {
-            guard let win = nsView.window else { return }
-            win.isOpaque = false
-            win.backgroundColor = .clear
-        }
-    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
 extension View {

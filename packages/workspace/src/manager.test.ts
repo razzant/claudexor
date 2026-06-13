@@ -46,6 +46,30 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.home_dir)).toBe(false);
   });
 
+  it("snapshotTree succeeds in-place when the project gitignores .claudexor (the v0.10 bug)", async () => {
+    const repo = await initRepo();
+    // The project ignores .claudexor in ITS OWN .gitignore — the failing case the
+    // user hit on an in-place agent turn ("paths are ignored ... use -f").
+    writeFileSync(join(repo, ".gitignore"), ".claudexor\n.claudexor-review-evidence\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "gitignore .claudexor"]);
+    // Materialize the self-ignored run dir (mirrors a concurrent in-place turn).
+    mkdirSync(join(repo, ".claudexor", "runs", "run-x"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", ".gitignore"), "*\n");
+    writeFileSync(join(repo, ".claudexor", "runs", "run-x", "artifact.txt"), "run artifact\n");
+    // A genuine dirty user edit so the snapshot path runs (not the clean->HEAD shortcut).
+    writeFileSync(join(repo, "user-edit.txt"), "dirty work\n");
+
+    // Used to throw `snapshot add -A failed: ... paths are ignored ... use -f`.
+    const snap = await snapshotTree(repo);
+    const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    expect(snap).not.toBe(head); // a real dirty snapshot, not the clean fallback
+    // The snapshot captures the user edit but never the gitignored .claudexor artifacts.
+    const tree = (await git(repo, ["ls-tree", "-r", "--name-only", snap])).stdout;
+    expect(tree).toContain("user-edit.txt");
+    expect(tree).not.toContain(".claudexor");
+  });
+
   it("refuses a dirty repo by default, allows snapshot", async () => {
     const repo = await initRepo();
     writeFileSync(join(repo, "README.md"), "# changed (uncommitted)\n");

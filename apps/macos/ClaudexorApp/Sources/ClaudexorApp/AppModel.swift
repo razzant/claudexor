@@ -60,6 +60,11 @@ final class AppModel {
     var projectContextMode: String = "auto" {
         didSet { UserDefaults.standard.set(projectContextMode, forKey: "claudexor.projectContextMode") }
     }
+    /// Recently-used project roots (MRU, most-recent first, capped) — powers the
+    /// composer's project chip so you Browse once, then pick from a menu (В6).
+    var recentProjects: [String] = [] {
+        didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
+    }
 
     /// Sample data is OFF by default and lives behind an explicit toggle, so live state is
     /// never silently mixed with mock content. When off, surfaces the engine doesn't expose
@@ -74,6 +79,12 @@ final class AppModel {
     var selectedThreadId: String?
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
+    /// DRAFT-thread routing (before the first message materializes a thread): the
+    /// composer edits these; once a thread exists, primary/pool are sticky on the
+    /// thread (PATCHed via setPrimaryHarness/setEligiblePool). nil/[] => inherit
+    /// the global default from Settings.
+    var draftPrimaryHarness: String?
+    var draftEligiblePool: [String] = []
     var liveHarnesses: [HarnessInfo] = []
     var liveBudget: BudgetState = .empty
     var settingsSnapshot: SettingsSnapshot?
@@ -139,6 +150,11 @@ final class AppModel {
     private var snapshotLoadDepth: [String: Int] = [:]
     /// Stream envelopes deferred while a snapshot load is in flight.
     private var deferredEnvelopes: [String: [BusEnvelope]] = [:]
+    /// SSE coalescing: events buffer here and flush in ~64ms batches, so a burst of
+    /// harness events (10+/sec) causes ONE SwiftUI re-render per batch instead of one
+    /// per event. `@ObservationIgnored` so buffering never itself triggers a render.
+    @ObservationIgnored private var eventBuffers: [String: [BusEnvelope]] = [:]
+    @ObservationIgnored private var flushTasks: [String: Task<Void, Never>] = [:]
     /// Live chat transcript per run (thinking / tools / messages folded from SSE).
     var transcripts: [String: TranscriptReducer] = [:]
     /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
@@ -182,6 +198,7 @@ final class AppModel {
         projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
         projectContextMode = UserDefaults.standard.string(forKey: "claudexor.projectContextMode") ?? "auto"
         if projectContextMode != "deep" { projectContextMode = "auto" }
+        recentProjects = UserDefaults.standard.stringArray(forKey: "claudexor.recentProjects") ?? []
     }
 
     var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
@@ -468,9 +485,46 @@ final class AppModel {
         return URL(fileURLWithPath: normalizedProjectRoot).lastPathComponent
     }
 
+    /// Settings' "Current Project" picker — set the project (+ record MRU) without
+    /// touching thread selection.
     func chooseProject() {
+        if let path = runProjectPanel() { selectProject(path) }
+    }
+
+    /// Set the Current Project and push it to the MRU (used everywhere a project is chosen).
+    func selectProject(_ path: String) {
+        let p = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return }
+        projectRoot = p
+        rememberProject(p)
+    }
+
+    /// Composer project chip — pick a recent project. A thread's repo is bound, so
+    /// choosing another project starts a NEW draft thread on it (issue #8: "New made
+    /// a chat in the old project"). In the draft state it just sets the project.
+    func pickProject(_ path: String) {
+        if selectedThreadId != nil { startDraftThread() }
+        selectProject(path)
+    }
+
+    /// Composer project chip — "Browse…". Same draft-switch semantics as `pickProject`,
+    /// but only after a folder is actually chosen (cancel changes nothing).
+    func browseProject() {
+        guard let path = runProjectPanel() else { return }
+        if selectedThreadId != nil { startDraftThread() }
+        selectProject(path)
+    }
+
+    private func rememberProject(_ path: String) {
+        var list = recentProjects.filter { $0 != path }
+        list.insert(path, at: 0)
+        recentProjects = Array(list.prefix(7))
+    }
+
+    /// Present the folder chooser; returns the chosen path (nil if cancelled).
+    private func runProjectPanel() -> String? {
         let panel = NSOpenPanel()
-        panel.title = "Choose Current Project"
+        panel.title = "Choose Project"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
@@ -480,13 +534,8 @@ final class AppModel {
         if hasCurrentProject {
             panel.directoryURL = URL(fileURLWithPath: normalizedProjectRoot, isDirectory: true)
         }
-        if panel.runModal() == .OK, let url = panel.url {
-            projectRoot = url.path
-        }
-    }
-
-    func clearProject() {
-        projectRoot = ""
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 
     func refreshSecrets() async {
@@ -741,17 +790,22 @@ final class AppModel {
         selectedThreadId = id
         do {
             let detail = try await client.threadDetail(id: id)
+            // The user may have switched threads (or hit New) during the await —
+            // don't let a stale load overwrite the now-current selection/draft.
+            guard selectedThreadId == id else { return }
             selectedThreadDetail = detail
             // Hydrate run details for the most recent turns so the conversation
             // can offer decision/apply actions (diff/findings) without requiring
             // a manual visit to each run's detail screen first.
             for turn in detail.turns.suffix(5) {
+                guard selectedThreadId == id else { return }
                 if let runId = turn.runId, liveTasks.contains(where: { $0.id == runId }) {
                     await loadRunDetail(runId)
                 }
             }
         } catch {
-            threadStatus = "Could not load thread: \(error)"
+            guard selectedThreadId == id else { return }  // don't surface a stale error on another thread
+            threadStatus = "Could not load thread: \(userMessage(for: error))"
         }
     }
 
@@ -761,6 +815,84 @@ final class AppModel {
         selectedThreadId = nil
         selectedThreadDetail = nil
         threadStatus = nil
+        // Clear the inspector route — a fresh draft has no run, so the inspector
+        // must not keep showing the previous thread's run.
+        if case .task = route { route = .threads }
+        // Reset draft routing back to "inherit global default".
+        draftPrimaryHarness = nil
+        draftEligiblePool = []
+    }
+
+    /// The thread the conversation is currently showing (detail preferred — it is
+    /// the freshest copy after a PATCH/turn — falling back to the list summary).
+    var currentThread: ThreadSummary? {
+        if let d = selectedThreadDetail { return d.thread }
+        if let id = selectedThreadId { return threads.first { $0.id == id } }
+        return nil
+    }
+
+    /// Primary harness that will answer in chat: thread sticky > global default.
+    /// In the draft state, the local draft value > global default. nil => engine auto.
+    var effectivePrimaryHarness: String? {
+        let sticky = selectedThreadId == nil ? draftPrimaryHarness : currentThread?.primaryHarness
+        let resolved = sticky ?? settingsSnapshot?.routing.primaryHarness
+        // Honesty guard: never SURFACE a primary that is outside a non-empty effective
+        // pool — the engine wouldn't route to it (it drops/clears such a primary), so
+        // showing it would be a lie. This also covers the draft case where the primary
+        // comes from the GLOBAL default while the pool is a narrower draft pool.
+        let pool = effectiveEligiblePool
+        if let r = resolved, !pool.isEmpty, !pool.contains(r) { return nil }
+        return resolved
+    }
+
+    /// Eligible harness pool (Race runs this; one candidate per harness): thread
+    /// sticky > global default. Empty => engine auto-pools doctor-ok harnesses.
+    var effectiveEligiblePool: [String] {
+        let sticky = selectedThreadId == nil ? draftEligiblePool : (currentThread?.eligibleHarnesses ?? [])
+        if !sticky.isEmpty { return sticky }
+        return settingsSnapshot?.routing.eligibleHarnesses ?? []
+    }
+
+    /// Switch the sticky primary harness. On a real thread this PATCHes the thread
+    /// (persists, survives reload); on a draft it updates the local draft value.
+    /// Thin gateway: the engine owns routing — orderPool just pins primary first.
+    func setPrimaryHarness(_ harness: String?) async {
+        guard let id = selectedThreadId else { draftPrimaryHarness = harness; return }
+        guard let client else { threadStatus = "Engine offline — reconnect to change the primary harness."; return }
+        do {
+            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(primaryHarness: .some(harness)))
+            applyThreadUpdate(updated)
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
+    /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
+    func setEligiblePool(_ pool: [String]) async {
+        guard let id = selectedThreadId else {
+            draftEligiblePool = pool
+            // Mirror the engine invariant locally for the draft: a primary outside a
+            // non-empty pool clears to Auto, so the chip never shows a harness the
+            // first turn won't route to. (On a real thread the PATCH response carries
+            // the cleared primary back via applyThreadUpdate.)
+            if let p = draftPrimaryHarness, !pool.isEmpty, !pool.contains(p) { draftPrimaryHarness = nil }
+            return
+        }
+        guard let client else { threadStatus = "Engine offline — reconnect to change the harness pool."; return }
+        do {
+            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(eligibleHarnesses: pool))
+            applyThreadUpdate(updated)
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
+    /// Apply a PATCH-thread response OPTIMISTICALLY: update the list row and the
+    /// open detail in place from the returned `ThreadSummary` — no heavy
+    /// `refreshThreads()` + `openThread()` re-fetch (which re-hydrated everything,
+    /// flickered, and conflated a later GET's error with the PATCH).
+    private func applyThreadUpdate(_ updated: ThreadSummary) {
+        threadStatus = nil
+        if let i = threads.firstIndex(where: { $0.id == updated.id }) { threads[i] = updated }
+        if selectedThreadId == updated.id, let detail = selectedThreadDetail {
+            selectedThreadDetail = ThreadDetailResponse(thread: updated, sessions: detail.sessions, turns: detail.turns)
+        }
     }
 
     func newThread(title: String?) async {
@@ -770,11 +902,23 @@ final class AppModel {
         }
         let scope: RunScope = normalizedProjectRoot.isEmpty ? .none : .project(root: normalizedProjectRoot, context: "auto")
         do {
-            let thread = try await client.createThread(CreateThreadRequest(title: title, scope: scope))
+            // Materialize the draft routing onto the new thread (sticky from turn one).
+            // Send the GUARDED primary (`effectivePrimaryHarness` already returns nil
+            // when the resolved primary — including the global-settings fallback —
+            // falls outside the effective pool), so an inconsistent global config can't
+            // persist a primary the engine's pool-fallback would reject on the first
+            // turn. The empty draft pool stays omitted (engine inherits the global pool,
+            // the same pool the guard checked against).
+            let thread = try await client.createThread(CreateThreadRequest(
+                title: title,
+                scope: scope,
+                primaryHarness: effectivePrimaryHarness,
+                eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool
+            ))
             threads.insert(thread, at: 0)
             await openThread(thread.id)
         } catch {
-            threadStatus = "Could not create thread: \(error)"
+            threadStatus = "Could not create thread: \(userMessage(for: error))"
         }
     }
 
@@ -785,7 +929,7 @@ final class AppModel {
     /// clear its text). A POST-send thread reload failure does NOT make this false
     /// (the turn is already on the server) — that would risk a duplicate send (#12).
     @discardableResult
-    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil) async -> Bool {
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, options: TurnOptions = .init()) async -> Bool {
         var threadId = selectedThreadId
         if threadId == nil {
             await newThread(title: nil)
@@ -793,13 +937,13 @@ final class AppModel {
             guard threadId != nil else { return false } // newThread set threadStatus on failure
         }
         guard let tid = threadId else { return false }
-        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId)
+        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, options: options)
     }
 
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
-    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil) async -> Bool {
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, options: TurnOptions = .init()) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before sending."
             return false
@@ -809,16 +953,51 @@ final class AppModel {
             return false
         }
         let flags = mode.strategyFlags
+        // Race runs the eligible pool: one candidate per AVAILABLE harness. Send the
+        // pool EXPLICITLY (what the user sees races) and size n to that same set, so
+        // the engine never wraps a too-large n back over a smaller resolved pool
+        // (which would race a harness against itself). Other modes send no harnesses
+        // and inherit the thread's sticky pool server-side (primary too).
+        var racePool: [String] = []
+        if mode == .bestOfN {
+            let available = effectiveEligiblePool.filter { id in
+                guard let family = HarnessFamily(rawValue: id) else { return false }
+                return availability(for: family, mode: mode).available
+            }
+            racePool = available.isEmpty ? effectiveEligiblePool : available
+        }
+        // Race width = one candidate per harness in the pool (≥2). A SINGLE-harness
+        // pool can't race against itself: send n=1 so the engine single-routes that
+        // one harness instead of duplicating it (a wasteful self-race). An EMPTY pool
+        // (auto) keeps the default 2 so the engine auto-pools two doctor-ok harnesses.
+        let raceN: Int?
+        if mode == .bestOfN {
+            raceN = racePool.count == 1 ? 1 : max(2, racePool.count)
+        } else {
+            raceN = nil
+        }
+        // Until Clean / Max Attempts are SINGLE-candidate repair strategies — the
+        // engine routes them to convergence (ignoring n), so they only make sense
+        // for a plain agent turn, never for Race. access/web/budget are per-turn.
+        let writeMode = !mode.isReadOnly
+        let repairMode = mode == .agent
         let result: RunStartResult
         do {
             result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,
-                n: mode == .bestOfN ? (flags.defaultN ?? 2) : nil,
-                attempts: mode == .maxAttempts ? 3 : nil,
-                untilClean: flags.untilClean ? true : nil,
+                harnesses: racePool.isEmpty ? nil : racePool,
+                n: raceN,
+                // "Until clean" and "Max attempts" are mutually exclusive repair
+                // strategies (no-fixed-cap vs hard-cap) — never send both. Until-clean
+                // wins: drop the attempts cap when it's on.
+                attempts: (repairMode && !options.untilClean) ? options.maxAttempts : nil,
+                untilClean: (repairMode && options.untilClean) ? true : (flags.untilClean ? true : nil),
                 swarm: flags.swarm ? true : nil,
                 create: flags.create ? true : nil,
+                maxUsd: options.maxUsd,
+                access: writeMode ? options.access : nil,
+                web: options.web,
                 planRunId: planRunId
             ))
         } catch let GatewayError.queueBusy(message) {
@@ -840,11 +1019,14 @@ final class AppModel {
     }
 
     /// Human-readable message for a gateway error (never a raw Swift dump in the UI).
+    /// For HTTP failures it surfaces the SERVER's own error body (fail-loud — a bare
+    /// "HTTP 400" hid the real reason during the v0.10 polish).
     func userMessage(for error: Error) -> String {
         switch error {
-        case GatewayError.http(let status, _):
+        case GatewayError.http(let status, let body):
             if status == 501 { return "This engine build does not support threads. Update Claudexor." }
             if status == 404 { return "The engine is out of date — restart the daemon." }
+            if let detail = serverErrorMessage(from: body) { return "Request failed (HTTP \(status)): \(detail)" }
             return "Request failed (HTTP \(status))."
         case GatewayError.queueBusy(let message):
             return "Engine busy: \(message)"
@@ -853,6 +1035,14 @@ final class AppModel {
         default:
             return "Something went wrong. Try again."
         }
+    }
+
+    /// Pull the engine's `{ "error": "..." }` message out of a failed HTTP body.
+    private func serverErrorMessage(from body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = obj["error"] as? String, !message.isEmpty else { return nil }
+        return message
     }
 
     /// Typed operator decision on a blocked run (review queue actions).
@@ -1227,8 +1417,12 @@ final class AppModel {
                         // reflect this event; never re-apply older sequence ids.
                         if env.seq > 0, env.seq <= (self.lastEventIds[runId] ?? 0) { continue }
                         if env.seq > 0 { self.lastEventIds[runId] = env.seq }
-                        self.apply(env, to: runId)
+                        // Buffer + coalesce: a 64ms flush applies a batch synchronously,
+                        // so SwiftUI does ONE re-render for the batch (not per event).
+                        self.eventBuffers[runId, default: []].append(env)
+                        self.scheduleFlush(runId)
                     }
+                    self.drainBuffer(runId) // flush the tail before terminal reconciliation
                     break // clean end frame: the run is terminal
                 } catch {
                     if Task.isCancelled { break }
@@ -1249,6 +1443,27 @@ final class AppModel {
         }
     }
 
+    /// Schedule a coalesced flush of this run's buffered SSE events (throttle: at
+    /// most one flush per ~64ms window). The batch applies synchronously, so SwiftUI
+    /// renders the whole batch once.
+    private func scheduleFlush(_ runId: String) {
+        guard flushTasks[runId] == nil else { return }
+        flushTasks[runId] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(64))
+            guard let self else { return }
+            self.flushTasks[runId] = nil
+            self.drainBuffer(runId)
+        }
+    }
+
+    /// Apply all buffered envelopes for a run in one synchronous batch.
+    private func drainBuffer(_ runId: String) {
+        let batch = eventBuffers[runId] ?? []
+        guard !batch.isEmpty else { return }
+        eventBuffers[runId] = []
+        for env in batch { apply(env, to: runId) }
+    }
+
     /// Cancel every live stream (daemon/client about to be replaced).
     private func cancelAllStreams() {
         globalStreamTask?.cancel()
@@ -1256,6 +1471,9 @@ final class AppModel {
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
         lastEventIds.removeAll()
+        for task in flushTasks.values { task.cancel() }
+        flushTasks.removeAll()
+        eventBuffers.removeAll()
     }
 
     /// Stream ended (terminal end frame or repeated failures): load the full

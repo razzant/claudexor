@@ -143,8 +143,18 @@ export async function stashCreate(repo: string): Promise<string | null> {
   try {
     const read = await gitEnv(repo, ["read-tree", "HEAD"], env);
     if (read.code !== 0) throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
-    const add = await gitEnv(repo, ["add", "-A", "--", ".", ":(exclude).claudexor", ":(exclude).claudexor-review-evidence"], env);
+    // Bare `git add -A` with NO pathspec. A pathspec — positive OR `:(exclude)` —
+    // that *names* an ignored path makes git hard-error ("paths are ignored ...
+    // use -f") when the project's own .gitignore lists `.claudexor` (the in-place
+    // bug the user hit). Bare `add -A` honors .gitignore and silently skips ignored
+    // paths instead. We then unstage `.claudexor` from the SCRATCH index so run
+    // artifacts never enter the snapshot even when `.claudexor` is NOT gitignored
+    // (concurrent envelope materialization); `--ignore-unmatch` makes the already-
+    // ignored case a clean no-op rather than an error.
+    const add = await gitEnv(repo, ["add", "-A"], env);
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
+    const unstage = await gitEnv(repo, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".claudexor", ".claudexor-review-evidence"], env);
+    if (unstage.code !== 0) throw new WorkspaceError(`snapshot exclude .claudexor failed: ${unstage.stderr.trim()}`);
     const writeTree = await gitEnv(repo, ["write-tree"], env);
     if (writeTree.code !== 0) throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
     const tree = writeTree.stdout.trim();

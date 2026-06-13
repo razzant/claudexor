@@ -20,8 +20,15 @@ struct RootView: View {
                         .inspectorColumnWidth(min: 320, ideal: 420, max: 560)
                 }
                 .toolbar { toolbarContent }
+                // Hide the toolbar's own material so the behind-window blur is
+                // continuous from the desktop through the title area (В2).
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .tint(Theme.accent)
         }
+        // Clear the SwiftUI window container so the behind-window material (and the
+        // desktop beneath it) shows through — the missing piece that made the window
+        // read as a solid gray panel (В2). Window opacity is set in AppDelegate.
+        .containerBackground(.clear, for: .window)
         .sheet(item: $model.authSheetHarness) { family in
             AuthSheet(family: family).environment(model)
         }
@@ -50,40 +57,30 @@ struct RootView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        // One minimal, native action cluster (trailing): appearance · inspector ·
+        // settings · new. No custom status capsule and no Refresh button (В3/В4/В10) —
+        // the engine reconnects automatically (launch + SSE), reconnect lives in
+        // Settings, and the project/primary chips live in the composer, not here.
+        // .iconOnly keeps each glyph centered in its glass toolbar chip.
         ToolbarItemGroup(placement: .primaryAction) {
-            EngineStatusDot()
-            Button { Task { await model.connect() } } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .help("Reconnect & refresh")
-
             AppearanceMenu()
 
             Button { withAnimation(.snappy) { inspectorPresented.toggle() } } label: {
                 Label("Run inspector", systemImage: "sidebar.trailing")
             }
-            .help("Toggle the run inspector")
+            .labelStyle(.iconOnly)
+            .help("Toggle the run inspector — diff, timeline, review")
 
             SettingsLink { Label("Settings", systemImage: "gearshape") }
+                .labelStyle(.iconOnly)
                 .help("Preferences, budget, harness doctor (⌘,)")
 
             Button { model.startDraftThread() } label: {
                 Label("New Thread", systemImage: "square.and.pencil")
             }
-            .help("New thread — the first message starts it")
+            .labelStyle(.iconOnly)
+            .help("New thread — pick a project and the first message starts it")
         }
-    }
-}
-
-/// Compact engine-health indicator for the toolbar (replaces the old sidebar footer).
-struct EngineStatusDot: View {
-    @Environment(AppModel.self) private var model
-    var body: some View {
-        Image(systemName: model.health.glyph)
-            .imageScale(.medium)
-            .foregroundStyle(model.health == .connected ? Theme.status(.succeeded)
-                             : (model.health == .connecting ? Theme.status(.running) : .secondary))
-            .help(model.health == .connected ? "Engine · \(model.endpoint)" : model.health.label)
     }
 }
 

@@ -75,3 +75,6 @@ benchmarks/swe-bench/gold.*.json
 
 # macOS app distribution output
 apps/macos/dist/
+
+# Local icon-generation scratch (not product source)
+.iconjobs/

@@ -563,6 +563,8 @@ export const ControlThread = z.object({
   workspaceMode: WorkspaceMode.default("in_place"),
   authPreference: AuthPreference.default("auto"),
   primaryHarness: z.string().nullable().default(null),
+  /** Sticky eligible pool for the thread (empty => engine auto-pools). */
+  eligibleHarnesses: z.array(z.string()).default([]),
   portfolio: Portfolio.optional(),
   state: ThreadState.default("active"),
   runIds: z.array(Id).default([]),
@@ -625,15 +627,20 @@ export const ControlThreadCreateRequest = z
     workspace: WorkspaceMode.optional(),
     authPreference: AuthPreference.optional(),
     primaryHarness: z.string().optional(),
+    /** Sticky eligible pool for the thread; turns inherit it when unset. */
+    eligibleHarnesses: z.array(z.string()).optional(),
   })
   .strict();
 export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateRequest>;
 
-/** Mutate a thread's title and/or open/closed state (rename, archive). */
+/** Mutate a thread's title, open/closed state, or sticky routing (rename,
+ * archive, switch primary/pool). primaryHarness nullable => clear back to auto. */
 export const ControlThreadUpdateRequest = z
   .object({
     title: z.string().optional(),
     state: ThreadState.optional(),
+    primaryHarness: z.string().nullable().optional(),
+    eligibleHarnesses: z.array(z.string()).optional(),
   })
   .strict();
 export type ControlThreadUpdateRequest = z.infer<typeof ControlThreadUpdateRequest>;

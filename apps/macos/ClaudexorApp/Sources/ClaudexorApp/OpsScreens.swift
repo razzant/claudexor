@@ -2,244 +2,6 @@ import SwiftUI
 import AppKit
 import ClaudexorKit
 
-// MARK: - Budget cockpit
-
-struct BudgetScreen: View {
-    @Environment(AppModel.self) private var model
-    @State private var maxUsdPerRun = ""
-    @State private var maxUsdPerDay = ""
-    private var b: BudgetState { model.budget }
-    private var runCapValid: Bool { optionalUsd(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var dayCapValid: Bool { optionalUsd(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    var body: some View {
-        ScreenScaffold(title: "Budget", subtitle: "Spend, leases, and the circuit breaker across your portfolio.") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.Spacing.md)], spacing: Theme.Spacing.md) {
-                Panel { MetricTile(title: "Spend", value: b.spendLabel, caption: "cap \(b.capLabel)", tint: Theme.accent, systemImage: "dollarsign.circle") }
-                Panel { MetricTile(title: "Remaining", value: b.remainingLabel, tint: b.spendKnown && b.capKnown ? Theme.status(.succeeded) : .secondary, systemImage: "creditcard") }
-                Panel {
-                    MetricTile(title: "Day threshold", value: b.breakerLabel, tint: b.breakerColor, systemImage: "bolt.shield")
-                        .help("Display threshold: spend across LISTED runs vs the configured per-day value. The engine enforces per-run caps; a cross-run day ledger does not exist yet, so this tier is informational, not an enforced breaker.")
-                }
-            }
-
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Budget defaults", systemImage: "slider.horizontal.2.square")
-                    HStack(spacing: Theme.Spacing.md) {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                            Text("Max USD per run").font(.caption).foregroundStyle(.secondary)
-                            TextField("No default", text: $maxUsdPerRun)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.callout, design: .monospaced))
-                                .help("Default per-run cap. The New Task composer can override this for a single run.")
-                        }
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                            Text("Max USD per day").font(.caption).foregroundStyle(.secondary)
-                            TextField("No default", text: $maxUsdPerDay)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.callout, design: .monospaced))
-                                .help("Display threshold for the budget view (listed-run spend vs this value). Not an enforced engine cap: a persistent cross-run day ledger does not exist yet.")
-                        }
-                    }
-                    if !runCapValid || !dayCapValid {
-                        Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Theme.status(.failed))
-                    }
-                    HStack {
-                        Button {
-                            Task { await saveBudgetDefaults() }
-                        } label: {
-                            Label("Save budget defaults", systemImage: "checkmark.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                        .disabled(!runCapValid || !dayCapValid)
-                        .help("Save budget defaults to the engine settings.")
-                        if let status = model.settingsStatus {
-                            Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                    }
-                }
-            }
-
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Portfolio budget", systemImage: "gauge.with.dots.needle.67percent")
-                    MeterBar(fraction: b.fraction, tint: b.fraction > 0.85 ? Theme.status(.failed) : Theme.accent, height: 14)
-                    HStack {
-                        Text(b.spendKnown && b.capKnown ? "\(Int(b.fraction * 100))% used" : "Usage unknown").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        if b.fraction > 0.75 {
-                            Label("Approaching cap — leases will throttle", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption).foregroundStyle(Theme.status(.blocked))
-                        }
-                    }
-                }
-            }
-
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Per-harness spend", systemImage: "chart.pie")
-                    let harnesses = HarnessFamily.allCases.filter { b.perHarness[$0] != nil }
-                    if harnesses.isEmpty {
-                        Text("Per-harness spend is unknown until the engine exposes verified per-harness ledger data.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(harnesses) { family in
-                        let v = b.perHarness[family] ?? 0
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                HarnessDot(family: family); Text(family.label).font(.caption.weight(.medium))
-                                Spacer()
-                                Text(String(format: "$%.4f", v)).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                            }
-                            MeterBar(fraction: b.spend > 0 ? v / b.spend : 0, tint: family.color)
-                        }
-                    }
-                }
-            }
-
-            Panel {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    SectionLabel("Circuit breaker tiers", systemImage: "bolt.shield")
-                    HStack(spacing: Theme.Spacing.sm) { ForEach(0..<4) { breakerTier($0) } }
-                    if !b.nativeQuota.isEmpty {
-                        ForEach(b.nativeQuota, id: \.self) { quota in
-                            Text(quota).font(.caption).foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text("Native hourly/weekly quota is unknown until a verified provider signal is available.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Pre-call lease reservation + prompt-fingerprint loop detection + recursion caps protect against runaway spend. Quota signals are shown only when verified.")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .task {
-            await model.refreshSettings()
-            syncBudgetDefaults()
-        }
-        .onChange(of: model.settingsSnapshot) { _, _ in syncBudgetDefaults() }
-    }
-
-    private func breakerTier(_ tier: Int) -> some View {
-        let labels = ["Healthy", "Watch", "Throttle", "Open"]
-        let colors = [Theme.status(.succeeded), Theme.status(.needsReview), Theme.status(.blocked), Theme.status(.failed)]
-        let active = tier <= b.breakerTier
-        return VStack(spacing: 4) {
-            Capsule().fill(active ? colors[tier] : Theme.surfaceRaisedHi).frame(height: 6)
-            Text(labels[tier]).font(.caption2).foregroundStyle(active ? colors[tier] : .secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func syncBudgetDefaults() {
-        guard let settings = model.settingsSnapshot else { return }
-        maxUsdPerRun = settings.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
-        maxUsdPerDay = settings.budget.maxUsdPerDay.map { String(format: "%.2f", $0) } ?? ""
-    }
-
-    private func saveBudgetDefaults() async {
-        guard runCapValid, dayCapValid else { return }
-        let clearRun = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let clearDay = maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let patch = SettingsUpdateRequest(
-            maxUsdPerRun: optionalUsd(maxUsdPerRun),
-            maxUsdPerDay: optionalUsd(maxUsdPerDay),
-            clearMaxUsdPerRun: clearRun,
-            clearMaxUsdPerDay: clearDay
-        )
-        _ = await model.saveSettings(patch)
-    }
-
-    private func optionalUsd(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "$", with: "")
-        if trimmed.isEmpty { return nil }
-        guard let value = Double(trimmed), value >= 0 else { return nil }
-        return value
-    }
-}
-
-// MARK: - Harness Doctor
-
-struct HarnessesScreen: View {
-    @Environment(AppModel.self) private var model
-    var body: some View {
-        if model.harnesses.isEmpty {
-            EmptyStateView(title: "No harness status yet",
-                           message: "Start or reconnect the local engine to load Harness Doctor results.",
-                           systemImage: "cpu")
-                .glowBackdrop()
-        } else {
-            ScreenScaffold(title: "Harness Doctor", subtitle: "No privileged harness. Roles are intents; a degraded adapter is gated out of roles it can't play.") {
-                ForEach(model.harnesses) { HarnessRow(info: $0) }
-            }
-        }
-    }
-}
-
-private struct HarnessRow: View {
-    @Environment(AppModel.self) private var model
-    let info: HarnessInfo
-    var body: some View {
-        Panel {
-            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                HStack(spacing: Theme.Spacing.md) {
-                    ZStack {
-                        Circle().fill(info.family.color.opacity(0.16)).frame(width: 38, height: 38)
-                        HarnessLogo(family: info.family, size: 20)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(info.family.label).font(.callout.weight(.semibold))
-                        Text(info.version).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Label(info.health.rawValue.capitalized, systemImage: info.health.glyph)
-                        .font(.caption.weight(.medium)).foregroundStyle(info.health.color)
-                        .padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.xs)
-                        .background(info.health.color.opacity(0.14), in: Capsule())
-                }
-                HStack(spacing: Theme.Spacing.sm) {
-                    Image(systemName: "key").imageScale(.small).foregroundStyle(.secondary)
-                    Text(info.auth).font(.caption).foregroundStyle(.secondary)
-                }
-                if info.health != .ok {
-                    FlowLayout(spacing: Theme.Spacing.sm) {
-                        Button { model.authSheetHarness = info.family } label: {
-                            Label("Setup", systemImage: "person.crop.circle.badge.checkmark")
-                        }
-                        .buttonStyle(.borderedProminent).tint(Theme.accent)
-                        .help("Open setup/auth actions for \(info.family.label).")
-                        Button { NativeSetup.copy("claudexor ask \"2+2?\" --harness \(info.family.rawValue)") } label: {
-                            Label("Copy Smoke", systemImage: "checkmark.seal")
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Copy a minimal smoke-test command for this harness.")
-                        Button { Task { await model.refreshHarnesses() } } label: {
-                            Label("Recheck", systemImage: "arrow.clockwise")
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Refresh install/auth/capability status after setup.")
-                    }
-                }
-                if !info.intents.isEmpty {
-                    FlowLayout(spacing: Theme.Spacing.xs) {
-                        ForEach(info.intents, id: \.self) { intent in
-                            Text(intent).font(.caption2)
-                                .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 2)
-                                .background(Theme.surfaceRaisedHi, in: Capsule()).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Settings
 
 struct SettingsScreen: View {
@@ -264,11 +26,45 @@ struct SettingsScreen: View {
     }
 
     var body: some View {
-        @Bindable var model = model
+        TabView {
+            settingsTab { generalGroup; currentProjectGroup; advancedGroup }
+                .tabItem { Label("General", systemImage: "gearshape") }
+            settingsTab { routingGroup }
+                .tabItem { Label("Routing", systemImage: "point.3.connected.trianglepath.dotted") }
+            settingsTab { harnessDoctorGroup; perHarnessGroup }
+                .tabItem { Label("Harnesses", systemImage: "cpu") }
+            settingsTab { budgetGroup; interactiveGroup }
+                .tabItem { Label("Budget", systemImage: "dollarsign.circle") }
+            settingsTab { secretsGroup }
+                .tabItem { Label("Secrets", systemImage: "key") }
+            settingsTab { appearanceGroup }
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
+        }
+        .frame(minWidth: 720, minHeight: 600)
+        .task { await refreshAll() }
+        .onAppear { syncFromModel() }
+        .onChange(of: model.settingsSnapshot) { _, _ in syncFromModel() }
+    }
+
+    /// Standard scrolling container for one settings tab (matte glass backdrop,
+    /// readable column). Each tab supplies its `settingsGroup(...)` sections.
+    private func settingsTab<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                ScreenHeader(title: "Settings", subtitle: "Preferences, defaults, auth, secrets, and delivery policy.")
-                settingsGroup("General", "gearshape") {
+                content()
+            }
+            .padding(.horizontal, Theme.Spacing.xl)
+            .padding(.vertical, Theme.Spacing.xl)
+            .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.surfaceBase)
+    }
+
+    @ViewBuilder private var generalGroup: some View {
+        @Bindable var model = model
+        settingsGroup("General", "gearshape") {
                     Toggle(isOn: $model.demoMode) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Show sample data").font(.callout)
@@ -283,7 +79,11 @@ struct SettingsScreen: View {
                         Button { Task { await refreshAll() } } label: { Label("Refresh metadata", systemImage: "arrow.triangle.2.circlepath") }.buttonStyle(.bordered)
                     }
                 }
-                settingsGroup("Appearance", "paintpalette") {
+    }
+
+    @ViewBuilder private var appearanceGroup: some View {
+        @Bindable var model = model
+        settingsGroup("Appearance", "paintpalette") {
                     Picker("Theme", selection: $model.appearance) {
                         ForEach(AppearanceMode.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
                     }
@@ -291,7 +91,11 @@ struct SettingsScreen: View {
                     Text("The window is matte glass — the desktop shows faintly through it. Code and diffs stay on a solid surface for contrast. Reduce Transparency falls back to a solid backdrop.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                settingsGroup("Current Project", "folder") {
+    }
+
+    @ViewBuilder private var currentProjectGroup: some View {
+        @Bindable var model = model
+        settingsGroup("Current Project", "folder") {
                     Text("Project-aware modes require this repo root. Ask can run without a project and stores artifacts in the user-level Claudexor store.")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: Theme.Spacing.sm) {
@@ -303,7 +107,9 @@ struct SettingsScreen: View {
                             .buttonStyle(.bordered)
                             .help("Choose an existing project folder or create a new empty folder.")
                         Button {
-                            model.projectRoot = projectRootDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            // Route through selectProject so the choice also lands in the
+                            // composer's recent-projects MRU (not just projectRoot).
+                            model.selectProject(projectRootDraft)
                         } label: { Label("Use", systemImage: "checkmark") }
                             .buttonStyle(.borderedProminent).tint(Theme.accent)
                             .help("Use this path as the Current Project for project-aware modes.")
@@ -316,7 +122,10 @@ struct SettingsScreen: View {
                     KeyValueRow(key: "Effective project", value: model.projectRoot.isEmpty ? "No project selected" : model.projectRoot, mono: true)
                     KeyValueRow(key: "Project config", value: ".claudexor/config.yaml", mono: true)
                 }
-                settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
+    }
+
+    @ViewBuilder private var routingGroup: some View {
+        settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
                     Picker("Default portfolio", selection: $defaultPortfolio) {
                         Text("Subscription-first").tag("subscription-first")
                         Text("Balanced").tag("balanced")
@@ -371,7 +180,10 @@ struct SettingsScreen: View {
                         }
                     }
                 }
-                settingsGroup("Harness Doctor & Auth", "cpu") {
+    }
+
+    @ViewBuilder private var harnessDoctorGroup: some View {
+        settingsGroup("Harness Doctor & Auth", "cpu") {
                     Text("Claudexor mirrors native harness auth first, with API-key fallback through stored secret refs.")
                         .font(.caption).foregroundStyle(.secondary)
                     KeyValueRow(key: "Control API", value: model.endpoint.isEmpty ? "—" : "http://\(model.endpoint)", mono: true)
@@ -379,7 +191,10 @@ struct SettingsScreen: View {
                         nativeAuthRow(family)
                     }
                 }
-                settingsGroup("Secrets", "key") {
+    }
+
+    @ViewBuilder private var secretsGroup: some View {
+        settingsGroup("Secrets", "key") {
                     Text("Secret values live in Keychain or a 0600 store. Run params and artifacts store refs/metadata only.")
                         .font(.caption).foregroundStyle(.secondary)
                     KeyValueRow(key: "Secret backend", value: model.secretBackend)
@@ -404,7 +219,10 @@ struct SettingsScreen: View {
                         }
                     }
                 }
-                settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
+    }
+
+    @ViewBuilder private var perHarnessGroup: some View {
+        settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
                     Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/config.yaml.")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
@@ -412,7 +230,10 @@ struct SettingsScreen: View {
                                            settings: model.settingsSnapshot?.harnesses?[family.rawValue])
                     }
                 }
-                settingsGroup("Budget", "dollarsign.circle") {
+    }
+
+    @ViewBuilder private var budgetGroup: some View {
+        settingsGroup("Budget", "dollarsign.circle") {
                     HStack(spacing: Theme.Spacing.md) {
                         TextField("Max USD per run", text: $maxUsdPerRun)
                             .textFieldStyle(.roundedBorder)
@@ -432,7 +253,10 @@ struct SettingsScreen: View {
                         .help("Save validated budget defaults. Empty fields clear the corresponding cap.")
                     KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
                 }
-                settingsGroup("Interactive questions", "questionmark.bubble") {
+    }
+
+    @ViewBuilder private var interactiveGroup: some View {
+        settingsGroup("Interactive questions", "questionmark.bubble") {
                     HStack(spacing: Theme.Spacing.md) {
                         TextField("Answer timeout (minutes)", text: $interactionTimeoutMinutes)
                             .textFieldStyle(.roundedBorder)
@@ -448,7 +272,10 @@ struct SettingsScreen: View {
                             .foregroundStyle(Theme.status(.failed))
                     }
                 }
-                settingsGroup("Advanced & About", "info.circle") {
+    }
+
+    @ViewBuilder private var advancedGroup: some View {
+        settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
                     // Single source: the bundle version stamped at packaging time
                     // (a hardcoded string here shipped stale in the past).
@@ -458,18 +285,6 @@ struct SettingsScreen: View {
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
                     KeyValueRow(key: "Public architecture", value: "CLAUDEXOR_BIBLE.md + docs/ARCHITECTURE.md", mono: true)
                 }
-            }
-            .padding(.horizontal, Theme.Spacing.xl)
-            .padding(.top, Theme.Spacing.xxxl)
-            .padding(.bottom, Theme.Spacing.xl)
-            .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .scrollContentBackground(.hidden)
-        .background(Theme.surfaceBase)
-        .task { await refreshAll() }
-        .onAppear { syncFromModel() }
-        .onChange(of: model.settingsSnapshot) { _, _ in syncFromModel() }
     }
 
     private func settingsGroup<Content: View>(_ title: String, _ systemImage: String, @ViewBuilder content: () -> Content) -> some View {
@@ -523,7 +338,7 @@ struct SettingsScreen: View {
         panel.prompt = "Use Project"
         if panel.runModal() == .OK, let url = panel.url {
             projectRootDraft = url.path
-            model.projectRoot = url.path
+            model.selectProject(url.path)   // also records the MRU for the composer chip
         }
     }
 
@@ -598,6 +413,10 @@ private struct HarnessDefaultsRow: View {
     @State private var modelDraft = ""
     @State private var effort = "__default"
     @State private var web = "auto"
+    @State private var maxUsdDraft = ""
+    @State private var fallbackDraft = ""
+    @State private var toolsAllowDraft = ""
+    @State private var toolsDenyDraft = ""
     @State private var saving = false
 
     private static let efforts = ["__default", "low", "medium", "high", "xhigh", "max"]
@@ -631,14 +450,42 @@ private struct HarnessDefaultsRow: View {
                 }
                 .fixedSize()
                 .help("Default external web/search policy for this harness.")
+            }
+            HStack(spacing: Theme.Spacing.sm) {
+                HStack(spacing: 4) {
+                    Text("$").foregroundStyle(.secondary)
+                    TextField("max/run", text: $maxUsdDraft)
+                        .frame(width: 64)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                }
+                .help("Per-harness USD cap per run. Empty keeps the engine default.")
+                TextField("fallback model", text: $fallbackDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .help("Model used if the primary model is unavailable. Empty = none.")
                 Button {
                     Task { await save() }
                 } label: {
                     Label("Save", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.bordered)
-                .disabled(saving)
+                .disabled(saving || !maxUsdValid)
                 .help("Save \(family.label) defaults to the engine config.")
+            }
+            HStack(spacing: Theme.Spacing.sm) {
+                TextField("tools allow (comma-separated)", text: $toolsAllowDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .help("Allow-list of tool ids for \(family.label). Empty = harness default.")
+                TextField("tools deny (comma-separated)", text: $toolsDenyDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .help("Deny-list of tool ids for \(family.label).")
+            }
+            if !maxUsdValid {
+                Label("Budget cap must be a non-negative number, or empty.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(Theme.status(.failed))
             }
         }
         .padding(Theme.Spacing.sm)
@@ -647,22 +494,43 @@ private struct HarnessDefaultsRow: View {
         .onChange(of: settings) { _, _ in sync() }
     }
 
+    private var maxUsdValid: Bool {
+        let t = maxUsdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return true }
+        return (Double(t) ?? -1) >= 0
+    }
+
     private func sync() {
         enabled = settings?.enabled ?? true
         modelDraft = settings?.defaultModel ?? ""
         effort = settings?.effort ?? "__default"
         web = settings?.web ?? "auto"
+        maxUsdDraft = settings?.maxUsd.map { String(format: "%g", $0) } ?? ""
+        fallbackDraft = settings?.fallbackModel ?? ""
+        toolsAllowDraft = (settings?.toolsAllow ?? []).joined(separator: ", ")
+        toolsDenyDraft = (settings?.toolsDeny ?? []).joined(separator: ", ")
+    }
+
+    private func csv(_ s: String) -> [String] {
+        s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     private func save() async {
+        guard maxUsdValid else { return }
         saving = true
         defer { saving = false }
         let trimmedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFallback = fallbackDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let capText = maxUsdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let patch = HarnessSettingsPatch(
             enabled: enabled,
             defaultModel: .some(trimmedModel.isEmpty ? nil : trimmedModel),
             effort: .some(effort == "__default" ? nil : effort),
-            web: web
+            web: web,
+            maxUsd: .some(capText.isEmpty ? nil : Double(capText)),
+            toolsAllow: csv(toolsAllowDraft),
+            toolsDeny: csv(toolsDenyDraft),
+            fallbackModel: .some(trimmedFallback.isEmpty ? nil : trimmedFallback)
         )
         _ = await model.saveSettings(SettingsUpdateRequest(harnesses: [family.rawValue: patch]))
     }

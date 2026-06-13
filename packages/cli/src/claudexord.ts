@@ -273,8 +273,8 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
       }),
-    updateThread: async (id: string, patch: { title?: string; state?: string }) =>
-      threads.updateThread(id, { title: patch.title, state: patch.state as any }),
+    updateThread: async (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) =>
+      threads.updateThread(id, { title: patch.title, state: patch.state as any, primaryHarness: patch.primaryHarness, eligibleHarnesses: patch.eligibleHarnesses }),
     applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) => applyThreadDiff(threads, id, opts),
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),

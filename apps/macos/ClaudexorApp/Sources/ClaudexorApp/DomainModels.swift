@@ -251,6 +251,51 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Access profile (per-turn write scope)
+
+/// How much a write turn may touch — surfaced in the composer's "⋯" options and
+/// sent on the turn (the engine's `access` field). Read-only modes ignore it.
+enum AccessProfile: String, CaseIterable, Identifiable {
+    case readOnly, workspaceWrite, elevated
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .readOnly: return "Read only"
+        case .workspaceWrite: return "Workspace write"
+        case .elevated: return "Elevated"
+        }
+    }
+    var glyph: String {
+        switch self {
+        case .readOnly: return "eye"
+        case .workspaceWrite: return "square.and.pencil"
+        case .elevated: return "lock.open"
+        }
+    }
+    /// The engine wire value for `ControlRunStartRequest.access`.
+    var wire: String {
+        switch self {
+        case .readOnly: return "readonly"
+        case .workspaceWrite: return "workspace_write"
+        case .elevated: return "full"
+        }
+    }
+}
+
+// MARK: - Per-turn composer options ("⋯")
+
+/// UI-side bag of per-turn knobs the composer's "⋯" panel collects. These map
+/// onto fields that already exist on the engine's run-start request (budget cap,
+/// access, web policy, agent repair strategies) — NOT new UI-only semantics.
+/// primary/pool are NOT here: they are sticky on the thread (PATCHed separately).
+struct TurnOptions: Equatable {
+    var maxUsd: Double? = nil
+    var access: String? = nil          // AccessProfile.wire
+    var web: String? = nil             // auto | off | cached | live
+    var untilClean: Bool = false
+    var maxAttempts: Int? = nil        // nil => engine default repair cap
+}
+
 // MARK: - Phase pipeline
 
 enum Phase: Int, CaseIterable, Identifiable {

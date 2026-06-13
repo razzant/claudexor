@@ -13,6 +13,18 @@
             "active",
             "closed"
           ]
+        },
+        "primaryHarness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eligibleHarnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

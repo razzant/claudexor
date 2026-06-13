@@ -122,8 +122,8 @@ export interface DaemonControlApiOptions {
     threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
     /** Single-writer turn creation (run_id bound later by the daemon runner). */
     createThreadTurn?: (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null }) => Promise<unknown>;
-    /** Rename / archive a thread. */
-    updateThread?: (id: string, patch: { title?: string; state?: string }) => Promise<unknown>;
+    /** Rename / archive a thread or switch its sticky primary/pool. */
+    updateThread?: (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) => Promise<unknown>;
     /** Deliver an isolated thread's accumulated worktree diff to the project. */
     applyThread?: (id: string, opts: { mode: string; branch?: string; message?: string }) => Promise<unknown>;
   };
@@ -357,6 +357,7 @@ export class DaemonControlApiServer {
           workspace: parsed.workspace,
           authPreference: parsed.authPreference,
           primaryHarness: parsed.primaryHarness ?? null,
+          eligibleHarnesses: parsed.eligibleHarnesses,
         });
         return this.json(res, 200, projectThread(thread, false));
       } catch (err) {
@@ -415,7 +416,12 @@ export class DaemonControlApiServer {
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
         const patch = ControlThreadUpdateRequest.parse(raw);
-        const thread = await svc(decodeURIComponent(threadDetailMatch[1] as string), { title: patch.title, state: patch.state });
+        const thread = await svc(decodeURIComponent(threadDetailMatch[1] as string), {
+          title: patch.title,
+          state: patch.state,
+          primaryHarness: patch.primaryHarness,
+          eligibleHarnesses: patch.eligibleHarnesses,
+        });
         return this.json(res, 200, projectThread(thread, false));
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
@@ -466,7 +472,7 @@ export class DaemonControlApiServer {
       const turnWork = previous.catch(() => undefined).then(async () => {
         try {
           const detail = await detailSvc(threadId);
-          const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null; run_ids?: string[]; workspace?: { mode?: string } };
+          const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null; eligible_harnesses?: string[]; run_ids?: string[]; workspace?: { mode?: string } };
           let prompt = String(body["prompt"] ?? "");
           let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;
           const planRunId = typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
@@ -489,6 +495,25 @@ export class DaemonControlApiServer {
           // Agent turns run "live" in the execution tree (in-place project or the
           // thread worktree — the runner resolves which from thread.workspace).
           const isolation = mode === "agent" ? "live" : "envelope";
+          // Sticky routing inheritance (thin gateway — pure DTO passthrough, the
+          // engine's orderPool/resolveCandidateAdapters owns all ordering): pool/
+          // primary precedence is per-turn body > thread sticky > omit (engine then
+          // auto-pools doctor-ok / falls back to config primary).
+          // The pool THIS turn routes/races over: a per-turn override, else the
+          // thread's sticky pool, else omit.
+          const turnPool = Array.isArray(body["harnesses"])
+            ? (body["harnesses"] as string[])
+            : (thread.eligible_harnesses && thread.eligible_harnesses.length > 0 ? thread.eligible_harnesses : undefined);
+          // Inherit the sticky primary ONLY when it stays valid in that pool. If the
+          // pool (per-turn OR the inherited thread pool) does not contain the primary
+          // — e.g. the user dropped the primary harness from the pool via the "⋯"
+          // chips — drop the bias rather than drag it along; the engine would
+          // otherwise reject the turn with "primary not in pool".
+          const inheritPrimary =
+            body["primaryHarness"] === undefined && thread.primary_harness
+              && (!turnPool || turnPool.includes(thread.primary_harness))
+              ? thread.primary_harness
+              : undefined;
           const params = normalizeRunStart(
             ControlRunStartRequest.parse({
               ...body,
@@ -500,7 +525,10 @@ export class DaemonControlApiServer {
               parentRunId: thread.head_run_id ?? undefined,
               planRunId: planRunId ?? undefined,
               authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
-              ...(thread.primary_harness && body["primaryHarness"] === undefined ? { primaryHarness: thread.primary_harness } : {}),
+              ...(inheritPrimary ? { primaryHarness: inheritPrimary } : {}),
+              ...(body["harnesses"] === undefined && thread.eligible_harnesses && thread.eligible_harnesses.length > 0
+                ? { harnesses: thread.eligible_harnesses }
+                : {}),
             }),
           );
           // Single-writer: create the turn (run_id=null) BEFORE enqueue and pass
@@ -1211,6 +1239,7 @@ function projectThread(raw: unknown, needsHuman: boolean): ControlThread {
     workspaceMode: workspace?.mode ?? "in_place",
     authPreference: t["auth_preference"] ?? "auto",
     primaryHarness: t["primary_harness"] ?? null,
+    eligibleHarnesses: t["eligible_harnesses"] ?? [],
     portfolio: t["portfolio"],
     state: t["state"] ?? "active",
     runIds: t["run_ids"] ?? [],

@@ -23,6 +23,8 @@ export interface CreateThreadInput {
   workspace?: WorkspaceMode;
   authPreference?: Thread["auth_preference"];
   primaryHarness?: string | null;
+  /** Sticky eligible harness pool for the thread (turns inherit when unset). */
+  eligibleHarnesses?: string[];
 }
 
 export interface CreateTurnInput {
@@ -35,6 +37,22 @@ export interface CreateTurnInput {
 export interface UpdateThreadInput {
   title?: string;
   state?: Thread["state"];
+  /** Switch the sticky primary harness (null => clear back to auto). */
+  primaryHarness?: string | null;
+  /** Replace the sticky eligible harness pool. */
+  eligibleHarnesses?: string[];
+}
+
+/**
+ * Thread routing invariant: a sticky primary harness must be a member of a
+ * NON-EMPTY eligible pool (an empty pool = engine auto-pool, so it constrains
+ * nothing). Returns the primary, or null when it falls outside the pool — so a
+ * thread is never stored claiming a primary the engine would drop. Applied at
+ * both create and update (the only writers of these two fields).
+ */
+function coercePrimaryToPool(primary: string | null, pool: string[]): string | null {
+  if (primary && pool.length > 0 && !pool.includes(primary)) return null;
+  return primary;
 }
 
 /**
@@ -110,6 +128,11 @@ export class ThreadStore {
 
   createThread(input: CreateThreadInput): Thread {
     const now = nowIso();
+    // Same invariant as updateThread: a sticky primary must be a member of a
+    // non-empty eligible pool. Enforce it at CREATE too (the create request carries
+    // primary + pool independently) so a thread is never born incoherent.
+    const eligible = input.eligibleHarnesses ?? [];
+    const primary = coercePrimaryToPool(input.primaryHarness ?? null, eligible);
     const thread = ThreadSchema.parse({
       schema_version: SCHEMA_VERSION,
       id: newId("th"),
@@ -125,7 +148,8 @@ export class ThreadStore {
       // thread is always in_place (review #6 — never persist a doomed config).
       workspace: { mode: input.repoRoot ? input.workspace ?? "in_place" : "in_place", worktree_path: null, base_sha: null },
       auth_preference: input.authPreference ?? "auto",
-      primary_harness: input.primaryHarness ?? null,
+      primary_harness: primary,
+      eligible_harnesses: eligible,
     });
     this.state.threads.push(thread);
     this.persist();
@@ -138,6 +162,14 @@ export class ThreadStore {
     if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
     if (patch.title !== undefined) thread.title = patch.title;
     if (patch.state !== undefined) thread.state = patch.state;
+    if (patch.primaryHarness !== undefined) thread.primary_harness = patch.primaryHarness;
+    if (patch.eligibleHarnesses !== undefined) thread.eligible_harnesses = patch.eligibleHarnesses;
+    // Invariant (thread.ts contract): a sticky primary must be a member of a non-empty
+    // eligible pool. If a PATCH leaves the primary outside the pool — e.g. the user
+    // removed the primary harness from the pool — clear it to null (Auto) rather than
+    // persist an incoherent state that the UI would show as "X answers in chat" while
+    // the engine silently drops X. (An empty pool = auto, so it imposes no constraint.)
+    thread.primary_harness = coercePrimaryToPool(thread.primary_harness, thread.eligible_harnesses);
     thread.updated_at = nowIso();
     this.persist();
     return thread;

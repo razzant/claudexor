@@ -225,6 +225,130 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: a turn inherits the thread's sticky primary + eligible pool; the body overrides them; PATCH switches them", async () => {
+    const { daemon, record } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-pool-"));
+    const now = new Date().toISOString();
+    let enqueued: Record<string, unknown> | undefined;
+    let patched: { primaryHarness?: string | null; eligibleHarnesses?: string[] } | undefined;
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2, id: "th-9", created_at: now, updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" }, title: "pool thread", mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: "codex",                 // sticky primary
+      eligible_harnesses: ["codex", "claude"],  // sticky pool
+      portfolio: "subscription-first", run_ids: [], head_run_id: null, state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        const job = await daemon.enqueue(params);
+        const turnId = (params as { turnId?: string }).turnId;
+        if (turnId) { const t = turns.find((x) => x["id"] === turnId); if (t) t["run_id"] = record.runId; }
+        return job;
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt, opts) => {
+        const turn = { id: `tn-${turns.length}`, thread_id: id, run_id: null, parent_run_id: opts.parentRunId ?? null, plan_run_id: opts.planRunId ?? null, kind: opts.kind ?? "followup", prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+      updateThread: async (_id, patch) => {
+        patched = { primaryHarness: patch.primaryHarness, eligibleHarnesses: patch.eligibleHarnesses };
+        if (patch.primaryHarness !== undefined) threadObj["primary_harness"] = patch.primaryHarness;
+        if (patch.eligibleHarnesses !== undefined) threadObj["eligible_harnesses"] = patch.eligibleHarnesses;
+        return threadObj;
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      // 1) No routing in the body -> inherit thread sticky primary + pool.
+      await fetch(`${base}/threads/th-9/turns`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "go" }),
+      });
+      expect(enqueued).toMatchObject({ primaryHarness: "codex", harnesses: ["codex", "claude"] });
+
+      // 2) Body override wins over the thread sticky values (+ per-turn strategy flags pass through).
+      enqueued = undefined;
+      await fetch(`${base}/threads/th-9/turns`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "go", primaryHarness: "claude", harnesses: ["cursor"], untilClean: true, n: 3 }),
+      });
+      expect(enqueued).toMatchObject({ primaryHarness: "claude", harnesses: ["cursor"], untilClean: true, n: 3 });
+
+      // 2b) A turn that explicitly narrows the pool (Race over the available subset)
+      // must NOT drag the sticky primary along when it is outside that pool — else
+      // the engine would fail "primary not in eligible pool". Drop the bias instead.
+      enqueued = undefined;
+      await fetch(`${base}/threads/th-9/turns`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "race available", harnesses: ["claude"], n: 2 }),  // codex (sticky primary) unavailable -> excluded
+      });
+      expect(enqueued).toMatchObject({ harnesses: ["claude"], n: 2 });
+      expect(enqueued && "primaryHarness" in enqueued).toBe(false);  // sticky codex NOT inherited (not in the pool)
+
+      // 2c) An ORDINARY turn (no body routing) must ALSO drop the sticky primary when
+      // the THREAD's own sticky pool no longer contains it — e.g. the user removed the
+      // primary harness from the pool via the "⋯" chips. Otherwise EVERY following turn
+      // inherits both and the engine rejects routing with "primary not in pool".
+      await fetch(`${base}/threads/th-9`, {
+        method: "PATCH", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ eligibleHarnesses: ["claude"] }),  // drop codex (the sticky primary) from the pool
+      });
+      enqueued = undefined;
+      await fetch(`${base}/threads/th-9/turns`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "ordinary turn" }),        // no body routing -> inherit thread sticky
+      });
+      expect(enqueued).toMatchObject({ harnesses: ["claude"] });
+      expect(enqueued && "primaryHarness" in enqueued).toBe(false);  // sticky codex NOT inherited (outside the narrowed pool)
+
+      // 3) PATCH switches the sticky primary + pool (the thin-gateway persist path).
+      const patch = await fetch(`${base}/threads/th-9`, {
+        method: "PATCH", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ primaryHarness: "claude", eligibleHarnesses: ["claude", "cursor"] }),
+      });
+      expect(patch.status).toBe(200);
+      expect(patched).toEqual({ primaryHarness: "claude", eligibleHarnesses: ["claude", "cursor"] });
+      const patchedThread = (await patch.json()) as { primaryHarness: string | null; eligibleHarnesses: string[] };
+      expect(patchedThread.primaryHarness).toBe("claude");
+      expect(patchedThread.eligibleHarnesses).toEqual(["claude", "cursor"]);
+    }, undefined, services);
+  });
+
+  it("threads: an empty sticky pool is NOT forwarded (engine auto-pools), but the body pool still is", async () => {
+    const { daemon, record } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-autopool-"));
+    const now = new Date().toISOString();
+    let enqueued: Record<string, unknown> | undefined;
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2, id: "th-10", created_at: now, updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" }, title: "auto pool", mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto", primary_harness: null, eligible_harnesses: [],
+      portfolio: "subscription-first", run_ids: [], head_run_id: null, state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) { enqueued = params as Record<string, unknown>; const job = await daemon.enqueue(params); const turnId = (params as { turnId?: string }).turnId; if (turnId) { const t = turns.find((x) => x["id"] === turnId); if (t) t["run_id"] = record.runId; } return job; },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt, opts) => { const turn = { id: `tn-${turns.length}`, thread_id: id, run_id: null, parent_run_id: opts.parentRunId ?? null, plan_run_id: opts.planRunId ?? null, kind: opts.kind ?? "followup", prompt, created_at: now }; turns.push(turn); return turn; },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      await fetch(`${base}/threads/th-10/turns`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ prompt: "go" }) });
+      expect(enqueued && "harnesses" in enqueued).toBe(false);   // omitted -> engine auto-pools
+      expect(enqueued && "primaryHarness" in enqueued).toBe(false);
+    }, undefined, services);
+  });
+
   it("allows Ask without a project by normalizing it to user-level context-off storage", async () => {
     const { daemon } = fakeDaemon();
     let enqueued: unknown;

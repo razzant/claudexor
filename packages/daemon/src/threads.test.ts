@@ -54,6 +54,51 @@ describe("ThreadStore", () => {
     expect(s.getThread(t.id)?.state).toBe("closed");
   });
 
+  it("persists a sticky eligible pool and primary, and survives a reload", () => {
+    const { path, s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex", "claude"] });
+    expect(t.eligible_harnesses).toEqual(["codex", "claude"]);
+    expect(t.primary_harness).toBe("codex");
+    expect(s.createThread({}).eligible_harnesses).toEqual([]); // default empty
+    // Reload from disk: sticky routing is durable.
+    const reloaded = new ThreadStore(path).getThread(t.id);
+    expect(reloaded?.eligible_harnesses).toEqual(["codex", "claude"]);
+    expect(reloaded?.primary_harness).toBe("codex");
+    // Invariant at CREATE too: a primary outside a non-empty pool is cleared, so a
+    // thread is never born claiming a primary the engine would drop.
+    const incoherent = s.createThread({ repoRoot: "/tmp/p2", primaryHarness: "codex", eligibleHarnesses: ["claude"] });
+    expect(incoherent.eligible_harnesses).toEqual(["claude"]);
+    expect(incoherent.primary_harness).toBeNull();
+    // Empty pool imposes no constraint — a standalone primary is kept (engine auto-pools).
+    expect(s.createThread({ primaryHarness: "codex", eligibleHarnesses: [] }).primary_harness).toBe("codex");
+  });
+
+  it("updateThread switches the sticky primary (incl. clear to null) and pool", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex"] });
+    s.updateThread(t.id, { primaryHarness: "claude", eligibleHarnesses: ["claude", "cursor"] });
+    expect(s.getThread(t.id)?.primary_harness).toBe("claude");
+    expect(s.getThread(t.id)?.eligible_harnesses).toEqual(["claude", "cursor"]);
+    // null clears the primary back to auto without touching the pool.
+    s.updateThread(t.id, { primaryHarness: null });
+    expect(s.getThread(t.id)?.primary_harness).toBeNull();
+    expect(s.getThread(t.id)?.eligible_harnesses).toEqual(["claude", "cursor"]);
+  });
+
+  it("updateThread clears a sticky primary that falls outside a narrowed pool (invariant)", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex", "claude"] });
+    // Remove the primary harness (codex) from the pool: the primary must not persist
+    // outside a non-empty pool, so it auto-clears to null (Auto) — the UI then shows
+    // Auto instead of lying that codex answers while the engine drops it.
+    s.updateThread(t.id, { eligibleHarnesses: ["claude"] });
+    expect(s.getThread(t.id)?.eligible_harnesses).toEqual(["claude"]);
+    expect(s.getThread(t.id)?.primary_harness).toBeNull();
+    // An empty pool imposes no constraint — a primary can stand alone (engine auto-pools).
+    s.updateThread(t.id, { primaryHarness: "claude", eligibleHarnesses: [] });
+    expect(s.getThread(t.id)?.primary_harness).toBe("claude");
+  });
+
   it("records the last observed model on a session", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

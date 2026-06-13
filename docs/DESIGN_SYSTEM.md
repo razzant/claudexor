@@ -199,6 +199,46 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - Test every screen with Reduce Transparency, Reduce Motion, Increase Contrast, and the
   system Liquid Glass tint settings.
 
+### 3.1 macOS 26 Liquid Glass APIs (the v0.10 redesign — first-class, not availability-gated)
+
+The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`):
+
+- **`glassEffect(.regular[.tint(...)], in: shape)`** — the floating chrome surface
+  (composer panel, floating actions). Use **static `.regular`** — NOT `.interactive()`:
+  pointer lensing re-composites the glass on every mouse move AND every re-render,
+  which was a measured scroll/idle FPS regression on an M5 Max. Apple reserves
+  `.interactive()` for elements that physically move under the cursor, not a static
+  composer. Reserve `.tint(...)` for one or two primary accents per surface.
+- **`GlassEffectContainer { ... }`** — wrap a cluster of glass elements so they share
+  one sampling region (constrains the sample zone — it *helps* perf). Group; don't
+  scatter bare `glassEffect`s.
+- **Native glass button styles** — `.buttonStyle(.glass)` for chrome actions (intent
+  menu, project/primary chips, "⋯"). The one prominent action (Send) does NOT use
+  `.glassProminent` — system glass-prominent can render near-white on the light-mode
+  glass (invisible). Send uses `AccentButtonStyle`: a SOLID accent capsule with white
+  text, legible in BOTH themes (WCAG). See §5.1.
+- **Behind-window transparency (the desktop shows faintly through the window, Р5)** —
+  three pieces, all required: (1) `GlassBackground` → `NSVisualEffectView`
+  (`.behindWindow` / `.underWindowBackground`) as the window backdrop; (2) the window
+  made non-opaque in `AppDelegate` (`isOpaque=false`, `backgroundColor=.clear`, set
+  reliably once the window exists — a per-frame SwiftUI guard never fired); (3)
+  `.containerBackground(.clear, for: .window)` + `.toolbarBackgroundVisibility(.hidden,
+  for: .windowToolbar)` on the root so the SwiftUI container and toolbar don't paint an
+  opaque panel over it. Miss any one and the window reads as solid gray. Reduce
+  Transparency → solid `surfaceBase`.
+- **Glass vs `Material`** — Liquid Glass is the FLOATING chrome layer; `Material`
+  (`.thinMaterial`/`.regularMaterial`, the `cardSurface` recipe) is the CONTENT
+  layer. Dense/input content (the composer text field, the "⋯" option rows, code,
+  diffs) sits on a **SOLID inset** (`surfaceRaised`/`surfaceCode`) INSIDE the glass —
+  never a second `glassEffect` and never a frosted card inside glass.
+- **Reduce Transparency** — every custom glass surface needs a SOLID fallback
+  (`surfaceRaised` + hairline). `composerGlass` and `GlassBackground` branch on
+  `accessibilityReduceTransparency` already; new glass must do the same.
+- **Reduce Motion** — gate state-toggle animations (e.g. the "⋯" expand) on
+  `accessibilityReduceMotion`; glass lensing/morph degrade to instant.
+- References: developer.apple.com — Adopting Liquid Glass, `glassEffect(_:in:)`,
+  `GlassEffectContainer`, `GlassButtonStyle`, Materials (HIG); WWDC25 #219/#323/#356.
+
 ---
 
 ## 4. App shell & information architecture
@@ -237,13 +277,37 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
     default, raw native details expand inline, and code/log text sits on `surface/code`.
   - **"What changed since you last looked"** marker + an **attention state** (working /
     blocked / needs-permission / done).
-- **Chat composer (v0.10).** Always live: a text field + an intent picker. Default
-  is `Agent` (the model decides whether to answer or edit). Project intents (Plan,
-  Race ×N, Audit) need a Current Project; a no-project thread is `Ask`-only. The
-  first message in the draft state materializes the thread. No separate full
-  composer, no spec-interview screen, no 9-mode picker — engine strategies (race
-  width, until-clean) are flags, and the canonical modes are FIVE
-  (`ask`/`plan`/`audit`/`agent`/`orchestrate`).
+- **Chat composer (v0.10 redesign).** ONE floating Liquid-Glass panel
+  (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
+  Two stacked zones, all with SOLID contents (no glass-on-glass):
+  - a controls row — the intent `Menu` (5 modes: `ask`/`plan`/`audit`/`agent`/Race),
+    the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
+    thread's project, an open thread's repo is bound), the `PrimaryHarnessChip` (which
+    harness answers in chat; sticky on the thread), and the "⋯" button (`.buttonStyle(.glass)`)
+    that opens the advanced options as a native dismissible **`.popover`** — NOT an
+    inline panel (the inline version read as glass-on-glass and was cramped);
+  - the input — `GlassField`: a `TextField(axis:.vertical)` on a SOLID `surfaceRaised`
+    inset with a real focus ring (scheme-aware — heavier in light mode where a faint
+    ring vanishes on white) and 1→6-line growth, with `Send` (`AccentButtonStyle` —
+    solid accent + white text, visible in BOTH themes, ⌘↩, dims when empty).
+  The "⋯" popover holds the harness pool chips, per-turn budget/access/web, and agent
+  repair strategies as clean SOLID `OptionSection`/`OptionRow` rows.
+  Default intent is `Agent`; project intents need a project; a **no-project thread is
+  `Ask`-only** — the controls row hides the primary/"⋯" affordances and shows an inline
+  "Pick a project to use Agent · Plan · Race" hint, the `ProjectChip` highlighted as the
+  affordance (no sending into the void). The draft-state first message materializes the
+  thread. The composer's intent menu surfaces FOUR canonical modes — `ask` / `agent` /
+  `plan` / `audit` — plus **Race** (which is `agent` + the best-of-N strategy flag, not a
+  mode). The fifth canonical mode `orchestrate` (and `explore` / `create`) are intentionally
+  **CLI-only**: they are power-user / scripted flows, so the composer keeps the everyday
+  surface small. race width / until-clean / attempts are engine strategy flags, not modes.
+- **One minimal toolbar, no second header.** The thread title/subtitle live in the
+  system window toolbar (`.navigationTitle`/`.navigationSubtitle`) — there is NO custom
+  header strip below it. The toolbar holds ONLY the standard trailing icon cluster:
+  appearance · run-inspector · settings · new (each with a `.help()` tooltip). There is
+  **no engine-status capsule and no Refresh button** in the toolbar (custom capsules
+  overlapped the window edge and read out-of-app; the engine auto-reconnects on launch
+  and over SSE). Project/primary chips live in the composer, not the toolbar.
 - **Markdown output surfaces.** Outcome, reports, plans, summaries, and diagnostics
   render native markdown with BLOCK structure: headings get heading type
   styles, paragraphs stay separated (never collapsed into one run-on line),
@@ -325,7 +389,30 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 
 These are exact, non-negotiable recipes. Screens MUST compose these shared views rather than
 re-implement them, so every screen is pixel-consistent. (Swift: `Components.swift`,
-`DesignTokens.swift`.)
+`DesignSystemComponents.swift`, `DesignTokens.swift`.)
+
+- **`GlassField`** — the composer input. `TextField(axis:.vertical)` on `surfaceRaised`
+  (solid), `Radius.control`, a focus ring (`@FocusState` → `accent` stroke on focus,
+  `separator` otherwise) that is **scheme-aware** (alpha 0.85 / width 1.75 in light;
+  0.6 / 1.5 in dark — a faint ring is invisible on a white field), animation scoped to
+  the stroke overlay only. `.lineLimit(1...maxLines)`. NEVER the glass or code surface.
+- **`AccentButtonStyle`** — the Send button (and any "must be visible in both themes"
+  prominent action). SOLID `accent` capsule + white text (NOT system `.glassProminent`,
+  which can vanish on light-mode glass); dims to `accent.opacity(0.35)` when disabled.
+- **`ProjectChip`** — the composer's working-directory picker. Capsule (logo + folder
+  name + chevron) opening a `Menu` of MRU recents (`model.recentProjects`, persisted) +
+  "Browse…" (`NSOpenPanel`). In the draft state it sets the new thread's project; an
+  open thread's repo is bound, so picking another project starts a new draft there.
+  Highlighted (accent border) when no project is set.
+- **`OptionSection` / `OptionRow`** — the "⋯" popover building blocks: a caption-titled
+  section, and a `labelWidth`-aligned label+control row (replaces ad-hoc `.fixedSize()` /
+  magic-width pickers so every option lines up). Solid surface, token spacing.
+- **`composerGlass()`** — the floating-panel glass modifier: static `.glassEffect(.regular)`
+  (NOT `.interactive()` — see §3.1) with a `surfaceRaised` solid fallback under Reduce
+  Transparency. Chrome only.
+- **`PrimaryHarnessChip`** — a single shared view (one instance in the composer controls row),
+  logo + label + chevron `Menu`, switching the thread's sticky primary harness (a change
+  applies from the next turn).
 
 - **Screen header / H1.** Every primary screen shows ONE title via the shared `ScreenHeader`
   (`.title2.weight(.bold)` + optional `.callout` secondary subtitle) — either through
@@ -353,14 +440,14 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   via `selectedChip(active:tint:)`. `tint` defaults to `accent`; pass a status/severity color
   ONLY when the chip *is* that status/severity. `FilterBar` owns the gutter (horizontal
   `Spacing.xxl`, vertical `Spacing.lg`). Never hand-roll a chip with a different font/padding.
-- **Toolbar + search.** There is exactly ONE window toolbar, defined in `RootView`
-  (`ToolbarItemGroup(.primaryAction)`): refresh · appearance · inspector · new-task. Search is
-  declared ONCE via `.searchable` on the `NavigationSplitView` (WWDC25 "Build a SwiftUI app
-  with the new design") so the affordance is identical on every screen; bind it to
-  `AppModel.searchQuery` and have list screens filter by it; the query is **cleared on every
-  route change** so one screen's search never leaks into the next. Screens MUST NOT add their
-  own `.searchable` or toolbar items (that reflows the glass toolbar and breaks consistency).
-  Prefer `ToolbarSpacer` for grouping; monochrome SF Symbols; don't mix text+icon in one group.
+- **Toolbar.** There is exactly ONE window toolbar, defined in `RootView`
+  (`ToolbarItemGroup(.primaryAction)`): **appearance · inspector · settings · new**, all
+  `.labelStyle(.iconOnly)` with a `.help()` tooltip. There is NO Refresh button (the engine
+  auto-reconnects on launch + over SSE) and NO global `.searchable` / status capsule (a custom
+  capsule overlapped the window edge and read out-of-app). The thread title/subtitle render in
+  the system toolbar via `.navigationTitle`/`.navigationSubtitle` — never a second header strip.
+  Project + primary harness chips live in the COMPOSER, not the toolbar. Monochrome SF Symbols;
+  don't mix text+icon in one group.
 - **Sidebar selection.** `List(selection:)` binds `SidebarRoute` (a `Hashable` enum with a
   distinct case per selectable concept). Every row gets a UNIQUE `.tag(SidebarRoute.…)`; the
   detail is a `switch` over the route. NEVER alias two concepts to one tag (e.g. a spec row
