@@ -39,6 +39,13 @@ async function detectVersion(): Promise<string | null> {
 async function authStatusOk(): Promise<boolean> {
   try {
     const env = Object.fromEntries(CLAUDE_PROVIDER_ENV_DENYLIST.map((name) => [name, null]));
+    // Probe a REAL native/subscription session only: `claude auth status` reports
+    // loggedIn:true for a bare ANTHROPIC_API_KEY (authMethod:api_key), which would
+    // make the run path mistake an API key for a native session and pick the
+    // subscription route (scrubs the key -> "Not logged in"). Scrub it here so this
+    // probe reflects native-session readiness alone; the api_key route is chosen
+    // separately by runClaude when no native session exists.
+    env.ANTHROPIC_API_KEY = null;
     const r = await runCapture(BIN, ["auth", "status"], { env, timeoutMs: 10_000 });
     return r.code === 0;
   } catch {
