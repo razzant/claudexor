@@ -8,7 +8,7 @@ set -euo pipefail
 
 CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export CLAUDEXOR_REPO_ROOT
-export PATH="$HOME/.local/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
 
 SWE_RUNS_ROOT="${CLAUDEXOR_SWE_RUNS_ROOT:-$HOME/.claudexor/cache/bench-experiments/swe-bench}"
