@@ -23,14 +23,27 @@ RUN_ID="claudexor-$(date +%Y%m%d-%H%M%S)"
 OUT="$RUNS_ROOT/$RUN_ID"
 mkdir -p "$OUT"
 
+MODE="${CLAUDEXOR_TB_MODE:-single}"
 MODEL_FLAG=()
-[ -n "$CLAUDE_MODEL" ] && MODEL_FLAG=(-m "$CLAUDE_MODEL")
+# A global -m collides across race candidates; the agent pins each candidate via the
+# seeded GlobalConfig (harnesses.<id>.default_model) + ANTHROPIC_MODEL instead. Only
+# pass -m for non-race arms.
+[ -n "$CLAUDE_MODEL" ] && [ "$MODE" != "race" ] && MODEL_FLAG=(-m "$CLAUDE_MODEL")
 
-AK=(--ak "harness=${CLAUDEXOR_TB_HARNESS:-claude}" --ak "attempts=$ATTEMPTS")
-[ -n "$CODEX_MODEL" ] && AK+=(--ak "reviewer_model=${CODEX_MODEL#openai/}")
+AK=(--ak "harness=${CLAUDEXOR_TB_HARNESS:-claude}" --ak "mode=$MODE")
+if [ "$MODE" = "race" ]; then
+  # n unset -> agent derives it from the comma-harness count (codex,claude -> 2).
+  [ -n "${CLAUDEXOR_TB_N:-}" ] && AK+=(--ak "n=${CLAUDEXOR_TB_N}")
+else
+  AK+=(--ak "attempts=$ATTEMPTS")
+fi
+[ -n "$CODEX_MODEL" ] && AK+=(--ak "reviewer_model=${CODEX_MODEL#openai/}" --ak "codex_model=${CODEX_MODEL#openai/}")
+[ -n "$CLAUDE_MODEL" ] && AK+=(--ak "claude_model=${CLAUDE_MODEL#anthropic/}")
+[ -n "${CLAUDEXOR_TB_REF:-}" ]  && AK+=(--ak "claudexor_ref=${CLAUDEXOR_TB_REF}")
+[ -n "${CLAUDEXOR_TB_REPO:-}" ] && AK+=(--ak "claudexor_repo=${CLAUDEXOR_TB_REPO}")
 [ -n "${CLAUDEXOR_TB_MAX_USD:-}" ] && AK+=(--ak "max_usd=${CLAUDEXOR_TB_MAX_USD}")
 
-log "claudexor (in-place convergence + cross-family review): dataset=$DATASET harness=${CLAUDEXOR_TB_HARNESS:-claude} attempts=$ATTEMPTS reviewer=${CODEX_MODEL:-<codex default>} -> $OUT"
+log "claudexor (mode=$MODE harness=${CLAUDEXOR_TB_HARNESS:-claude} n=${CLAUDEXOR_TB_N:-auto} attempts=$ATTEMPTS reviewer=${CODEX_MODEL:-<codex default>} ref=${CLAUDEXOR_TB_REF:-main}): dataset=$DATASET -> $OUT"
 # shellcheck disable=SC2086
 # ${arr[@]+...} guards empty-array expansion under `set -u` on bash 3.2 (macOS).
 harbor run -d "$DATASET" --timeout-multiplier "${CLAUDEXOR_TB_TIMEOUT_MULT:-3}" --agent-import-path "$AGENT_IMPORT" ${MODEL_FLAG[@]+"${MODEL_FLAG[@]}"} "${AK[@]}" $SEL -n "$N_CONCURRENT" -o "$OUT"

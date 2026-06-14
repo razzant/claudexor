@@ -75,12 +75,29 @@ class ClaudexorAgent(BaseInstalledAgent):
         max_usd: float | str | None = None,
         claudexor_ref: str = "main",
         claudexor_repo: str | None = None,
+        mode: str = "single",
+        n: int | str | None = None,
+        codex_model: str | None = None,
+        claude_model: str | None = None,
         *args,
         **kwargs,
     ) -> None:
+        # "single" = in-place convergence (--attempts). "race" = literal best-of-N
+        # (--n <N> --harness <list>): isolated candidate envelopes + cross-family
+        # review, winner's git diff auto-adopted into /app. NEVER pass --attempts in
+        # race mode (it selects convergence and forecloses the race).
+        self._mode = str(mode).strip().lower()
         self._harness = str(harness)
         self._reviewer_model = (str(reviewer_model) or None) if reviewer_model else None
         self._attempts = max(1, int(attempts))
+        # Race width defaults to the number of comma-separated harnesses
+        # (harness=codex,claude -> n=2, one candidate per family); explicit n wins.
+        if n not in (None, ""):
+            self._n = max(1, int(n))
+        else:
+            self._n = max(1, len([h for h in self._harness.split(",") if h.strip()]))
+        self._codex_model = (str(codex_model) or None) if codex_model else None
+        self._claude_model = (str(claude_model) or None) if claude_model else None
         self._max_usd = float(max_usd) if max_usd not in (None, "") else None
         self._claudexor_ref = str(claudexor_ref)
         self._claudexor_repo = str(claudexor_repo or os.environ.get("CLAUDEXOR_TB_REPO", "https://github.com/joi-lab/claudexor.git"))
@@ -114,6 +131,12 @@ class ClaudexorAgent(BaseInstalledAgent):
         # 2) Node 22 (nvm), the harness CLIs, and the Claudexor CLI (built from source),
         #    all as the default agent user so the runtime user owns them.
         install_env: dict[str, str] = {"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
+        # Private joi-lab/claudexor needs auth to clone; pass the token to the install
+        # shell, where an env-based credential helper consumes it at clone time so it is
+        # never written to .gitconfig or the install log.
+        gh_token = self._get_env("GITHUB_TOKEN")
+        if gh_token:
+            install_env["GITHUB_TOKEN"] = gh_token
         await self.exec_as_agent(
             environment,
             command=(
@@ -143,6 +166,10 @@ class ClaudexorAgent(BaseInstalledAgent):
                 # Both families so cross-family review (claude implement / codex review,
                 # or vice versa) is always available.
                 "npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest\n"
+                # Authenticate the private-repo clone via an env-based credential helper.
+                # Single-quoted helper => $GITHUB_TOKEN stays literal in .gitconfig and is
+                # expanded from the env only when git runs the helper (never logged/on disk).
+                "if [ -n \"${GITHUB_TOKEN:-}\" ]; then git config --global credential.helper '!f() { echo username=x; echo \"password=$GITHUB_TOKEN\"; }; f'; fi\n"
                 f"git clone --depth 1 --branch {shlex.quote(self._claudexor_ref)} "
                 f"{shlex.quote(self._claudexor_repo)} \"$HOME/claudexor\"\n"
                 'cd "$HOME/claudexor"\n'
@@ -199,24 +226,27 @@ class ClaudexorAgent(BaseInstalledAgent):
         # Avoid the libuv io_uring crash (uv__io_poll assertion) that aborts Node
         # 20.3+/22 in emulated / older-kernel containers; inherited by claude/codex too.
         env["UV_USE_IO_URING"] = "0"
-        if self.model_name:
-            model = self.model_name.split("/")[-1]
-            # Pin the Claude implementer/reviewer model via Claude Code's env knob.
-            env["ANTHROPIC_MODEL"] = model
-        if self._reviewer_model:
-            # Used by Claudexor's codex cost estimator when codex reviews.
-            env["CLAUDEXOR_CODEX_MODEL"] = self._reviewer_model
+        # Pin the claude candidate/reviewer model. Prefer the explicit claude_model
+        # kwarg (race mode suppresses Harbor's -m so a global --model can't collide
+        # across candidates), else Harbor's model_name. Claude Code reads ANTHROPIC_MODEL.
+        claude_model = self._claude_model or (self.model_name.split("/")[-1] if self.model_name else None)
+        if claude_model:
+            env["ANTHROPIC_MODEL"] = claude_model
+        codex_model = self._codex_model or self._reviewer_model
+        if codex_model:
+            # Codex cost estimator (review and, in race mode, the codex candidate);
+            # the codex candidate's actual model is pinned via the seeded config.
+            env["CLAUDEXOR_CODEX_MODEL"] = codex_model
         return env
 
     def _claudexor_command(self, instruction: str) -> str:
-        flags = [
-            "run",
-            "--in-place",
-            "--attempts",
-            str(self._attempts),
-            "--harness",
-            self._harness,
-        ]
+        flags = ["run", "--in-place", "--harness", self._harness]
+        if self._mode == "race":
+            # Literal best-of-N: N isolated candidates, cross-family review, winner's
+            # git diff auto-adopted into /app. No --attempts (it selects convergence).
+            flags += ["--n", str(self._n)]
+        else:
+            flags += ["--attempts", str(self._attempts)]
         if self._reviewer_model:
             flags += ["--reviewer-model", f"openai={self._reviewer_model}"]
         # A value-flag (`--access full`, optionally `--max-usd`) is always the last
@@ -242,6 +272,25 @@ class ClaudexorAgent(BaseInstalledAgent):
             "h=$(printf %s /app | sha256sum | cut -c1-16) && "
             "printf 'allow_full_access: true\\n' > \"$HOME/.claudexor/trust/$h.yaml\""
         )
+        # Pin each candidate's model via the user-level GlobalConfig
+        # (harnesses.<id>.default_model). A single global --model would collide across
+        # the two race candidates, so per-harness default_model is the correct knob;
+        # ANTHROPIC_MODEL (set in _run_env) additionally pins claude. Schema is
+        # non-strict with all-default fields, so this minimal shape validates.
+        codex_model = self._codex_model or self._reviewer_model
+        claude_model = self._claude_model or (self.model_name.split("/")[-1] if self.model_name else None)
+        harness_yaml = ""
+        if codex_model:
+            harness_yaml += f"  codex:\n    default_model: {codex_model}\n"
+        if claude_model:
+            harness_yaml += f"  claude:\n    default_model: {claude_model}\n"
+        seed_models = ":"
+        if harness_yaml:
+            cfg_yaml = "version: 1\nharnesses:\n" + harness_yaml
+            seed_models = (
+                'mkdir -p "$HOME/.claudexor" && '
+                "printf %s " + shlex.quote(cfg_yaml) + ' > "$HOME/.claudexor/config.yaml"'
+            )
         # Always exit 0: Terminal-Bench scores the container STATE via hidden tests, not
         # the agent's exit code. A non-converged Claudexor run still leaves valid work in
         # /app; let the verifier judge it. Claudexor's own status lives in the artifacts.
@@ -253,6 +302,7 @@ class ClaudexorAgent(BaseInstalledAgent):
             "cd /app\n"
             f"{seed_codex_auth}\n"
             f"{seed_trust}\n"
+            f"{seed_models}\n"
             f"{cmd} || true\n"
             f"{export_artifacts}\n"
         )
