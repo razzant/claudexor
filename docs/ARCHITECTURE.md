@@ -335,7 +335,8 @@ artifact/delivery facade:
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
   the winner to the execution tree (a typed `session.rebound` disclosure covers
   those isolated candidates). A `planRunId` body field implements an approved
-  plan from an earlier turn)
+  plan from an earlier turn; a `specPath` body field Implements against a frozen
+  SpecPack — the agent runs against that contract instead of a bare prompt)
 - `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree
   diff to the project; in-place threads write the project directly and never
   need this)
@@ -360,6 +361,18 @@ artifact/delivery facade:
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.
+
+### Spec flow (interview → frozen SpecPack → Implement)
+
+The server owns the interactive spec interview; a surface is a thin driver.
+`POST /spec/questions` runs a read-only grounding `plan` over the prompt and
+returns the plan-derived clarifying questions (`planRunId`, `planDir`,
+`questions`). The surface collects answers, then `POST /spec/freeze` freezes a
+SpecPack and persists it, returning `specId`, `specDir`, `specPath` (the frozen
+SpecPack file), `specHash`, and `changes`. An Implement run is then a normal
+agent thread turn: `POST /threads/:id/turns` carrying that `specPath`, so the
+agent runs against the frozen SpecPack contract rather than a bare prompt. Spec
+is single-tier in v1 — one freeze, no spec-version ladder.
 
 ### Event streaming contract (snapshot-then-subscribe)
 
@@ -510,14 +523,34 @@ The macOS app is a native control surface over the control API:
   is `Ask`-only (project-aware intents are hidden until a project is picked, and
   Ask can run without one);
 - the composer's `ProjectChip` picks the working directory (MRU recents +
-  Browse…); the composer exposes intent (`ask`/`plan`/`audit`/`agent`, plus Race
-  as an agent strategy; `orchestrate` is CLI-only), the eligible pool, the sticky
-  primary harness, portfolio, model hint, budget, access profile, and
-  deterministic gates;
+  Browse…) and is the ONLY place project selection lives; the composer exposes
+  intent (`ask`/`plan`/`audit`/`agent`, plus Race as an agent strategy and
+  **Spec**; `orchestrate` is CLI-only), the eligible pool, the sticky primary
+  harness, a **per-turn model picker** for the primary harness (enumerated ids
+  when the harness can enumerate, else honest free-text; empty = harness/global
+  default), a per-turn budget cap, access profile, web policy, project-context
+  depth, isolated-workspace toggle, and agent repair strategies (until-clean /
+  max-attempts). Portfolio and deterministic gates are engine/Settings concerns,
+  not per-turn composer controls;
+- **Spec** is a macOS UI intent, not a wire run mode: it drives the server-owned
+  spec flow client-side (`POST /spec/questions` → answers → `POST /spec/freeze`)
+  and then sends a normal agent turn carrying the returned `specPath` to
+  Implement against the frozen SpecPack. The grounding plan honors the composer's
+  eligible pool, and the per-turn model/options the user set carry through to the
+  Implement turn. It maps to the engine's read-only `plan`/spec endpoints, not a
+  new `ModeKind`;
+- while a turn is running, the composer's **Send button swaps to Stop** (a
+  server-owned cancel of the running turn), since a new turn cannot start over a
+  live native session;
+- a terminal turn that FAILED with no answer/transcript renders an **inline
+  failure card** with the engine's honest failure reason, instead of reading as
+  idle next to a red status pill;
 - Settings is a real macOS `Settings` scene (`Cmd+,`) with grouped preferences;
 - Settings edits app preferences and engine defaults exposed by `/settings`,
-  including appearance/motion, Current Project, routing/model defaults, budget,
-  auth status, and secret refs;
+  including appearance/motion, routing/model defaults, budget, auth status, and
+  secret refs; per-harness defaults auto-save (no Save button). Settings does
+  NOT own project selection — there is no Current Project field; the working
+  directory is picked only in the chat composer's `ProjectChip`;
 - Budget and the Harness Doctor are Settings tabs (not a sidebar Operations
   section); the chat-first main window is the thread list + conversation, with run
   detail in the trailing inspector;

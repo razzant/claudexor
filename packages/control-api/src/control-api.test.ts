@@ -368,6 +368,43 @@ describe("DaemonControlApiServer", () => {
     }, undefined, services);
   });
 
+  it("threads: a turn forwards the per-turn model and a frozen specPath to the daemon enqueue", async () => {
+    // HTTP-boundary proof for the macOS per-turn model picker + spec Implement:
+    // the Swift client posts { model, specPath } on /threads/:id/turns and the
+    // thin gateway must accept (strict schema) AND forward them to enqueue — not
+    // silently drop them. (Kit tests cover Swift encoding; this locks the wire.)
+    const { daemon, record } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-modelspec-"));
+    const now = new Date().toISOString();
+    let enqueued: Record<string, unknown> | undefined;
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2, id: "th-11", created_at: now, updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" }, title: "model+spec", mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto", primary_harness: null, eligible_harnesses: [],
+      portfolio: "subscription-first", run_ids: [], head_run_id: null, state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) { enqueued = params as Record<string, unknown>; const job = await daemon.enqueue(params); const turnId = (params as { turnId?: string }).turnId; if (turnId) { const t = turns.find((x) => x["id"] === turnId); if (t) t["run_id"] = record.runId; } return job; },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt, opts) => { const turn = { id: `tn-${turns.length}`, thread_id: id, run_id: null, parent_run_id: opts.parentRunId ?? null, plan_run_id: opts.planRunId ?? null, kind: opts.kind ?? "followup", prompt, created_at: now }; turns.push(turn); return turn; },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      // A spec Implement turn: empty prompt is allowed because a frozen specPath
+      // supplies the intent (mirrors normalizeRunStart's prompt-or-specPath rule).
+      const r = await fetch(`${base}/threads/th-11/turns`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "", model: "gpt-5-codex", specPath: "/repo/.claudexor/specs/s1/spec.json" }),
+      });
+      expect(r.status).toBe(200);
+      expect(enqueued).toMatchObject({ model: "gpt-5-codex", specPath: "/repo/.claudexor/specs/s1/spec.json", threadId: "th-11" });
+    }, undefined, services);
+  });
+
   it("allows Ask without a project by normalizing it to user-level context-off storage", async () => {
     const { daemon } = fakeDaemon();
     let enqueued: unknown;
@@ -724,7 +761,8 @@ describe("DaemonControlApiServer", () => {
           body: JSON.stringify({ prompt: "Freeze this", scope: { kind: "project", root: "/tmp/project" }, plan: "accepted plan" }),
         });
         expect(validFreeze.status).toBe(200);
-        expect(await validFreeze.json()).toMatchObject({ specId: "spec-1" });
+        // specPath (the frozen SpecPack file an Implement run reads) must pass through.
+        expect(await validFreeze.json()).toMatchObject({ specId: "spec-1", specPath: "/tmp/spec-1/spec.json" });
 
         const badFreeze = await fetch(`${base}/spec/freeze`, {
           method: "POST",
@@ -742,7 +780,7 @@ describe("DaemonControlApiServer", () => {
         },
         specFreeze: async (input) => {
           seen.push(input);
-          return { specId: "spec-1", specDir: "/tmp/spec-1", specHash: "sha256:" + "a".repeat(64), changes: [] };
+          return { specId: "spec-1", specDir: "/tmp/spec-1", specPath: "/tmp/spec-1/spec.json", specHash: "sha256:" + "a".repeat(64), changes: [] };
         },
       },
     );

@@ -88,13 +88,18 @@ project, temporary workspaces, and harness native homes. The app must show which
 project a run will use. `Ask` may answer general questions without a project,
 using a non-sensitive synthetic cwd and storing artifacts in the user-level
 Claudexor store. Project-aware modes require an
-explicit Current Project and must not silently fall back to a process cwd.
+explicit project (chosen in the composer's ProjectChip) and must not silently
+fall back to a process cwd.
 
-Project runs execute in isolated envelopes under `.claudexor/workspaces/.../tree`.
-The harness cwd is the envelope worktree. Absolute host paths such as `/tmp/...`
-are not project diffs and do not prove project success. Project tmp requests
-default to project-local `tmp/...` or run artifacts unless the user explicitly
-selects a verified host-side-effect mode.
+Ordinary project runs (and Race candidates) execute in isolated envelopes under
+`.claudexor/workspaces/.../tree`, with the harness cwd at the envelope worktree.
+v0.10 chat thread WRITE turns instead run IN-PLACE in the thread's explicit
+execution tree — the live project for an `in_place` thread, or the thread's
+persistent worktree for an `isolated` thread — and the surface must disclose which
+applies. Either way, absolute host paths such as `/tmp/...` are not project diffs
+and do not prove project success. Project tmp requests default to project-local
+`tmp/...` or run artifacts unless the user explicitly selects a verified
+host-side-effect mode.
 
 ## 8. Spec-Driven Work Is First-Class
 
@@ -128,11 +133,12 @@ transitions are bugs.
 ## 10. Settings Are Preferences, Not Brochures
 
 macOS Settings owns app preferences and engine defaults exposed by the control
-API: current project, appearance, routing, primary harness, model hints, env
-inheritance, budget caps, auth status, and secret refs. The Settings scene also
-hosts live Budget and the Harness Doctor (tabs). Review verdicts and run
-diagnostics live ON the turn and in the run inspector — there is no separate
-Review Queue screen in the v0.10 chat-first cockpit.
+API: appearance, routing, primary harness, model hints, env inheritance, budget
+caps, auth status, and secret refs. The Settings scene also hosts live Budget and
+the Harness Doctor (tabs). Project selection is NOT a Settings preference — it
+lives only in the chat composer's ProjectChip (MRU recents + Browse…). Review
+verdicts and run diagnostics live ON the turn and in the run inspector — there is
+no separate Review Queue screen in the v0.10 chat-first cockpit.
 
 ## 11. Delivery Is Server-Owned
 

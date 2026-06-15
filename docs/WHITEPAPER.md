@@ -29,6 +29,17 @@ every write turn. Modes collapsed to five intents (`ask`, `plan`, `audit`, `agen
 `orchestrate`); engine strategies (race width, attempt caps, repair-to-clean,
 research swarm, create-from-scratch) are flags on a mode, never modes.
 
+Spec-driven work uses the same server-owned contract. The macOS app exposes a
+**Spec** intent that runs an app-driven SpecPack interview: a read-only grounding
+plan produces plan-grounded clarifying questions, the user answers them, and the
+server FREEZES a SpecPack (a content-hashed contract file). Implement is then an
+ordinary agent turn carrying that frozen spec, so the agent works against the
+contract, not a re-derived prompt. The app is a thin driver over the existing
+server-owned `/spec/questions` → `/spec/freeze` endpoints — it never composes the
+spec or its path itself — and Spec stays a UI intent that maps onto the engine's
+read-only plan/spec surface, not a new wire mode. Spec is single-tier in v1: one
+freeze, no spec-version ladder.
+
 Auth is subscription-first and honest: native codex/claude sessions are seeded
 into envelopes so a Max/Pro user with NO API key is fully routable; explicit
 `subscription`/`api_key` preferences fall back with a typed

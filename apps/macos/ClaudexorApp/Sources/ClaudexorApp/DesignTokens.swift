@@ -298,15 +298,24 @@ struct GlassBackground: View {
 /// to flip `isOpaque` and never reliably fired (the desktop stayed hidden), so this
 /// view is now PURE blur with no window side effects.
 private struct BehindWindowMaterial: NSViewRepresentable {
+    /// The window is fully clear (AppDelegate.makeWindowsTranslucent), so this frost
+    /// IS the visible backdrop. A slightly reduced alpha lets a bit more desktop show
+    /// through ("немного прозрачнее"); content cards carry their own frosted surfaces,
+    /// so text stays WCAG-legible in both themes. Conservative single step.
+    static let backdropAlpha: CGFloat = 0.88
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.blendingMode = .behindWindow
         v.material = .underWindowBackground
         v.state = .active
+        v.alphaValue = Self.backdropAlpha
         return v
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.alphaValue = Self.backdropAlpha
+    }
 }
 
 extension View {

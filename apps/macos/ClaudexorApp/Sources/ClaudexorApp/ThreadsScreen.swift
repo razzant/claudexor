@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ClaudexorKit
 
 /// Chat/session-first cockpit (v0.9 variant A): LEFT — threads + needs-me;
@@ -17,6 +18,24 @@ struct ThreadsScreen: View {
     @State private var webPolicy = "auto"
     @State private var untilClean = false
     @State private var maxAttempts = 3
+    /// Per-turn model override for the primary harness. Empty = harness default
+    /// (the global default stays in Settings → Harnesses). Not sticky across threads.
+    @State private var composerModel = ""
+    /// Enumerated models for the current primary harness (ADP4). nil until loaded;
+    /// an empty / non-enumerable response falls back to a free-text field.
+    @State private var primaryModels: HarnessModelsResponse?
+    /// True while a Stop request is in flight for the head run (server owns the cancel).
+    @State private var stopping = false
+    /// Width of the LEFT thread list, driven by an explicit drag handle (item 6).
+    /// HSplitView dragged from the "wrong side" (the right pane grew when you dragged
+    /// the divider) — an explicit width + Divider makes the drag track the cursor:
+    /// drag right widens the list, left narrows it, clamped to [minThreadW, maxThreadW].
+    @State private var threadListWidth: CGFloat = 280
+    /// Width captured at the start of a divider drag; nil when not dragging. The drag
+    /// translation is added to THIS (not the live width) so the divider can't run away.
+    @State private var dragStartWidth: CGFloat?
+    private let minThreadW: CGFloat = 240
+    private let maxThreadW: CGFloat = 360
 
     /// The harness families offered as a per-thread pool / primary (raw + fake are
     /// never user-routable in chat — they stay CLI-only, mirroring Settings).
@@ -62,15 +81,46 @@ struct ThreadsScreen: View {
     }
 
     var body: some View {
-        HSplitView {
+        // Explicit width + drag handle instead of HSplitView (item 6): HSplitView
+        // resized from the "wrong side" — the divider didn't track the cursor. Here
+        // the left list owns its width and the handle adds the drag translation, so
+        // dragging RIGHT widens the list and LEFT narrows it (clamped to bounds).
+        HStack(spacing: 0) {
             threadList
-                .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+                .frame(width: threadListWidth, alignment: .leading)
+                .frame(maxHeight: .infinity)
+            sectionDivider
             conversation
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { await model.refreshThreads() }
         .navigationTitle(navTitle)
         .navigationSubtitle(navSubtitle)
+    }
+
+    /// A draggable divider between the thread list and the conversation. The drag's
+    /// horizontal translation is ADDED to the list width (drag right ⇒ wider list),
+    /// clamped to [minThreadW, maxThreadW]. A wide invisible hit area + resize cursor
+    /// make it grabbable; the visible hairline is a standard Divider.
+    private var sectionDivider: some View {
+        Divider()
+            .padding(.horizontal, 3)              // widen the grab target around the hairline
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .onChanged { value in
+                        // Add the cursor-delta to the width AT DRAG START (captured
+                        // once), not the live width — otherwise the cumulative
+                        // translation would compound each frame and run away.
+                        let base = dragStartWidth ?? threadListWidth
+                        if dragStartWidth == nil { dragStartWidth = base }
+                        threadListWidth = min(maxThreadW, max(minThreadW, base + value.translation.width))
+                    }
+                    .onEnded { _ in dragStartWidth = nil }
+            )
     }
 
     // MARK: Threads pane
@@ -166,6 +216,11 @@ struct ThreadsScreen: View {
                     .padding(.vertical, Theme.Spacing.xs)
             }
 
+            // SPEC-FLOW: the interview / frozen-spec card sits just above the
+            // composer (same placement as the pending-interaction answer surface),
+            // so the parked-on-user question is always visible.
+            specFlowSection
+
             // Isolated threads accumulate in a worktree; deliver the diff to the
             // project on demand. In-place threads write the live tree directly and
             // never need this bar.
@@ -174,6 +229,67 @@ struct ThreadsScreen: View {
             }
 
             composer
+        }
+    }
+
+    /// The SPEC-FLOW card(s) for the current thread: the question interview while
+    /// asking, a working spinner while freezing, and a "Spec frozen" card with an
+    /// Implement button once frozen. Driven entirely off `model.specFlow`.
+    @ViewBuilder private var specFlowSection: some View {
+        // `specFlow` is non-nil only for the selected thread, so `tid` is the OWNING
+        // thread — captured here and passed into the cards so their actions bind to
+        // it (not to whatever is selected when the async submit/implement resolves).
+        if let tid = model.selectedThreadId, let flow = model.specFlow {
+        switch flow {
+        case .askingQuestions(_, let questions, let planDir, let planRunId, let answers, let error):
+            // Seed the card from `answers` so an unresolved-clarifications 400
+            // re-opens with the user's prior picks intact (they fix only the missing
+            // fields, never re-answer everything). `id:` keys the @State to the
+            // current answer set so a re-derived card re-seeds instead of reusing
+            // stale @State from the previous render.
+            SpecQuestionCard(threadId: tid, questions: questions, planDir: planDir, planRunId: planRunId,
+                             initialAnswers: answers, errorMessage: error)
+                .id(SpecQuestionCard.seedIdentity(answers))
+                .padding(.horizontal, Theme.Spacing.lg)
+                .padding(.bottom, Theme.Spacing.sm)
+        case .grounding:
+            // Pre-questions: the grounding plan is reading the repo to derive the
+            // interview. Nothing is frozen yet — don't claim it is.
+            HStack(spacing: Theme.Spacing.sm) {
+                ProgressView().controlSize(.small)
+                Text("Running the grounding plan…")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .help("Reading the project to prepare the spec interview — this can take a few minutes.")
+                Spacer()
+            }
+            .padding(.horizontal, Theme.Spacing.lg)
+            .padding(.vertical, Theme.Spacing.sm)
+        case .freezing:
+            HStack(spacing: Theme.Spacing.sm) {
+                ProgressView().controlSize(.small)
+                Text("Freezing the spec…")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .help("Assembling and freezing the SpecPack from your answers — this can take a few minutes.")
+                Spacer()
+            }
+            .padding(.horizontal, Theme.Spacing.lg)
+            .padding(.vertical, Theme.Spacing.sm)
+        case .frozen(let specId, let specPath, let specHash, let changes):
+            SpecFrozenCard(threadId: tid, specId: specId, specPath: specPath, specHash: specHash, changes: changes)
+                .padding(.horizontal, Theme.Spacing.lg)
+                .padding(.bottom, Theme.Spacing.sm)
+        case .error(let message):
+            HStack(spacing: Theme.Spacing.sm) {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Dismiss") { model.cancelSpec(threadId: tid) }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+            .padding(.horizontal, Theme.Spacing.lg)
+            .padding(.vertical, Theme.Spacing.sm)
+        }
         }
     }
 
@@ -220,16 +336,27 @@ struct ThreadsScreen: View {
                         PrimaryHarnessChip(current: primaryFamily, pool: poolFamilies) { picked in
                             Task { await model.setPrimaryHarness(picked?.rawValue) }
                         }
-                        Button {
-                            showOptions.toggle()
-                        } label: {
-                            Image(systemName: "slider.horizontal.3")
-                        }
-                        .buttonStyle(.glass)
-                        .help("More options: harness pool, budget, access, web, repair strategies")
-                        // Native dismissible popover (В5) — no inline glass-on-glass panel.
-                        .popover(isPresented: $showOptions, arrowEdge: .bottom) { composerOptions }
                     }
+                    // The "⋯" options button is ALWAYS available — a no-project Ask is
+                    // still entitled to a per-turn model / web / budget. `composerOptions`
+                    // itself hides the project-only controls (Context, Workspace, repair).
+                    Button {
+                        showOptions.toggle()
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            // Subtle active tint only while the panel is open, so the
+                            // options control reads as a PEER of the other composer-row
+                            // controls — not the one prominent filled button (В: it
+                            // looked like the only clickable thing). No glass fill.
+                            .foregroundStyle(showOptions ? Theme.accent : .secondary)
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .padding(.vertical, Theme.Controls.chipVPadding)
+                            .background(showOptions ? Theme.accent.opacity(0.14) : .clear, in: Capsule())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("More options: harness pool, model, budget, access, web, repair strategies")
+                    // Native dismissible popover (В5) — no inline glass-on-glass panel.
+                    .popover(isPresented: $showOptions, arrowEdge: .bottom) { composerOptions }
                     Spacer(minLength: Theme.Spacing.sm)
                     composerHint
                 }
@@ -237,27 +364,57 @@ struct ThreadsScreen: View {
                 .onChange(of: model.selectedThreadId) {
                     if !threadHasProject { composerMode = .ask }
                     // Per-turn knobs are not sticky — don't carry one thread's budget
-                    // cap / access / web / repair flags into the next thread.
+                    // cap / access / web / repair flags / model into the next thread.
                     capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
                     untilClean = false; maxAttempts = 3; showOptions = false
+                    composerModel = ""
                 }
                 // The no-project gate also fires when the project changes under a draft
                 // (clearing it from Settings, etc.) — fall back to read-only Ask.
                 .onChange(of: threadHasProject) { _, has in
                     if !has { composerMode = .ask; showOptions = false }
                 }
+                // A per-turn model is harness-specific: when the primary harness
+                // changes, a model chosen for the OLD harness would route-fail on the
+                // new one. Clear the selection AND the cached enumeration so the picker
+                // can't briefly show the stale list or send a stale id.
+                .onChange(of: primaryFamily) { _, _ in
+                    composerModel = ""
+                    primaryModels = nil
+                }
 
                 HStack(alignment: .center, spacing: Theme.Spacing.sm) {
                     GlassField(text: $composerText,
                                placeholder: "Message…  (⌘↩ to send · the first message starts a thread)",
                                onSubmit: send)
-                    Button("Send", action: send)
-                        .buttonStyle(AccentButtonStyle())
-                        .keyboardShortcut(.return, modifiers: .command)
-                        // Blocked on empty text OR an invalid budget cap — never send a
-                        // turn whose typed cap was silently dropped (typed-money contract).
-                        .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || capUsdInvalid)
-                        .help(capUsdInvalid ? "Fix the budget cap in ⋯ options to send" : "Send (⌘↩)")
+                    // While the head turn is still running, a new turn can't start over a
+                    // live one (the native session is busy) — swap Send→Stop so the only
+                    // action is to cancel the active run, not queue a doomed second turn.
+                    if model.selectedThreadStarting {
+                        // 202-QUEUED bind window: busy, but no runId yet => no cancel
+                        // target. Show a disabled "Starting…" so a second turn can't be
+                        // sent over the not-yet-started first; it flips to Stop once the
+                        // runId binds.
+                        Button("Starting…", action: {})
+                            .buttonStyle(AccentButtonStyle())
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(true)
+                            .help("The turn is starting — Stop becomes available once it binds")
+                    } else if model.selectedThreadBusy {
+                        Button(stopping ? "Stopping…" : "Stop", action: stop)
+                            .buttonStyle(AccentButtonStyle())
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(stopping)
+                            .help("Cancel the running turn (server-owned)")
+                    } else {
+                        Button("Send", action: send)
+                            .buttonStyle(AccentButtonStyle())
+                            .keyboardShortcut(.return, modifiers: .command)
+                            // Blocked on empty text OR an invalid budget cap — never send a
+                            // turn whose typed cap was silently dropped (typed-money contract).
+                            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || capUsdInvalid)
+                            .help(capUsdInvalid ? "Fix the budget cap in ⋯ options to send" : "Send (⌘↩)")
+                    }
                 }
             }
             .padding(Theme.Spacing.md)
@@ -313,6 +470,7 @@ struct ThreadsScreen: View {
                     }
                 }
             }
+            OptionRow(label: "Model") { modelControl }
             OptionRow(label: "Budget") {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text("$").foregroundStyle(.secondary)
@@ -334,8 +492,12 @@ struct ThreadsScreen: View {
                 }
                 .labelsHidden()
                 .fixedSize()
-                .disabled(composerMode.isReadOnly)
-                .help(composerMode.isReadOnly ? "Read-only intents never write" : "How much this turn may touch")
+                // Spec is a read-only GROUNDING intent but collects options for its
+                // eventual WRITE (Implement) turn — so access stays settable for it.
+                .disabled(composerMode.isReadOnly && composerMode != .spec)
+                .help(composerMode.isReadOnly && composerMode != .spec
+                      ? "Read-only intents never write"
+                      : "How much this turn may touch (Spec: applies to the Implement turn)")
             }
             OptionRow(label: "Web") {
                 Picker("", selection: $webPolicy) {
@@ -345,6 +507,23 @@ struct ThreadsScreen: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("External-context policy for this turn")
+            }
+            // Context depth for PROJECT-SCOPED turns (RunScope.project picks deep|auto
+            // off `projectContextMode`). The owner removed project SELECTION from
+            // Settings but kept this preference — give it a reachable in-chat control.
+            // Hidden when the turn has no project (then the scope is `.none`, no depth).
+            if threadHasProject {
+                OptionRow(label: "Context") {
+                    Picker("", selection: Binding(
+                        get: { model.projectContextMode },
+                        set: { model.projectContextMode = $0 }
+                    )) {
+                        Text("Auto").tag("auto"); Text("Deep").tag("deep")
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Auto = grounded as needed · Deep = always read the repo deeply (slower, more thorough)")
+                }
             }
             // Workspace mode is FIXED at thread creation, so it's only editable while
             // drafting the first turn (no thread selected yet). Isolated keeps a thread
@@ -360,8 +539,9 @@ struct ThreadsScreen: View {
                 }
             }
             // Repair strategies are single-candidate (the engine routes them to
-            // convergence, NOT a race) — offer them for a plain Agent turn only.
-            if composerMode == .agent {
+            // convergence, NOT a race) — offer them for a plain Agent turn, and for
+            // Spec (they carry through to its Implement agent turn).
+            if composerMode == .agent || composerMode == .spec {
                 OptionSection(title: "Repair strategies") {
                     HStack(spacing: Theme.Spacing.xl) {
                         Toggle("Until clean", isOn: $untilClean).toggleStyle(.switch).tint(Theme.accent)
@@ -378,6 +558,64 @@ struct ThreadsScreen: View {
         }
         .padding(Theme.Spacing.lg)
         .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
+        // Enumerate the chosen primary harness's models when the panel opens (and
+        // re-enumerate when the primary changes). nil-keyed when Auto: a "free text"
+        // fallback covers the no-known-primary case so the field always works.
+        .task(id: primaryFamily) { await loadPrimaryModels() }
+    }
+
+    /// Per-turn model override for the primary harness. A Picker over enumerated
+    /// model ids when the harness can honestly enumerate (mirrors HarnessDefaultsRow),
+    /// else an HONEST free-text field. Empty = harness default (the key is dropped).
+    /// The GLOBAL default still lives in Settings → Harnesses (this is per-turn only).
+    ///
+    /// In practice the chat-routable harnesses (codex/claude/cursor/opencode) report
+    /// no enumerable models today, so this resolves to free text; the only adapter
+    /// with a `models()` producer is raw-api, which is CLI-routable (not in the chat
+    /// pool). The Picker path stays so any chat harness that gains enumeration lights
+    /// it up automatically — the control is honest either way, never a false dropdown.
+    @ViewBuilder private var modelControl: some View {
+        if let models = primaryModels, models.canEnumerate {
+            Picker("", selection: $composerModel) {
+                Text("Harness default").tag("")
+                // Preserve a typed/legacy id the enumeration doesn't list instead of
+                // silently dropping it (same guard as the Settings model picker).
+                if !composerModel.isEmpty, !models.models.contains(where: { $0.id == composerModel }) {
+                    Text("\(composerModel) (custom)").tag(composerModel)
+                }
+                ForEach(models.models) { m in
+                    Text(modelMenuLabel(m)).tag(m.id)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .help("Model for THIS turn's primary harness (source: \(models.source)). Default keeps the harness/global choice.")
+        } else {
+            TextField("harness default", text: $composerModel)
+                .frame(maxWidth: 160)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .help(primaryFamily == nil
+                      ? "Pick a primary harness to choose its model, or type a model id for this turn. Empty = harness default."
+                      : "Optional model for this turn. Empty = harness default.")
+        }
+    }
+
+    private func modelMenuLabel(_ m: HarnessModel) -> String {
+        let name = m.label.map { $0.isEmpty ? m.id : $0 } ?? m.id
+        return name == m.id ? name : "\(name) (\(m.id))"
+    }
+
+    /// One-shot enumeration of the chosen primary harness's models (thin consumer of
+    /// the control-api DTO). Auto/no-primary leaves it nil so the free-text field shows.
+    private func loadPrimaryModels() async {
+        guard let family = primaryFamily else { primaryModels = nil; return }
+        let fetched = await model.harnessModels(for: family)
+        // The primary harness may have changed during the await (the chip switched
+        // or a thread switch re-resolved it). Don't assign models fetched for a now-
+        // stale family — that would offer the wrong harness's models for this turn.
+        guard primaryFamily == family else { return }
+        primaryModels = fetched
     }
 
     private func togglePool(_ family: HarnessFamily) {
@@ -390,6 +628,10 @@ struct ThreadsScreen: View {
     /// materializes one (on the Current Project). No silent no-op (the v0.9 bug).
     /// The text is cleared only after a successful send, restored on failure.
     private func send() {
+        // While the head turn is still running, ⌘↩ / Return submits through
+        // GlassField.onSubmit must not queue a second turn over a live one — route
+        // the keystroke to Stop instead (mirrors the swapped button).
+        if model.selectedThreadBusy { stop(); return }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         // Guard the cap HERE too, not only on the Send button: ⌘↩ / Return submit
@@ -398,12 +640,46 @@ struct ThreadsScreen: View {
         guard !capUsdInvalid else { return }
         let mode = composerMode
         let options = currentOptions
+        let chosenModel = composerModel
         composerText = ""
+        // Spec is NOT a normal turn: it drives the server-owned interview
+        // (/spec/questions → answers → /spec/freeze) client-side. The flow renders
+        // its own cards above the composer once accepted. But startSpec can fail HARD
+        // before any durable card exists (engine offline / no project / transport
+        // error) — restore the prompt in that case, mirroring composerSend below
+        // (and only when the user hasn't typed a replacement in the meantime).
+        if mode == .spec {
+            Task {
+                // Carry the per-turn model + options so the eventual Implement turn
+                // honors the visible composer controls (not silently dropped).
+                let accepted = await model.startSpec(prompt: text, model: chosenModel, options: options)
+                if !accepted && composerText.isEmpty { composerText = text }
+            }
+            return
+        }
         Task {
-            let sent = await model.composerSend(prompt: text, mode: mode, options: options)
+            let sent = await model.composerSend(prompt: text, mode: mode, model: chosenModel, options: options)
             // Restore ONLY if the engine rejected it AND the user hasn't started
             // typing the next message in the meantime — never clobber in-flight text.
             if !sent && composerText.isEmpty { composerText = text }
+        }
+    }
+
+    /// Cancel the selected thread's active head run (server-owned cancel via
+    /// /runs/:id/control). Fires whenever the composer is in the cancellable
+    /// `.busy` state — including the bound-but-not-yet-hydrated window, where the
+    /// runId (`selectedHeadRunId`) is a valid cancel target even before the live
+    /// `TaskRun` row merges. No-op while `.starting` (no runId) or `.idle`.
+    private func stop() {
+        // Fire whenever the composer is SHOWING Stop (busy and not the no-target
+        // "Starting…" state) and a cancel target exists — including the detail-load
+        // window, where busy/headRunId come from the thread-summary head run.
+        guard !stopping, model.selectedThreadBusy, !model.selectedThreadStarting,
+              let runId = model.selectedHeadRunId else { return }
+        stopping = true
+        Task {
+            await model.cancel(runId)
+            stopping = false
         }
     }
 }
@@ -432,6 +708,9 @@ private struct TurnCard: View {
     /// nil => follow the run state (expanded while running, collapsed when done);
     /// a user toggle pins it.
     @State private var transcriptExpanded: Bool?
+    /// True while an "Implement plan" turn is being sent, so the button shows a
+    /// working state and can't be double-clicked (mirrors ApplyThreadBar.applying).
+    @State private var implementingPlan = false
 
     private var run: TaskRun? { turn.runId.flatMap { model.task($0) } }
 
@@ -511,6 +790,11 @@ private struct TurnCard: View {
                         .lineLimit(8)
                         .textSelection(.enabled)
                 }
+                // Inline failure card: a terminal-FAILED turn with nothing to show
+                // (no answer, no transcript, no diff — e.g. an unauthed harness wrote
+                // only failure.yaml) otherwise reads as idle next to a red status pill.
+                // Make it honest in the chat: surface the reason + an Open-run link.
+                if isSilentFailure(run) { failureCard(run) }
             } else if let state = turn.run?.state {
                 Text(state).font(.caption).foregroundStyle(.secondary)
             }
@@ -527,6 +811,53 @@ private struct TurnCard: View {
         .onTapGesture { if let run { model.route = .task(run.id) } }
     }
 
+    /// A turn that finished in a genuinely FAILURE-shaped terminal state but
+    /// produced no visible content (no answer, no transcript, no diff). Without
+    /// this the card shows only a status pill — silently idle-looking.
+    ///
+    /// ALLOW-LIST (not an exclude-list): only real failures get the red card.
+    /// Benign/neutral terminals are NOT failures and must keep their own status —
+    /// `noOp` (legitimately nothing to do), `ungated`/`reviewNotRun` (delivery/
+    /// review policy states), `cancelled` (user-stopped), `needsReview`/`blocked`
+    /// (carry their own decision/apply affordances). Rendering any of those as a
+    /// red "failed" card would be dishonest.
+    private func isSilentFailure(_ run: TaskRun) -> Bool {
+        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .exhausted, .notConverged]
+        guard failureShaped.contains(run.status) else { return false }
+        let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasTranscript = !(turn.runId.flatMap { model.transcripts[$0]?.blocks } ?? []).isEmpty
+        return !hasAnswer && !hasTranscript && run.diff.isEmpty
+    }
+
+    /// Inline error card for a silent terminal failure (item 5): the engine's honest
+    /// reason (engineError ← RunFailure.safeMessage) + an Open-run link. Never silent.
+    private func failureCard(_ run: TaskRun) -> some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.status(.failed))
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                Text(run.status.label).font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                Text(failureReason(run))
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Spacer()
+            Button("Open run") { model.route = .task(run.id) }
+                .buttonStyle(.link)
+                .help("Open this run in the inspector — failure detail, timeline, logs")
+        }
+        .padding(Theme.Spacing.sm)
+        .background(Theme.status(.failed).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+    }
+
+    /// The engine's honest reason for a silent failure, or a neutral fallback when
+    /// the failure record carried no message (still better than a bare status pill).
+    private func failureReason(_ run: TaskRun) -> String {
+        let reason = (run.engineError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty
+            ? "This turn ended without producing an answer, diff, or transcript."
+            : reason
+    }
+
     /// The honest terminal outcome of this turn (what it actually did).
     @ViewBuilder
     private func outcomeRow(_ result: RunResult) -> some View {
@@ -540,11 +871,20 @@ private struct TurnCard: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                Button("Implement plan") {
+                Button(implementingPlan ? "Implementing…" : "Implement plan") {
                     guard let runId = turn.runId else { return }
-                    Task { await model.composerSend(prompt: "Implement this plan.", mode: .agent, planRunId: runId) }
+                    implementingPlan = true
+                    Task {
+                        // Bind to the plan turn's OWNING thread, not live selection.
+                        await model.composerSend(prompt: "Implement this plan.", mode: .agent,
+                                                 planRunId: runId, onThread: turn.threadId)
+                        implementingPlan = false
+                    }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
+                // Can't start an Implement turn over a live head run (the composer's
+                // busy gate also rejects it, but the button must reflect the invariant).
+                .disabled(implementingPlan || model.selectedThreadBusy)
                 .help("Run an agent turn that implements this plan")
             }
         case "patch":
@@ -852,7 +1192,7 @@ struct IntentMenu: View {
     let projectScoped: Bool
 
     private var options: [RunMode] {
-        projectScoped ? [.ask, .agent, .plan, .readOnlyAudit, .bestOfN] : [.ask]
+        projectScoped ? [.ask, .agent, .plan, .spec, .readOnlyAudit, .bestOfN] : [.ask]
     }
     private func label(_ m: RunMode) -> String { m == .bestOfN ? "Race" : m.label }
 
@@ -883,5 +1223,58 @@ struct IntentMenu: View {
         .help(projectScoped
               ? "Intent for the next turn — Race runs the eligible pool; until-clean / attempts are in ⋯"
               : "No Current Project — only Ask (read-only) is available.")
+    }
+}
+
+/// The frozen-spec card: the SpecPack is sealed (id + hash + change count) and an
+/// Implement button (styled like "Implement plan") sends an agent turn that reads
+/// the spec FILE. The path is server-returned (never composed in Swift).
+private struct SpecFrozenCard: View {
+    @Environment(AppModel.self) private var model
+    /// The OWNING thread (captured at render) so Implement targets it, not selection.
+    let threadId: String
+    let specId: String
+    let specPath: String
+    let specHash: String
+    let changes: Int
+    @State private var implementing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Image(systemName: "snowflake").foregroundStyle(Theme.accent)
+                Text("Spec frozen").font(.subheadline.weight(.semibold))
+                Spacer()
+                // Dismiss the frozen card without implementing (otherwise the card is
+                // a dead-end — the user froze a spec but chose not to run it).
+                Button("Dismiss") { model.cancelSpec(threadId: threadId) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(implementing)
+                    .help("Clear this frozen spec without implementing it")
+                Button(implementing ? "Implementing…" : "Implement") {
+                    implementing = true
+                    Task {
+                        await model.implementSpec(threadId: threadId, specPath: specPath)
+                        implementing = false
+                    }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                // Can't start an Implement turn over a live head run (composerSend
+                // also rejects it; the button reflects the invariant).
+                .disabled(implementing || model.selectedThreadBusy)
+                .help("Run an agent turn that implements this frozen spec")
+            }
+            HStack(spacing: Theme.Spacing.md) {
+                Label(specId, systemImage: "doc.badge.gearshape")
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                Label(String(specHash.prefix(12)), systemImage: "number")
+                    .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    .help("Spec hash \(specHash)")
+                Label("\(changes) change\(changes == 1 ? "" : "s")", systemImage: "plusminus")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(Theme.Spacing.lg)
+        .cardSurface(stroke: true, strokeColor: Theme.accent.opacity(0.5))
     }
 }

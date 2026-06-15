@@ -32,7 +32,13 @@ PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
 APP="$DIST/Claudexor.app"
 
-VERSION="${CLAUDEXOR_VERSION:-0.10.0}"
+# Version SSOT is the generated CLAUDEXOR_VERSION constant (scripts/gen-version.mjs
+# from the root package.json). Read it so the bundle / DMG version can't silently
+# drift from the release (the old hardcoded "0.10.0" default mis-named a 0.10.1
+# build). The CLAUDEXOR_VERSION env still overrides for ad-hoc builds.
+REPO_ROOT="$(cd "$MACOS_DIR/../.." && pwd)"
+DERIVED_VERSION="$(sed -nE 's/.*CLAUDEXOR_VERSION = "([^"]+)".*/\1/p' "$REPO_ROOT/packages/util/src/version.ts" 2>/dev/null | head -1)"
+VERSION="${CLAUDEXOR_VERSION:-${DERIVED_VERSION:-0.10.0}}"
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 
 # On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be

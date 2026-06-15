@@ -30,6 +30,35 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - SPEC-FLOW state
+
+/// The client-side state of the SPEC-FLOW for the CURRENT thread (questions →
+/// answers → freeze → implement). v1 is single-tier: the server runs the
+/// grounding plan, returns one interview, and freezes on the answers. The flow
+/// is keyed to a thread id so switching threads never shows a stale spec card.
+enum SpecFlowState: Equatable {
+    /// The grounding plan is running (pre-questions): /spec/questions is in flight,
+    /// reading the repo to derive the interview. NOTHING is frozen yet — this is a
+    /// distinct phase from `.freezing` so the spinner doesn't claim "freezing the
+    /// SpecPack" while only the grounding plan runs (it can take minutes).
+    case grounding
+    /// The grounding plan ran; these questions await the user. `prompt` is the
+    /// user's ORIGINAL spec intent — carried so the freeze call posts the exact same
+    /// prompt the grounding plan ran on (not a stale head-turn prompt). `planDir`/
+    /// `planRunId` thread back into the freeze call; `answers` are accumulated
+    /// client-side. `error` is non-nil after an unresolved-clarifications 400 re-opens
+    /// this card.
+    case askingQuestions(prompt: String, questions: [SpecQuestion], planDir: String, planRunId: String, answers: [SpecAnswer], error: String?)
+    /// The freeze call is in flight (assembling + persisting the SpecPack).
+    case freezing
+    /// The SpecPack is frozen and ready to implement (carries the file path an
+    /// Implement turn reads).
+    case frozen(specId: String, specPath: String, specHash: String, changes: Int)
+    /// An honest, surfaced failure (e.g. unresolved-clarifications 400) — the
+    /// question card stays open and shows this message.
+    case error(String)
+}
+
 // MARK: - App model
 
 /// Single source of UI state. Prefers the live engine-service (loopback control-api):
@@ -66,11 +95,49 @@ final class AppModel {
     }
 
     var liveTasks: [TaskRun] = []
+    /// Run ids the user has successfully cancelled. Lets `composerTurnState` treat a
+    /// cancelled run as inactive IMMEDIATELY — even in the bound-but-not-yet-hydrated
+    /// window where no live row exists to flip and the embedded card still says
+    /// "running" (otherwise Stop would appear to do nothing until hydration).
+    private var cancelledRunIds: Set<String> = []
+    /// A turn POST is in flight (composerSend: from the click until the thread detail
+    /// reflects the accepted turn). The head-turn busy-gate is detail-derived and
+    /// can't see this window, so without it the composer would still show Send and a
+    /// user could DOUBLE-SUBMIT (or, on a draft, create two threads). Folded into
+    /// `selectedThreadBusy`/`selectedThreadStarting` and re-entry-guarded in
+    /// composerSend so no turn-start path can bypass it.
+    private(set) var turnSubmitting = false
     // Threads (chat/session-first): the conversation list + selected detail.
     var threads: [ThreadSummary] = []
     var selectedThreadId: String?
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
+    /// SPEC-FLOW state (questions → freeze → implement) keyed PER THREAD. Keyed —
+    /// not a single slot — so a long `/spec/questions` or `/spec/freeze` await that
+    /// returns AFTER the user switched threads still records its result on the
+    /// OWNING thread (never stranding that thread's card at `.grounding`/`.freezing`),
+    /// and a concurrent spec on another thread is never clobbered. `specFlow` reads
+    /// only the selected thread's entry, so a switch hides a non-current card.
+    private var specFlowByThread: [String: SpecFlowState] = [:]
+    /// Per-thread SPEC-FLOW generation. Spec grounding/freeze are NOT thread turns,
+    /// so `selectedThreadBusy` can't block a second Spec on the same thread — two
+    /// in-flight `/spec/questions` (or a cancel mid-grounding) would otherwise race
+    /// and the LAST response would clobber the newest interview. Each start / submit
+    /// / cancel bumps the generation; an await that returns stale (its gen is no
+    /// longer current) drops its write instead of overwriting fresher state.
+    private var specFlowGen: [String: Int] = [:]
+    /// Per-turn model + options the user set in the composer when they STARTED a
+    /// spec, kept per thread so the eventual Implement turn honors them (the visible
+    /// composer controls would otherwise be silently ignored by the spec flow). The
+    /// grounding plan / freeze run read-only on harness defaults; these apply to the
+    /// write turn that implements the frozen spec.
+    private var specPendingModel: [String: String] = [:]
+    private var specPendingOptions: [String: TurnOptions] = [:]
+    /// The active SPEC-FLOW state — scoped to the selected thread (nil otherwise).
+    var specFlow: SpecFlowState? {
+        guard let tid = selectedThreadId else { return nil }
+        return specFlowByThread[tid]
+    }
     /// DRAFT-thread routing (before the first message materializes a thread): the
     /// composer edits these; once a thread exists, primary/pool are sticky on the
     /// thread (PATCHed via setPrimaryHarness/setEligiblePool). nil/[] => inherit
@@ -418,13 +485,14 @@ final class AppModel {
         return URL(fileURLWithPath: normalizedProjectRoot).lastPathComponent
     }
 
-    /// Settings' "Current Project" picker — set the project (+ record MRU) without
-    /// touching thread selection.
+    /// The composer ProjectChip's "Browse…" — open the panel and set the project
+    /// (+ record MRU) without touching thread selection. (Project selection lives
+    /// only in the chat ProjectChip; Settings no longer owns a project picker.)
     func chooseProject() {
         if let path = runProjectPanel() { selectProject(path) }
     }
 
-    /// Set the Current Project and push it to the MRU (used everywhere a project is chosen).
+    /// Set the working project and push it to the MRU (used everywhere a project is chosen).
     func selectProject(_ path: String) {
         let p = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !p.isEmpty else { return }
@@ -697,6 +765,14 @@ final class AppModel {
         guard let client else { return }
         do {
             try await client.cancel(runId: id)
+            // Record the cancel authoritatively. When the live row already exists we
+            // flip it; but in the bound-but-NOT-yet-hydrated window there is no row to
+            // flip, and the head turn's EMBEDDED card still reads "running" — so the
+            // composer would stay stuck on Stop after a successful cancel. Remember the
+            // cancelled id so `composerTurnState` reports it inactive immediately,
+            // until the real (cancelled) row hydrates. runIds are unique, so this is
+            // always-correct for that id and never needs pruning for correctness.
+            cancelledRunIds.insert(id)
             if let idx = liveTasks.firstIndex(where: { $0.id == id }) {
                 liveTasks[idx].status = .cancelled
                 liveTasks[idx].updatedAt = .now
@@ -763,6 +839,107 @@ final class AppModel {
         if let d = selectedThreadDetail { return d.thread }
         if let id = selectedThreadId { return threads.first { $0.id == id } }
         return nil
+    }
+
+    /// The repo bound to a SPECIFIC thread (the freshest copy for the selected one,
+    /// else the list summary). Used by thread-scoped spec actions so they resolve
+    /// the owning thread's repo, not whatever is selected when the await resolves.
+    func threadRepoRoot(_ tid: String) -> String? {
+        if tid == selectedThreadId, let d = selectedThreadDetail { return d.thread.repoRoot }
+        return threads.first { $0.id == tid }?.repoRoot
+    }
+
+    /// The selected thread's HEAD turn runId — the CANCEL target. Present as soon
+    /// as the head turn binds a runId, EVEN BEFORE its live `TaskRun` row hydrates
+    /// (so Stop is actionable in that window). nil only during the 202 pre-bind
+    /// window, where there is nothing to cancel yet.
+    var selectedHeadRunId: String? {
+        // Prefer the loaded detail's head turn runId; during the detail-load window
+        // (detail not yet this thread) fall back to the thread summary's headRunId so
+        // Stop stays actionable for a thread you just selected while it's still live.
+        if selectedThreadDetail?.thread.id == selectedThreadId,
+           let runId = selectedThreadDetail?.turns.last?.runId {
+            return runId
+        }
+        return threads.first { $0.id == selectedThreadId }?.headRunId
+    }
+
+    /// The composer Send/Stop affordance for the head turn, resolved by the pure
+    /// Kit core (`resolveComposerTurnState`) so every window is unit-tested. See
+    /// `ComposerTurnState` for the precedence; the inputs are:
+    ///  - headRunId: the cancel target (nil = 202 pre-bind window).
+    ///  - hydratedRowActive: the live row's `isActive` once it has merged into
+    ///    `liveTasks` (authoritative — reflects cancel/completion); nil otherwise.
+    ///  - embeddedStateActive: the embedded run-card state (fallback while no live
+    ///    row has hydrated — covers the 202 and bound-but-not-hydrated windows).
+    var composerTurnState: ComposerTurnState {
+        // Trust the loaded detail ONLY when it actually belongs to the selected
+        // thread. openThread sets selectedThreadId BEFORE the detail arrives, so
+        // during that load window selectedThreadDetail is still the PREVIOUS thread's
+        // (or nil) — using it would judge the wrong thread. `.idle` here makes the
+        // composer's busy-gate fall back to the thread-summary head run (isThreadBusy).
+        guard selectedThreadDetail?.thread.id == selectedThreadId,
+              let last = selectedThreadDetail?.turns.last else { return .idle }
+        let headRunId = last.runId
+        // hydratedRowActive is authoritative when known: a run WE cancelled is
+        // inactive even before its (cancelled) live row hydrates — otherwise the
+        // composer would stay on Stop after a successful cancel in the not-yet-
+        // hydrated window (the embedded card still says "running").
+        let hydratedRowActive: Bool? = headRunId.flatMap { id in
+            cancelledRunIds.contains(id) ? false : task(id)?.status.isActive
+        }
+        let embeddedStateActive = last.run.map { RunStatus(api: $0.state).isActive } ?? false
+        return resolveComposerTurnState(headRunId: headRunId,
+                                        hydratedRowActive: hydratedRowActive,
+                                        embeddedStateActive: embeddedStateActive)
+    }
+
+    /// Is a specific thread too busy to accept a new turn? A submit in flight blocks
+    /// ALL threads (the engine processes one turn-start at a time). The SELECTED
+    /// thread is judged by its rich `composerTurnState` (embedded + hydrated). A
+    /// NON-selected target (Implement plan/spec on a card whose owning thread isn't
+    /// current) is judged from its thread-summary head run via the global `liveTasks`
+    /// list (refreshRuns loads all runs), honoring a pending cancel — so the client
+    /// busy gate holds for those too, not only the per-thread server serialization.
+    func isThreadBusy(_ id: String?) -> Bool {
+        if turnSubmitting { return true }
+        guard let id else { return false }
+        // Rich state ONLY when this thread's detail is actually loaded (the selected
+        // thread, post-hydration). During openThread's load window the detail is the
+        // previous thread's, so fall through to the summary head run below.
+        if id == selectedThreadId, selectedThreadDetail?.thread.id == id {
+            return composerTurnState != .idle
+        }
+        // Non-selected target, OR the selected thread whose detail hasn't loaded yet:
+        // judge from the thread summary's head run via the global liveTasks list
+        // (refreshRuns loads all runs), honoring a pending cancel.
+        //
+        // If the head run row isn't hydrated yet we return false (idle) rather than
+        // assuming busy: a thread's summary `state` is its LIFECYCLE state ("active"),
+        // NOT head-run liveness, so it can't distinguish a running head from a
+        // completed one — treating any headRunId as busy would falsely BLOCK turns on
+        // a thread whose head run already finished. This transient, self-correcting
+        // window (it resolves the instant the detail/live row hydrates) is backstopped
+        // by the per-thread server turn serialization, which rejects a real overlap.
+        guard let headRunId = threads.first(where: { $0.id == id })?.headRunId else { return false }
+        if cancelledRunIds.contains(headRunId) { return false }
+        return task(headRunId)?.status.isActive ?? false
+    }
+
+    /// True while the selected thread's head turn is live (a submit is in flight,
+    /// the turn is running, OR the 202-bind window) — a new turn can't start over
+    /// it. Folds the pre-detail `turnSubmitting` window into the detail-derived
+    /// `composerTurnState`.
+    var selectedThreadBusy: Bool { isThreadBusy(selectedThreadId) }
+
+    /// True while there is NO cancel target yet: a submit is in flight (pre-detail)
+    /// OR the turn is accepted but its runId hasn't bound (202 window). The composer
+    /// shows a disabled "Starting…". Once a runId binds, `.busy` (Stop) wins — even
+    /// while the submit task is still wrapping up, and even if the live row has not
+    /// hydrated (the runId is the cancel target).
+    var selectedThreadStarting: Bool {
+        if composerTurnState == .busy { return false }
+        return turnSubmitting || composerTurnState == .starting
     }
 
     /// Primary harness that will answer in chat: thread sticky > global default.
@@ -901,26 +1078,49 @@ final class AppModel {
     /// clear its text). A POST-send thread reload failure does NOT make this false
     /// (the turn is already on the server) — that would risk a duplicate send (#12).
     @discardableResult
-    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, options: TurnOptions = .init()) async -> Bool {
-        var threadId = selectedThreadId
+    /// `onThread` binds the turn to a SPECIFIC owning thread (Implement-plan /
+    /// Implement-spec capture their card's thread at tap time). When nil, the turn
+    /// targets the current selection and materializes a draft thread if needed.
+    /// Binding the target removes the thread-selection race: an action begun on one
+    /// thread can't be re-pointed at a different thread the user switched to during
+    /// the async send.
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
+        let targetId = explicitThreadId ?? selectedThreadId
+        // Single busy gate for EVERY turn-start path (composer, Implement-plan,
+        // Implement-spec all funnel through here), so none can start a turn over a
+        // live one — gated on the TARGET thread, not live selection. `isThreadBusy`
+        // folds in `turnSubmitting`, so this also blocks a double-submit during the
+        // pre-detail window (checked synchronously before `turnSubmitting = true`, so
+        // concurrent main-actor calls can't both pass). The composer's send() also
+        // routes ⌘↩→Stop while busy; non-composer buttons rely on this guard.
+        guard !isThreadBusy(targetId) else {
+            threadStatus = "Wait for the running turn to finish, or Stop it, before starting another."
+            return false
+        }
+        turnSubmitting = true
+        defer { turnSubmitting = false }
+        var threadId = targetId
         if threadId == nil {
             await newThread(title: nil)
             threadId = selectedThreadId
             guard threadId != nil else { return false } // newThread set threadStatus on failure
         }
         guard let tid = threadId else { return false }
-        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, options: options)
+        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, specPath: specPath, model: model, options: options)
     }
 
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
-    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, options: TurnOptions = .init()) async -> Bool {
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, options: TurnOptions = .init()) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before sending."
             return false
         }
-        guard mode != .unknown else {
+        // `.spec` is NOT a wire turn — it is driven client-side via startSpec
+        // (questions) + implementSpec (which sends an .agent turn with specPath).
+        // Reject both the sentinel mode and a leaked spec mode loudly here.
+        guard mode != .unknown, mode != .spec else {
             threadStatus = "Unknown mode — pick an intent from the composer."
             return false
         }
@@ -968,9 +1168,12 @@ final class AppModel {
                 swarm: flags.swarm ? true : nil,
                 create: flags.create ? true : nil,
                 maxUsd: options.maxUsd,
+                // Per-turn model override (empty = harness default → don't send the key).
+                model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
                 access: writeMode ? options.access : nil,
                 web: options.web,
-                planRunId: planRunId
+                planRunId: planRunId,
+                specPath: specPath
             ))
         } catch {
             threadStatus = userMessage(for: error)
@@ -985,6 +1188,207 @@ final class AppModel {
             stream(runId: info.runId)
         }
         return true
+    }
+
+    // MARK: SPEC-FLOW (server-owned interview)
+
+    /// Set/clear the SPEC-FLOW state for a given thread (keyed per thread so a
+    /// thread switch hides a non-current card and a late await records on its own
+    /// thread). Writing is unconditional on the current selection: the getter
+    /// already gates visibility by `selectedThreadId`.
+    private func setSpecFlow(_ state: SpecFlowState?, for threadId: String) {
+        specFlowByThread[threadId] = state
+    }
+
+    /// Bump and return the SPEC-FLOW generation for a thread (called at every
+    /// start / submit / cancel so an older in-flight await can detect it is stale).
+    private func nextSpecGen(_ tid: String) -> Int {
+        let g = (specFlowGen[tid] ?? 0) + 1
+        specFlowGen[tid] = g
+        return g
+    }
+
+    /// True while `gen` is still the live generation for `tid` — i.e. no newer
+    /// start/submit/cancel superseded the in-flight request that captured it.
+    private func isCurrentSpecGen(_ tid: String, _ gen: Int) -> Bool {
+        specFlowGen[tid] == gen
+    }
+
+    /// Begin the SPEC-FLOW: resolve/create a thread (reusing the existing draft
+    /// bootstrap), require a project, then run the grounding plan synchronously via
+    /// /spec/questions. Empty questions => freeze directly (nothing to ask). The
+    /// question card and the frozen card both render off `specFlow`.
+    ///
+    /// Returns TRUE when the flow was accepted OR an error CARD was established (any
+    /// path that left durable UI state for the thread). Returns FALSE on a HARD
+    /// failure with no durable state (engine offline / no project / no thread) — the
+    /// caller should then RESTORE the composer text, mirroring how composerSend
+    /// failures preserve the prompt. The discardable annotation keeps existing
+    /// fire-and-forget callers compiling.
+    @discardableResult
+    func startSpec(prompt: String, model: String = "", options: TurnOptions = .init()) async -> Bool {
+        guard let client else {
+            threadStatus = "Engine offline — reconnect before starting a spec."
+            return false
+        }
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // A spec is project-scoped: the grounding plan reads the repo. Resolve the
+        // repo BEFORE materializing a thread (mirrors composerSend's ordering) so the
+        // no-project path fails loud WITHOUT leaving an empty orphan draft thread.
+        // Prefer the selected thread's bound repo, fall back to the Current Project.
+        let repoRoot = currentThread?.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? normalizedProjectRoot
+        guard !repoRoot.isEmpty else {
+            threadStatus = "Spec needs a project — pick one before starting an interview."
+            return false
+        }
+        // Materialize a thread the same way composerSend does, so spec turns and
+        // the eventual Implement turn share one conversation/native session.
+        var threadId = selectedThreadId
+        if threadId == nil {
+            await newThread(title: nil)
+            threadId = selectedThreadId
+            guard threadId != nil else { return false }  // newThread set threadStatus
+        }
+        guard let tid = threadId else { return false }
+        // Past this point a durable spec CARD exists for `tid` (grounding → questions /
+        // freeze / error), so every remaining path returns true: a thread switch leaves
+        // that card intact and the engine error surfaces in-card, not via lost text.
+        // A fresh generation supersedes any in-flight grounding for this thread.
+        let gen = nextSpecGen(tid)
+        // Remember the composer's per-turn model + options for the eventual Implement
+        // turn (the grounding/freeze run read-only; these apply to the write turn).
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        specPendingModel[tid] = trimmedModel.isEmpty ? nil : trimmedModel
+        specPendingOptions[tid] = options
+        setSpecFlow(.grounding, for: tid)  // "running the grounding plan" while it runs (minutes)
+        threadStatus = nil
+        // Honor the user's eligible pool for the grounding plan too (the composer
+        // exposes pool chips while Spec is selected) — otherwise the questions could
+        // come from a harness outside the pool the Implement turn will use. Empty =>
+        // engine default (nil). Same pool a normal turn resolves.
+        let pool = effectiveEligiblePool
+        do {
+            let res = try await client.specQuestions(
+                SpecQuestionsRequest(prompt: trimmed, scope: .project(root: repoRoot),
+                                     harnesses: pool.isEmpty ? nil : pool)
+            )
+            // State is keyed by `tid`, so record the result on its OWNING thread even
+            // if the user switched away during the long await (the getter hides a
+            // non-current card). This prevents a stranded `.grounding` spinner. But
+            // DROP the write if a newer start/cancel superseded this grounding.
+            guard isCurrentSpecGen(tid, gen) else { return true }
+            if res.questions.isEmpty {
+                // Nothing to clarify: freeze straight from the grounding plan (no
+                // prior questions to preserve — pass them explicitly, not re-read).
+                await freezeSpec(prompt: trimmed, repoRoot: repoRoot, planDir: res.planDir,
+                                 answers: [], threadId: tid, gen: gen,
+                                 priorQuestions: [], priorPlanRunId: "")
+            } else {
+                setSpecFlow(.askingQuestions(prompt: trimmed, questions: res.questions, planDir: res.planDir,
+                                             planRunId: res.planRunId, answers: [], error: nil), for: tid)
+            }
+        } catch {
+            guard isCurrentSpecGen(tid, gen) else { return true }
+            setSpecFlow(.error(userMessage(for: error)), for: tid)
+        }
+        return true
+    }
+
+    /// Submit the user's interview answers and freeze the SpecPack. On an
+    /// unresolved-clarifications 400 the question card STAYS open with the server's
+    /// reason (no silent guessing); on success the flow advances to `.frozen`.
+    func submitSpecAnswers(threadId tid: String, answers: [SpecAnswer]) async {
+        // Bound to the OWNING thread (passed by the card), not live selection — a
+        // thread switch during the freeze can't mis-apply or drop the answers.
+        guard case .askingQuestions(let prompt, let questions, let planDir, let planRunId, _, _) = specFlowByThread[tid] else { return }
+        let repoRoot = threadRepoRoot(tid)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? normalizedProjectRoot
+        guard !repoRoot.isEmpty else {
+            setSpecFlow(.error("Spec needs a project — the thread has no repo."), for: tid)
+            return
+        }
+        // A fresh generation supersedes any in-flight freeze for this thread.
+        let gen = nextSpecGen(tid)
+        // The freeze prompt is the user's ORIGINAL spec intent, carried on
+        // `.askingQuestions` since startSpec — so /spec/freeze posts the exact prompt
+        // the grounding plan ran on (not the stale head-turn prompt, which on a fresh
+        // thread is generic and on an existing thread is the PREVIOUS turn's). The
+        // current questions/planRunId are passed EXPLICITLY (not re-read from mutable
+        // state) so a 400 can re-open the SAME card.
+        await freezeSpec(prompt: prompt, repoRoot: repoRoot, planDir: planDir,
+                         answers: answers, threadId: tid, gen: gen,
+                         priorQuestions: questions, priorPlanRunId: planRunId)
+    }
+
+    /// Shared freeze step (used by both the empty-questions fast path and the
+    /// answered path). Keeps the question card open on an unresolved-clarifications
+    /// 400 by re-deriving the asking state with the error attached. `priorQuestions`/
+    /// `priorPlanRunId` are passed in by the caller (not re-read from mutable state),
+    /// and `gen` guards the post-await writes against a superseding start/cancel.
+    private func freezeSpec(prompt: String, repoRoot: String, planDir: String,
+                            answers: [SpecAnswer], threadId tid: String, gen: Int,
+                            priorQuestions: [SpecQuestion], priorPlanRunId: String) async {
+        guard let client else {
+            setSpecFlow(.error("Engine offline — reconnect before freezing the spec."), for: tid)
+            return
+        }
+        setSpecFlow(.freezing, for: tid)
+        do {
+            let res = try await client.specFreeze(
+                SpecFreezeRequest(prompt: prompt, scope: .project(root: repoRoot),
+                                  planDir: planDir, answers: answers)
+            )
+            // Keyed by `tid`: record on the owning thread even if the user navigated
+            // away during the freeze await (the getter hides a non-current card), so
+            // the card never strands at `.freezing`. DROP if superseded.
+            guard isCurrentSpecGen(tid, gen) else { return }
+            setSpecFlow(.frozen(specId: res.specId, specPath: res.specPath,
+                                specHash: res.specHash, changes: res.changes.count), for: tid)
+        } catch {
+            guard isCurrentSpecGen(tid, gen) else { return }
+            let message = userMessage(for: error)
+            // Unresolved clarifications (and any freeze refusal): keep the question
+            // card OPEN with the reason in its error slot so the user can answer the
+            // missing fields — never guess.
+            if !priorQuestions.isEmpty {
+                setSpecFlow(.askingQuestions(prompt: prompt, questions: priorQuestions, planDir: planDir,
+                                             planRunId: priorPlanRunId, answers: answers,
+                                             error: message), for: tid)
+            } else {
+                setSpecFlow(.error(message), for: tid)
+            }
+        }
+    }
+
+    /// Implement a FROZEN spec: send an .agent turn carrying the spec FILE path
+    /// (the orchestrator reads it and fails loud if unreadable). Clears the spec
+    /// card on a successful send (the new turn renders the run).
+    func implementSpec(threadId tid: String, specPath: String) async {
+        // Bound to the OWNING thread (passed by the frozen card): the Implement turn
+        // and the card-clear both target that thread, not live selection. Honor the
+        // per-turn model + options the user set when they started the spec.
+        let sent = await composerSend(prompt: "Implement the frozen spec.", mode: .agent,
+                                      specPath: specPath, model: specPendingModel[tid],
+                                      options: specPendingOptions[tid] ?? .init(), onThread: tid)
+        if sent {
+            setSpecFlow(nil, for: tid)
+            specPendingModel[tid] = nil
+            specPendingOptions[tid] = nil
+        }
+    }
+
+    /// Dismiss the SPEC-FLOW (e.g. the user cancels the question card). Bumps the
+    /// generation so a grounding/freeze still in flight can't RE-SHOW the dismissed
+    /// card when its await returns (its write is dropped as stale).
+    func cancelSpec(threadId tid: String) {
+        // Thread-bound (the card passes its owning thread) so a dismiss can't clear a
+        // different thread's spec if selection changed.
+        _ = nextSpecGen(tid)
+        setSpecFlow(nil, for: tid)
+        specPendingModel[tid] = nil
+        specPendingOptions[tid] = nil
     }
 
     /// Human-readable message for a gateway error (never a raw Swift dump in the UI).

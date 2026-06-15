@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -52,7 +52,11 @@ describe("spec command helpers", () => {
       tests: ["node test.js"],
     });
     const persisted = persistSpec(repo, spec, PLAN);
-    const specJson = readFileSync(join(persisted.specDir, "spec.json"), "utf8");
+    // This is exactly the `specPath` the control-api /spec/freeze returns and an
+    // Implement run reads — keep the layout (specDir + "/spec.json") locked.
+    const specPath = join(persisted.specDir, "spec.json");
+    expect(existsSync(specPath)).toBe(true);
+    const specJson = readFileSync(specPath, "utf8");
     const projection = readFileSync(join(persisted.specDir, "PLANS.md"), "utf8");
     expect(specJson).toContain(spec.id);
     expect(projection).toContain(`Claudexor Spec ${spec.id}`);

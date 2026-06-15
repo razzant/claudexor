@@ -309,17 +309,24 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// Per-turn primary harness override (bias hint; engine pins it first). When
     /// nil the turn inherits the thread's sticky primary_harness.
     public var primaryHarness: String?
+    /// Per-turn model override forwarded to the primary harness. When nil the turn
+    /// uses the harness default (Settings → Harnesses owns the global default).
+    public var model: String?
     /// Per-turn access profile: readonly | workspace_write | full.
     public var access: String?
     /// Per-turn external-context policy: auto | off | cached | live.
     public var web: String?
     /// Implement an approved plan from an earlier turn (forces agent mode).
     public var planRunId: String?
+    /// Implement a FROZEN spec: the path to the SpecPack file the orchestrator
+    /// reads (fails loudly if unreadable). Carried by an Implement-spec turn.
+    public var specPath: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
-                maxUsd: Double? = nil, primaryHarness: String? = nil, access: String? = nil,
-                web: String? = nil, planRunId: String? = nil) {
+                maxUsd: Double? = nil, primaryHarness: String? = nil, model: String? = nil,
+                access: String? = nil, web: String? = nil, planRunId: String? = nil,
+                specPath: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -330,9 +337,161 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.create = create
         self.maxUsd = maxUsd
         self.primaryHarness = primaryHarness
+        self.model = model
         self.access = access
         self.web = web
         self.planRunId = planRunId
+        self.specPath = specPath
+    }
+}
+
+// MARK: - SPEC-FLOW (server-owned interview: questions -> answers -> freeze)
+
+/// Body for POST /spec/questions — run the grounding plan synchronously and
+/// extract the open-questions interview. Mirrors ControlSpecQuestionsRequest
+/// (the server .strict()-parses it; scope must be a project root).
+public struct SpecQuestionsRequest: Codable, Sendable {
+    public var prompt: String
+    public var scope: RunScope
+    public var harnesses: [String]?
+
+    public init(prompt: String, scope: RunScope, harnesses: [String]? = nil) {
+        self.prompt = prompt
+        self.scope = scope
+        self.harnesses = harnesses
+    }
+}
+
+/// One option of an interview question (id is the wire value an answer carries,
+/// label is the human text shown on the chip). Mirrors InterviewOption.
+public struct SpecOption: Codable, Sendable, Equatable, Hashable {
+    public let id: String
+    public let label: String
+
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// One interview "quiz card". `tier` is hierarchical depth (0 = foundational;
+/// v1 is single-tier). `kind` is single | multi | text; `allowText` permits a
+/// free-text answer in addition to / instead of the options. Mirrors
+/// InterviewQuestion (snake_case `allow_text`).
+public struct SpecQuestion: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public let id: String
+    public let tier: Int
+    public let prompt: String
+    public let kind: String
+    public let options: [SpecOption]
+    public let allowText: Bool
+    public let rationale: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, tier, prompt, kind, options, rationale
+        case allowText = "allow_text"
+    }
+
+    public init(id: String, tier: Int = 0, prompt: String, kind: String = "single",
+                options: [SpecOption] = [], allowText: Bool = false, rationale: String? = nil) {
+        self.id = id
+        self.tier = tier
+        self.prompt = prompt
+        self.kind = kind
+        self.options = options
+        self.allowText = allowText
+        self.rationale = rationale
+    }
+
+    /// Tolerate payloads that omit defaulted fields (tier/kind/options/allow_text).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier) ?? 0
+        prompt = try c.decode(String.self, forKey: .prompt)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "single"
+        options = try c.decodeIfPresent([SpecOption].self, forKey: .options) ?? []
+        allowText = try c.decodeIfPresent(Bool.self, forKey: .allowText) ?? false
+        rationale = try c.decodeIfPresent(String.self, forKey: .rationale)
+    }
+}
+
+/// Response from POST /spec/questions: the grounding plan ran (planRunId/planDir)
+/// and produced this interview. Empty `questions` => nothing to ask, freeze directly.
+public struct SpecQuestionsResponse: Codable, Sendable {
+    public let planRunId: String
+    public let planDir: String
+    public let questions: [SpecQuestion]
+}
+
+/// One answer to an interview question: option ids selected (NOT labels) and/or
+/// free text. Mirrors InterviewAnswer (snake_case keys).
+public struct SpecAnswer: Codable, Sendable, Equatable {
+    public let questionId: String
+    public let optionIds: [String]
+    public let text: String?
+
+    enum CodingKeys: String, CodingKey {
+        case questionId = "question_id"
+        case optionIds = "option_ids"
+        case text
+    }
+
+    public init(questionId: String, optionIds: [String] = [], text: String? = nil) {
+        self.questionId = questionId
+        self.optionIds = optionIds
+        self.text = text
+    }
+}
+
+/// Body for POST /spec/freeze — assemble + freeze the SpecPack from the grounding
+/// plan (planDir or inline plan) and the user's answers. Mirrors
+/// ControlSpecFreezeRequest. Unresolved clarifications => the server 400s (the
+/// interview refuses to silently guess).
+public struct SpecFreezeRequest: Codable, Sendable {
+    public var prompt: String
+    public var scope: RunScope
+    public var planDir: String?
+    public var plan: String?
+    public var answers: [SpecAnswer]?
+
+    public init(prompt: String, scope: RunScope, planDir: String? = nil,
+                plan: String? = nil, answers: [SpecAnswer]? = nil) {
+        self.prompt = prompt
+        self.scope = scope
+        self.planDir = planDir
+        self.plan = plan
+        self.answers = answers
+    }
+}
+
+/// Response from POST /spec/freeze: the frozen SpecPack. `specPath` is the file an
+/// Implement run reads (a bare specId does not load content). `changes` is a
+/// section-level diff vs the prior revision (opaque to the UI — count it).
+public struct SpecFreezeResponse: Codable, Sendable {
+    public let specId: String
+    public let specDir: String
+    public let specPath: String
+    public let specHash: String
+    public let changes: [JSONValue]
+
+    enum CodingKeys: String, CodingKey { case specId, specDir, specPath, specHash, changes }
+
+    public init(specId: String, specDir: String, specPath: String, specHash: String, changes: [JSONValue] = []) {
+        self.specId = specId
+        self.specDir = specDir
+        self.specPath = specPath
+        self.specHash = specHash
+        self.changes = changes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        specId = try c.decode(String.self, forKey: .specId)
+        specDir = try c.decode(String.self, forKey: .specDir)
+        specPath = try c.decode(String.self, forKey: .specPath)
+        specHash = try c.decode(String.self, forKey: .specHash)
+        changes = try c.decodeIfPresent([JSONValue].self, forKey: .changes) ?? []
     }
 }
 

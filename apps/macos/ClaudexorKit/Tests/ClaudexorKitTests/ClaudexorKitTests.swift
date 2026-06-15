@@ -64,6 +64,45 @@ import Testing
         #expect(emptyObj?["interactionTimeoutMs"] == nil)
     }
 
+    @Test func harnessSettingsPatchEncodesClearVsSetForModelOverride() throws {
+        // The macOS per-harness auto-save builds this patch from its drafts. The
+        // revert bug was macOS-side @State handling, but the WIRE contract it
+        // relies on must hold: a TYPED model override persists as a real string
+        // (not dropped to null), and an EMPTY draft clears the override (explicit
+        // JSON null), while web is always sent and untouched server-only fields
+        // (maxTurns/maxRounds) are omitted so applyHarnessSettingsPatches keeps them.
+        let setPatch = HarnessSettingsPatch(
+            enabled: true,
+            defaultModel: .some("gpt-5.5"),
+            effort: .some("high"),
+            web: "live",
+            maxUsd: .some(2.5),
+            toolsAllow: ["read"],
+            toolsDeny: [],
+            fallbackModel: .some(nil)
+        )
+        let setObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(setPatch)) as? [String: Any]
+        #expect(setObj?["enabled"] as? Bool == true)
+        #expect(setObj?["defaultModel"] as? String == "gpt-5.5")  // typed → real value, never reverted to null
+        #expect(setObj?["effort"] as? String == "high")
+        #expect(setObj?["web"] as? String == "live")
+        #expect(setObj?["maxUsd"] as? Double == 2.5)
+        #expect(setObj?["toolsAllow"] as? [String] == ["read"])
+        // fallback empty → explicit null (clear); untouched fields omitted (kept server-side).
+        #expect(setObj?.keys.contains("fallbackModel") == true)
+        #expect(setObj?["fallbackModel"] is NSNull)
+        #expect(setObj?["maxTurns"] == nil)
+        #expect(setObj?["maxRounds"] == nil)
+
+        // An empty model-override draft clears the stored override (explicit null),
+        // which is distinct from "omit" (keep). This is the half the revert bug
+        // would have broken if an empty field silently kept the old value.
+        let clearPatch = HarnessSettingsPatch(enabled: true, defaultModel: .some(nil), web: "auto")
+        let clearObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clearPatch)) as? [String: Any]
+        #expect(clearObj?.keys.contains("defaultModel") == true)
+        #expect(clearObj?["defaultModel"] is NSNull)
+    }
+
     @Test func harnessStatusDecodesChecksAndDefaultsMissingIntentArrays() throws {
         let rich = """
         {
@@ -254,6 +293,22 @@ import Testing
         #expect(old.run == nil)
     }
 
+    @Test func threadTurnDecodesQueuedHeadDuringBindWindow() throws {
+        // The 202-QUEUED bind window: the head turn has NO runId yet, but its
+        // embedded run card already carries an active state. The composer's
+        // busy-gate (selectedThreadBusy) reads `run.state` here to keep Send blocked
+        // before a runId binds, so this exact shape must decode: runId == nil with a
+        // non-nil, active run.state.
+        let json = #"""
+        {"id":"tn-2","threadId":"th-1","runId":null,"prompt":"build it",
+         "run":{"state":"queued","mode":"agent","waitingOnUser":false},
+         "createdAt":"t"}
+        """#
+        let turn = try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(json.utf8))
+        #expect(turn.runId == nil)            // no cancel target yet
+        #expect(turn.run?.state == "queued")  // but the card is already active
+    }
+
     @Test func createThreadRequestEncodesWorkspace() throws {
         let body = CreateThreadRequest(scope: .project(root: "/p"), workspace: "isolated")
         let data = try JSONEncoder().encode(body)
@@ -345,6 +400,104 @@ import Testing
         #expect(old.eligibleHarnesses == nil)
     }
 
+    // MARK: - SPEC-FLOW DTOs
+
+    @Test func specQuestionsResponseDecodesInterview() throws {
+        // /spec/questions: tier, snake_case allow_text, options[{id,label}], rationale.
+        let json = """
+        {
+          "planRunId": "run-plan-1",
+          "planDir": "/runs/run-plan-1",
+          "questions": [
+            {"id":"q1","tier":0,"prompt":"Which storage?","kind":"single",
+             "options":[{"id":"opt-sqlite","label":"SQLite"},{"id":"opt-pg","label":"Postgres"}],
+             "allow_text":true,"rationale":"Surfaced by plan review."},
+            {"id":"q2","tier":1,"prompt":"Anything else?","kind":"text","options":[],"allow_text":true},
+            {"id":"q3","prompt":"Pick targets","kind":"multi",
+             "options":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"allow_text":false}
+          ]
+        }
+        """
+        let res = try JSONDecoder().decode(SpecQuestionsResponse.self, from: Data(json.utf8))
+        #expect(res.planRunId == "run-plan-1")
+        #expect(res.planDir == "/runs/run-plan-1")
+        #expect(res.questions.count == 3)
+        let q1 = res.questions[0]
+        #expect(q1.id == "q1")
+        #expect(q1.tier == 0)
+        #expect(q1.kind == "single")
+        #expect(q1.allowText == true)                       // allow_text mapped
+        #expect(q1.options == [SpecOption(id: "opt-sqlite", label: "SQLite"),
+                               SpecOption(id: "opt-pg", label: "Postgres")])
+        #expect(q1.rationale == "Surfaced by plan review.")
+        #expect(res.questions[1].kind == "text")
+        #expect(res.questions[2].kind == "multi")
+        #expect(res.questions[2].allowText == false)
+        // Tolerate omitted defaulted fields (tier defaults 0).
+        let bare = #"{"planRunId":"r","planDir":"/d","questions":[{"id":"q","prompt":"?"}]}"#
+        let leniant = try JSONDecoder().decode(SpecQuestionsResponse.self, from: Data(bare.utf8))
+        #expect(leniant.questions.first?.tier == 0)
+        #expect(leniant.questions.first?.kind == "single")
+        #expect(leniant.questions.first?.allowText == false)
+    }
+
+    @Test func specFreezeResponseDecodesSpecPath() throws {
+        // /spec/freeze: specPath is the FILE an Implement run reads (must decode).
+        let json = """
+        {
+          "specId": "spec-7f3a",
+          "specDir": "/repo/.claudexor/specs/spec-7f3a",
+          "specPath": "/repo/.claudexor/specs/spec-7f3a/spec.json",
+          "specHash": "sha256:abc123",
+          "changes": [{"section":"success_criteria","kind":"added"},{"section":"tests","kind":"added"}]
+        }
+        """
+        let res = try JSONDecoder().decode(SpecFreezeResponse.self, from: Data(json.utf8))
+        #expect(res.specId == "spec-7f3a")
+        #expect(res.specPath == "/repo/.claudexor/specs/spec-7f3a/spec.json")
+        #expect(res.specHash == "sha256:abc123")
+        #expect(res.changes.count == 2)
+        #expect(res.changes.first?["section"]?.stringValue == "success_criteria")
+        // Missing `changes` defaults to [] (not a throw).
+        let noChanges = #"{"specId":"s","specDir":"/d","specPath":"/d/spec.json","specHash":"h"}"#
+        let lean = try JSONDecoder().decode(SpecFreezeResponse.self, from: Data(noChanges.utf8))
+        #expect(lean.changes.isEmpty)
+    }
+
+    @Test func specAnswerEncodesSnakeCaseKeysWithOptionIds() throws {
+        // An answer carries option IDs (not labels) — snake_case wire keys.
+        let answer = SpecAnswer(questionId: "q1", optionIds: ["opt-sqlite"], text: "and a cache")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answer)) as? [String: Any]
+        #expect(obj?["question_id"] as? String == "q1")
+        #expect(obj?["option_ids"] as? [String] == ["opt-sqlite"])
+        #expect(obj?["text"] as? String == "and a cache")
+    }
+
+    @Test func threadTurnRequestEncodesSpecPath() throws {
+        // An Implement-spec turn carries the server-returned spec FILE path.
+        let req = ThreadTurnRequest(prompt: "Implement the frozen spec.", mode: "agent",
+                                    specPath: "/repo/.claudexor/specs/spec-7f3a/spec.json")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect(obj?["specPath"] as? String == "/repo/.claudexor/specs/spec-7f3a/spec.json")
+        #expect(obj?["mode"] as? String == "agent")
+        // Absent on a normal turn (the endpoint is .strict() — no stray key).
+        let plain = ThreadTurnRequest(prompt: "hi")
+        let plainObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+        #expect(plainObj?["specPath"] == nil)
+    }
+
+    @Test func threadTurnRequestEncodesPerTurnModel() throws {
+        // A per-turn model override forwards under the same key the run-start request
+        // uses (the turn endpoint .strict()-parses it).
+        let req = ThreadTurnRequest(prompt: "go", mode: "agent", model: "gpt-5-codex")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect(obj?["model"] as? String == "gpt-5-codex")
+        // Absent when unset (harness default) — no stray key for the strict endpoint.
+        let plain = ThreadTurnRequest(prompt: "hi")
+        let plainObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+        #expect(plainObj?["model"] == nil)
+    }
+
     // MARK: - TranscriptReducer
 
     private func env(_ seq: Int, _ json: String) -> BusEnvelope {
@@ -394,5 +547,94 @@ import Testing
         #expect(r.trimmed > 0)
         let toolBlocks = r.blocks.filter { if case .tool = $0 { return true }; return false }
         #expect(toolBlocks.count <= 1)   // no duplicate tool block
+    }
+
+    // MARK: - Composer Send/Stop gate (the busy-gate that kept regressing)
+
+    @Test func composerIdleWhenNoActiveTurn() {
+        // No runId, no embedded activity, no hydrated row → Send.
+        #expect(resolveComposerTurnState(headRunId: nil, hydratedRowActive: nil,
+                                         embeddedStateActive: false) == .idle)
+    }
+
+    @Test func composerStartingDuringPreBindWindow() {
+        // 202 accepted, runId not bound yet, embedded says active → disabled Starting…
+        // (busy, but no cancel target).
+        #expect(resolveComposerTurnState(headRunId: nil, hydratedRowActive: nil,
+                                         embeddedStateActive: true) == .starting)
+    }
+
+    @Test func composerBusyWhenRunBoundAndHydratedActive() {
+        // runId bound, live row hydrated + active → Stop is actionable.
+        #expect(resolveComposerTurnState(headRunId: "r1", hydratedRowActive: true,
+                                         embeddedStateActive: true) == .busy)
+    }
+
+    @Test func composerBusyWhenRunBoundButRowNotHydrated() {
+        // round-4 regression: runId bound, live row NOT hydrated yet, embedded
+        // active. Must be .busy (the runId is a valid cancel target), NOT a
+        // disabled .starting.
+        #expect(resolveComposerTurnState(headRunId: "r1", hydratedRowActive: nil,
+                                         embeddedStateActive: true) == .busy)
+    }
+
+    @Test func composerIdleAfterCancelEvenIfEmbeddedStale() {
+        // round-3 regression: after Stop, the live row reads .cancelled (inactive)
+        // while the embedded snapshot still says "running". The live row is
+        // authoritative → .idle (composer returns to Send); the stale embedded
+        // state must NOT keep it on Stop.
+        #expect(resolveComposerTurnState(headRunId: "r1", hydratedRowActive: false,
+                                         embeddedStateActive: true) == .idle)
+    }
+
+    @Test func composerIdleWhenBoundRowDoneAndNoEmbeddedActivity() {
+        // runId bound, no hydrated row, embedded says terminal → not busy → Send
+        // (don't show Stop on a finished turn during the bind window).
+        #expect(resolveComposerTurnState(headRunId: "r1", hydratedRowActive: nil,
+                                         embeddedStateActive: false) == .idle)
+    }
+
+    // MARK: - Per-harness auto-save (staged-field patch + anti-clobber)
+
+    @Test func harnessPatchClearsEmptyDraftsWithExplicitNull() throws {
+        // Empty/whitespace drafts must encode an EXPLICIT clear (.some(nil) -> JSON
+        // null), not be omitted — so the override is dropped server-side.
+        let patch = buildHarnessPatch(enabled: false, modelDraft: "  ", effort: "__default",
+                                      web: "off", maxUsdDraft: "", toolsAllowDraft: " , ",
+                                      toolsDenyDraft: "", fallbackDraft: "")
+        #expect(patch.defaultModel == .some(Optional<String>.none))   // cleared
+        #expect(patch.effort == .some(Optional<String>.none))         // sentinel -> cleared
+        #expect(patch.maxUsd == .some(Optional<Double>.none))         // empty -> cleared
+        #expect(patch.fallbackModel == .some(Optional<String>.none))
+        #expect(patch.toolsAllow == [])                               // " , " -> no tokens
+        #expect(patch.enabled == false)
+        let json = String(decoding: try JSONEncoder().encode(patch), as: UTF8.self)
+        #expect(json.contains("\"defaultModel\":null"))               // explicit clear on the wire
+        #expect(json.contains("\"maxUsd\":null"))
+    }
+
+    @Test func harnessPatchSetsTypedValuesAndParses() {
+        // Typed values survive into the patch; CSV/number parsing is fixed.
+        let patch = buildHarnessPatch(enabled: true, modelDraft: " fable ", effort: "high",
+                                      web: "live", maxUsdDraft: "1.5", toolsAllowDraft: "bash, edit ,read",
+                                      toolsDenyDraft: "web", fallbackDraft: "opus")
+        #expect(patch.defaultModel == .some("fable"))                 // trimmed, set
+        #expect(patch.effort == .some("high"))
+        #expect(patch.maxUsd == .some(1.5))
+        #expect(patch.toolsAllow == ["bash", "edit", "read"])         // trimmed CSV
+        #expect(patch.toolsDeny == ["web"])
+        #expect(patch.fallbackModel == .some("opus"))
+        #expect(patch.web == "live")
+    }
+
+    @Test func harnessSaveDoesNotSettleWhenNewerEditRacedIn() {
+        // The field-revert bug: a typed value must SURVIVE a settings refresh until
+        // its OWN save settles. An older in-flight save (captured an earlier gen)
+        // must NOT clear `dirty` when a newer edit has bumped the generation.
+        var gen = 0
+        gen += 1; let firstEdit = gen      // user types "fable" -> gen 1
+        gen += 1; let secondEdit = gen     // user types "fable5" before save lands -> gen 2
+        #expect(harnessSaveShouldSettle(capturedGen: firstEdit, currentGen: gen) == false)  // stale, stays dirty
+        #expect(harnessSaveShouldSettle(capturedGen: secondEdit, currentGen: gen) == true)  // newest, settles
     }
 }

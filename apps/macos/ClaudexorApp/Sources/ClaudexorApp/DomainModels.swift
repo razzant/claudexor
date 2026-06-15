@@ -129,13 +129,16 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
 // MARK: - Run modes
 
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, unknown
+    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, spec, unknown
     var id: String { rawValue }
     static var allCases: [RunMode] {
-        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate]
+        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate, .spec]
     }
 
     /// The wire MODE (v0.9: five canonical ids — strategies ride as flags, see `strategyFlags`).
+    /// `.spec` has NO wire mode: it is handled client-side via /spec/questions +
+    /// /spec/freeze (sendTurn never sends it as a normal turn), so it maps to the
+    /// sentinel "unknown" — which `sendTurn` rejects loudly if it ever leaks here.
     var apiValue: String {
         switch self {
         case .ask: return "ask"
@@ -143,7 +146,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .agent, .bestOfN, .maxAttempts, .untilClean, .create: return "agent"
         case .plan: return "plan"
         case .orchestrate: return "orchestrate"
-        case .unknown: return "unknown"
+        case .spec, .unknown: return "unknown"
         }
     }
 
@@ -201,6 +204,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "Create"
         case .readOnlyAudit: return "Read-only Audit"
         case .orchestrate: return "Orchestrate"
+        case .spec: return "Spec"
         case .unknown: return "Unknown Mode"
         }
     }
@@ -216,6 +220,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "plus.square.on.square"
         case .readOnlyAudit: return "magnifyingglass"
         case .orchestrate: return "brain.head.profile"
+        case .spec: return "checklist"
         case .unknown: return "exclamationmark.triangle"
         }
     }
@@ -231,11 +236,12 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "Scaffold a brand-new repo or component."
         case .readOnlyAudit: return "Read-only audit / map of a codebase."
         case .orchestrate: return "Brain: routed like reviewers; produces a typed orchestration plan over the tool belt."
+        case .spec: return "Interview to freeze a SpecPack: grounding plan → questions → answers → frozen spec to implement."
         case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }
     }
     var isMultiCandidate: Bool { self == .bestOfN }
-    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate }
+    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate || self == .spec }
     var requiresProject: Bool { self != .ask }
     var requiredIntent: String {
         switch self {
@@ -245,6 +251,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .readOnlyAudit: return "audit"
         case .create: return "create_from_scratch"
         case .orchestrate: return "orchestrate"
+        case .spec: return "plan"
         case .unknown: return "implement"
         default: return "implement"
         }

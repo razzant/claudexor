@@ -401,7 +401,15 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const repoRoot = projectRootFromScopedInput(p, "spec freeze");
       const spec = await freezeSpecFromGrounding(prompt, plan, { answers: Array.isArray(p["answers"]) ? (p["answers"] as never[]) : [] });
       const persisted = persistSpec(repoRoot, spec, plan);
-      return { specId: spec.id, specDir: persisted.specDir, specHash: persisted.specHash, changes: persisted.changes };
+      // specPath = the frozen SpecPack file an Implement run reads (a bare specId
+      // does not load content). Single producer; the layout matches persistSpec.
+      return {
+        specId: spec.id,
+        specDir: persisted.specDir,
+        specPath: join(persisted.specDir, "spec.json"),
+        specHash: persisted.specHash,
+        changes: persisted.changes,
+      };
     },
   };
 }
