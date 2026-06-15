@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
   "main": "./dist/cli.js",

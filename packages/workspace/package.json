@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/workspace",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "WorkspaceEnvelope manager: git worktree + env/HOME/config isolation + ports + dirty policy.",
   "type": "module",
   "main": "./dist/index.js",

@@ -8,6 +8,7 @@ import {
   freezeSpecFromGrounding,
   persistSpec,
   readAnswers,
+  validateAnswers,
 } from "./spec.js";
 
 const PLAN = `# SpecPack (plan run-1)
@@ -30,6 +31,155 @@ describe("spec command helpers", () => {
     expect(qs[0]?.id).toBe("q1");
     expect(qs[0]?.kind).toBe("text");
     expect(qs[0]?.prompt).toContain("magic links");
+  });
+
+  it("parses structured single/multi/text questions WITH answer choices", () => {
+    const plan = `# Plan
+
+## Open Questions
+- [single] Which auth flow? :: OAuth :: API key :: Both
+- [multi] Which platforms? :: iOS :: Android :: Web
+- [text] Any naming constraints?
+- (none)
+
+## Next
+ignored`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(3); // (none) is skipped; "## Next" ends the block
+
+    // single-choice with options
+    expect(qs[0]?.kind).toBe("single");
+    expect(qs[0]?.prompt).toBe("Which auth flow?");
+    expect(qs[0]?.options.map((o) => o.label)).toEqual(["OAuth", "API key", "Both"]);
+    expect(qs[0]?.options.map((o) => o.id)).toEqual(["o1", "o2", "o3"]);
+    expect(qs[0]?.allow_text).toBe(false); // choice-only
+
+    // multi-choice with options
+    expect(qs[1]?.kind).toBe("multi");
+    expect(qs[1]?.options).toHaveLength(3);
+
+    // free-text (no options)
+    expect(qs[2]?.kind).toBe("text");
+    expect(qs[2]?.options).toEqual([]);
+    expect(qs[2]?.allow_text).toBe(true);
+  });
+
+  it("degrades gracefully: untagged-with-options => single; tagged choice w/o options => text", () => {
+    const plan = `## Open Questions
+- Pick a store :: Postgres :: SQLite
+- [single] No options here`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(2);
+    expect(qs[0]?.kind).toBe("single"); // untagged but has "::" options
+    expect(qs[0]?.options.map((o) => o.label)).toEqual(["Postgres", "SQLite"]);
+    expect(qs[1]?.kind).toBe("text"); // [single] but no options to pick
+    expect(qs[1]?.options).toEqual([]);
+  });
+
+  it("parses the LAST Open Questions block and skips template placeholders (echoed prompt)", () => {
+    // Simulate a harness that echoes the grounding instruction (template block with
+    // <placeholder> bullets) BEFORE its real plan + real Open Questions section.
+    const plan = `# Plan
+
+## Open Questions
+- [single] <question> :: <option A> :: <option B>
+- [text] <question that has no good fixed options>
+
+## My Plan
+do the thing
+
+## Open Questions
+- [single] Which DB? :: Postgres :: SQLite`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(1); // only the real, last block — placeholders skipped
+    expect(qs[0]?.prompt).toBe("Which DB?");
+    expect(qs[0]?.options.map((o) => o.label)).toEqual(["Postgres", "SQLite"]);
+  });
+
+  it("drops leaked placeholder option labels; degrades to text if all options were placeholders", () => {
+    const plan = `## Open Questions
+- [single] Real question :: <option A> :: Postgres
+- [single] Half-edited :: <option A> :: <option B>`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(2);
+    expect(qs[0]?.options.map((o) => o.label)).toEqual(["Postgres"]); // "<option A>" dropped
+    expect(qs[0]?.kind).toBe("single");
+    expect(qs[1]?.options).toEqual([]); // both placeholders dropped
+    expect(qs[1]?.kind).toBe("text"); // degraded (nothing to pick)
+  });
+
+  it("keeps a legacy untagged bullet with a single :: as ONE free-text question", () => {
+    const plan = "## Open Questions\n- Session store :: Redis vs Postgres?";
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.kind).toBe("text"); // not a 1-option choice
+    expect(qs[0]?.prompt).toBe("Session store :: Redis vs Postgres?"); // prose preserved
+    expect(qs[0]?.options).toEqual([]);
+  });
+
+  it("validateAnswers fails loudly on malformed answers", () => {
+    const qs = extractQuestionsFromPlan(
+      "## Open Questions\n- [single] Which? :: A :: B\n- [text] Notes?",
+    );
+    // unknown option id
+    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o9"], text: null }])).toThrow(/unknown option/);
+    // single with >1 option
+    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1", "o2"], text: null }])).toThrow(/at most one/);
+    // free text where allow_text is false (single choice)
+    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1"], text: "extra" }])).toThrow(/free text is not allowed/);
+    // unknown question id (stale/malformed answer) fails loudly, not silently dropped
+    expect(() => validateAnswers(qs, [{ question_id: "q9", option_ids: [], text: "x" }])).toThrow(/unknown question/);
+    // duplicate answers for the same question fail loudly (would otherwise silently use the first)
+    expect(() => validateAnswers(qs, [
+      { question_id: "q1", option_ids: ["o1"], text: null },
+      { question_id: "q1", option_ids: ["o2"], text: null },
+    ])).toThrow(/duplicate/);
+    // valid answers do not throw
+    expect(() => validateAnswers(qs, [
+      { question_id: "q1", option_ids: ["o1"], text: null },
+      { question_id: "q2", option_ids: [], text: "some notes" },
+    ])).not.toThrow();
+  });
+
+  it("preserves legitimate angle-bracket option labels (only exact templates are dropped)", () => {
+    const plan = "## Open Questions\n- [single] Which header? :: <stdio.h> :: <stdlib.h>";
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.kind).toBe("single");
+    expect(qs[0]?.options.map((o) => o.label)).toEqual(["<stdio.h>", "<stdlib.h>"]); // NOT dropped
+  });
+
+  it("returns [] for an Open Questions section with only (none) or empty", () => {
+    expect(extractQuestionsFromPlan("## Open Questions\n- (none)")).toEqual([]);
+    expect(extractQuestionsFromPlan("## Open Questions\n- [text] (none)")).toEqual([]); // (none) after a tag
+    expect(extractQuestionsFromPlan("## Open Questions\n\n## Next\nignored")).toEqual([]);
+    expect(extractQuestionsFromPlan("# Plan\nno questions section here")).toEqual([]);
+  });
+
+  it("records a chip-only choice answer as a RESOLVED clarification (not missing)", () => {
+    // Regression: a single/multi answer selected via chips carries option_ids and
+    // NO free text. It must resolve (so freeze succeeds) AND be recorded.
+    const plan = "## Open Questions\n- [single] Which store? :: Postgres :: SQLite";
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs[0]?.kind).toBe("single");
+    const draft = draftFromPlanAndAnswers("x", plan, qs, {
+      answers: [{ question_id: "q1", option_ids: ["o1"], text: null }],
+    });
+    expect(draft.clarifications?.filter((c) => c.status === "open")).toHaveLength(0); // none missing
+    expect(draft.clarifications?.[0]?.status).toBe("resolved");
+    expect(draft.clarifications?.[0]?.resolution).toBe("Postgres"); // selected label recorded
+    expect(draft.decided_tradeoffs?.some((t) => t.includes("Postgres"))).toBe(true);
+  });
+
+  it("freezes a [single] choice answered by chip and persists the selected label", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-spec-choice-"));
+    const plan = "# Plan\n\n## Open Questions\n- [single] Which store? :: Postgres :: SQLite";
+    const spec = await freezeSpecFromGrounding("pick a store", plan, {
+      answers: [{ question_id: "q1", option_ids: ["o2"], text: null }], // SQLite
+    });
+    const persisted = persistSpec(repo, spec, plan);
+    const specJson = readFileSync(join(persisted.specDir, "spec.json"), "utf8");
+    expect(specJson).toContain("SQLite"); // the user's decision is in the frozen contract
   });
 
   it("keeps missing answers as open clarifications (freeze fails loudly)", async () => {

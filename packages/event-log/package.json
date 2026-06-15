@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/event-log",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
   "type": "module",
   "main": "./dist/index.js",

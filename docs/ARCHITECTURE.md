@@ -1,4 +1,4 @@
-# Claudexor v0.10.0 Architecture Reference
+# Claudexor Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
@@ -119,9 +119,9 @@ Routing is `Pool + Primary + Portfolio`:
   `subscription-first`.
 
 Single-route read-only modes (`ask`, `audit`) choose one route from the
-eligible pool, primary first. `Agent` is a one-candidate envelope run. `explore`
-expands a bounded read-only pool (default width 4, capped at 8). Best-of-N
-expands the eligible pool over N candidates. Convergence rotates compatible
+eligible pool, primary first. `Agent` is a one-candidate envelope run. `audit
+--swarm` (the old `explore`) expands a bounded read-only pool (default width 4,
+capped at 8). Best-of-N expands the eligible pool over N candidates. Convergence rotates compatible
 harnesses when a stall signature persists.
 
 A thread carries sticky routing so the chat surface stays a thin gateway: a
@@ -131,9 +131,12 @@ the pool size). A turn inherits both unless its request overrides them
 (`POST /threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
 auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
-`primaryHarness` is still only pinned first, and a primary outside the selected
-pool fails loudly. Surfaces just set the sticky values (`POST /threads`,
-`PATCH /threads/:id`) and send DTOs; they never route.
+`primaryHarness` is only pinned first, and an EXPLICITLY-selected primary outside
+the selected pool fails loudly (the engine rejects it). An INHERITED sticky
+primary that no longer fits the pool is instead dropped by the thin gateway
+before the turn is enqueued (so a stale bias never forces routing). Surfaces just
+set the sticky values (`POST /threads`, `PATCH /threads/:id`) and send DTOs; they
+never route.
 
 Harness availability is determined by discovery + doctor + capabilities:
 `available` alone is not enough. A harness must be `ok`, expose the required
@@ -365,9 +368,15 @@ and returns liveness only.
 ### Spec flow (interview → frozen SpecPack → Implement)
 
 The server owns the interactive spec interview; a surface is a thin driver.
-`POST /spec/questions` runs a read-only grounding `plan` over the prompt and
-returns the plan-derived clarifying questions (`planRunId`, `planDir`,
-`questions`). The surface collects answers, then `POST /spec/freeze` freezes a
+`POST /spec/questions` runs a read-only grounding `plan` over the prompt, with a
+grounding instruction that asks the harness to end its plan with a structured
+`## Open Questions` block; the server parses that into multiple-choice
+`InterviewQuestion`s (`single`/`multi` with `options`, or free-text `text`) and
+returns them (`planRunId`, `planDir`, `questions`). Parsing is tolerant for
+backward compatibility: a plain untagged bullet under the heading (no `[kind]`
+tag, no `::` options) degrades to a free-text question. The surface renders the
+choices and collects answers (selected `option_ids` and/or free `text`), then
+`POST /spec/freeze` freezes a
 SpecPack and persists it, returning `specId`, `specDir`, `specPath` (the frozen
 SpecPack file), `specHash`, and `changes`. An Implement run is then a normal
 agent thread turn: `POST /threads/:id/turns` carrying that `specPath`, so the
@@ -535,10 +544,11 @@ The macOS app is a native control surface over the control API:
 - **Spec** is a macOS UI intent, not a wire run mode: it drives the server-owned
   spec flow client-side (`POST /spec/questions` → answers → `POST /spec/freeze`)
   and then sends a normal agent turn carrying the returned `specPath` to
-  Implement against the frozen SpecPack. The grounding plan honors the composer's
-  eligible pool, and the per-turn model/options the user set carry through to the
-  Implement turn. It maps to the engine's read-only `plan`/spec endpoints, not a
-  new `ModeKind`;
+  Implement against the frozen SpecPack. The read-only grounding plan uses ONLY the
+  composer's eligible pool (with each harness's default model); the per-turn
+  model/budget/access/web/repair options the user set do NOT affect grounding — they
+  are captured and applied to the write Implement turn. It maps to the engine's
+  read-only `plan`/spec endpoints, not a new `ModeKind`;
 - while a turn is running, the composer's **Send button swaps to Stop** (a
   server-owned cancel of the running turn), since a new turn cannot start over a
   live native session;

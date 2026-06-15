@@ -298,23 +298,28 @@ struct GlassBackground: View {
 /// to flip `isOpaque` and never reliably fired (the desktop stayed hidden), so this
 /// view is now PURE blur with no window side effects.
 private struct BehindWindowMaterial: NSViewRepresentable {
-    /// The window is fully clear (AppDelegate.makeWindowsTranslucent), so this frost
-    /// IS the visible backdrop. A slightly reduced alpha lets a bit more desktop show
-    /// through ("немного прозрачнее"); content cards carry their own frosted surfaces,
-    /// so text stays WCAG-legible in both themes. Conservative single step.
-    static let backdropAlpha: CGFloat = 0.88
-
+    /// The window is fully clear (AppDelegate.makeWindowsTranslucent), so this view IS
+    /// the visible backdrop — a behind-window frosted vibrancy (matte glass). This is
+    /// NOT WWDC25 Liquid Glass (`glassEffect`), which the token doctrine reserves for
+    /// navigation/chrome; this is the AppKit behind-window material per Bible §9.
+    ///
+    /// The frost = the vibrancy MATERIAL's built-in blur + translucency, applied at
+    /// FULL alpha. Do NOT lower `alphaValue` to "let more desktop through": that fades
+    /// the frost itself and reveals the un-blurred desktop, which reads as a flat,
+    /// too-transparent wash rather than frosted glass (the v0.10.1 bug). `.hudWindow`
+    /// is a substantial frosted vibrancy that still hints at the desktop behind it;
+    /// `.underWindowBackground` (the old material) was the most see-through option.
+    /// Content cards keep their own surfaces and code/diffs stay solid for legibility.
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.blendingMode = .behindWindow
-        v.material = .underWindowBackground
+        v.material = .hudWindow
         v.state = .active
-        v.alphaValue = Self.backdropAlpha
         return v
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.alphaValue = Self.backdropAlpha
+        nsView.material = .hudWindow
     }
 }
 

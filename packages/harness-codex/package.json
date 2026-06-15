@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-codex",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Codex CLI adapter (codex exec --json).",
   "type": "module",
   "main": "./dist/index.js",

@@ -31,10 +31,12 @@ research swarm, create-from-scratch) are flags on a mode, never modes.
 
 Spec-driven work uses the same server-owned contract. The macOS app exposes a
 **Spec** intent that runs an app-driven SpecPack interview: a read-only grounding
-plan produces plan-grounded clarifying questions, the user answers them, and the
-server FREEZES a SpecPack (a content-hashed contract file). Implement is then an
-ordinary agent turn carrying that frozen spec, so the agent works against the
-contract, not a re-derived prompt. The app is a thin driver over the existing
+plan is steered to surface the material open decisions as a structured
+multiple-choice quiz (single/multi/text questions with options), the user answers
+by picking options and/or typing, and the server FREEZES a SpecPack (a
+content-hashed contract file) that RECORDS each resolved decision. Implement is
+then an ordinary agent turn carrying that frozen spec, so the agent works against
+the contract — including the user's recorded choices — not a re-derived prompt. The app is a thin driver over the existing
 server-owned `/spec/questions` → `/spec/freeze` endpoints — it never composes the
 spec or its path itself — and Spec stays a UI intent that maps onto the engine's
 read-only plan/spec surface, not a new wire mode. Spec is single-tier in v1: one
@@ -73,9 +75,10 @@ A thread carries **sticky routing**: an eligible harness pool (what Race runs �
 one candidate per harness) and an optional primary harness bias (which harness
 answers in chat), both persisted on the thread and switched via
 `PATCH /threads/:id`. Precedence is per-turn body > thread sticky > engine default;
-the engine owns resolution (`orderPool` pins the primary first), and a primary that
-falls outside a non-empty pool is cleared rather than forced — surfaces never invent
-routing. Per-turn policy (access, web, budget cap, repair strategy) rides on the
+the engine owns resolution (`orderPool` pins the primary first). An INHERITED sticky
+primary that no longer fits the pool is dropped by the thin gateway rather than
+forced (surfaces never invent routing), while an EXPLICITLY-selected primary outside
+the pool fails loudly in the engine. Per-turn policy (access, web, budget cap, repair strategy) rides on the
 turn request as flags, not modes. The primary remains a bias hint, never a
 privileged role.
 

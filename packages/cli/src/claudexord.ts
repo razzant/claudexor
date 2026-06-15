@@ -9,11 +9,11 @@ import { SecretStore } from "@claudexor/secrets";
 import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
 import { deliver } from "@claudexor/delivery";
 import { containsSecretLikeToken, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
-import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig } from "@claudexor/schema";
+import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig, InterviewAnswer } from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
+import { buildGroundingPrompt, extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -382,9 +382,13 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const prompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
       if (!prompt.trim()) throw new Error("prompt is required");
       const repoRoot = projectRootFromScopedInput(p, "spec questions");
+      // Drive an interactive, CHOICE-BASED interview: the read-only grounding plan
+      // must end with a structured "## Open Questions" section that
+      // extractQuestionsFromPlan parses into single/multi/text questions with options.
+      // The instruction + its parser are a co-located contract pair in spec.ts.
       const plan = await new Orchestrator({ registry: buildRegistry() }).run({
         repoRoot,
-        prompt,
+        prompt: buildGroundingPrompt(prompt),
         mode: "plan",
         harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
         access: "readonly",
@@ -399,7 +403,35 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const plan = typeof p["plan"] === "string" ? p["plan"] : readTextSafe(join(planDir, "final", "plan.md")) ?? "";
       if (!prompt.trim() || !plan.trim()) throw new Error("prompt and plan/planDir are required");
       const repoRoot = projectRootFromScopedInput(p, "spec freeze");
-      const spec = await freezeSpecFromGrounding(prompt, plan, { answers: Array.isArray(p["answers"]) ? (p["answers"] as never[]) : [] });
+      // Forward the full SpecAnswersFile shape — not just answers — so a client that
+      // edited the draft's summary / criteria / non-goals / gates doesn't have them
+      // silently dropped from the frozen SpecPack. Fail LOUDLY on a malformed field
+      // (e.g. tests:[123]) rather than silently filtering it.
+      const strArr = (v: unknown, field: string): string[] | undefined => {
+        if (v === undefined) return undefined;
+        if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+          throw new Error(`spec freeze: "${field}" must be an array of strings`);
+        }
+        return v as string[];
+      };
+      const strOpt = (v: unknown, field: string): string | undefined => {
+        if (v === undefined) return undefined;
+        if (typeof v !== "string") throw new Error(`spec freeze: "${field}" must be a string`);
+        return v;
+      };
+      // Schema-parse the answers at the wire boundary (Bible §3): a malformed item
+      // (missing/typed question_id, bad option_ids) fails loudly with a typed error,
+      // rather than slipping through an `as never[]` cast. Absent => no answers.
+      const answers = p["answers"] === undefined ? [] : InterviewAnswer.array().parse(p["answers"]);
+      const spec = await freezeSpecFromGrounding(prompt, plan, {
+        answers,
+        summary: strOpt(p["summary"], "summary"),
+        success_criteria: strArr(p["success_criteria"], "success_criteria"),
+        non_goals: strArr(p["non_goals"], "non_goals"),
+        forbidden_approaches: strArr(p["forbidden_approaches"], "forbidden_approaches"),
+        decided_tradeoffs: strArr(p["decided_tradeoffs"], "decided_tradeoffs"),
+        tests: strArr(p["tests"], "tests"),
+      });
       const persisted = persistSpec(repoRoot, spec, plan);
       // specPath = the frozen SpecPack file an Implement run reads (a bare specId
       // does not load content). Single producer; the layout matches persistSpec.

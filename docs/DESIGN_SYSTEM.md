@@ -219,12 +219,16 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
   text, legible in BOTH themes (WCAG). See §5.1.
 - **Behind-window transparency (the desktop shows faintly through the window, Р5)** —
   three pieces, all required: (1) `GlassBackground` → `NSVisualEffectView`
-  (`.behindWindow` / `.underWindowBackground`) as the window backdrop; (2) the window
+  (`.behindWindow` / `.hudWindow`) as the window backdrop, at FULL alpha; (2) the window
   made non-opaque in `AppDelegate` (`isOpaque=false`, `backgroundColor=.clear`, set
   reliably once the window exists — a per-frame SwiftUI guard never fired); (3)
   `.containerBackground(.clear, for: .window)` + `.toolbarBackgroundVisibility(.hidden,
   for: .windowToolbar)` on the root so the SwiftUI container and toolbar don't paint an
-  opaque panel over it. Miss any one and the window reads as solid gray. Reduce
+  opaque panel over it. Miss any one and the window reads as solid gray. The frost
+  comes from the MATERIAL, not a reduced `alphaValue`: lowering the vibrancy view's
+  alpha fades the frost and reveals the un-blurred desktop (a flat, too-transparent
+  wash), so the backdrop stays full-alpha and `.hudWindow` (a substantial frosted
+  vibrancy) replaces the most-transparent `.underWindowBackground`. Reduce
   Transparency → solid `surfaceBase`.
 - **Glass vs `Material`** — Liquid Glass is the FLOATING chrome layer; `Material`
   (`.thinMaterial`/`.regularMaterial`, the `cardSurface` recipe) is the CONTENT
