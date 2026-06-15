@@ -110,16 +110,18 @@ public final class GatewayClient: Sendable {
         return (try Self.decoder.decode(HarnessListResponse.self, from: data)).harnesses
     }
 
-    public func setupHarness(_ body: HarnessSetupRequest) async throws -> HarnessSetupResponse {
-        var req = request("harnesses/setup", method: "POST")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try Self.encoder.encode(body)
+    /// Enumerable models for one harness (the ADP4 consumer of the adapter
+    /// models() producer). `source == "none"` (or an empty list) means the
+    /// harness cannot enumerate — the caller should fall back to free text.
+    public func harnessModels(harnessId: String) async throws -> HarnessModelsResponse {
+        let escaped = harnessId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? harnessId
+        let req = request("harnesses/\(escaped)/models", method: "GET")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
-        return try Self.decoder.decode(HarnessSetupResponse.self, from: data)
+        return try Self.decoder.decode(HarnessModelsResponse.self, from: data)
     }
 
     public func createSetupJob(_ body: SetupJobCreateRequest) async throws -> SetupJob {
@@ -154,16 +156,6 @@ public final class GatewayClient: Sendable {
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return try Self.decoder.decode(SetupJob.self, from: data)
-    }
-
-    public func listSetupJobs() async throws -> [SetupJob] {
-        let req = request("setup/jobs", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return try Self.decoder.decode(SetupJobListResponse.self, from: data).jobs
     }
 
     public func settings() async throws -> SettingsSnapshot {
@@ -234,6 +226,13 @@ public final class GatewayClient: Sendable {
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return try Self.decoder.decode(RunDecisionResponse.self, from: data)
+    }
+
+    /// Revert this turn's in-place mutation (server-owned restore to the pre-turn
+    /// snapshot). Routes through the same decision endpoint with `revert_run`; the
+    /// server refuses (HTTP 409) if the working tree has diverged since the turn.
+    public func revertRun(runId: String) async throws -> RunDecisionResponse {
+        try await decide(runId: runId, body: RunDecisionRequest(action: "revert_run"))
     }
 
     // MARK: Threads (chat/session-first)

@@ -167,6 +167,14 @@
         "create": {
           "type": "boolean"
         },
+        "synthesis": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ]
+        },
         "maxUsd": {
           "anyOf": [
             {
@@ -238,6 +246,14 @@
             "subscription",
             "api_key",
             "auto"
+          ]
+        },
+        "autonomy": {
+          "type": "string",
+          "enum": [
+            "suggest",
+            "auto_safe",
+            "auto_full"
           ]
         }
       },

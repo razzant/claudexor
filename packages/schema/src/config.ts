@@ -1,18 +1,10 @@
 import { z } from "zod";
 import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
 import { EffortHint } from "./harness.js";
-import { DeliveryPolicy } from "./workproduct.js";
 import { Portfolio } from "./budget.js";
 
 export const RoutingPolicy = z.enum(["auto", "primary", "portfolio"]);
 export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
-
-/** What to do when the preferred auth route's quota/money is exhausted. */
-export const SecretRef = z.object({
-  ref: z.string().min(1),
-  env: z.string().optional(),
-});
-export type SecretRef = z.infer<typeof SecretRef>;
 
 /**
  * Project config — safe, versioned settings. This shape may NOT carry sensitive
@@ -21,35 +13,14 @@ export type SecretRef = z.infer<typeof SecretRef>;
  */
 export const ProjectConfig = z.object({
   version: z.literal(1).default(1),
-  project: z
-    .object({
-      name: z.string().optional(),
-      language_stack: z.array(z.string()).default([]),
-      package_manager: z.string().optional(),
-    })
-    .default({ language_stack: [] }),
   context: z
     .object({
-      agents_md_first: z.boolean().default(true),
-      never_silent_truncate: z.boolean().default(true),
       mandatory_files: z.array(z.string()).default([]),
       include: z.array(z.string()).default([]),
       exclude: z.array(z.string()).default([]),
     })
     .default({}),
   tests: z.object({ commands: z.array(z.string()).default([]) }).default({ commands: [] }),
-  delivery: z
-    .object({
-      default_mutation_mode: DeliveryPolicy.shape.mutation_mode.optional(),
-      default_apply_policy: DeliveryPolicy.shape.apply_policy.optional(),
-    })
-    .default({}),
-  review: z
-    .object({
-      default_attempts: z.number().int().positive().default(3),
-      strictness: z.enum(["advisory", "block"]).default("block"),
-    })
-    .default({}),
   budget: z.object({ portfolio: Portfolio.default("subscription-first") }).default({ portfolio: "subscription-first" }),
 });
 export type ProjectConfig = z.infer<typeof ProjectConfig>;
@@ -57,12 +28,8 @@ export type ProjectConfig = z.infer<typeof ProjectConfig>;
 /** Sensitive trust settings — only valid in global/user-local/trust files. */
 export const TrustConfig = z.object({
   version: z.literal(1).default(1),
-  repo_hash: z.string().optional(),
   access_default: AccessProfile.default("workspace_write"),
   allow_full_access: z.boolean().default(false),
-  full_access_requires_prompt: z.boolean().default(true),
-  max_api_budget_usd_per_day: z.number().nonnegative().nullable().default(null),
-  preferred_harnesses: z.array(z.string()).default([]),
 });
 export type TrustConfig = z.infer<typeof TrustConfig>;
 
@@ -82,7 +49,12 @@ export const GlobalConfig = z.object({
       primary_harness: z.string().nullable().default(null),
       eligible_harnesses: z.array(z.string()).default([]),
       default_model: z.string().nullable().default(null),
-      env_inheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
+      /**
+       * How the child harness env is built: `mirror_native` inherits the user's
+       * shell env (default, matches how the native CLIs run); `clean` spawns from
+       * a minimal allowlist (agent env isolation).
+       */
+      env_inheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
       /** Default auth route preference (subscription/api_key/auto). */
       auth_preference: AuthPreference.default("auto"),
     })
@@ -90,7 +62,6 @@ export const GlobalConfig = z.object({
   budget: z
     .object({
       max_usd_per_run: z.number().nonnegative().nullable().default(null),
-      max_usd_per_day: z.number().nonnegative().nullable().default(null),
     })
     .default({}),
   harnesses: z
@@ -108,19 +79,8 @@ export const GlobalConfig = z.object({
         fallback_model: z.string().nullable().default(null),
         web: ExternalContextPolicy.default("auto"),
         native_options: z.record(z.string(), z.unknown()).default({}),
-        auth_ref: SecretRef.nullable().default(null),
         /** Per-harness auth route preference; overrides routing.auth_preference. */
         auth_preference: AuthPreference.default("auto"),
-      }),
-    )
-    .default({}),
-  secrets: z
-    .record(
-      z.string(),
-      z.object({
-        description: z.string().optional(),
-        harnesses: z.array(z.string()).default([]),
-        env: z.string().optional(),
       }),
     )
     .default({}),

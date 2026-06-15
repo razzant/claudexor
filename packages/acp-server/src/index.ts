@@ -38,6 +38,13 @@ export class AcpServer {
   private readonly pendingRequests = new Map<string, (result: any) => void>();
   /** Active run per session: lets session/cancel abort and keeps prompts serial. */
   private readonly activeRuns = new Map<string, AbortController>();
+  /** Fallback tool_call ids keyed by `${sessionId}:${toolName}` — a FIFO QUEUE of
+   * synthetic ids awaiting completion by a tool_result that arrives WITHOUT a
+   * use_id. A queue (not a single slot) so two in-flight same-name use_id-less
+   * calls don't clobber each other: each PUSHes on tool_call, the matching
+   * tool_result SHIFTs one (oldest-first). use_id-bearing calls match directly
+   * by id and never touch this. */
+  private readonly openToolCalls = new Map<string, string[]>();
 
   constructor(private readonly opts: AcpServerOptions) {}
 
@@ -61,7 +68,13 @@ export class AcpServer {
         }
         continue;
       }
-      if (msg.id === undefined || msg.id === null) continue;
+      // A JSON-RPC NOTIFICATION (method present, no id) must be handled WITHOUT
+      // a response — replying to a notification violates JSON-RPC. session/cancel
+      // arrives this way (id-less) and aborts the active run silently.
+      if (msg.id === undefined || msg.id === null) {
+        this.handleNotification(msg);
+        continue;
+      }
       // NEVER block the read loop on a handler: session/prompt runs for
       // minutes and the loop must keep consuming session/request_permission
       // responses and session/cancel while the run is active. Handler errors
@@ -78,6 +91,11 @@ export class AcpServer {
 
   private reply(id: unknown, result: unknown): void {
     this.write({ jsonrpc: "2.0", id, result });
+  }
+
+  /** Spec-coded JSON-RPC error response ({code, message}) — never an ad-hoc shape. */
+  private error(id: unknown, code: number, message: string): void {
+    this.write({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
   private notify(method: string, params: unknown): void {
@@ -99,7 +117,7 @@ export class AcpServer {
       case "initialize":
         this.reply(id, {
           protocolVersion: ACP_PROTOCOL_VERSION,
-          agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.9.0" },
+          agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "dev" },
           agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
         });
         return;
@@ -117,9 +135,10 @@ export class AcpServer {
         const sessionId = params?.sessionId as string | undefined;
         const text = extractPromptText(params?.prompt);
         // One active run per session: a second prompt while one is running is
-        // a protocol misuse and must fail loudly, not interleave run events.
+        // a protocol misuse. ACP StopReason has no "error" member, so fail loudly
+        // as a JSON-RPC error (-32600 Invalid Request) rather than inventing one.
         if (sessionId && this.activeRuns.has(sessionId)) {
-          this.reply(id, { stopReason: "error", error: `session ${sessionId} already has an active prompt` });
+          this.error(id, -32600, `session ${sessionId} already has an active prompt`);
           return;
         }
         const controller = new AbortController();
@@ -143,34 +162,48 @@ export class AcpServer {
             hooks,
           );
           if (sessionId) {
-            this.notify("session/update", {
-              sessionId,
-              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(result) } },
-            });
+            // The turn result is the human-readable summary/answer (the run's
+            // primary output), not a raw dumped JSON object the editor can't show.
+            const summary = summarizeResult(result);
+            if (summary) {
+              this.notify("session/update", {
+                sessionId,
+                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } },
+              });
+            }
           }
           this.reply(id, { stopReason: controller.signal.aborted ? "cancelled" : "end_turn" });
         } catch (err) {
           if (controller.signal.aborted) {
             this.reply(id, { stopReason: "cancelled" });
           } else {
-            this.reply(id, { stopReason: "error", error: err instanceof Error ? err.message : String(err) });
+            // A failed turn is a JSON-RPC error (-32603 internal), not an invented
+            // StopReason — the ACP StopReason enum has no "error" member.
+            this.error(id, -32603, err instanceof Error ? err.message : String(err));
           }
         } finally {
           if (sessionId && this.activeRuns.get(sessionId) === controller) this.activeRuns.delete(sessionId);
         }
         return;
       }
-      case "session/cancel": {
-        const sessionId = params?.sessionId as string | undefined;
-        const active = sessionId ? this.activeRuns.get(sessionId) : undefined;
-        if (active) active.abort();
-        // Honest reply: report whether there was anything to cancel.
-        this.reply(id, { cancelled: Boolean(active) });
-        return;
-      }
       default:
-        this.write({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });
+        this.error(id, -32601, `method not found: ${method}`);
     }
+  }
+
+  /**
+   * JSON-RPC notifications (no `id`) get NO response. ACP `session/cancel` is a
+   * notification: it aborts the underlying run (cooperative cancellation) and the
+   * in-flight session/prompt then resolves with stopReason "cancelled".
+   */
+  private handleNotification(msg: any): void {
+    const { method, params } = msg;
+    if (method === "session/cancel") {
+      const sessionId = params?.sessionId as string | undefined;
+      const active = sessionId ? this.activeRuns.get(sessionId) : undefined;
+      if (active) active.abort();
+    }
+    // Unknown notifications are silently ignored — JSON-RPC forbids replying.
   }
 
   /** Thin RunEvent -> session/update projection (no business logic). */
@@ -195,15 +228,52 @@ export class AcpServer {
       }
       if (sub === "tool_call" && p["tool"] && typeof p["tool"] === "object") {
         const tool = p["tool"] as Record<string, any>;
+        const toolCallId = String(tool["use_id"] ?? `tc-${Math.random().toString(36).slice(2, 8)}`);
+        // Fallback matching for tool_results that lack a native use_id: only those
+        // need it (a use_id-bearing result matches directly by id). Without this the
+        // synthetic tc-* call never completes and the client hangs. Key by
+        // sessionId+name (the only discriminator the result side also carries) and
+        // PUSH onto a FIFO queue so two concurrent same-name use_id-less calls each
+        // get their own slot — the matching results SHIFT them oldest-first.
+        if (typeof tool["use_id"] !== "string") {
+          const fallbackKey = `${sessionId}:${String(tool["name"] ?? "")}`;
+          const queue = this.openToolCalls.get(fallbackKey);
+          if (queue) queue.push(toolCallId);
+          else this.openToolCalls.set(fallbackKey, [toolCallId]);
+        }
         this.notify("session/update", {
           sessionId,
           update: {
             sessionUpdate: "tool_call",
-            toolCallId: String(tool["use_id"] ?? `tc-${Math.random().toString(36).slice(2, 8)}`),
+            toolCallId,
             title: String(tool["name"] ?? "tool"),
             status: "in_progress",
           },
         });
+        return;
+      }
+      if (sub === "tool_result" && p["tool"] && typeof p["tool"] === "object") {
+        const tool = p["tool"] as Record<string, any>;
+        // Terminal completion for the started tool_call. status: "ok"->completed,
+        // "error"->failed; an unknown/missing status still completes (never hang).
+        const hasUseId = typeof tool["use_id"] === "string" && tool["use_id"];
+        const fallbackKey = `${sessionId}:${String(tool["name"] ?? "")}`;
+        // use_id-bearing result -> match directly; otherwise SHIFT the oldest
+        // queued synthetic id (FIFO) so concurrent same-name calls each complete.
+        const queue = hasUseId ? undefined : this.openToolCalls.get(fallbackKey);
+        const toolCallId = hasUseId ? String(tool["use_id"]) : queue?.shift();
+        if (toolCallId) {
+          // Drop the queue once drained so empty keys don't accumulate.
+          if (queue && queue.length === 0) this.openToolCalls.delete(fallbackKey);
+          this.notify("session/update", {
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              status: tool["status"] === "error" ? "failed" : "completed",
+            },
+          });
+        }
         return;
       }
       return;
@@ -226,6 +296,7 @@ export class AcpServer {
     const questions: any[] = Array.isArray(request?.questions) ? request.questions : [];
     if (questions.length === 0) return null;
     const answers: any[] = [];
+    let declinedFreeText = false;
     for (const q of questions) {
       const options = (Array.isArray(q?.options) ? q.options : []).map((o: any, idx: number) => ({
         optionId: `opt-${idx + 1}`,
@@ -233,18 +304,12 @@ export class AcpServer {
         kind: "allow_once",
       }));
       if (options.length === 0) {
-        // A free-text question (no options) still deserves an answer surface:
-        // ACP permission outcomes can carry text on some hosts; ask with a
-        // single acknowledge option and forward any text the host returned.
-        const response = await this.request("session/request_permission", {
-          sessionId,
-          toolCall: { toolCallId: String(request?.interaction_id ?? "interaction"), title: String(q?.question ?? "Question") },
-          options: [{ optionId: "opt-answer", name: "Answer in chat", kind: "allow_once" }],
-        });
-        const text = typeof response?.outcome?.text === "string" ? response.outcome.text : typeof response?.text === "string" ? response.text : null;
-        if (text && text.trim()) {
-          answers.push({ question_id: String(q?.id ?? ""), selected_labels: [], free_text: text });
-        }
+        // A free-text question has no answer channel over ACP: session/request_permission
+        // returns a chosen optionId, NOT arbitrary text. Faking an "Answer in chat"
+        // affordance would advertise a capability this surface cannot honor. Decline
+        // benignly (like the --json path) so the run continues with assumptions, and
+        // note it honestly to the client below.
+        declinedFreeText = true;
         continue;
       }
       const response = await this.request("session/request_permission", {
@@ -258,8 +323,41 @@ export class AcpServer {
         answers.push({ question_id: String(q?.id ?? ""), selected_labels: [picked.name], free_text: null });
       }
     }
+    if (declinedFreeText) {
+      this.notify("session/update", {
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "[claudexor] a free-text question could not be answered over ACP; the run continues with assumptions.",
+          },
+        },
+      });
+    }
+    // Returning answers only for the choice questions; an empty set is a benign
+    // decline (orchestrator/adapter then continue with assumptions).
     return answers.length > 0 ? { interaction_id: String(request?.interaction_id ?? ""), answers } : null;
   }
+}
+
+/**
+ * Reduce a run result to the human-readable text the editor should show. The
+ * orchestrator returns an OrchestratorResult whose `summary` is the primary
+ * output; prefer it over dumping the whole internal object. Falls back to a
+ * compact JSON string only when no summary/text field is present.
+ */
+function summarizeResult(result: unknown): string {
+  if (typeof result === "string") return result.trim();
+  if (result && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    for (const key of ["summary", "answer", "text"]) {
+      const v = r[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return JSON.stringify(result);
+  }
+  return result === undefined || result === null ? "" : String(result);
 }
 
 function extractPromptText(prompt: unknown): string {

@@ -27,8 +27,15 @@ import {
   HarnessRunSpec,
   OrchestrateContract as OrchestrateContractSchema,
   type OrchestrateContract as OrchestrateContractT,
+  type OrchestrateAutonomy,
   OrchestratePlan as OrchestratePlanSchema,
   type OrchestratePlan as OrchestratePlanT,
+  type OrchestratePlanCall as OrchestratePlanCallT,
+  type OrchestratePlanProgress as OrchestratePlanProgressT,
+  type OrchestrateStepStatus,
+  toolRisk,
+  DecisionRecord as DecisionRecordSchema,
+  WorkProduct as WorkProductSchema,
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
   SessionReboundLineage as SessionReboundLineageSchema,
@@ -47,7 +54,8 @@ import { HarnessUnavailableError } from "@claudexor/core";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import { buildContextPack, preflightEvidence, writeEvidencePacket } from "@claudexor/context";
-import { WorkspaceManager, applyPatch, ensureGitRepository } from "@claudexor/workspace";
+import { WorkspaceManager, applyPatch, ensureGitRepository, snapshotTree } from "@claudexor/workspace";
+import { deliver, validateApplyGate } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
 import {
   type GateSpec,
@@ -63,7 +71,7 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudexor/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudexor/synthesis";
 import { BudgetLedger, type RouterCandidate, observationFromEvent, promptFingerprint, selectHarness } from "@claudexor/budget";
-import { classifyRisk, requireHuman, reviewDepthForRisk } from "@claudexor/policy";
+import { classifyRisk, DEFAULT_REQUIRE_HUMAN_PATHS, requireHuman, reviewDepthForRisk } from "@claudexor/policy";
 import {
   appendLine,
   containsSecretLikeToken,
@@ -174,6 +182,29 @@ export interface RunInput {
    * is the deliverable. Only honored by convergence modes.
    */
   inPlace?: boolean;
+  /**
+   * How much the orchestrate brain may act without confirmation
+   * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
+   * executor over the typed plan classifies each tool_call via toolRisk and
+   * runs safe steps as isolated sub-runs / reads, blocking risky steps under
+   * auto_safe. Defaults to `suggest` (plan-only) when unset.
+   */
+  autonomy?: OrchestrateAutonomy;
+  /**
+   * Recursion-depth guard for orchestrate. The executor spawns sub-runs via
+   * `this.run`; a sub-run must NOT itself orchestrate (orchestrate-within-
+   * orchestrate throws). The top-level orchestrate run is depth 0; sub-runs it
+   * spawns inherit depth+1 and are forbidden from mode=orchestrate.
+   */
+  orchestrateDepth?: number;
+  /**
+   * Optional live answer-delivery service for the executor's `answer_question`
+   * step (the daemon owns the InteractionRegistry; the engine does not). When
+   * absent, an answer_question step is honestly SKIPPED (no live interaction
+   * surface in this context) rather than silently claimed done. Read-only
+   * w.r.t. the tree. Returns true when the answer was delivered.
+   */
+  answerInteraction?: (runId: string, interactionId: string, answers: InteractionAnswerSet) => Promise<boolean>;
 }
 
 /** Context handed to RunInput.onInteraction for one pending question. */
@@ -290,6 +321,21 @@ const MAX_PARALLEL_CANDIDATES = 4;
 /** Default wait for one interactive answer before a benign decline. */
 const DEFAULT_INTERACTION_TIMEOUT_MS = 900_000;
 
+/**
+ * SAFETY INVARIANT 1 (asserted, not convention): a sub-run spawned by the
+ * orchestrate executor for a SAFE step (start_run/race) MUST run as an isolated
+ * ENVELOPE — never a live in-place turn on a thread. Throws loudly if a caller
+ * ever constructs a safe sub-run that could mutate the live tree.
+ */
+function assertEnvelopeSubRun(sub: RunInput): void {
+  if (sub.inPlace === true) {
+    throw new Error("orchestrate safe sub-run must be an isolated envelope (inPlace must be false), refusing live-tree mutation");
+  }
+  if (sub.threadId !== undefined || sub.executionRoot !== undefined) {
+    throw new Error("orchestrate safe sub-run must not bind a thread or in-place execution root (isolation envelope only)");
+  }
+}
+
 /** Changed paths and +/- line counts parsed from a unified git diff. */
 function diffStats(diff: string): { paths: string[]; additions: number; deletions: number } {
   const paths: string[] = [];
@@ -352,6 +398,12 @@ export class Orchestrator {
       case "plan":
         return this.runPlan(resolved);
       case "orchestrate":
+        // Recursion guard: a sub-run spawned by the orchestrate executor carries
+        // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
+        // recursion). Fail loudly rather than silently degrade.
+        if ((resolved.orchestrateDepth ?? 0) > 0) {
+          throw new Error("orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate");
+        }
         return this.runOrchestrate(resolved);
     }
   }
@@ -692,7 +744,14 @@ export class Orchestrator {
     log: EventLog,
   ): Promise<string> {
     if (input.repoRoot === NO_PROJECT_ROOT || input.contextMode === "off") return "";
-    const pack = await buildContextPack(input.repoRoot, contract);
+    // SF6: the versioned project config drives the context pack — mandatory files
+    // (fail-closed when listed), plus include/exclude globs for the Scope Atlas.
+    const projectCtx = this.projectConfig(input.repoRoot).context;
+    const pack = await buildContextPack(input.repoRoot, contract, {
+      mandatory: projectCtx.mandatory_files.length > 0 ? projectCtx.mandatory_files : undefined,
+      include: projectCtx.include,
+      exclude: projectCtx.exclude,
+    });
     store.writeYaml(join(paths.contextDir, "context_pack.yaml"), pack);
     log.emit("context.pack.created", {
       hash: pack.hash,
@@ -768,6 +827,11 @@ export class Orchestrator {
 
   private projectConfig(repoRoot: string): ProjectConfig {
     return this.config(repoRoot).project;
+  }
+
+  /** Resolved child-env composition mode (mirror_native|clean) from global config. */
+  private envInheritance(repoRoot: string): "mirror_native" | "clean" {
+    return this.config(repoRoot).global.routing.env_inheritance;
   }
 
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
@@ -861,9 +925,8 @@ export class Orchestrator {
       budget: {
         portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
         // Run cap precedence: explicit run input > surface deps > the user's
-        // configured global per-run default. (max_usd_per_day is a UI budget
-        // display threshold; engine-side day ledgers need persistent spend
-        // tracking and are documented as such.)
+        // configured global per-run default. ($/day caps were removed; the budget
+        // priority is respecting harness-reported subscription/OAuth quota — SF3.)
         max_usd: input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
       },
     });
@@ -1020,6 +1083,7 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       max_usd: routed.settings?.maxUsd ?? null,
+      env_inheritance: this.envInheritance(contract.repo.root),
       ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
       ...(inPlaceEnvelope && sessionFields?.resume_session_id
         ? { resume_session_id: sessionFields.resume_session_id }
@@ -1344,8 +1408,9 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     // The execution root is the tree the harness mutates: the project itself for
     // in-place threads/ordinary runs, or the thread's persistent worktree for an
-    // isolated thread. Config/artifacts/contract stay anchored to repoRoot.
-    const execRoot = input.executionRoot ?? input.repoRoot;
+    // isolated thread. Config/artifacts/contract stay anchored to repoRoot. Both
+    // the WorkspaceManager and the git boundary resolve against this SINGLE root.
+    const execRoot = this.execRootOf(input);
     const wsm = new WorkspaceManager(execRoot);
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
@@ -1363,6 +1428,17 @@ export class Orchestrator {
     const gitPreconditionError = await this.ensureWriteModeGitBoundary(execRoot, log, store, paths, runId, mode);
     if (gitPreconditionError) {
       return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: gitPreconditionError, candidates: [] };
+    }
+    // Pre-turn snapshot of the live tree for in-place runs: the revert restore
+    // target (server-owned revertInPlace). A snapshot failure must never fail the
+    // run — revert is simply unavailable then.
+    let preTurnSha: string | null = null;
+    if (input.inPlace === true) {
+      try {
+        preTurnSha = await snapshotTree(execRoot);
+      } catch {
+        preTurnSha = null;
+      }
     }
 
     // ContextPack is LAZY (Q13): agent/race candidates explore the live tree
@@ -1418,6 +1494,7 @@ export class Orchestrator {
       leaseId: string;
     }
     let budgetStopped = false;
+    let softWarned = false;
     const slots: CandidateSlot[] = [];
     for (let i = 0; i < adapters.length; i++) {
       const routed = adapters[i] as RoutedAdapter;
@@ -1449,7 +1526,20 @@ export class Orchestrator {
         return;
       }
       const adapter = slot.routed.adapter;
-      const knobs = this.routeSpecKnobs(slot.routed, contract.external_context.policy, input.model, input.effort);
+      // SF2 soft + downgrade breaker (before the hard cap): soft = a one-time
+      // warning; downgrade = run this attempt on the per-harness fallback_model
+      // (cheaper) instead of hard-killing — gives fallback_model a real job.
+      const breakerTier = slotLedger(slot).tier();
+      if (breakerTier === "soft" && !softWarned) {
+        softWarned = true;
+        log.emit("budget.observation", { harness_id: adapter.id, attempt_id: slot.attemptId, kind: "manual", detail: "budget soft cap reached — approaching the run ceiling" });
+      }
+      const downgradeModel = breakerTier === "downgrade" ? slot.routed.settings?.fallbackModel ?? null : null;
+      if (downgradeModel) {
+        log.emit("budget.observation", { harness_id: adapter.id, attempt_id: slot.attemptId, kind: "manual", detail: `budget downgrade — switching to fallback model ${downgradeModel}` });
+      }
+      const modelForAttempt = downgradeModel ?? input.model;
+      const knobs = this.routeSpecKnobs(slot.routed, contract.external_context.policy, modelForAttempt, input.effort);
       const effectiveWeb = this.discloseWebUpgrade(log, slot.routed, knobs.webPolicy, slot.attemptId);
       let envelope: WorkspaceEnvelope | undefined;
       try {
@@ -1489,7 +1579,7 @@ export class Orchestrator {
             log.emit("harness.event", harnessEventPayload(adapter.id, slot.attemptId, safeEv));
           },
           input.signal,
-          input.model,
+          modelForAttempt,
           input.effort,
           this.candidateIntent(input),
           log,
@@ -1550,6 +1640,21 @@ export class Orchestrator {
     };
     await runBounded(slots, Math.min(slots.length, MAX_PARALLEL_CANDIDATES), runSlot);
     const runs: CandidateRun[] = runsBySlot.filter((r): r is CandidateRun => r !== undefined);
+
+    // Revert divergence fence for the single-candidate in-place path: the
+    // candidate mutated the LIVE tree during execution above, so the post-turn
+    // snapshot must be taken NOW — before review/synthesis/arbitration, which can
+    // run for a long time during which the user may edit files. Snapshotting after
+    // arbitration (as the race-adoption path does) would fold those user edits
+    // into the revert target and let a later revert clobber them.
+    let earlyPostTurnSha: string | null = null;
+    if (input.inPlace === true && slots.length === 1) {
+      try {
+        earlyPostTurnSha = await snapshotTree(execRoot);
+      } catch {
+        earlyPostTurnSha = null;
+      }
+    }
 
     if (input.signal?.aborted) {
       await disposeReviewEnvelopes();
@@ -1778,18 +1883,39 @@ export class Orchestrator {
       // apply (the user edited the tree mid-race) is disclosed, never lost.
       // A clean terminal to adopt is success OR ungated (review passed but no
       // test gates were configured to certify it) — never blocked/failed/no_op.
+      // Adoption is HONEST: `adopted` reflects whether the live in-place tree was
+      // actually mutated, DECOUPLED from a clean review. A single-candidate
+      // in-place turn edits the live tree directly — so it is "applied" even when
+      // review is blocked (applyState = applied_review_blocked + Revert offered).
+      // A race (n>1) ran candidates in isolated envelopes; its winner mutates the
+      // live tree only when we apply it, which we gate on a clean terminal.
       const adoptable = status === "success" || status === "ungated";
       let adopted: boolean | null = null;
-      if (input.inPlace === true && adoptable && winnerRun.diff.trim().length > 0) {
+      let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" = "not_applied";
+      let postTurnSha: string | null = null;
+      if (input.inPlace === true && hasDiff) {
         if (slots.length === 1) {
-          adopted = true; // already live
-        } else {
+          // Already live: the candidate ran in-place and wrote the tree itself.
+          adopted = true;
+          applyState = adoptable ? "applied" : "applied_review_blocked";
+          // Fence taken right after the candidate finished (pre-review), so user
+          // edits made during review/arbitration are not folded into the target.
+          postTurnSha = earlyPostTurnSha;
+        } else if (adoptable) {
           try {
             await applyPatch(execRoot, winnerRun.diff);
             adopted = true;
+            applyState = "applied";
             log.emit("work_product.adopted", { applied: true, patch_sha256: patchSha256, winner: winnerRun.attemptId });
+            // Race winner: snapshot immediately after applying (minimal window).
+            try {
+              postTurnSha = await snapshotTree(execRoot);
+            } catch {
+              postTurnSha = null;
+            }
           } catch (err) {
             adopted = false;
+            applyState = "not_applied";
             log.emit("work_product.adopted", { applied: false, patch_sha256: patchSha256, detail: safeErrorMessage(err) });
           }
         }
@@ -1810,6 +1936,9 @@ export class Orchestrator {
           diffstat: { files: wstats.paths.length, additions: wstats.additions, deletions: wstats.deletions },
           blockers,
           adopted,
+          apply_state: applyState,
+          pre_turn_sha: preTurnSha,
+          post_turn_sha: postTurnSha,
         },
       });
       store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, { ...result.decision, status }, evidences, synth.reason, actualReviewVerified));
@@ -1925,22 +2054,26 @@ export class Orchestrator {
   private policyFindings(
     run: CandidateRun,
     reviewVerified: boolean,
+    protectedPaths: string[] = [],
   ): { findings: ReviewFinding[]; risk: { level: string; reasons: string[]; changedFiles: number } } {
     const stats = diffStats(run.diff);
-    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions });
+    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions, protectedPaths });
     const findings: ReviewFinding[] = [];
     const reviewer = { harness_id: "policy", requested_model: null, requested_effort: null, observed_model: null, route_proof_status: "verified" as const };
     const evidenceFor = (reasons: string[]) => ({
       files: stats.paths.filter((p) => reasons.some((r) => r.includes(p))).map((path) => ({ path, lines: null })),
     });
-    const human = requireHuman(stats.paths);
+    // Structured matched-path evidence (never reconstructed from prose).
+    const evidenceFromPaths = (paths: string[]) => ({ files: paths.map((path) => ({ path, lines: null })) });
+    // Contract protected_paths escalate the human gate alongside the built-in globs.
+    const human = requireHuman(stats.paths, [...DEFAULT_REQUIRE_HUMAN_PATHS, ...protectedPaths]);
     if (human.required) {
       findings.push(ReviewFindingSchema.parse({
         id: newId("find"),
         severity: "NEEDS_HUMAN",
         category: "security",
         claim: `protected-path change requires human approval: ${human.reasons.join("; ")}`,
-        evidence: evidenceFor(human.reasons),
+        evidence: evidenceFromPaths(human.matchedPaths),
         reviewer,
         status: "accepted",
       }));
@@ -1952,7 +2085,7 @@ export class Orchestrator {
         severity: "NEEDS_HUMAN",
         category: "security",
         claim: `critical-risk diff requires human approval: ${risk.reasons.join("; ")}`,
-        evidence: evidenceFor(risk.reasons),
+        evidence: risk.matchedPaths.length > 0 ? evidenceFromPaths(risk.matchedPaths) : evidenceFor(risk.reasons),
         reviewer,
         status: "accepted",
       }));
@@ -1962,7 +2095,7 @@ export class Orchestrator {
         severity: "NEEDS_HUMAN",
         category: "architecture",
         claim: `high-risk diff requires a cross-family review panel (>=2 provider families), which is not available: ${risk.reasons.join("; ")}`,
-        evidence: evidenceFor(risk.reasons),
+        evidence: risk.matchedPaths.length > 0 ? evidenceFromPaths(risk.matchedPaths) : evidenceFor(risk.reasons),
         reviewer,
         status: "accepted",
       }));
@@ -2003,6 +2136,7 @@ export class Orchestrator {
               artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
               cwd: candidateCwd,
               reviewers,
+              envInheritance: this.envInheritance(cwd),
               onReviewerEvent: (event) => log.emit(event.type, { ...event }),
             })
           : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
@@ -2016,15 +2150,21 @@ export class Orchestrator {
       }
       this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
       const revalidated = await revalidateFindings(result.findings);
+      // The high-risk human gate must key off the ACTUAL cross-family verification
+      // (stream-observed route proofs), not the preliminary routeVerified (families
+      // merely configured). Otherwise a high-risk diff skips its NEEDS_HUMAN gate
+      // when two families were configured but their route proofs went unverified.
+      // Mirrors the convergence path (actualReviewVerified).
+      const candidateReviewVerified = reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified;
       // Typed policy gate (risk + protected paths) merges with reviewer findings.
-      const policy = this.policyFindings(run, reviewVerified);
+      const policy = this.policyFindings(run, candidateReviewVerified, contract.constraints.protected_paths);
       const allFindings = [...policy.findings, ...revalidated];
       const inconclusive = allFindings.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
       const noBlockers = !allFindings.some((f) => isBlocking(f));
       const reviewClean = result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
       store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
         attempt_id: run.attemptId,
-        review_verified: reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified,
+        review_verified: candidateReviewVerified,
         cross_family_healthy: result.crossFamilyHealthy,
         cross_family_verified: result.crossFamilyVerified,
         healthy_providers: result.healthyProviders,
@@ -2035,7 +2175,7 @@ export class Orchestrator {
         route_proofs: result.routeProofs,
       });
       for (const f of allFindings) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
-      evidences.push(this.toEvidence(run, contract, allFindings, reviewClean, reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified));
+      evidences.push(this.toEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified));
     }
     return evidences;
   }
@@ -2080,7 +2220,13 @@ export class Orchestrator {
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
-    const wsm = new WorkspaceManager(this.execRootOf(input));
+    // The execution root is the tree the harness mutates (thread worktree for an
+    // isolated thread, else the project). The WorkspaceManager AND the git
+    // boundary must resolve against the SAME root — the race path does so via the
+    // local `execRoot`; this path previously ensured the boundary on repoRoot,
+    // which for an isolated thread is the project, not the mutated worktree.
+    const execRoot = this.execRootOf(input);
+    const wsm = new WorkspaceManager(execRoot);
     const readiness = new ReadinessLedger();
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
@@ -2090,7 +2236,7 @@ export class Orchestrator {
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
     if (!input.inPlace) {
-      const gitPreconditionError = await this.ensureWriteModeGitBoundary(input.repoRoot, log, store, paths, runId, mode);
+      const gitPreconditionError = await this.ensureWriteModeGitBoundary(execRoot, log, store, paths, runId, mode);
       if (gitPreconditionError) {
         return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: gitPreconditionError, candidates: [] };
       }
@@ -2149,6 +2295,12 @@ export class Orchestrator {
     let lastRun: CandidateRun | null = null;
     let actualReviewVerified = false;
     let lastFinalReviewClean = false;
+    // Honest apply-state for in-place convergence: the attempts mutate the LIVE
+    // tree directly, so record the revert fence (pre-turn snapshot) and the
+    // post-mutation snapshot of the last attempt (captured before its review, so
+    // user edits during review are not folded into the revert target — see runRace).
+    let preTurnSha: string | null = null;
+    let lastPostTurnSha: string | null = null;
     let triedSinceProgress = new Set<string>();
     let lastSig = "";
     // until_clean has NO fixed attempt cap; it stops on convergence, budget hard tier,
@@ -2166,6 +2318,13 @@ export class Orchestrator {
       // every attempt spec (parity with runRace); telemetry must never claim an
       // access level the envelope did not actually run with.
       const convergenceAccess = contract.access.effective_profile;
+      if (input.inPlace === true) {
+        try {
+          preTurnSha = await snapshotTree(execRoot);
+        } catch {
+          preTurnSha = null;
+        }
+      }
       envelope = await wsm.create({
         taskId,
         attemptId: "converge",
@@ -2276,6 +2435,16 @@ export class Orchestrator {
         }
         lastRun = run;
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry: run.telemetry });
+        // Post-mutation fence for in-place: snapshot the live tree NOW (after the
+        // harness mutated it, before this attempt's review). The last attempt's
+        // value is the revert target persisted into work_product.yaml.
+        if (input.inPlace === true) {
+          try {
+            lastPostTurnSha = await snapshotTree(execRoot);
+          } catch {
+            lastPostTurnSha = null;
+          }
+        }
 
         // The review round is wrapped so a preflight/revalidation throw ends the
         // run TERMINALLY with artifacts instead of orphaning the run dir (#5).
@@ -2297,6 +2466,7 @@ export class Orchestrator {
                     artifactsDir: join(paths.reviewsDir, `${attemptId}-reviewers`),
                     cwd: candidateReviewCwd,
                     reviewers,
+                    envInheritance: this.envInheritance(input.repoRoot),
                     onReviewerEvent: (event) => log.emit(event.type, { ...event }),
                   })
                 : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
@@ -2313,7 +2483,7 @@ export class Orchestrator {
             actualReviewVerified = reviewVerified && reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified;
             const revalidated = await revalidateFindings(reviewResult.findings);
             // Typed policy gate (risk + protected paths) merges with reviewer findings.
-            const policy = this.policyFindings(run, actualReviewVerified);
+            const policy = this.policyFindings(run, actualReviewVerified, contract.constraints.protected_paths);
             const allFindings = [...policy.findings, ...revalidated];
             lastFindings = allFindings;
             store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
@@ -2423,12 +2593,31 @@ export class Orchestrator {
       assertNoSecretLikeTokens("final patch diff", lastRun.diff);
       const patchSha256 = sha256(lastRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), lastRun.diff);
+      // Honest apply-state (parity with runRace single-candidate in-place): a
+      // convergence run with inPlace mutated the live tree directly across its
+      // attempts, so it is "applied" even when review blocked (Revert offered).
+      const convHasDiff = lastRun.diff.trim().length > 0;
+      const convAdoptable = status === "success" || status === "ungated";
+      const convAdopted: boolean | null = input.inPlace === true && convHasDiff ? true : null;
+      const convApplyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
+        convAdopted === true ? (convAdoptable ? "applied" : "applied_review_blocked") : "not_applied";
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: "patch",
         source_task_id: taskId,
         producer_attempt_id: lastRun.attemptId,
-        meta: { harness_id: lastRun.harnessId, mode, attempts: attempt, status, review_verified: actualReviewVerified, patch_sha256: patchSha256 },
+        meta: {
+          harness_id: lastRun.harnessId,
+          mode,
+          attempts: attempt,
+          status,
+          review_verified: actualReviewVerified,
+          patch_sha256: patchSha256,
+          adopted: convAdopted,
+          apply_state: convApplyState,
+          pre_turn_sha: convAdopted === true ? preTurnSha : null,
+          post_turn_sha: convAdopted === true ? lastPostTurnSha : null,
+        },
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
@@ -2593,6 +2782,7 @@ export class Orchestrator {
         model_hint: knobs.model,
         effort_hint: knobs.effort,
         max_turns: knobs.maxTurns,
+        env_inheritance: this.envInheritance(input.repoRoot),
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const planInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
@@ -2721,6 +2911,7 @@ export class Orchestrator {
           artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
           cwd: this.execRootOf(input),
           reviewers,
+          envInheritance: this.envInheritance(input.repoRoot),
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });
         reviewFindings = res.findings;
@@ -2850,11 +3041,15 @@ export class Orchestrator {
     const goal = input.prompt || "Plan the next move for this repository.";
     // The typed orchestration contract is a REAL persisted artifact (producer
     // here, consumers: the brain prompt below + the plan validator).
+    // Autonomy is producer-supplied (control-api/CLI -> daemon -> RunInput);
+    // the executor below is its consumer. Default `suggest` (plan-only) preserves
+    // the read-only contract when no autonomy is requested.
+    const autonomy: OrchestrateAutonomy = input.autonomy ?? "suggest";
     const orchestrateContract = OrchestrateContractSchema.parse({
       thread_id: input.threadId ?? newId("th"),
       goal,
       budget: { max_usd: input.maxUsd ?? null, max_tool_calls: null },
-      autonomy: "suggest",
+      autonomy,
     });
     const brainPrompt = [
       `You are the Claudexor orchestration brain. Plan — do not implement.`,
@@ -3028,6 +3223,7 @@ export class Orchestrator {
         model_hint: knobs.model,
         effort_hint: knobs.effort,
         max_turns: knobs.maxTurns,
+        env_inheritance: this.envInheritance(input.repoRoot),
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const reportInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
@@ -3251,9 +3447,11 @@ export class Orchestrator {
     // persist final/orchestration.yaml; a missing/invalid block is disclosed in
     // the summary and events (suggest autonomy: the plan is the work product).
     let typedPlanNote = "";
+    let orchestratePlan: OrchestratePlanT | null = null;
     if (opts.mode === "orchestrate") {
       const extracted = extractOrchestratePlan(report);
       if (extracted.plan) {
+        orchestratePlan = extracted.plan;
         store.writeYaml(join(paths.finalDir, "orchestration.yaml"), extracted.plan);
         log.emit("output.ready", { kind: "report", path: "final/orchestration.yaml" });
         typedPlanNote = `\n- Typed plan: final/orchestration.yaml (${extracted.plan.tool_calls.length} tool call(s))`;
@@ -3276,8 +3474,24 @@ export class Orchestrator {
       });
       store.writeText(join(paths.finalDir, "omissions.md"), `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`);
     }
+    // orchestrate executor (auto_safe/auto_full): the plan is no longer just a
+    // suggestion — run its tool_calls in order, classifying each via toolRisk
+    // (fail-closed). SAFE steps run as isolated envelope sub-runs / pure reads;
+    // a RISKY step (apply) blocks under auto_safe (awaiting a human decision) and
+    // applies through the single existing gate under auto_full. The executor's
+    // terminal outcome (success / blocked / failed) becomes the run's terminal.
+    const autonomy: OrchestrateAutonomy = opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
+    let terminal: RunStatus = "success";
+    if (opts.mode === "orchestrate" && autonomy !== "suggest" && orchestratePlan) {
+      // Thread the GENERATED runId onto input so the executor's answer_question
+      // step keys the interaction registry by this orchestrate run's id (callers
+      // often invoke run() without a preassigned runId).
+      const exec = await this.executeOrchestratePlan({ ...input, runId }, orchestratePlan, autonomy, opts.orchestrateContract ?? null, store, paths, log);
+      terminal = exec.terminal;
+      typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
+    }
     const harnessLabel = attempts.map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`).join(", ");
-    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: success${typedPlanNote}\n\n${report}\n`);
+    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: ${terminal}${typedPlanNote}\n\n${report}\n`);
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
@@ -3287,18 +3501,359 @@ export class Orchestrator {
       meta: { harnesses: attempts.map((a) => a.harnessId), mode: opts.mode, intent: opts.intent, read_only: true },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
-    log.emit("run.completed", { status: "success" });
+    if (terminal === "blocked") {
+      writeFailure(store, paths, {
+        phase: "executor",
+        category: "policy",
+        safeMessage: "orchestrate executor stopped at a risky step (apply) under auto_safe; awaiting a human decision",
+        runDir: paths.root,
+        nextActions: ["Review the proposed apply", "Approve via the run decision endpoint", "Re-run with auto_full to apply automatically"],
+      });
+      log.emit("run.blocked", { status: terminal, phase: "executor", failure_ref: "final/failure.yaml" });
+    } else if (terminal === "failed") {
+      writeFailure(store, paths, {
+        phase: "executor",
+        category: "internal",
+        safeMessage: "orchestrate executor failed: a safe step errored fatally (see final/orchestration_progress.yaml)",
+        runDir: paths.root,
+        nextActions: ["Inspect final/orchestration_progress.yaml", "Open the failed sub-run", "Re-run after the cause is fixed"],
+      });
+      log.emit("run.failed", { status: terminal, phase: "executor", failure_ref: "final/failure.yaml" });
+    } else {
+      log.emit("run.completed", { status: terminal });
+    }
 
     return {
       runId,
       taskId,
       mode: opts.mode,
-      status: "success",
+      status: terminal,
       winner: null,
       runDir: paths.root,
       summary: redactSecrets(report).slice(0, 400),
       candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
     };
+  }
+
+  /**
+   * Execute a typed orchestration plan under auto_safe / auto_full. Runs the
+   * tool_calls IN ORDER, classifying each via toolRisk (FAIL-CLOSED). Persists
+   * final/orchestration_progress.yaml and emits progress events. Returns the
+   * executor's terminal status (success / blocked / failed) and a short note.
+   *
+   * SAFETY INVARIANTS (see CLAUDEXOR doctrine):
+   *  1. A SAFE step NEVER mutates the live tree: start_run/race run as isolated
+   *     ENVELOPE sub-runs (inPlace=false, asserted), review/status/answer are reads.
+   *  2. Risk is fail-closed (toolRisk): any unknown/undeclared tool is risky.
+   *  3. auto_safe STOPS at the first risky step (apply) without executing it; the
+   *     run ends `blocked` awaiting a human decision.
+   *  4. answer_question / status / review are read-only w.r.t. the tree.
+   */
+  private async executeOrchestratePlan(
+    input: RunInput,
+    plan: OrchestratePlanT,
+    autonomy: OrchestrateAutonomy,
+    contract: OrchestrateContractT | null,
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+    log: EventLog,
+  ): Promise<{ terminal: RunStatus; note: string }> {
+    const maxToolCalls = contract?.budget.max_tool_calls ?? null;
+    const steps: OrchestratePlanProgressT["steps"] = plan.tool_calls.map((call, index) => ({
+      index,
+      tool: call.tool,
+      risk: toolRisk(call.tool),
+      status: "pending" as OrchestrateStepStatus,
+      run_id: null,
+      detail: null,
+    }));
+    let stoppedReason: string | null = null;
+    let terminal: RunStatus = "success";
+    const persist = (): void => {
+      const progress: OrchestratePlanProgressT = { steps, autonomy, stopped_reason: stoppedReason };
+      store.writeYaml(join(paths.finalDir, "orchestration_progress.yaml"), progress);
+    };
+    persist();
+    log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
+
+    let executed = 0;
+    for (let i = 0; i < plan.tool_calls.length; i++) {
+      const call = plan.tool_calls[i]!;
+      const step = steps[i]!;
+      // Honor input.signal abort: stop, mark remaining steps skipped.
+      if (input.signal?.aborted) {
+        step.status = "skipped";
+        step.detail = "run cancelled before this step";
+        stoppedReason = "cancelled";
+        terminal = "cancelled";
+        persist();
+        break;
+      }
+      // Honor the budget cap on tool calls (count attempted executions).
+      if (maxToolCalls !== null && executed >= maxToolCalls) {
+        step.status = "skipped";
+        step.detail = `budget max_tool_calls=${maxToolCalls} reached`;
+        stoppedReason = `budget max_tool_calls=${maxToolCalls} reached`;
+        persist();
+        continue;
+      }
+      const risk = toolRisk(call.tool);
+      // RISKY step (apply, or any fail-closed-risky tool).
+      if (risk === "risky") {
+        if (autonomy === "auto_safe") {
+          // STOP: do not execute the risky step; block awaiting a human decision.
+          step.status = "blocked";
+          step.detail = "risky step requires human approval (auto_safe)";
+          stoppedReason = `blocked at risky step #${i} (${call.tool}) under auto_safe`;
+          terminal = "blocked";
+          log.emit("orchestrate.step.blocked", { index: i, tool: call.tool, autonomy });
+          persist();
+          break;
+        }
+        // auto_full: execute the risky step (apply) via the single gate.
+        step.status = "running";
+        persist();
+        executed++;
+        try {
+          const r = await this.executeApplyStep(input, call as Extract<OrchestratePlanCallT, { tool: "apply" }>);
+          step.status = r.ok ? "done" : "failed";
+          step.run_id = r.runId;
+          step.detail = r.detail;
+          log.emit("orchestrate.step.done", { index: i, tool: call.tool, ok: r.ok, run_id: r.runId });
+          if (!r.ok) {
+            terminal = "failed";
+            stoppedReason = `apply step #${i} failed: ${r.detail}`;
+            persist();
+            break;
+          }
+        } catch (err) {
+          step.status = "failed";
+          step.detail = safeErrorMessage(err);
+          terminal = "failed";
+          stoppedReason = `apply step #${i} threw: ${safeErrorMessage(err)}`;
+          persist();
+          break;
+        }
+        persist();
+        continue;
+      }
+      // SAFE step: execute as an isolated sub-run / pure read.
+      step.status = "running";
+      persist();
+      executed++;
+      try {
+        const r = await this.executeSafeStep(input, call, log, store, paths);
+        step.status = r.status;
+        step.run_id = r.runId;
+        step.detail = r.detail;
+        log.emit("orchestrate.step.done", { index: i, tool: call.tool, status: r.status, run_id: r.runId });
+        if (r.status === "failed") {
+          terminal = "failed";
+          stoppedReason = `safe step #${i} (${call.tool}) errored: ${r.detail}`;
+          persist();
+          break;
+        }
+      } catch (err) {
+        step.status = "failed";
+        step.detail = safeErrorMessage(err);
+        terminal = "failed";
+        stoppedReason = `safe step #${i} (${call.tool}) threw: ${safeErrorMessage(err)}`;
+        persist();
+        break;
+      }
+      persist();
+    }
+    persist();
+    const done = steps.filter((s) => s.status === "done").length;
+    const note =
+      terminal === "blocked"
+        ? `blocked at a risky step (${done}/${steps.length} safe steps done)`
+        : terminal === "failed"
+          ? `failed (${done}/${steps.length} steps done; ${stoppedReason ?? "see progress"})`
+          : terminal === "cancelled"
+            ? `cancelled (${done}/${steps.length} steps done)`
+            : `all ${done}/${steps.length} steps done`;
+    return { terminal, note };
+  }
+
+  /**
+   * Run one SAFE plan step. start_run/race spawn ISOLATED ENVELOPE sub-runs
+   * (inPlace=false, ASSERTED); review/status/answer_question are pure reads /
+   * answer delivery that never mutate the live tree.
+   */
+  private async executeSafeStep(
+    input: RunInput,
+    call: OrchestratePlanCallT,
+    log: EventLog,
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+  ): Promise<{ status: OrchestrateStepStatus; runId: string | null; detail: string | null }> {
+    switch (call.tool) {
+      case "start_run":
+      case "race": {
+        // Force an isolated envelope sub-run: inPlace MUST be false, no thread
+        // binding, no in-place execution root, no nested autonomy. A sub-run
+        // inherits orchestrateDepth+1 (recursion guard) and may NOT orchestrate.
+        const subInput: RunInput = {
+          repoRoot: input.repoRoot,
+          prompt: call.prompt,
+          mode: call.tool === "start_run" ? call.mode : "agent",
+          n: call.tool === "race" ? call.n : undefined,
+          harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
+          portfolio: input.portfolio,
+          maxUsd: input.maxUsd ?? null,
+          web: input.web,
+          externalContextPolicy: input.externalContextPolicy,
+          signal: input.signal,
+          // SAFETY: isolated envelope, never the live in-place thread tree.
+          inPlace: false,
+          threadId: undefined,
+          executionRoot: undefined,
+          autonomy: undefined,
+          resumeSessions: undefined,
+          onSessionObserved: undefined,
+          orchestrateDepth: (input.orchestrateDepth ?? 0) + 1,
+        };
+        // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
+        // isolated envelope — never a live in-place turn.
+        assertEnvelopeSubRun(subInput);
+        log.emit("orchestrate.subrun.started", { tool: call.tool, mode: subInput.mode, n: subInput.n ?? null });
+        const res = await this.run(subInput);
+        return {
+          status: res.status === "failed" || res.status === "cancelled" ? "failed" : "done",
+          runId: res.runId,
+          detail: `${call.tool} sub-run ${res.runId} -> ${res.status}`,
+        };
+      }
+      case "status": {
+        // Pure read of the referenced run's decision/work_product artifacts.
+        const read = this.readRunStatus(input.repoRoot, call.run_id);
+        return { status: read ? "done" : "skipped", runId: call.run_id, detail: read ?? `run ${call.run_id} has no readable status artifacts` };
+      }
+      case "review": {
+        // Read-only review over the referenced run's recorded patch diff. The
+        // step ACTUALLY runs the reviewer panel (evidence beats summaries — a
+        // "done" review must mean a review happened), persists its artifacts, and
+        // reports the real outcome; eligibility alone is never reported as done.
+        const diff = this.readRunPatch(input.repoRoot, call.run_id);
+        if (diff === null) return { status: "skipped", runId: call.run_id, detail: `run ${call.run_id} has no patch.diff to review` };
+        const reviewers = await this.resolveReviewers(input.repoRoot);
+        if (reviewers.length === 0) return { status: "skipped", runId: call.run_id, detail: "no doctor-OK reviewers available" };
+        const evidenceDir = join(paths.reviewsDir, `orchestrate-${call.run_id}`, "evidence");
+        const result = await reviewCandidate({
+          candidateLabel: `Run ${call.run_id}`,
+          diff,
+          evidenceDir,
+          artifactsDir: join(paths.reviewsDir, `orchestrate-${call.run_id}`),
+          cwd: input.repoRoot,
+          reviewers,
+          envInheritance: this.envInheritance(input.repoRoot),
+          onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+        });
+        const revalidated = await revalidateFindings(result.findings);
+        store.writeYaml(join(paths.reviewsDir, `orchestrate-${call.run_id}.yaml`), {
+          target_run_id: call.run_id,
+          cross_family_healthy: result.crossFamilyHealthy,
+          cross_family_verified: result.crossFamilyVerified,
+          findings: revalidated,
+          route_proofs: result.routeProofs,
+        });
+        const blockers = revalidated.filter((f) => isBlocking(f)).length;
+        return {
+          status: "done",
+          runId: call.run_id,
+          detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
+        };
+      }
+      case "answer_question": {
+        // Deliver typed answers to a referenced pending interaction (read-only
+        // w.r.t. the tree). The daemon owns the live registry; without an
+        // injected service this context cannot reach it, so SKIP honestly.
+        //
+        // INVARIANT: safe sub-runs are NON-interactive (subInput above omits
+        // onInteraction, so a start_run/race sub-run never raises an interaction
+        // and nothing registers under its run id). The only pending interactions
+        // therefore belong to THIS orchestrate run, so `input.runId` is the
+        // correct registry key. If sub-runs are ever made interactive, the
+        // answer_question plan call MUST carry the target sub-run id and pass it
+        // here instead of input.runId (the registry is keyed by runId+interactionId).
+        if (!input.answerInteraction) {
+          return { status: "skipped", runId: null, detail: "no live interaction surface in this context" };
+        }
+        const delivered = await input.answerInteraction(input.runId ?? "", call.interaction_id, {
+          interaction_id: call.interaction_id,
+          answers: call.answers.map((a) => ({ question_id: a.question_id, selected_labels: a.selected_labels, free_text: a.free_text })),
+        });
+        return { status: delivered ? "done" : "skipped", runId: null, detail: delivered ? `delivered answers to ${call.interaction_id}` : `interaction ${call.interaction_id} not found / already resolved` };
+      }
+      default: {
+        // FAIL-CLOSED: a risky tool (apply) must never reach the safe executor;
+        // the caller routes risky steps to executeApplyStep / the auto_safe block.
+        throw new Error(`executeSafeStep refused a non-safe tool '${(call as { tool: string }).tool}' (risky tools must not run as safe steps)`);
+      }
+    }
+  }
+
+  /**
+   * Execute a RISKY `apply` step (auto_full only) through the SINGLE existing
+   * apply gate (`validateApplyGate`) + `deliver` — the same path
+   * accept_clean_patch uses. Reads the referenced run's patch + work_product +
+   * decision artifacts; refuses unless the gate passes.
+   */
+  private async executeApplyStep(
+    input: RunInput,
+    call: Extract<OrchestratePlanCallT, { tool: "apply" }>,
+  ): Promise<{ ok: boolean; runId: string; detail: string }> {
+    const store = new ArtifactStore(input.repoRoot);
+    const sub = store.runPaths(call.run_id);
+    const patchPath = join(sub.finalDir, "patch.diff");
+    const patchText = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : null;
+    if (patchText === null) return { ok: false, runId: call.run_id, detail: `run ${call.run_id} has no patch.diff to apply` };
+    if (containsSecretLikeToken(patchText)) return { ok: false, runId: call.run_id, detail: "patch contains a secret-like token; refusing apply" };
+    const decision = store.readYaml(join(sub.arbitrationDir, "decision.yaml"));
+    const workProduct = store.readYaml(join(sub.finalDir, "work_product.yaml"));
+    const parsedDecision = decision ? DecisionRecordSchema.safeParse(decision) : null;
+    const parsedWp = workProduct ? WorkProductSchema.safeParse(workProduct) : null;
+    // The referenced run's recorded original project IS this orchestrate run's
+    // repoRoot (sub-runs were spawned against it); the gate re-verifies identity.
+    const gateError = validateApplyGate({
+      // Artifact-only path (we read the referenced run's decision/work_product
+      // from disk, not a live daemon job): pass state=null and let the gate's
+      // decision.status check be the terminal-state guard. Hardcoding "succeeded"
+      // would silently bypass that check if it were ever relaxed.
+      state: null,
+      decision: parsedDecision?.success ? parsedDecision.data : null,
+      workProduct: parsedWp?.success ? parsedWp.data : null,
+      patch: patchText,
+      originalRepoRoot: input.repoRoot,
+      targetRepoRoot: input.repoRoot,
+      operatorDecision: null,
+    });
+    if (gateError) return { ok: false, runId: call.run_id, detail: `apply gate refused: ${gateError}` };
+    const delivered = await deliver(input.repoRoot, patchText, { mode: call.mode });
+    return { ok: delivered.applied, runId: call.run_id, detail: delivered.applied ? `applied (${call.mode})` : `deliver failed: ${delivered.detail ?? "unknown"}` };
+  }
+
+  /** Pure read: a referenced run's decision/work_product status, or null. */
+  private readRunStatus(repoRoot: string, runId: string): string | null {
+    const store = new ArtifactStore(repoRoot);
+    const sub = store.runPaths(runId);
+    const decision = store.readYaml<{ status?: string; outcome?: string }>(join(sub.arbitrationDir, "decision.yaml"));
+    const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(join(sub.finalDir, "work_product.yaml"));
+    if (!decision && !wp) return null;
+    const parts: string[] = [];
+    if (decision?.status) parts.push(`decision=${decision.status}`);
+    if (wp?.meta?.["result_kind"]) parts.push(`result_kind=${String(wp.meta["result_kind"])}`);
+    if (wp?.meta?.["apply_state"]) parts.push(`apply_state=${String(wp.meta["apply_state"])}`);
+    return parts.length > 0 ? parts.join(", ") : `run ${runId}: artifacts present`;
+  }
+
+  /** Pure read: a referenced run's recorded patch diff, or null. */
+  private readRunPatch(repoRoot: string, runId: string): string | null {
+    const store = new ArtifactStore(repoRoot);
+    const sub = store.runPaths(runId);
+    const path = join(sub.finalDir, "patch.diff");
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
   }
 }
 

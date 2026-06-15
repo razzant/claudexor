@@ -12,16 +12,30 @@ WORKDIR="${3:?usage: make-predictions.sh <tasks.jsonl> <predictions.jsonl> <work
 have_key ANTHROPIC_API_KEY
 have_key OPENAI_API_KEY
 
-RUNNER="${CLAUDEXOR_BENCHMARK_RUNNER:-}"
-if [ -z "$RUNNER" ]; then
-  echo "CLAUDEXOR_BENCHMARK_RUNNER must point to an external SWE-bench runner; v0.5 core CLI has no bench command." >&2
-  exit 2
+# The shipped SWE-bench runner is the in-repo `claudexor-benchmark-runner`
+# (benchmarks/runner). Default to its built entrypoint; honor an explicit override
+# via CLAUDEXOR_BENCHMARK_RUNNER (a path to any compatible runner CLI).
+DEFAULT_RUNNER="$CLAUDEXOR_REPO_ROOT/benchmarks/runner/dist/cli.js"
+RUNNER="${CLAUDEXOR_BENCHMARK_RUNNER:-$DEFAULT_RUNNER}"
+
+# Build guard: if using the default in-repo runner and it isn't built yet, stop with
+# a clear instruction instead of failing deep in node. (An explicit override is the
+# caller's responsibility, so we only guard the default.)
+if [ -z "${CLAUDEXOR_BENCHMARK_RUNNER:-}" ] && [ ! -f "$RUNNER" ]; then
+  die "SWE-bench runner not built at $RUNNER. Build it first, e.g.:
+    (cd $CLAUDEXOR_REPO_ROOT && pnpm build)
+  then re-run. (Or set CLAUDEXOR_BENCHMARK_RUNNER to a prebuilt runner CLI.)"
 fi
 
 ARGS=(--tasks "$TASKS" --predictions "$PREDS" --workdir "$WORKDIR" --n "${CLAUDEXOR_SWE_N:-2}")
 [ -n "${CLAUDEXOR_SWE_MAX_USD:-}" ] && ARGS+=(--max-usd "$CLAUDEXOR_SWE_MAX_USD")
 [ -n "${CLAUDEXOR_SWE_REVIEWER_MODEL:-}" ] && ARGS+=(--reviewer-model "$CLAUDEXOR_SWE_REVIEWER_MODEL")
+[ -n "${CLAUDEXOR_SWE_TASK_TIMEOUT_SEC:-}" ] && ARGS+=(--task-timeout-sec "$CLAUDEXOR_SWE_TASK_TIMEOUT_SEC")
 
-log "external benchmark runner -> $PREDS (n=${CLAUDEXOR_SWE_N:-2}, workdir=$WORKDIR)"
-"$RUNNER" "${ARGS[@]}"
+log "SWE-bench runner -> $PREDS (n=${CLAUDEXOR_SWE_N:-2}, workdir=$WORKDIR, runner=$RUNNER)"
+# A .js entrypoint is run with node; any other path is executed directly.
+case "$RUNNER" in
+  *.js) node "$RUNNER" "${ARGS[@]}" ;;
+  *) "$RUNNER" "${ARGS[@]}" ;;
+esac
 log "predictions: $PREDS"

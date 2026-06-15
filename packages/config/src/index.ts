@@ -90,10 +90,7 @@ export function initProjectConfig(repoRoot: string): InitResult {
     return { configPath, created: false };
   }
   const config = ProjectConfig.parse({
-    project: { name: undefined, language_stack: [] },
     context: {
-      agents_md_first: true,
-      never_silent_truncate: true,
       mandatory_files: ["README.md", "docs/ARCHITECTURE.md"],
     },
   });

@@ -1,13 +1,15 @@
-import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
+import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessModel, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, abortSignalFromSpec } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
-import { parseChatCompletion } from "./parse.js";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { parseChatCompletion, parseModelsList } from "./parse.js";
 
 /** A stalled remote endpoint must not hang a run forever. */
 const RAW_API_TIMEOUT_MS = 180_000;
+/** Model enumeration is interactive (a picker waits on it): keep it snappy. */
+const RAW_API_MODELS_TIMEOUT_MS = 15_000;
 
 export interface RawApiConfig {
   id?: string;
@@ -30,7 +32,16 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
 
   function apiKey(): string | undefined {
-    return process.env[keyEnv] ?? resolveSecret("raw") ?? (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined);
+    const env = process.env[keyEnv];
+    if (env) return env;
+    // Secret fallback is INSTANCE-SCOPED so a key for one provider is never sent
+    // to another (e.g. an OpenAI "raw" key must not reach openrouter.ai). The
+    // default OpenAI-compatible instance owns the managed "raw" (and "openai")
+    // secret; every named instance (openrouter, …) resolves ONLY its own slot.
+    if (id === "raw-api") {
+      return resolveSecret("raw") ?? (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined);
+    }
+    return resolveSecret(id) ?? undefined;
   }
 
   return {
@@ -45,7 +56,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
         version: defaultModel,
-        adapter_version: "0.9.0",
+        adapter_version: CLAUDEXOR_VERSION,
         provider_family: providerFamily,
         capabilities: {
           plan: true,
@@ -74,6 +85,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           web_policy: "none",
           quota_signal: "unknown",
           usage_signal: "exact",
+          // The chat-completions request sends no `reasoning_effort` field
+          // (body is {model, messages} only) -> effort is not a tunable surface.
+          effort_levels: [],
         },
         capability_profile: {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "json", event_schema: "normalized" }],
@@ -84,7 +98,6 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         },
         auth_modes: ["api_key"],
         access_profiles_supported: ["readonly"],
-        models: { discovery: "unavailable" },
       });
     },
 
@@ -112,6 +125,26 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         disabled_intents: ["implement", "create_from_scratch", "repair", "verify"],
         reasons: ["key present but route unproven (no isolated smoke)"],
       });
+    },
+
+    // The REAL enumeration producer (ADP4): an OpenAI-compatible endpoint
+    // exposes `GET <baseURL>/models`. Fails SOFT — a picker must never see a
+    // throw, so network/auth/parse errors collapse to an empty list.
+    async models(): Promise<HarnessModel[]> {
+      const key = apiKey();
+      if (!key) return [];
+      try {
+        const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+          method: "GET",
+          headers: { accept: "application/json", authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(RAW_API_MODELS_TIMEOUT_MS),
+        });
+        if (!res.ok) return [];
+        const json = await res.json();
+        return parseModelsList(json).map((m) => ({ id: m.id, label: m.label, context_window: m.context_window }));
+      } catch {
+        return [];
+      }
     },
 
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {

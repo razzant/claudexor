@@ -109,8 +109,6 @@ export function diffSpecPacks(a: SpecPack, b: SpecPack): SpecFieldChange[] {
   diffList("non_goals", a.non_goals, b.non_goals);
   diffList("forbidden_approaches", a.forbidden_approaches, b.forbidden_approaches);
   diffList("decided_tradeoffs", a.decided_tradeoffs, b.decided_tradeoffs);
-  diffList("constraints.allowed_paths", a.constraints.allowed_paths, b.constraints.allowed_paths);
-  diffList("constraints.forbidden_paths", a.constraints.forbidden_paths, b.constraints.forbidden_paths);
   diffList("constraints.protected_paths", a.constraints.protected_paths, b.constraints.protected_paths);
   diffList(
     "success_criteria",

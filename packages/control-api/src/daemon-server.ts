@@ -2,16 +2,15 @@ import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
+import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import {
   AccessProfile,
   ControlWebEvidence,
   ControlApplyCheckRequest,
   ControlApplyRequest,
-  ControlHarnessSetupRequest,
-  ControlHarnessSetupResponse,
   ControlHarnessListResponse,
+  ControlHarnessModelsResponse,
   ControlSetupJob,
   ControlSetupJobConfirmRequest,
   ControlSetupJobCreateRequest,
@@ -52,6 +51,7 @@ import {
   ControlTurnRunCard,
   DecisionRecord,
   ModeKind,
+  OrchestratePlanProgress,
   Portfolio,
   ReviewFinding,
   RunEventType,
@@ -100,7 +100,8 @@ export interface DaemonControlApiOptions {
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
     harnesses?: () => Promise<unknown>;
-    setupHarness?: (input: unknown) => Promise<unknown>;
+    /** Enumerable models for one harness (ADP4); thin projection over the adapter's optional models(). */
+    harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
     createSetupJob?: (input: unknown) => Promise<unknown>;
     listSetupJobs?: () => Promise<unknown>;
     setupJobStatus?: (input: unknown) => Promise<unknown>;
@@ -265,7 +266,40 @@ export class DaemonControlApiServer {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
-      const job = await this.opts.daemon.enqueue(params);
+      // 202-queued lineage race (B4): a thread-anchored direct enqueue is a TURN
+      // of that conversation. The daemon runner binds the turn only at onRunStart,
+      // so a run that sits QUEUED (another turn on the thread is active) would be
+      // observable headless (GET /runs, GET /threads) with NO turn record and a
+      // stale head_run_id until it starts. Mirror the rerun_with_feedback / turns
+      // ordering: single-writer — pre-create the turn (run_id=null) BEFORE enqueue
+      // and pass its id, so the queued run is recorded on its thread deterministically
+      // before it can be seen. A pre-created turnId (the /threads/:id/turns path)
+      // already did this, so we only fill the gap for a bare threadId.
+      const directThreadId = typeof params.threadId === "string" && params.threadId ? params.threadId : null;
+      let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
+      if (directThreadId && !params.turnId) {
+        const createTurnSvc = this.opts.services?.createThreadTurn;
+        if (createTurnSvc) {
+          const detailSvc = this.opts.services?.threadDetail;
+          // Validate the thread exists (404) BEFORE enqueue: the daemon runner
+          // swallows a failed createTurn, so an enqueue against a missing thread
+          // would otherwise orphan the run. Fail loudly here instead.
+          if (detailSvc) {
+            try {
+              await detailSvc(directThreadId);
+            } catch (err) {
+              const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 404;
+              return this.json(res, status, { error: err instanceof Error ? err.message : `no such thread: ${directThreadId}` });
+            }
+          }
+          const turn = (await createTurnSvc(directThreadId, String(params.prompt ?? ""), {
+            parentRunId: params.parentRunId ?? null,
+            planRunId: params.planRunId ?? null,
+          })) as { id: string };
+          enqueueParams = { ...params, turnId: turn.id };
+        }
+      }
+      const job = await this.opts.daemon.enqueue(enqueueParams);
       const rec = await this.waitForRunStart(job.id);
       if (rec.runId && rec.runDir) {
         return this.json(res, 200, ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }));
@@ -371,7 +405,11 @@ export class DaemonControlApiServer {
       if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
       const { threads } = await svc();
       const runs = await this.opts.daemon.list();
-      const blocked = new Set(runs.filter((r) => r.state === "blocked").map((r) => r.runId ?? r.id));
+      // needs-human clears once the operator has decided: a blocked run with a
+      // persisted operator_decision is no longer in the "needs me" inbox.
+      const blocked = new Set(
+        runs.filter((r) => r.state === "blocked" && readValidOperatorDecision(r) === null).map((r) => r.runId ?? r.id),
+      );
       return this.json(res, 200, ControlThreadListResponse.parse({
         threads: threads.map((t) => projectThread(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? ""))),
       }));
@@ -396,9 +434,10 @@ export class DaemonControlApiServer {
             if (rec) cards.set(runId, turnRunCard(this.summarizeRunLive(rec)));
           }
         }
-        const headState = byRun.get(thread.head_run_id ?? "")?.state;
+        const headRec = byRun.get(thread.head_run_id ?? "");
+        const headNeedsHuman = headRec?.state === "blocked" && readValidOperatorDecision(headRec) === null;
         return this.json(res, 200, ControlThreadDetail.parse({
-          thread: projectThread(detail.thread, headState === "blocked"),
+          thread: projectThread(detail.thread, headNeedsHuman),
           sessions: detail.sessions.map(projectSession),
           turns: detail.turns.map((t) => projectTurn(t, cards)),
         }));
@@ -681,21 +720,47 @@ export class DaemonControlApiServer {
         }
         const patch = readPatch(rec);
         if (patch === null) return this.json(res, 409, { error: "no patch artifact; there is nothing to unblock for apply" });
-        const record = {
+        const written = writeOperatorDecision(rec, {
           action: body.action,
           finding_ids: body.findingIds,
           accepted_risks: body.acceptedRisks,
           patch_sha256: sha256(patch),
           decided_at: nowIso(),
-        };
-        // The artifact name is server-fixed (no client path input); only the run
-        // dir root needs validating before the write.
-        const root = safeArtifactRoot(rec.runDir);
-        if (!root) return this.json(res, 500, { error: "cannot resolve run artifact root" });
-        mkdirSync(join(root, "arbitration"), { recursive: true });
-        writeFileSync(join(root, "arbitration", "operator_decision.yaml"), stringifyYaml(record), "utf8");
+        });
+        if (!written) return this.json(res, 500, { error: "cannot resolve run artifact root" });
         appendRunAuditEvent(rec, "control.applied", { decision: body.action, finding_ids: body.findingIds, accepted_risks: body.acceptedRisks });
         return this.json(res, 200, ControlRunDecisionResponse.parse({ accepted: true, status: "applied", message: `${body.action} recorded; apply is now permitted for this exact patch` }));
+      }
+
+      if (body.action === "revert_run") {
+        // Server-owned revert of an in-place turn's live mutation. Restores the
+        // tree to the recorded pre-turn snapshot, refusing (fail loud) if the tree
+        // has diverged from the recorded post-turn state (the user edited since).
+        const result = controlRunResult(rec);
+        if (!result.revertable || !result.preTurnSha || !result.postTurnSha) {
+          return this.json(res, 409, { error: "this run produced no revertable in-place change" });
+        }
+        const repoRoot = applyTargetRoot({ kind: "original_project" }, rec);
+        if (!repoRoot) return this.json(res, 400, { error: "cannot resolve the in-place project root to revert" });
+        const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+        if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
+        let revert;
+        try {
+          revert = await revertInPlace(repoRoot, result.preTurnSha, result.postTurnSha);
+        } catch (err) {
+          return this.json(res, 500, { error: `revert failed: ${err instanceof Error ? err.message : String(err)}` });
+        }
+        if (!revert.reverted) {
+          appendRunAuditEvent(rec, "control.rejected", { decision: "revert_run", reason: revert.reason ?? "revert refused" });
+          return this.json(res, 409, ControlRunDecisionResponse.parse({ accepted: false, status: "rejected", message: revert.reason ?? "revert refused" }));
+        }
+        markRunReverted(rec);
+        appendRunAuditEvent(rec, "control.applied", { decision: "revert_run", removed: revert.removed });
+        return this.json(res, 200, ControlRunDecisionResponse.parse({
+          accepted: true,
+          status: "applied",
+          message: `reverted to the pre-turn state${revert.removed.length ? ` (removed ${revert.removed.length} turn-added file(s))` : ""}`,
+        }));
       }
 
       if (body.action === "accept_clean_patch") {
@@ -757,17 +822,9 @@ export class DaemonControlApiServer {
     }
 
     if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
-    if (method === "POST" && path === "/harnesses/setup") {
-      let body: ControlHarnessSetupRequest;
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        body = ControlHarnessSetupRequest.parse(raw);
-      } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
-      }
-      return this.service(res, "setupHarness", body, ControlHarnessSetupResponse);
+    const harnessModelsMatch = /^\/harnesses\/([^/]+)\/models$/.exec(path);
+    if (method === "GET" && harnessModelsMatch) {
+      return this.service(res, "harnessModels", { harnessId: decodeURIComponent(harnessModelsMatch[1] as string) }, ControlHarnessModelsResponse);
     }
     if (method === "GET" && path === "/setup/jobs") return this.service(res, "listSetupJobs", undefined, ControlSetupJobListResponse);
     if (method === "POST" && path === "/setup/jobs") {
@@ -823,13 +880,13 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
     if (method === "POST" && path === "/secrets") {
       const body = await this.readBody(req);
-      if (!validSecretSetBody(body)) return this.json(res, 400, { error: "secret name must be openai, anthropic, cursor, opencode, or raw" });
+      if (!validSecretSetBody(body)) return this.json(res, 400, { error: "secret name must be openai, anthropic, openrouter, cursor, opencode, or raw" });
       return this.service(res, "setSecret", body);
     }
     const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
     if (method === "DELETE" && secretDeleteMatch) {
       const name = decodeURIComponent(secretDeleteMatch[1] as string);
-      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: "secret name must be openai, anthropic, cursor, opencode, or raw" });
+      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: "secret name must be openai, anthropic, openrouter, cursor, opencode, or raw" });
       return this.service(res, "deleteSecret", name);
     }
     if (method === "POST" && path === "/spec/questions") {
@@ -1302,6 +1359,14 @@ function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
 
 function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const mode = parsed.mode ?? "agent";
+  // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
+  // engine boundary unless a frozen spec FILE (specPath) supplies the intent.
+  // A bare specId does not load spec content at enqueue time, so it is not a
+  // valid substitute for the prompt. Fail loud (400) rather than enqueue a
+  // doomed run that produces nothing.
+  if (parsed.prompt.trim().length === 0 && !parsed.specPath) {
+    throw Object.assign(new Error("prompt must not be empty (provide a prompt or a frozen specPath)"), { status: 400 });
+  }
   // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must
   // 400 here, not persist a doomed job for the orchestrator to reject later.
   if (parsed.web && parsed.externalContextPolicy && parsed.web !== parsed.externalContextPolicy) {
@@ -1424,8 +1489,16 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("final/explore.md"),
     mtime("final/report.md"),
     mtime("final/patch.diff"),
-    // The honest outcome (result kind / diffstat / adopted) is projected from
-    // work_product.yaml; a summary cached before it landed must invalidate.
+    // Orchestrate output is the prose plan + the typed plan; a summary cached
+    // before they land (or after a revert re-stamps work_product) must invalidate.
+    mtime("final/orchestration.md"),
+    mtime("final/orchestration.yaml"),
+    // Executor progress (auto_safe/auto_full) lands after the plan; a detail
+    // cached before steps ran (or as they advance) must invalidate.
+    mtime("final/orchestration_progress.yaml"),
+    // The honest outcome (result kind / diffstat / adopted / apply_state) is
+    // projected from work_product.yaml; a summary cached before it landed (or
+    // before a revert flipped apply_state) must invalidate.
     mtime("final/work_product.yaml"),
   ].join("|");
 }
@@ -1457,12 +1530,49 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
     ds && typeof ds.files === "number"
       ? { files: ds.files, additions: typeof ds.additions === "number" ? ds.additions : 0, deletions: typeof ds.deletions === "number" ? ds.deletions : 0 }
       : null;
+  const applyStateRaw = meta["apply_state"];
+  const applyState =
+    applyStateRaw === "applied" || applyStateRaw === "applied_review_blocked" || applyStateRaw === "reverted"
+      ? applyStateRaw
+      : "not_applied";
+  const preTurnSha = typeof meta["pre_turn_sha"] === "string" ? meta["pre_turn_sha"] : null;
+  const postTurnSha = typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null;
+  // A run is revertable when it actually mutated the live tree this turn and the
+  // pre/post snapshots needed for a safe restore exist. The daemon revert handler
+  // still re-checks the tree hasn't diverged from post_turn_sha before acting.
+  const revertable =
+    (applyState === "applied" || applyState === "applied_review_blocked") && preTurnSha !== null && postTurnSha !== null;
   return ControlRunResult.parse({
     kind,
     diffStat,
     blockers: typeof meta["blockers"] === "number" ? meta["blockers"] : 0,
     adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : null,
+    applyState,
+    preTurnSha,
+    postTurnSha,
+    revertable,
   });
+}
+
+/** Flip the persisted work_product apply_state to `reverted` after a successful
+ * revert so the run stops advertising a Revert affordance (single source: the
+ * work_product meta that controlRunResult projects). Best-effort: the revert
+ * already happened; a metadata write failure must not 500 the response. */
+function markRunReverted(rec: DaemonRunRecord): void {
+  try {
+    if (!rec.runDir) return;
+    const root = safeArtifactRoot(rec.runDir);
+    if (!root) return;
+    const wpPath = join(root, "final", "work_product.yaml");
+    if (!existsSync(wpPath)) return;
+    const doc = (parseYaml(readFileSync(wpPath, "utf8")) ?? {}) as Record<string, unknown>;
+    const meta = (doc["meta"] && typeof doc["meta"] === "object" ? doc["meta"] : {}) as Record<string, unknown>;
+    meta["apply_state"] = "reverted";
+    doc["meta"] = meta;
+    writeFileSync(wpPath, stringifyYaml(doc), "utf8");
+  } catch {
+    /* best-effort: the revert succeeded regardless of this metadata flip */
+  }
 }
 
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
@@ -1585,7 +1695,11 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
   const lastSeq = cursor ?? (rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  const operator = readOperatorDecision(rec);
+  // Project ONLY a VALID operator decision (action is an unblock AND patch-hash
+  // matches the current patch) — same gate as the needs-human inbox — so a stale
+  // or mutated operator_decision.yaml can't make a surface render an apply
+  // affordance for a run the server still considers blocked.
+  const operator = readValidOperatorDecision(rec);
   const operatorDecisionRaw = operator
     ? (() => {
         try {
@@ -1610,6 +1724,9 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
+    // Typed executor progress for an orchestrate auto_safe/auto_full run; null
+    // for suggest / non-orchestrate runs. Thin projection of the engine artifact.
+    orchestrate: safeReadStructuredArtifact(rec, "final/orchestration_progress.yaml", OrchestratePlanProgress),
     failure,
   });
 }
@@ -1933,6 +2050,25 @@ function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: str
   });
 }
 
+/**
+ * SINGLE writer of the operator unblock artifact (B4). Every accept_risk /
+ * override decision routes through here so the on-disk shape and the path
+ * resolution (server-fixed name, validated run-dir root) exist in exactly one
+ * place — the mirror of readOperatorDecision below. Returns false when the run
+ * artifact root cannot be resolved (caller fails loudly). */
+function writeOperatorDecision(
+  rec: DaemonRunRecord,
+  record: { action: string; finding_ids: string[]; accepted_risks: string[]; patch_sha256: string; decided_at: string },
+): boolean {
+  // The artifact name is server-fixed (no client path input); only the run dir
+  // root needs validating before the write.
+  const root = rec.runDir ? safeArtifactRoot(rec.runDir) : null;
+  if (!root) return false;
+  mkdirSync(join(root, "arbitration"), { recursive: true });
+  writeFileSync(join(root, "arbitration", "operator_decision.yaml"), stringifyYaml(record), "utf8");
+  return true;
+}
+
 /** The persisted operator unblock decision (accept_risk / override), if any. */
 function readOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha256?: string } | null {
   try {
@@ -1944,6 +2080,24 @@ function readOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha
   } catch {
     return null;
   }
+}
+
+/**
+ * A VALID operator unblock decision: the action is a genuine unblock
+ * (accept_risk / override_needs_human) AND its recorded patch_sha256 still
+ * matches the current final/patch.diff. Used to clear the needs-human inbox —
+ * mirrors the apply gate (delivery validateApplyGate) so a mutated decision
+ * artifact or a mutated patch can NEVER silently hide a blocked run from the
+ * operator. Returns null when the decision is absent, the wrong action, or stale.
+ */
+function readValidOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha256?: string } | null {
+  const decision = readOperatorDecision(rec);
+  if (!decision) return null;
+  if (decision.action !== "accept_risk" && decision.action !== "override_needs_human") return null;
+  if (typeof decision.patch_sha256 !== "string" || decision.patch_sha256.length === 0) return null;
+  const patch = readTextArtifact(rec, "final/patch.diff", false);
+  if (patch === null || decision.patch_sha256 !== sha256(patch)) return null;
+  return decision;
 }
 
 function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, schema: { parse(value: unknown): T }): T | null {
@@ -2006,7 +2160,7 @@ function validateAbsoluteRepoRoot(repoRoot: string): string | null {
   return isAbsolute(repoRoot) ? null : "project root must be an absolute path";
 }
 
-const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);
+const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw", "openrouter"]);
 
 function isAllowedSecretName(name: string): boolean {
   return ALLOWED_SECRET_NAMES.has(name);

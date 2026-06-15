@@ -28,7 +28,6 @@
             "start_run",
             "race",
             "status",
-            "answer_question",
             "apply",
             "review"
           ]
@@ -64,13 +63,6 @@
           },
           "additionalProperties": false,
           "default": {}
-        },
-        "stop_conditions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
         },
         "autonomy": {
           "type": "string",

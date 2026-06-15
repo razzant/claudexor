@@ -48,7 +48,6 @@ export type FileEvidence = z.infer<typeof FileEvidence>;
 
 export const CommandEvidence = z.object({
   command: z.string(),
-  result_ref: z.string().optional(),
 });
 export type CommandEvidence = z.infer<typeof CommandEvidence>;
 

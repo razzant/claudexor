@@ -66,7 +66,7 @@ export class McpServer {
         this.reply(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "0.9.0" },
+          serverInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "dev" },
         });
         return;
       case "ping":
@@ -106,6 +106,26 @@ export class McpServer {
 
 export type RunnerFn = (params: any) => Promise<unknown>;
 
+/**
+ * Reduce a run result to the human-readable text an MCP host should show. Mirrors
+ * the ACP server's summarizeResult: the orchestrator returns an OrchestratorResult
+ * whose `summary` is the primary output; prefer it over dumping the whole internal
+ * run object. Falls back to a compact JSON string only when no summary/answer/text
+ * field is present.
+ */
+function summarizeResult(result: unknown): string {
+  if (typeof result === "string") return result.trim();
+  if (result && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    for (const key of ["summary", "answer", "text"]) {
+      const v = r[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return JSON.stringify(result);
+  }
+  return result === undefined || result === null ? "" : String(result);
+}
+
 /** Default Claudexor tool surface for MCP (v0.9: 5 canonical modes + strategy flags). */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   const promptSchema = {
@@ -122,7 +142,9 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     name,
     description,
     inputSchema: promptSchema,
-    handler: async (args) => JSON.stringify(await runner({ ...args, ...params }), null, 2),
+    // Return the run SUMMARY / primary output, not the raw internal run object
+    // (parity with the ACP server — MCP hosts should not see raw JSON dumps).
+    handler: async (args) => summarizeResult(await runner({ ...args, ...params })),
   });
   return [
     mk("claudexor_ask", "Answer a question through a read-only selected harness route.", { mode: "ask" }),
@@ -136,7 +158,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       name: "claudexor_status",
       description: "Return Claudexor/runtime status.",
       inputSchema: { type: "object", properties: {} },
-      handler: async () => JSON.stringify(await runner({ mode: "__status" }), null, 2),
+      handler: async () => summarizeResult(await runner({ mode: "__status" })),
     },
   ];
 }

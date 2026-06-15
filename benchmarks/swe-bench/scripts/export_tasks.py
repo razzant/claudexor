@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export a SWE-bench HuggingFace dataset split to a Claudexor tasks.jsonl.
 
-Each line matches @claudexor/benchmark's BenchTask shape:
+Each line matches the claudexor-benchmark-runner's BenchTask shape:
     {"instance_id", "problem_statement", "repo", "base_commit"}
 
 Run via uv so `datasets` need not be installed globally:

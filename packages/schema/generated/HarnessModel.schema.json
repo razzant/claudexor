@@ -1,0 +1,37 @@
+{
+  "$ref": "#/definitions/HarnessModel",
+  "definitions": {
+    "HarnessModel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

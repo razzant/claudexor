@@ -45,14 +45,12 @@ import Testing
     }
 
     @Test func settingsUpdateCanClearBudgetCaps() throws {
-        let req = SettingsUpdateRequest(defaultPortfolio: "subscription-first", clearMaxUsdPerRun: true, clearMaxUsdPerDay: true)
+        let req = SettingsUpdateRequest(defaultPortfolio: "subscription-first", clearMaxUsdPerRun: true)
         let data = try JSONEncoder().encode(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(obj?["defaultPortfolio"] as? String == "subscription-first")
         #expect(obj?["maxUsdPerRun"] == nil)
-        #expect(obj?["maxUsdPerDay"] == nil)
         #expect(obj?["clearMaxUsdPerRun"] as? Bool == true)
-        #expect(obj?["clearMaxUsdPerDay"] as? Bool == true)
     }
 
     @Test func settingsUpdateEncodesInteractionTimeout() throws {
@@ -91,13 +89,45 @@ import Testing
         #expect(legacyStatus.checks.isEmpty)
     }
 
+    @Test func harnessModelsResponseDecodesEnumerationAndNoneFallback() throws {
+        // Real enumeration (raw-api GET /v1/models): snake_case context_window,
+        // a model with a null label, and a present-but-null label both tolerated.
+        let api = """
+        {
+          "harnessId": "raw-api",
+          "source": "api",
+          "models": [
+            {"id": "gpt-5.5", "label": "GPT 5.5", "context_window": 400000},
+            {"id": "o4-mini", "label": null, "context_window": null},
+            {"id": "bare"}
+          ]
+        }
+        """
+        let enumerated = try JSONDecoder().decode(HarnessModelsResponse.self, from: Data(api.utf8))
+        #expect(enumerated.harnessId == "raw-api")
+        #expect(enumerated.source == "api")
+        #expect(enumerated.canEnumerate)
+        #expect(enumerated.models.count == 3)
+        #expect(enumerated.models[0] == HarnessModel(id: "gpt-5.5", label: "GPT 5.5", contextWindow: 400000))
+        #expect(enumerated.models[1].label == nil)
+        #expect(enumerated.models[1].contextWindow == nil)
+        #expect(enumerated.models[2] == HarnessModel(id: "bare"))
+
+        // Harness that cannot enumerate: source "none", models defaulted to [].
+        let none = #"{"harnessId":"claude","source":"none"}"#
+        let unavailable = try JSONDecoder().decode(HarnessModelsResponse.self, from: Data(none.utf8))
+        #expect(unavailable.source == "none")
+        #expect(unavailable.models.isEmpty)
+        #expect(!unavailable.canEnumerate)
+    }
+
     @Test func runDetailDecodesNewProjectionFieldsAndOldPayloadDefaults() throws {
         let rich = """
         {
           "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true},
           "primaryOutput": {"kind":"answer","path":"final/answer.md","text":"4","bytes":1},
           "timeline": [{"type":"harness.event","title":"Codex answered","detail":"done","rawRef":"events.jsonl"}],
-          "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events","nativeQuota":[]},
+          "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events"},
           "reviewFindings": []
         }
         """

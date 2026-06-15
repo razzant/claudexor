@@ -1,8 +1,10 @@
 """Claudexor as a Harbor (Terminal-Bench 2.1) installed agent.
 
 Harbor drives an agent inside each task's isolated container. This adapter installs
-Node + the Claude Code and Codex CLIs + the Claudexor control plane, then runs Claudexor
-in INTERNAL ORCHESTRATION mode against the live ``/app`` tree:
+Node + the Claude Code and Codex CLIs and uploads a **prebuilt single-file Claudexor
+CLI bundle** (no in-container clone/``pnpm install``/``tsc`` — that repeatedly tripped
+Harbor's AgentSetupTimeout under Rosetta), then runs Claudexor in INTERNAL
+ORCHESTRATION mode against the live ``/app`` tree:
 
     claudexor run --in-place --attempts N --harness <h> --access full <instruction>
 
@@ -16,8 +18,11 @@ the container's runtime STATE (services, files, packages), which cannot be merge
 across independent attempts. So the paradigm-correct Claudexor contribution here is
 intra-trial: convergence + cross-family review inside one container.
 
-Anti-cheating: convergence is driven ONLY by cross-family review (and the agent's own
-checks), never by Terminal-Bench's hidden grading tests.
+Anti-cheating: convergence is driven by cross-family review (and the agent's own
+checks). The agent is INSTRUCTED (see ``_PREAMBLE``) not to search for, read, or run
+Terminal-Bench's hidden grading tests, but this is prompt-enforced under ``--access
+full`` — there is no sandboxed filesystem read-protection yet (a future improvement),
+so treat it as an instruction, not a hard guarantee.
 
 Run (PYTHONPATH must include the repo root so this module is importable):
 
@@ -99,8 +104,13 @@ class ClaudexorAgent(BaseInstalledAgent):
         self._codex_model = (str(codex_model) or None) if codex_model else None
         self._claude_model = (str(claude_model) or None) if claude_model else None
         self._max_usd = float(max_usd) if max_usd not in (None, "") else None
+        # Legacy / accepted-but-unused: the CLI now ships as a prebuilt single-file
+        # bundle uploaded into the container (see install()), so the code under test is
+        # whatever was bundled on the host — NOT cloned in-container. These kwargs are
+        # still accepted so `--ak claudexor_ref=...` doesn't error; to change the code
+        # under test, rebuild the bundle from that ref on the host (`pnpm bench:bundle`).
         self._claudexor_ref = str(claudexor_ref)
-        self._claudexor_repo = str(claudexor_repo or os.environ.get("CLAUDEXOR_TB_REPO", "https://github.com/joi-lab/claudexor.git"))
+        self._claudexor_repo = str(claudexor_repo or os.environ.get("CLAUDEXOR_TB_REPO", ""))
         super().__init__(logs_dir, *args, **kwargs)
 
     # No auto version probe; the launcher resolves Node lazily via nvm.
@@ -111,32 +121,87 @@ class ClaudexorAgent(BaseInstalledAgent):
         # Prepend the benchmark-container preamble, then apply any configured template.
         return super().render_instruction(_PREAMBLE + instruction)
 
+    # Where the host-side prebuilt CLI bundles live, and where they land in the
+    # container. BEN1: shipping prebuilt files replaces the in-container clone +
+    # `pnpm install` + `tsc` (~30 packages) that kept blowing Harbor's
+    # AgentSetupTimeout under Rosetta. Build them with `pnpm bench:bundle`.
+    #
+    # TWO sibling bundles, NOT one: agent mode (`claudexor run`) routes through
+    # ensureDaemon(), which auto-starts the daemon by spawning the SIBLING file
+    # `new URL("./claudexord.js", import.meta.url)` next to the running CLI bundle
+    # (there is no in-process fallback — runs are always daemon-tracked). So
+    # claudexord.js MUST be installed alongside claudexor-cli.js in the SAME dir,
+    # preserving the sibling relationship ensureDaemon() resolves.
+    _BUNDLE_DIR = "/opt/claudexor"
+    _CLI_BUNDLE_NAME = "claudexor-cli.js"
+    _DAEMON_BUNDLE_NAME = "claudexord.js"
+    _BUNDLE_HOST_DIR = Path(__file__).resolve().parent / "dist"
+    _BUNDLE_HOST_PATH = _BUNDLE_HOST_DIR / _CLI_BUNDLE_NAME
+    _DAEMON_HOST_PATH = _BUNDLE_HOST_DIR / _DAEMON_BUNDLE_NAME
+    _BUNDLE_CONTAINER_PATH = f"{_BUNDLE_DIR}/{_CLI_BUNDLE_NAME}"
+    _DAEMON_CONTAINER_PATH = f"{_BUNDLE_DIR}/{_DAEMON_BUNDLE_NAME}"
+
+    def _ensure_host_bundle(self) -> tuple[Path, Path]:
+        """Return (cli, daemon) bundle paths, building both on demand if missing.
+
+        bundle-cli.mjs emits BOTH sibling bundles in one run; we treat them as a
+        unit so a partial/stale dist never ships only the CLI (which would make
+        every daemon-backed run fail at ensureDaemon's sibling existsSync check).
+        """
+        cli = self._BUNDLE_HOST_PATH
+        daemon = self._DAEMON_HOST_PATH
+        if cli.is_file() and daemon.is_file():
+            return cli, daemon
+        # Build them: `node benchmarks/terminal_bench/scripts/bundle-cli.mjs`. Requires the
+        # workspace to be built first (the script self-checks for packages/cli/dist/*.js).
+        import subprocess
+
+        repo_root = Path(__file__).resolve().parents[2]
+        builder = self._BUNDLE_HOST_DIR.parent / "scripts" / "bundle-cli.mjs"
+        try:
+            subprocess.run(
+                ["node", str(builder)], cwd=str(repo_root), check=True
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(
+                f"Claudexor CLI bundles not found at {self._BUNDLE_HOST_DIR} and could not "
+                f"be built ({exc}). Build them on the host first: "
+                f"`pnpm build && pnpm bench:bundle`."
+            ) from exc
+        missing = [p for p in (cli, daemon) if not p.is_file()]
+        if missing:
+            raise RuntimeError(
+                f"bundle-cli.mjs ran but {', '.join(str(p) for p in missing)} still "
+                f"missing. Run `pnpm build && pnpm bench:bundle` on the host."
+            )
+        return cli, daemon
+
     async def install(self, environment: BaseEnvironment) -> None:
-        # 1) System packages (root): curl + git to fetch nvm and clone Claudexor.
+        # 0) Resolve (build if needed) BOTH host-side CLI bundles BEFORE touching the
+        #    container, so a missing/partial dist fails fast with a clear hint.
+        cli_bundle, daemon_bundle = self._ensure_host_bundle()
+
+        # 1) System packages (root): curl + ca-certificates to fetch nvm. (No git/clone
+        #    anymore — the CLI ships as a prebuilt bundle, not a source checkout.)
         await self.exec_as_root(
             environment,
             command=(
                 "if command -v apt-get >/dev/null 2>&1; then "
-                "  apt-get update && apt-get install -y curl git ca-certificates; "
+                "  apt-get update && apt-get install -y curl ca-certificates; "
                 "elif command -v apk >/dev/null 2>&1; then "
-                "  apk add --no-cache curl git bash ca-certificates; "
+                "  apk add --no-cache curl bash ca-certificates; "
                 "elif command -v yum >/dev/null 2>&1; then "
-                "  yum install -y curl git ca-certificates; "
+                "  yum install -y curl ca-certificates; "
                 "fi"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
             timeout_sec=600,
         )
 
-        # 2) Node 22 (nvm), the harness CLIs, and the Claudexor CLI (built from source),
-        #    all as the default agent user so the runtime user owns them.
+        # 2) Node 22 (nvm) + the harness CLIs, as the default agent user so the runtime
+        #    user owns them. The Claudexor CLI bundle still needs a node runtime AND the
+        #    `claude`/`codex` CLIs it shells out to for cross-family implement+review.
         install_env: dict[str, str] = {"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
-        # Private joi-lab/claudexor needs auth to clone; pass the token to the install
-        # shell, where an env-based credential helper consumes it at clone time so it is
-        # never written to .gitconfig or the install log.
-        gh_token = self._get_env("GITHUB_TOKEN")
-        if gh_token:
-            install_env["GITHUB_TOKEN"] = gh_token
         await self.exec_as_agent(
             environment,
             command=(
@@ -148,53 +213,46 @@ class ClaudexorAgent(BaseInstalledAgent):
                 'mkdir -p "$NVM_DIR"\n'
                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash\n"
                 '. "$NVM_DIR/nvm.sh"\n'
-                # Node 22 is required by the repo's pinned pnpm@11 (uses node:sqlite).
-                # Pin 22.16: 22.22+ libuv asserts under colima kernel; pnpm@11 needs >=22.12 (uv__io_poll EEXIST assert) under
-                # colima's emulated kernel even with UV_USE_IO_URING=0.
+                # Pin 22.16: 22.22+ libuv asserts under colima kernel; node:sqlite etc.
+                # need >=22.12 even with UV_USE_IO_URING=0 on the emulated kernel.
                 "nvm install 22.16.0 && nvm alias default 22.16.0\n"
-                "corepack enable\n"
-                # Node 22.11's bundled corepack ships stale npm signing keys
-                # ("Cannot find matching keyid"); skip integrity pinning here.
-                "export COREPACK_INTEGRITY_KEYS=0\n"
-                "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n"
-                # Cap V8 heap; TB task containers are memory-limited and a parallel
-                # 29-package tsc build otherwise OOMs (SIGABRT / exit 134).
-                "export NODE_OPTIONS=\"--max-old-space-size=2048\"\n"
                 # Disable libuv io_uring: Node 20.3+/22 crashes with a uv__io_poll
                 # epoll assertion inside emulated / older-kernel containers.
                 "export UV_USE_IO_URING=0\n"
                 # Both families so cross-family review (claude implement / codex review,
                 # or vice versa) is always available.
                 "npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest\n"
-                # Authenticate the private-repo clone via an env-based credential helper.
-                # Single-quoted helper => $GITHUB_TOKEN stays literal in .gitconfig and is
-                # expanded from the env only when git runs the helper (never logged/on disk).
-                "if [ -n \"${GITHUB_TOKEN:-}\" ]; then git config --global credential.helper '!f() { echo username=x; echo \"password=$GITHUB_TOKEN\"; }; f'; fi\n"
-                f"git clone --depth 1 --branch {shlex.quote(self._claudexor_ref)} "
-                f"{shlex.quote(self._claudexor_repo)} \"$HOME/claudexor\"\n"
-                'cd "$HOME/claudexor"\n'
-                # --ignore-scripts skips dependency postinstalls; the esbuild native
-                # binary's postinstall SIGSEGVs in TB's sandboxed container, and esbuild
-                # is needed neither by the tsc build nor the JS runtime.
-                # Serialize pnpm io: high-parallelism fd polling trips a racy epoll
-                # EEXIST assert (libuv) on colima's virtiofs/QEMU stack.
-                "export UV_THREADPOOL_SIZE=4\n"
-                # pnpm completes ("Done in Ns") then ABORTS in libuv teardown on
-                # colima's stack — tolerate the exit crash and verify artifacts
-                # EXPLICITLY (fail loudly when the work is actually missing).
-                "pnpm install --frozen-lockfile --ignore-scripts || true\n"
-                "test -d node_modules/.pnpm || { echo 'pnpm install did not materialize node_modules'; exit 1; }\n"
-                # Serialize the build so only one tsc runs at a time (low peak memory).
-                "pnpm build --concurrency=1 || true\n"
-                "test -f packages/cli/dist/cli.js || { echo 'build did not produce cli.js'; exit 1; }\n"
             ),
             env=install_env,
-            timeout_sec=1800,
+            timeout_sec=900,
         )
 
-        # 3) `claudexor` launcher on PATH (root-written, agent-resolved at runtime). The
-        #    quoted heredoc keeps $HOME unexpanded so it resolves to the agent's HOME
-        #    when the launcher runs.
+        # 3) Upload BOTH prebuilt bundles side-by-side (uploads as root) and make them
+        #    world-readable + executable so the agent user can run them. The daemon
+        #    bundle MUST land in the same dir as the CLI bundle and keep the name
+        #    `claudexord.js`: agent runs auto-start the daemon via the CLI's sibling
+        #    resolution `new URL("./claudexord.js", import.meta.url)`, so the sibling
+        #    relationship in /opt/claudexor IS the wiring — break it and every
+        #    daemon-backed run fails (there is no in-process fallback).
+        await self.exec_as_root(
+            environment,
+            command=f"mkdir -p {shlex.quote(self._BUNDLE_DIR)}",
+            timeout_sec=120,
+        )
+        await environment.upload_file(str(cli_bundle), self._BUNDLE_CONTAINER_PATH)
+        await environment.upload_file(str(daemon_bundle), self._DAEMON_CONTAINER_PATH)
+        await self.exec_as_root(
+            environment,
+            command=(
+                f"chmod 0755 {shlex.quote(self._BUNDLE_CONTAINER_PATH)} "
+                f"{shlex.quote(self._DAEMON_CONTAINER_PATH)}"
+            ),
+            timeout_sec=120,
+        )
+
+        # 4) `claudexor` launcher on PATH (root-written, agent-resolved at runtime). The
+        #    quoted heredoc keeps $HOME unexpanded so nvm resolves to the agent's HOME
+        #    when the launcher runs; it then execs the uploaded single-file bundle.
         await self.exec_as_root(
             environment,
             command=(
@@ -202,7 +260,7 @@ class ClaudexorAgent(BaseInstalledAgent):
                 "#!/usr/bin/env bash\n"
                 'export NVM_DIR="$HOME/.nvm"\n'
                 '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true\n'
-                'exec node "$HOME/claudexor/packages/cli/dist/cli.js" "$@"\n'
+                f'exec node {shlex.quote(self._BUNDLE_CONTAINER_PATH)} "$@"\n'
                 "LAUNCH\n"
                 "chmod +x /usr/local/bin/claudexor"
             ),

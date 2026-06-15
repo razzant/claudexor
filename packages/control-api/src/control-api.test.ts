@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { DaemonControlApiServer, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
+import { DaemonControlApiServer, normalizeRunStartRequest, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "@claudexor/util";
+
+describe("normalizeRunStart prompt validation", () => {
+  const projectScope = () => ({ scope: { kind: "project" as const, root: tmpdir() } });
+  it("rejects an empty prompt (no silent no-op)", () => {
+    expect(() => normalizeRunStartRequest({ ...projectScope(), prompt: "", mode: "agent" })).toThrowError(/prompt must not be empty/);
+  });
+  it("rejects a whitespace-only prompt", () => {
+    expect(() => normalizeRunStartRequest({ ...projectScope(), prompt: "   \n\t ", mode: "agent" })).toThrowError(/prompt must not be empty/);
+  });
+  it("allows an empty prompt only when a frozen specPath supplies the intent", () => {
+    expect(() => normalizeRunStartRequest({ ...projectScope(), prompt: "", mode: "agent", specPath: "/tmp/spec.yaml" })).not.toThrow();
+  });
+  it("rejects an empty prompt with only a specId (no spec content loaded at enqueue)", () => {
+    expect(() => normalizeRunStartRequest({ ...projectScope(), prompt: "", mode: "agent", specId: "spec-1" })).toThrowError(/prompt must not be empty/);
+  });
+  it("accepts a real prompt", () => {
+    expect(() => normalizeRunStartRequest({ ...projectScope(), prompt: "do the thing", mode: "agent" })).not.toThrow();
+  });
+});
 
 describe("DaemonControlApiServer", () => {
   const token = "daemon-token-123";
@@ -503,78 +522,6 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("validates and forwards harness setup through a typed control-api service", async () => {
-    const { daemon } = fakeDaemon();
-    const seen: unknown[] = [];
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const setup = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "claude", action: "login" }),
-        });
-        expect(setup.status).toBe(200);
-        const body = (await setup.json()) as { harness: string; action: string; command: string; guideUrl: string; status: string };
-        expect(body).toMatchObject({
-          harness: "claude",
-          action: "login",
-          status: "prepared",
-          // Native login only: verification runs in-process in the daemon —
-          // chaining a `claudexor doctor` shell form was the exit-127 class.
-          command: "claude /login",
-        });
-        expect(body.guideUrl).toBe("https://docs.anthropic.com/en/docs/claude-code");
-        expect(seen).toEqual([{ harness: "claude", action: "login" }]);
-
-        const invalid = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "unknown", action: "login" }),
-        });
-        expect(invalid.status).toBe(400);
-
-        const defaultAction = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "codex" }),
-        });
-        expect(defaultAction.status).toBe(200);
-        expect(seen.at(-1)).toEqual({ harness: "codex", action: "login" });
-
-        const secretBody = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "codex", action: "login", token: "sk-" + "d".repeat(24) }),
-        });
-        expect(secretBody.status).toBe(400);
-
-        const legacyExtra = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "codex", action: "login", repoRoot: "/repo", contextMode: "off", inPlace: true }),
-        });
-        expect(legacyExtra.status).toBe(400);
-      },
-      undefined,
-      {
-        setupHarness: async (input) => {
-          const p = input as { harness: string; action: string };
-          seen.push({ harness: p.harness, action: p.action });
-          return {
-            harness: p.harness,
-            action: p.action,
-            status: "prepared",
-            command: "claude /login",
-            guideUrl: "https://docs.anthropic.com/en/docs/claude-code",
-            logPath: "/tmp/claudexor-setup.log",
-            message: "prepared",
-          };
-        },
-      },
-    );
-  });
-
   it("serves harness readiness checks and intent gating through the typed control-api service", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(
@@ -616,6 +563,32 @@ describe("DaemonControlApiServer", () => {
             },
           ],
         }),
+      },
+    );
+  });
+
+  it("serves a harness's enumerable models through the typed harnessModels service (ADP4)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const ok = await fetch(`${base}/harnesses/raw-api/models`, { headers: { authorization: `Bearer ${token}` } });
+        expect(ok.status).toBe(200);
+        const body = (await ok.json()) as { harnessId: string; source: string; models: { id: string; label: string | null; context_window: number | null }[] };
+        expect(body).toMatchObject({ harnessId: "raw-api", source: "api" });
+        expect(body.models).toEqual([{ id: "gpt-4o-mini", label: null, context_window: null }]);
+
+        // A harness that cannot enumerate -> honest source "none" with [].
+        const none = await fetch(`${base}/harnesses/codex/models`, { headers: { authorization: `Bearer ${token}` } });
+        expect(none.status).toBe(200);
+        expect(await none.json()).toMatchObject({ harnessId: "codex", source: "none", models: [] });
+      },
+      undefined,
+      {
+        harnessModels: async ({ harnessId }) =>
+          harnessId === "raw-api"
+            ? { harnessId, source: "api", models: [{ id: "gpt-4o-mini", label: null, context_window: null }] }
+            : { harnessId, source: "none", models: [] },
       },
     );
   });
@@ -790,36 +763,6 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("returns 501 when harness setup service is not configured", async () => {
-    const { daemon } = fakeDaemon();
-    await withDaemonServer(daemon, async (base) => {
-      const setup = await fetch(`${base}/harnesses/setup`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ harness: "codex", action: "doctor" }),
-      });
-      expect(setup.status).toBe(501);
-    });
-  });
-
-  it("rejects malformed harness setup service responses", async () => {
-    const { daemon } = fakeDaemon();
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const setup = await fetch(`${base}/harnesses/setup`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "codex", action: "doctor" }),
-        });
-        // A schema-invalid service RESULT is a server-side contract bug: 500, not 400.
-        expect(setup.status).toBe(500);
-      },
-      undefined,
-      { setupHarness: async () => ({ harness: "codex", action: "doctor", status: "bogus", message: "bad" }) },
-    );
-  });
-
   it("rejects secret-like string values in run params before enqueue", async () => {
     const { daemon } = fakeDaemon();
     const secret = "sk-" + "c".repeat(24);
@@ -923,6 +866,102 @@ describe("DaemonControlApiServer", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  it("direct POST /runs with a bare threadId pre-creates the turn BEFORE enqueue (202-queued lineage race)", async () => {
+    const { record } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2, id: "th-race", created_at: now, updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" }, title: "race thread", mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto", primary_harness: null, eligible_harnesses: [],
+      portfolio: "subscription-first", run_ids: [], head_run_id: null, state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    // The job sits QUEUED (never surfaces runId/runDir) — exactly the window where
+    // an unbound turn would be observable headless.
+    let enqueuedParams: Record<string, unknown> | undefined;
+    let createTurnCalled = false;
+    let enqueueOrder: "turn-first" | "enqueue-first" | undefined;
+    const daemon: DaemonFacadeClient = {
+      async enqueue(params: unknown) {
+        enqueuedParams = params as Record<string, unknown>;
+        enqueueOrder = createTurnCalled ? "turn-first" : "enqueue-first";
+        return { id: "job-race", state: "queued" };
+      },
+      async status() {
+        return { id: "job-race", state: "queued" };
+      },
+      async list() {
+        return [{ id: "job-race", state: "queued" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async (id) => {
+        expect(id).toBe("th-race");
+        return { thread: threadObj, sessions: [], turns };
+      },
+      createThreadTurn: async (id, prompt, opts) => {
+        createTurnCalled = true;
+        const turn = { id: "tn-race", thread_id: id, run_id: null, parent_run_id: opts.parentRunId ?? null, plan_run_id: opts.planRunId ?? null, kind: opts.kind ?? "followup", prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "hi", mode: "agent", scope: { kind: "project", root: repo }, threadId: "th-race" }),
+        });
+        expect(res.status).toBe(202);
+        // The turn was created (single-writer) BEFORE the run was enqueued, and the
+        // pre-created turnId rides the enqueue so the daemon runner binds it.
+        expect(createTurnCalled).toBe(true);
+        expect(enqueueOrder).toBe("turn-first");
+        expect(enqueuedParams?.["turnId"]).toBe("tn-race");
+        expect(turns).toHaveLength(1);
+      },
+      5,
+      services,
+    );
+    void record;
+  });
+
+  it("direct POST /runs with a bare threadId for a MISSING thread fails loudly (no orphan enqueue)", async () => {
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() { enqueued += 1; return { id: "job", state: "queued" }; },
+      async status() { return { id: "job", state: "queued" }; },
+      async list() { return [{ id: "job", state: "queued" }]; },
+      async cancel() { return { ok: true }; },
+    };
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-missing-"));
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => { throw Object.assign(new Error("no such thread: th-missing"), { status: 404 }); },
+      createThreadTurn: async () => { throw new Error("should not be called when the thread is missing"); },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "hi", mode: "agent", scope: { kind: "project", root: repo }, threadId: "th-missing" }),
+        });
+        expect(res.status).toBe(404);
+        expect(enqueued).toBe(0);
+      },
+      5,
+      services,
+    );
   });
 
   it("rejects old mode ids and inline env/secrets before daemon enqueue", async () => {

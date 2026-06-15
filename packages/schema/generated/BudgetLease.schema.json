@@ -42,54 +42,12 @@
           ],
           "default": null
         },
-        "auth_mode": {
-          "type": "string",
-          "enum": [
-            "local_session",
-            "api_key",
-            "unknown"
-          ],
-          "default": "unknown"
-        },
-        "budget_class": {
-          "type": "string",
-          "enum": [
-            "exact",
-            "native",
-            "observed",
-            "manual",
-            "unknown"
-          ],
-          "default": "unknown"
-        },
         "max_usd": {
           "type": [
             "number",
             "null"
           ],
           "default": null
-        },
-        "max_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "subscription_pressure_limit": {
-          "type": "string",
-          "enum": [
-            "low",
-            "medium",
-            "high",
-            "burn",
-            "unknown"
-          ],
-          "default": "unknown"
         },
         "reason": {
           "type": "array",

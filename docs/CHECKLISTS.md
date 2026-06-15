@@ -26,6 +26,21 @@ Use this before committing documentation changes.
   packet names, local absolute paths, raw planning prompts, transcript-style
   review verdicts, and token-like values.
 
+## Design Discipline (locked owner directives)
+
+These are LOCKED rules for all future work. Do not re-litigate them.
+
+- **Meta-solutions over patches.** Always prefer a general, adaptive, generalizable
+  design over a one-off patch. Data-drive from declared capabilities, use single
+  producers with translational consumers, and favor typed contracts over
+  hardcoded enums-in-logic, so new values / harnesses / modes work without
+  re-patching. Reference example: the effort-ladder normalizer — adapters declare
+  their `effort_levels`, a shared normalizer clamps to them, and no per-level value
+  is hardcoded in logic.
+- **Staged-field rule.** A schema field ships only WITH a real producer AND a real
+  consumer in the SAME change; otherwise it is deleted, never left as a dead or
+  fake knob. This is exactly what `pnpm knip` plus the docs-truth gate enforce.
+
 ## Schema Changes
 
 - Change `packages/schema` first.
@@ -92,8 +107,9 @@ pnpm test
   unreadable glass behind dense content, and hover help gaps.
 - Check every sheet or blocking subflow has a visible close/Done or Back/Continue
   path.
-- Check Review Queue and other dense grids do not force the whole app window to
-  a wide fixed minimum.
+- Check the inline per-turn review/diff surfaces and other dense content (in the
+  run inspector and on turn cards) do not force the whole app window to a wide
+  fixed minimum.
 - Check budget cap editing uses validated currency input fields, not sliders.
 - Check completed runs show Outcome/answer first, running runs show Timeline,
   and failures without output show Diagnostics.

@@ -38,21 +38,22 @@ export function buildRouteProof(
   });
 }
 
-/** Mark same-model-fallback when two supposedly-distinct routes share an observed model. */
+/**
+ * Mark same-model-fallback when two supposedly-distinct routes share a
+ * STREAM-OBSERVED model. Only `verified` proofs count as real observations —
+ * an `accepted_model_arg` (argv echo) or `unverified` proof is not evidence the
+ * CLI ran that model, so it must not trigger a false same-model-fallback claim.
+ */
 export function classifyDiversity(proofs: RouteProof[]): RouteProof[] {
   const counts = new Map<string, number>();
   for (const p of proofs) {
-    if (p.observed.model_id) counts.set(p.observed.model_id, (counts.get(p.observed.model_id) ?? 0) + 1);
+    if (p.status === "verified" && p.observed.model_id) {
+      counts.set(p.observed.model_id, (counts.get(p.observed.model_id) ?? 0) + 1);
+    }
   }
   return proofs.map((p) =>
-    p.observed.model_id && (counts.get(p.observed.model_id) ?? 0) > 1
+    p.status === "verified" && p.observed.model_id && (counts.get(p.observed.model_id) ?? 0) > 1
       ? { ...p, status: "same_model_fallback" as const }
       : p,
   );
-}
-
-/** Distinct provider families => cross-family review is possible. */
-export function verifyCrossFamily(families: ProviderFamily[]): { verified: boolean; distinct: ProviderFamily[] } {
-  const distinct = [...new Set(families.filter((f) => f !== "unknown"))];
-  return { verified: distinct.length >= 2, distinct };
 }

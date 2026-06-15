@@ -127,12 +127,21 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
 // Context builders
 // ---------------------------------------------------------------------------
 
+// Optional `--paths a,b,c` pathspec to scope a large diff to the risky files
+// (the full-tree diff can exceed reviewer context). Empty => whole diff.
+const PATHSPEC = (() => {
+  const i = process.argv.indexOf("--paths");
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v ? v.split(",").map((s) => s.trim()).filter(Boolean) : [];
+})();
+const pathArgs = PATHSPEC.length > 0 ? ["--", ...PATHSPEC] : [];
+
 function changedFiles(base) {
-  return git(["diff", "--name-only", `${base}..HEAD`]).trim();
+  return git(["diff", "--name-only", `${base}..HEAD`, ...pathArgs]).trim();
 }
 
 function diffText(base) {
-  return git(["diff", `${base}..HEAD`]);
+  return git(["diff", `${base}..HEAD`, ...pathArgs]);
 }
 
 function touchedFilePack(paths) {

@@ -67,8 +67,7 @@
               "type": "string",
               "enum": [
                 "mirror_native",
-                "clean",
-                "profile_only"
+                "clean"
               ],
               "default": "mirror_native"
             },
@@ -89,18 +88,6 @@
           "type": "object",
           "properties": {
             "max_usd_per_run": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "minimum": 0
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
-            "max_usd_per_day": {
               "anyOf": [
                 {
                   "type": "number",
@@ -224,56 +211,9 @@
                 "additionalProperties": {},
                 "default": {}
               },
-              "auth_ref": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "ref": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "env": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "ref"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
               "auth_preference": {
                 "$ref": "#/definitions/GlobalConfig/properties/routing/properties/auth_preference",
                 "default": "auto"
-              }
-            },
-            "additionalProperties": false
-          },
-          "default": {}
-        },
-        "secrets": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "description": {
-                "type": "string"
-              },
-              "harnesses": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "default": []
-              },
-              "env": {
-                "type": "string"
               }
             },
             "additionalProperties": false

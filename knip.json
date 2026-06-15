@@ -14,7 +14,7 @@
       "project": ["src/**/*.ts"]
     },
     "benchmarks/runner": {
-      "entry": ["src/index.ts"],
+      "entry": ["src/cli.ts"],
       "project": ["src/**/*.ts"]
     },
     ".": {
@@ -34,7 +34,7 @@
     "binaries": "off",
     "unresolved": "off",
     "duplicates": "warn",
-    "enumMembers": "off",
+    "enumMembers": "error",
     "nsExports": "off",
     "nsTypes": "off"
   }

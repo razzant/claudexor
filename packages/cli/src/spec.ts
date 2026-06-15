@@ -86,6 +86,7 @@ export function draftFromPlanAndAnswers(prompt: string, plan: string, questions:
     decided_tradeoffs: [
       ...(file.decided_tradeoffs ?? []),
       "Grounding came from Claudexor plan mode: multi-harness read-only planning plus cross-family plan review.",
+      `Plan grounding hash: ${hashJson({ plan })}`,
     ],
     tests: (file.tests ?? []).map((command, i) => ({ id: `gate-${i + 1}`, command, required: true })),
     tasks: [
@@ -98,14 +99,10 @@ export function draftFromPlanAndAnswers(prompt: string, plan: string, questions:
       status: "open" as const,
       resolution: null,
     })),
-    // Keep the plan excerpt in a decided tradeoff/projection rather than stuffing
-    // raw markdown into the schema; native exports carry the full plan text.
+    // The plan grounding hash lives in decided_tradeoffs (above); native exports
+    // carry the full plan text. protected_paths is the only wired constraint.
     constraints: {
-      allowed_paths: [],
-      forbidden_paths: [],
       protected_paths: [],
-      compatibility: [],
-      style: [`Plan grounding hash: ${hashJson({ plan })}`],
     },
   };
 }

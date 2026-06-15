@@ -41,9 +41,6 @@ importers:
 
   benchmarks/runner:
     dependencies:
-      '@claudexor/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
       '@claudexor/util':
         specifier: workspace:*
         version: link:../../packages/util
@@ -211,6 +208,9 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+      '@claudexor/workspace':
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/event-log:
     dependencies:
@@ -348,6 +348,9 @@ importers:
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core
+      '@claudexor/delivery':
+        specifier: workspace:*
+        version: link:../delivery
       '@claudexor/event-log':
         specifier: workspace:*
         version: link:../event-log

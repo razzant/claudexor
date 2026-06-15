@@ -5,9 +5,6 @@ import { SignalQuality } from "./harness.js";
 export const AuthMode = z.enum(["local_session", "api_key", "unknown"]);
 export type AuthMode = z.infer<typeof AuthMode>;
 
-export const SubscriptionPressure = z.enum(["low", "medium", "high", "burn", "unknown"]);
-export type SubscriptionPressure = z.infer<typeof SubscriptionPressure>;
-
 export const Portfolio = z.enum([
   "daily-rich",
   "balanced",
@@ -29,11 +26,7 @@ export const BudgetLease = z.object({
   intent: Intent,
   harness_id: Id,
   model_hint: z.string().nullable().default(null),
-  auth_mode: AuthMode.default("unknown"),
-  budget_class: SignalQuality.default("unknown"),
   max_usd: z.number().nullable().default(null),
-  max_tokens: z.number().int().nullable().default(null),
-  subscription_pressure_limit: SubscriptionPressure.default("unknown"),
   reason: z.array(z.string()).default([]),
   created_at: z.string(),
   state: z.enum(["reserved", "settled", "cancelled"]).default("reserved"),

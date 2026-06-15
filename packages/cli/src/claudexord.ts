@@ -11,8 +11,8 @@ import { deliver } from "@claudexor/delivery";
 import { containsSecretLikeToken, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig } from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
-import { buildGateway, buildRegistry } from "./registry.js";
-import { createSetupJobManager, setupHarness } from "./setup-jobs.js";
+import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { createSetupJobManager } from "./setup-jobs.js";
 import { extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -105,6 +105,13 @@ async function main(): Promise<void> {
           ? (harnessId, nativeSessionId, observedModel) => threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
           : undefined,
         authPreference: p.authPreference,
+        // Orchestrate autonomy (suggest/auto_safe/auto_full): consumed by the
+        // executor in runOrchestrate. The daemon also lends the executor a live
+        // answer-delivery service for answer_question steps (the engine does not
+        // own the interaction registry).
+        autonomy: p.autonomy,
+        answerInteraction: async (subRunId, interactionId, answers) =>
+          interactions.answer(subRunId, interactionId, answers).status === "delivered",
         repoRoot,
         prompt: String(p.prompt ?? ""),
         mode: p.mode,
@@ -117,6 +124,7 @@ async function main(): Promise<void> {
         untilClean: p.untilClean === true,
         swarm: p.swarm === true,
         create: p.create === true,
+        synthesis: p.synthesis,
         // Policy from the GUI composer / API client (applied, not just displayed).
         maxUsd: p.maxUsd ?? null,
         access: p.access,
@@ -279,7 +287,7 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),
     harnesses: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),
-    setupHarness: async (input: unknown) => setupHarness(input),
+    harnessModels: async (input: { harnessId: string }) => harnessModels(input.harnessId, NO_PROJECT_ROOT),
     createSetupJob: async (input: unknown) => setupJobs.create(input),
     listSetupJobs: async () => ({ jobs: setupJobs.list() }),
     setupJobStatus: async (input: unknown) => setupJobs.status(input),
@@ -301,7 +309,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         },
         budget: {
           maxUsdPerRun: cfg.global.budget.max_usd_per_run,
-          maxUsdPerDay: cfg.global.budget.max_usd_per_day,
         },
         harnesses: Object.fromEntries(Object.entries(cfg.global.harnesses).map(([id, h]) => [id, {
           enabled: h.enabled,
@@ -344,7 +351,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         budget: {
           ...cfg.budget,
           max_usd_per_run: p.clearMaxUsdPerRun === true ? null : p.maxUsdPerRun ?? cfg.budget.max_usd_per_run,
-          max_usd_per_day: p.clearMaxUsdPerDay === true ? null : p.maxUsdPerDay ?? cfg.budget.max_usd_per_day,
         },
         harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));

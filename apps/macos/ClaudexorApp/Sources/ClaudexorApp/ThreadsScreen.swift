@@ -166,6 +166,13 @@ struct ThreadsScreen: View {
                     .padding(.vertical, Theme.Spacing.xs)
             }
 
+            // Isolated threads accumulate in a worktree; deliver the diff to the
+            // project on demand. In-place threads write the live tree directly and
+            // never need this bar.
+            if let t = model.currentThread, t.workspaceMode == "isolated", !t.runIds.isEmpty {
+                ApplyThreadBar(threadId: t.id)
+            }
+
             composer
         }
     }
@@ -339,6 +346,19 @@ struct ThreadsScreen: View {
                 .fixedSize()
                 .help("External-context policy for this turn")
             }
+            // Workspace mode is FIXED at thread creation, so it's only editable while
+            // drafting the first turn (no thread selected yet). Isolated keeps a thread
+            // worktree; in_place (default) mutates the live tree so the next turn sees it.
+            if model.selectedThreadId == nil {
+                OptionSection(title: "Workspace") {
+                    Toggle("Isolated workspace", isOn: Binding(
+                        get: { model.draftIsolatedWorkspace },
+                        set: { model.draftIsolatedWorkspace = $0 }
+                    ))
+                    .toggleStyle(.switch).tint(Theme.accent)
+                    .help("Turns accumulate in a separate worktree; apply them to the project later with “Apply thread”. Off = in-place (the next turn sees prior edits).")
+                }
+            }
             // Repair strategies are single-candidate (the engine routes them to
             // convergence, NOT a race) — offer them for a plain Agent turn only.
             if composerMode == .agent {
@@ -401,6 +421,14 @@ private struct TurnCard: View {
     /// Set after a successful apply so the apply buttons can't be clicked twice
     /// (the SERVER gate is still the source of truth; this is a local guard).
     @State private var applied = false
+    /// Set after a successful revert so the affordance collapses immediately; the
+    /// SERVER (work_product apply_state) is the source of truth on the next refresh.
+    @State private var reverted = false
+    /// True while a Revert request is in flight (the server owns the outcome).
+    @State private var reverting = false
+    /// The apply gate reason from the pre-flight check (why apply would be refused),
+    /// shown up front so the user isn't surprised on press. nil => not checked / OK.
+    @State private var applyBlockReason: String?
     /// nil => follow the run state (expanded while running, collapsed when done);
     /// a user toggle pins it.
     @State private var transcriptExpanded: Bool?
@@ -450,6 +478,9 @@ private struct TurnCard: View {
                 // its diffstat (and whether a race winner was auto-applied).
                 if let result = turn.run?.result {
                     outcomeRow(result)
+                    // Honest apply-state label: never a green "succeeded" next to an
+                    // applied-but-review-blocked turn. Offers Revert while revertable.
+                    applyStateRow(result, run: run)
                 }
                 // Server-derived: a persisted operator decision (from ANY surface,
                 // surviving reloads) unblocks apply; `riskAccepted` only bridges
@@ -462,7 +493,16 @@ private struct TurnCard: View {
                     Label("Applied to project", systemImage: "checkmark.seal.fill")
                         .font(.caption).foregroundStyle(Theme.status(.succeeded))
                 } else if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
+                    // Apply PRE-FLIGHT: dry-run the gate when the apply bar appears so
+                    // a refusal reason is shown UP FRONT, not only on press.
+                    if let reason = applyBlockReason {
+                        Label(reason, systemImage: "hand.raised.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                            .help("Apply would be refused for this reason (apply pre-flight).")
+                    }
                     applyBar(run)
+                        .task(id: run.id) { applyBlockReason = await model.applyCheck(runId: run.id) }
                 }
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
                     Text(answer)
@@ -518,6 +558,54 @@ private struct TurnCard: View {
         }
     }
 
+    /// Honest application state of an in-place turn (decoupled from a clean terminal):
+    /// `applied` is green, `applied_review_blocked` is an honest amber (NOT a green
+    /// "succeeded"), `reverted` is neutral, `not_applied` shows nothing. While the
+    /// mutation is still safely revertable, offers Revert (server-owned; refuses on
+    /// tree divergence and the refusal is surfaced verbatim).
+    @ViewBuilder
+    private func applyStateRow(_ result: RunResult, run: TaskRun) -> some View {
+        // Local revert wins immediately; otherwise read the honest server state.
+        let state = reverted ? "reverted" : result.applyState
+        if let (text, glyph, tint) = Self.applyStateBadge(state) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Label(text, systemImage: glyph)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(tint)
+                Spacer()
+                // Offer Revert only while the server still says it's safe (tree
+                // unchanged since) and we haven't already reverted this turn.
+                if result.revertable && !reverted {
+                    Button(reverting ? "Reverting…" : "Revert") {
+                        guard let runId = turn.runId else { return }
+                        reverting = true
+                        Task {
+                            let err = await model.revertRun(runId: runId)
+                            reverting = false
+                            if err == nil { reverted = true; actionError = nil }
+                            else { actionError = err }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(reverting)
+                    .help("Restore the project to this turn's pre-turn state (server refuses if you've edited since)")
+                }
+            }
+        }
+    }
+
+    /// Map the honest apply-state to a label/glyph/tint. nil => render nothing
+    /// (not_applied / unknown — envelope-only, plan/answer, or nothing produced).
+    private static func applyStateBadge(_ state: String) -> (String, String, Color)? {
+        switch state {
+        case "applied": return ("Applied", "checkmark.seal.fill", Theme.status(.succeeded))
+        case "applied_review_blocked": return ("Applied · review blocked", "exclamationmark.triangle.fill", Theme.status(.blocked))
+        case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
+        default: return nil
+        }
+    }
+
     /// Review-queue actions ON the turn (the "apply: human_review" fix).
     private func decisionBar(_ run: TaskRun) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
@@ -543,25 +631,111 @@ private struct TurnCard: View {
     }
 
     private func applyBar(_ run: TaskRun) -> some View {
-        HStack(spacing: Theme.Spacing.sm) {
+        // The pre-flight reason gates EVERY apply mode, not just in-place: the server
+        // runs applyGateError(...) before deliver(...) for all modes (daemon-server.ts
+        // /runs/:id/apply), and deliver() also refuses a dirty worktree before the
+        // branch/pr checkout (delivery index.ts). A "branch" apply the gate refuses
+        // would be rejected with the identical error — so disable BOTH buttons rather
+        // than offer a doomed action.
+        let blocked = applyBlockReason != nil
+        return HStack(spacing: Theme.Spacing.sm) {
             Button("Apply patch") {
                 Task {
                     actionError = await model.applyRun(runId: run.id)
                     if actionError == nil { applied = true }   // hide buttons; no double-apply
                 }
             }
-            .help("Applies the reviewed patch to the original project (server-gated)")
+            .disabled(blocked)
+            .help(blocked ? (applyBlockReason ?? "Apply is currently refused")
+                          : "Applies the reviewed patch to the original project (server-gated)")
             Button("Apply as branch") {
                 Task {
                     actionError = await model.applyRun(runId: run.id, mode: "branch")
                     if actionError == nil { applied = true }
                 }
             }
-            .help("Applies onto a new branch")
+            .disabled(blocked)
+            .help(blocked ? (applyBlockReason ?? "Apply is currently refused")
+                          : "Applies onto a new branch")
             Spacer()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
+    }
+}
+
+/// Deliver an ISOLATED thread's accumulated worktree diff to its project. Renders
+/// the ControlThreadApplyResponse honestly (applied/branched/empty/conflict/rejected
+/// + a HEAD-moved warning) — the server owns whether the apply lands.
+private struct ApplyThreadBar: View {
+    @Environment(AppModel.self) private var model
+    let threadId: String
+    @State private var applying = false
+    /// Honest outcome of the apply, distinguishing the three states unambiguously
+    /// (the old `String?` conflated "applied OK" and "no attempt" as empty-ish and
+    /// left the buttons live after success — В: repeat-click re-applied the thread).
+    private enum Outcome {
+        case idle              // no attempt yet — offer Apply / As branch
+        case applied           // a completed apply SUCCEEDED — lock the buttons
+        case failed(String)    // a completed apply returned an honest message
+    }
+    @State private var outcome: Outcome = .idle
+
+    private var isApplied: Bool { if case .applied = outcome { return true }; return false }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Image(systemName: isApplied ? "checkmark.seal.fill" : "arrow.up.doc.on.clipboard")
+                .foregroundStyle(isApplied ? Theme.status(.succeeded) : Theme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Isolated workspace").font(.caption.weight(.medium))
+                switch outcome {
+                case .applied:
+                    Text("Applied to the project — this thread's worktree has been delivered.")
+                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
+                case .failed(let message):
+                    Text(message).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                case .idle:
+                    Text("Turns are kept in a thread worktree — apply them to the project when ready.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            // After a successful apply the thread is delivered — HIDE the apply actions
+            // so it can't be re-applied by mistake; show an explicit "Applied" state.
+            if isApplied {
+                Label("Applied", systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.status(.succeeded))
+            } else {
+                Button(applying ? "Applying…" : "Apply thread") {
+                    applying = true
+                    Task {
+                        let err = await model.applyThread(id: threadId)
+                        applying = false
+                        outcome = err.map(Outcome.failed) ?? .applied
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(applying)
+                .help("Deliver the thread's accumulated diff to the project (server-gated)")
+                Button("As branch") {
+                    applying = true
+                    Task {
+                        let err = await model.applyThread(id: threadId, mode: "branch")
+                        applying = false
+                        outcome = err.map(Outcome.failed) ?? .applied
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(applying)
+                .help("Deliver onto a new branch instead of the working tree")
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.lg)
+        .padding(.vertical, Theme.Spacing.sm)
     }
 }
 

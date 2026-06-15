@@ -1,3 +1,4 @@
+export { CLAUDEXOR_VERSION } from "./version.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,

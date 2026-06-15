@@ -85,9 +85,6 @@
                 "properties": {
                   "command": {
                     "type": "string"
-                  },
-                  "result_ref": {
-                    "type": "string"
                   }
                 },
                 "required": [

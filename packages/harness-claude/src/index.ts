@@ -1,17 +1,25 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, providerScrubEnv, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, providerScrubEnv, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
 import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame, isResultFrame } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
+
+/**
+ * Ordered (weakest→strongest) reasoning-effort levels `claude --effort` accepts.
+ * Claude does NOT accept `xhigh`/`max`, so they clamp to `high` via the shared
+ * normalizer (the ADP2 "claude xhigh" bug fix). SINGLE source for the manifest's
+ * `effort_levels` and the run-time normalizer.
+ */
+const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high"];
 
 function permissionArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -161,7 +169,7 @@ export function createClaudeAdapter(): HarnessAdapter {
         display_name: "Claude Code",
         kind: "local_cli",
         version,
-        adapter_version: "0.9.0",
+        adapter_version: CLAUDEXOR_VERSION,
         provider_family: "anthropic",
         capabilities: {
           plan: true,
@@ -192,6 +200,9 @@ export function createClaudeAdapter(): HarnessAdapter {
           orchestrate: true,
           quota_signal: "observed",
           usage_signal: "exact",
+          // claude --effort accepts low|medium|high ONLY (xhigh/max clamp to high
+          // via the shared normalizer). Single source for the run-time normalizer.
+          effort_levels: [...CLAUDE_EFFORT_LEVELS],
         },
         capability_profile: {
           execution_surfaces: [
@@ -205,7 +216,6 @@ export function createClaudeAdapter(): HarnessAdapter {
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
-        models: { discovery: "available" },
       });
     },
 
@@ -270,7 +280,10 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
     ? ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio", ...permissionArgs(spec.access)]
     : ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
-  if (spec.effort_hint) args.push("--effort", spec.effort_hint);
+  // Clamp onto claude's supported effort ladder (xhigh/max -> high); null = not
+  // requested OR not tunable -> pass no flag. Never sends an invalid level.
+  const eff = normalizeEffort(spec.effort_hint, CLAUDE_EFFORT_LEVELS);
+  if (eff) args.push("--effort", eff);
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
   // Resume a native Claude session as a follow-up turn of the same conversation.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);

@@ -62,53 +62,6 @@
             "allocated": []
           }
         },
-        "services": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "start_command": {
-                "type": "string"
-              },
-              "health_check": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "default": null
-              }
-            },
-            "required": [
-              "name",
-              "start_command"
-            ],
-            "additionalProperties": false
-          },
-          "default": []
-        },
-        "sandbox": {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "enum": [
-                "none",
-                "native",
-                "docker",
-                "devcontainer",
-                "remote"
-              ],
-              "default": "none"
-            }
-          },
-          "additionalProperties": false,
-          "default": {
-            "mode": "none"
-          }
-        },
         "policy_profile": {
           "type": "string",
           "default": "workspace_write"

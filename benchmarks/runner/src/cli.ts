@@ -40,18 +40,25 @@ const workdir = flag("workdir") ?? die("--workdir <repos-dir> is required");
 const n = Math.max(1, Number.parseInt(flag("n") ?? "2", 10) || 2);
 const maxUsd = flag("max-usd");
 const reviewerModel = flag("reviewer-model");
+// Per-task wall-clock timeout so one stuck `claudexor run` can't hang the whole
+// sweep. Flag wins over env; default 1800s (30 min). A timed-out task is logged and
+// recorded as an EMPTY prediction, then the loop continues.
+const taskTimeoutSec = Math.max(
+  1,
+  Number.parseInt(flag("task-timeout-sec") ?? process.env.CLAUDEXOR_SWE_TASK_TIMEOUT_SEC ?? "1800", 10) || 1800,
+);
 const harness = process.env.CLAUDEXOR_SWE_HARNESS || "codex";
 const modelName = process.env.CLAUDEXOR_SWE_MODEL_NAME || "claudexor";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// dist/cli.js -> repo root is four levels up (dist -> runner -> benchmarks -> repo).
-const repoRoot = process.env.CLAUDEXOR_REPO_ROOT || resolve(here, "..", "..", "..", "..");
+// dist/cli.js -> repo root is THREE levels up (dist -> runner -> benchmarks -> repo).
+const repoRoot = process.env.CLAUDEXOR_REPO_ROOT || resolve(here, "..", "..", "..");
 const cliEntry = join(repoRoot, "packages", "cli", "dist", "cli.js");
 if (!existsSync(cliEntry)) die(`built CLI not found at ${cliEntry} (run \`pnpm build\` first)`);
 
 const tasks = loadTasksFromJsonl(tasksPath);
 if (tasks.length === 0) die(`no tasks loaded from ${tasksPath}`);
-log(`runner: ${tasks.length} task(s), n=${n}, harness=${harness}, cli=${cliEntry}`);
+log(`runner: ${tasks.length} task(s), n=${n}, harness=${harness}, task-timeout=${taskTimeoutSec}s, cli=${cliEntry}`);
 
 const workRoot = isAbsolute(workdir) ? workdir : resolve(process.cwd(), workdir);
 const predictions: Prediction[] = [];
@@ -74,7 +81,24 @@ for (const task of tasks) {
     encoding: "utf8",
     maxBuffer: 128 * 1024 * 1024,
     env: process.env,
+    timeout: taskTimeoutSec * 1000,
+    killSignal: "SIGKILL",
   });
+
+  // A wall-clock timeout (or any signal-kill) leaves no usable patch — record an
+  // empty prediction and move on so the sweep doesn't hang on one stuck task.
+  if (r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+    log(`  ${task.instance_id}: TIMED OUT after ${taskTimeoutSec}s (killed); empty patch`);
+    predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: "" });
+    writePredictions(predictions, predsPath);
+    continue;
+  }
+  if (r.signal) {
+    log(`  ${task.instance_id}: killed by signal ${r.signal}; empty patch`);
+    predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: "" });
+    writePredictions(predictions, predsPath);
+    continue;
+  }
 
   let patch = "";
   // --json prints exactly one JSON object on stdout; tolerate trailing whitespace.

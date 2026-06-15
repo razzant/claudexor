@@ -194,35 +194,7 @@
         "constraints": {
           "type": "object",
           "properties": {
-            "allowed_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "forbidden_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
             "protected_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "compatibility": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "style": {
               "type": "array",
               "items": {
                 "type": "string"
@@ -265,58 +237,6 @@
           "default": {
             "commands": []
           }
-        },
-        "delivery": {
-          "type": "object",
-          "properties": {
-            "mutation_mode": {
-              "type": "string",
-              "enum": [
-                "native_live",
-                "envelope_live",
-                "artifact_only",
-                "branch",
-                "commit",
-                "pr",
-                "new_repo_materialize",
-                "native"
-              ],
-              "default": "envelope_live"
-            },
-            "apply_policy": {
-              "type": "string",
-              "enum": [
-                "never",
-                "ask",
-                "auto_if_green",
-                "auto_if_consilium_approves",
-                "always",
-                "native"
-              ],
-              "default": "ask"
-            },
-            "apply_scope": {
-              "type": "string",
-              "enum": [
-                "all",
-                "selected_files",
-                "selected_hunks",
-                "interactive"
-              ],
-              "default": "all"
-            },
-            "materialize_policy": {
-              "type": "string",
-              "enum": [
-                "ask",
-                "auto_if_green",
-                "always"
-              ],
-              "default": "ask"
-            }
-          },
-          "additionalProperties": false,
-          "default": {}
         },
         "access": {
           "type": "object",

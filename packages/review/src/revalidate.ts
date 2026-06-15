@@ -5,8 +5,6 @@ export interface RevalidateDecision {
   note?: string;
 }
 
-export type Decider = (f: ReviewFinding) => RevalidateDecision | Promise<RevalidateDecision>;
-
 function hasEvidence(f: ReviewFinding): boolean {
   return (
     f.evidence.files.length > 0 ||
@@ -17,9 +15,9 @@ function hasEvidence(f: ReviewFinding): boolean {
 }
 
 /**
- * Deterministic baseline revalidation (no LLM): enforces the evidence rules.
- * The real loop layers an LLM-first Decider on top, but these invariants always
- * hold: no evidence -> cannot block; out-of-scope/insufficient pass through.
+ * Deterministic revalidation (no LLM): enforces the evidence invariants that
+ * always hold — no evidence -> cannot block; out-of-scope/insufficient pass
+ * through; a NEEDS_HUMAN escalation stays a blocking human gate.
  */
 export function deterministicDecision(f: ReviewFinding): RevalidateDecision {
   if (f.severity === "OUT_OF_SCOPE") return { status: "out_of_scope" };
@@ -34,22 +32,14 @@ export function deterministicDecision(f: ReviewFinding): RevalidateDecision {
 }
 
 /**
- * Revalidate every finding (LLM-first when a Decider is provided). Each finding's
- * status is recorded; the deterministic evidence invariant is always applied
- * first so an LLM cannot promote an evidence-free finding to blocking.
+ * Revalidate every finding deterministically. Each finding's status is recorded;
+ * the evidence-free BLOCK/FIX_FIRST invariant is applied so a reviewer cannot
+ * leave an evidence-free finding in a blocking state.
  */
-export async function revalidateFindings(
-  findings: ReviewFinding[],
-  decide: Decider = deterministicDecision,
-): Promise<ReviewFinding[]> {
+export async function revalidateFindings(findings: ReviewFinding[]): Promise<ReviewFinding[]> {
   const out: ReviewFinding[] = [];
   for (const f of findings) {
-    // Hard invariant first.
-    if ((f.severity === "BLOCK" || f.severity === "FIX_FIRST") && !hasEvidence(f)) {
-      out.push({ ...f, status: "insufficient_evidence", revalidation_note: "no evidence -> cannot block" });
-      continue;
-    }
-    const d = await decide(f);
+    const d = deterministicDecision(f);
     out.push({ ...f, status: d.status, revalidation_note: d.note });
   }
   return out;

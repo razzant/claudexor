@@ -2,9 +2,40 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyPatch, ensureGitRepository, git, isGitRepo, snapshotTree } from "./git.js";
+import { applyPatch, ensureGitRepository, git, isGitRepo, revertWorkingTreeTo, snapshotTree } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
+
+describe("revertWorkingTreeTo", () => {
+  it("restores a modified file, removes a turn-added file, and refuses when the tree diverged", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "keep.ts"), "original\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const preTurn = await snapshotTree(repo); // clean -> HEAD
+    // The "turn" mutates the live tree: edit a tracked file + add a new one.
+    writeFileSync(join(repo, "keep.ts"), "MUTATED by the turn\n");
+    writeFileSync(join(repo, "added.ts"), "new file from the turn\n");
+    const postTurn = await snapshotTree(repo);
+
+    // Happy path: tree still equals postTurn -> restore.
+    const r1 = await revertWorkingTreeTo(repo, preTurn, postTurn);
+    expect(r1.reverted).toBe(true);
+    expect(r1.removed).toContain("added.ts");
+    expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("original\n");
+    expect(existsSync(join(repo, "added.ts"))).toBe(false);
+
+    // Divergence fence: re-mutate then ask to revert against the STALE postTurn.
+    writeFileSync(join(repo, "keep.ts"), "edited again after the turn\n");
+    const r2 = await revertWorkingTreeTo(repo, preTurn, postTurn);
+    expect(r2.reverted).toBe(false);
+    expect(r2.reason).toMatch(/diverged/);
+    // The refused revert touched nothing.
+    expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("edited again after the turn\n");
+  });
+});
 
 async function initRepo(): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), "claudexor-ws-"));

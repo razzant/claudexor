@@ -2,6 +2,7 @@ import type {
   ConformanceReport,
   HarnessEvent,
   HarnessManifest,
+  HarnessModel,
   HarnessRunSpec,
   InteractionAnswerSet,
   InteractionRequest,
@@ -32,6 +33,14 @@ export interface HarnessAdapter {
 
   /** Optional dedicated review path (defaults to run with intent=review). */
   review?(spec: HarnessRunSpec): AsyncIterable<HarnessEvent>;
+
+  /**
+   * Optional model enumeration. Only adapters that can HONESTLY list models
+   * implement this (e.g. raw-api via OpenAI-compatible `GET /v1/models`);
+   * native-CLI adapters that cannot enumerate simply omit it. Must fail soft
+   * (return [] on network/auth error) — never throw into a picker/consumer.
+   */
+  models?(spec?: DoctorSpec): Promise<HarnessModel[]>;
 
   /** Optional cancellation. */
   cancel?(sessionId: string): Promise<void>;

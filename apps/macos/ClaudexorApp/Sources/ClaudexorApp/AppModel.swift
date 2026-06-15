@@ -7,15 +7,7 @@ import ClaudexorKit
 
 enum SidebarRoute: Hashable {
     case threads
-    case overview
-    case tasks
     case task(String)
-    case spec(String)
-    case interview
-    case review
-    case budget
-    case harnesses
-    case settings
 }
 
 enum AppearanceMode: String, CaseIterable, Identifiable {
@@ -85,8 +77,11 @@ final class AppModel {
     /// the global default from Settings.
     var draftPrimaryHarness: String?
     var draftEligiblePool: [String] = []
+    /// DRAFT-thread workspace mode: false => in_place (default; turns mutate the live
+    /// tree), true => isolated (turns accumulate in a thread worktree, applied later via
+    /// "Apply thread"). Fixed at thread creation, so it's only editable in the draft.
+    var draftIsolatedWorkspace = false
     var liveHarnesses: [HarnessInfo] = []
-    var liveBudget: BudgetState = .empty
     var settingsSnapshot: SettingsSnapshot?
     var secretBackend = "unknown"
     var storedSecrets: [SecretInfo] = []
@@ -95,8 +90,6 @@ final class AppModel {
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
     var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : liveHarnesses }
-    var budget: BudgetState { demoMode ? DemoData.budget : observedLiveBudget }
-    var interviewQuestions: [InterviewQuestion] { demoMode ? DemoData.interviewQuestions : [] }
 
     /// Live runs grouped into a light project tree for the sidebar.
     private var liveProjects: [Project] {
@@ -106,34 +99,6 @@ final class AppModel {
             return Project(id: name, name: name,
                            specs: [Spec(id: "\(name)-runs", title: "Runs", frozen: false, version: 0, runIds: ids)])
         }
-    }
-
-    private var observedLiveBudget: BudgetState {
-        let spendSamples = liveTasks.filter(\.spendKnown)
-        let spend = spendSamples.reduce(0) { $0 + $1.spendUsd }
-        let spendEstimated = spendSamples.contains(where: \.spendEstimated)
-        let spendKnown = !spendSamples.isEmpty
-        let dayCap = settingsSnapshot?.budget.maxUsdPerDay
-        let capKnown = dayCap != nil
-        let cap = dayCap ?? 0
-        let breaker: Int
-        if spendKnown && capKnown && cap > 0 {
-            let fraction = min(spend / cap, 1)
-            breaker = fraction >= 1 ? 3 : fraction > 0.85 ? 2 : fraction > 0.75 ? 1 : 0
-        } else {
-            breaker = 0
-        }
-        return BudgetState(
-            spend: spend,
-            cap: cap,
-            spendKnown: spendKnown,
-            capKnown: capKnown,
-            spendEstimated: spendEstimated,
-            source: spendKnown || capKnown ? "runs/settings" : "unknown",
-            nativeQuota: liveBudget.nativeQuota,
-            breakerTier: breaker,
-            perHarness: [:]
-        )
     }
 
     /// Engine-side defaults for launch surfaces (quick launch, retry).
@@ -202,30 +167,6 @@ final class AppModel {
     }
 
     var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
-
-    var selectedTaskId: String? {
-        if case let .task(id) = route { return id }
-        return nil
-    }
-
-    var selectedTask: TaskRun? {
-        guard let id = selectedTaskId else { return nil }
-        return tasks.first { $0.id == id }
-    }
-
-    var selectedSpecId: String? {
-        if case let .spec(id) = route { return id }
-        return nil
-    }
-
-    var selectedSpec: Spec? {
-        guard let id = selectedSpecId else { return nil }
-        return projects.flatMap(\.specs).first { $0.id == id }
-    }
-
-    func project(forSpec specId: String) -> Project? {
-        projects.first { $0.specs.contains { $0.id == specId } }
-    }
 
     // A run parked on a pending question NEEDS the user even though its daemon
     // state is still "running".
@@ -415,21 +356,6 @@ final class AppModel {
         return values.compactMap(\.stringValue)
     }
 
-    func prepareHarnessSetup(family: HarnessFamily, action: String) async -> HarnessSetupResponse? {
-        guard let client else {
-            settingsStatus = "Engine offline: reconnect before preparing \(family.label) setup."
-            return nil
-        }
-        do {
-            let response = try await client.setupHarness(HarnessSetupRequest(harness: family.setupHarnessId, action: action))
-            settingsStatus = response.message
-            return response
-        } catch {
-            settingsStatus = "Could not prepare \(family.label) setup: \(error)"
-            return nil
-        }
-    }
-
     func startSetupJob(family: HarnessFamily, action: String) async -> SetupJob? {
         guard let client else {
             settingsStatus = "Engine offline: reconnect before starting \(family.label) setup."
@@ -443,6 +369,13 @@ final class AppModel {
             settingsStatus = "Could not start \(family.label) setup: \(error)"
             return nil
         }
+    }
+
+    /// Enumerable models for one harness (ADP4 picker). Returns nil when the
+    /// engine is offline OR the request fails, so the view falls back to free text.
+    func harnessModels(for family: HarnessFamily) async -> HarnessModelsResponse? {
+        guard let client else { return nil }
+        return try? await client.harnessModels(harnessId: family.rawValue)
     }
 
     func confirmSetupJob(_ jobId: String) async -> SetupJob? {
@@ -821,6 +754,7 @@ final class AppModel {
         // Reset draft routing back to "inherit global default".
         draftPrimaryHarness = nil
         draftEligiblePool = []
+        draftIsolatedWorkspace = false
     }
 
     /// The thread the conversation is currently showing (detail preferred — it is
@@ -895,6 +829,41 @@ final class AppModel {
         }
     }
 
+    /// Apply an ISOLATED thread's accumulated worktree diff to its project. Returns
+    /// nil on success, else an honest message (empty/conflict/rejected, or a transport
+    /// error). On success refreshes the thread (its head/state may have moved).
+    func applyThread(id: String, mode: String = "apply") async -> String? {
+        guard let client else { return "Engine offline — reconnect to apply this thread." }
+        do {
+            let res = try await client.applyThread(id: id, body: ThreadApplyRequest(mode: mode))
+            if res.applied {
+                await refreshThreads()
+                await openThread(id)
+                return nil
+            }
+            // Honest non-applied outcomes: surface the server's status + detail verbatim.
+            let base = Self.threadApplyLabel(res.status)
+            let head = res.headMoved ? " (project HEAD moved past the thread base)" : ""
+            return res.detail.map { "\(base): \($0)\(head)" } ?? "\(base)\(head)"
+        } catch {
+            return userMessage(for: error)
+        }
+    }
+
+    /// Human-readable label for a ControlThreadApplyResponse.status.
+    private static func threadApplyLabel(_ status: String) -> String {
+        switch status {
+        case "applied": return "Applied"
+        case "branched": return "Applied as branch"
+        case "committed": return "Committed"
+        case "pr_opened": return "PR opened"
+        case "empty": return "Nothing to apply"
+        case "conflict": return "Conflict — apply refused"
+        case "rejected": return "Apply rejected"
+        default: return status
+        }
+    }
+
     func newThread(title: String?) async {
         guard let client else {
             threadStatus = "Engine offline: reconnect before creating a thread."
@@ -912,6 +881,9 @@ final class AppModel {
             let thread = try await client.createThread(CreateThreadRequest(
                 title: title,
                 scope: scope,
+                // Isolated => turns accumulate in a thread worktree (applied later);
+                // in_place is the engine default, so omit it rather than send it.
+                workspace: draftIsolatedWorkspace ? "isolated" : nil,
                 primaryHarness: effectivePrimaryHarness,
                 eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool
             ))
@@ -1000,9 +972,6 @@ final class AppModel {
                 web: options.web,
                 planRunId: planRunId
             ))
-        } catch let GatewayError.queueBusy(message) {
-            threadStatus = "Engine busy: \(message)"
-            return false   // the turn did NOT land — let the composer keep the text
         } catch {
             threadStatus = userMessage(for: error)
             return false
@@ -1028,8 +997,6 @@ final class AppModel {
             if status == 404 { return "The engine is out of date — restart the daemon." }
             if let detail = serverErrorMessage(from: body) { return "Request failed (HTTP \(status)): \(detail)" }
             return "Request failed (HTTP \(status))."
-        case GatewayError.queueBusy(let message):
-            return "Engine busy: \(message)"
         case is URLError:
             return "Cannot reach the engine — is the daemon running?"
         default:
@@ -1037,12 +1004,16 @@ final class AppModel {
         }
     }
 
-    /// Pull the engine's `{ "error": "..." }` message out of a failed HTTP body.
+    /// Pull the engine's reason out of a failed HTTP body. Transport/gate errors use
+    /// `{ "error": "..." }`; a refused decision (e.g. the 409 revert-refusal path)
+    /// instead carries `ControlRunDecisionResponse.message` — so honor BOTH, else a
+    /// rejection's concrete reason (the divergence message) is swallowed.
     private func serverErrorMessage(from body: String) -> String? {
         guard let data = body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let message = obj["error"] as? String, !message.isEmpty else { return nil }
-        return message
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let error = obj["error"] as? String, !error.isEmpty { return error }
+        if let message = obj["message"] as? String, !message.isEmpty { return message }
+        return nil
     }
 
     /// Typed operator decision on a blocked run (review queue actions).
@@ -1065,6 +1036,41 @@ final class AppModel {
             return res.applied ? nil : (res.detail ?? "Apply was refused.")
         } catch {
             return "Apply failed: \(error)"
+        }
+    }
+
+    /// Apply PRE-FLIGHT: dry-run the apply gate BEFORE the user presses Apply, so the
+    /// UI shows WHY apply would be refused (the gate reason) up front instead of only
+    /// on press. Returns nil when apply would proceed cleanly, or the server's honest
+    /// refusal reason (the gate error body, or the patch's non-applying stderr).
+    func applyCheck(runId: String) async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let res = try await client.applyCheck(runId: runId)
+            return res.ok ? nil : (res.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "The patch would not apply cleanly."
+                : res.stderr)
+        } catch {
+            // The gate refusal (e.g. blocked/needs-human, secret-like token) comes
+            // back as an HTTP error whose body carries the real reason — surface it.
+            return userMessage(for: error)
+        }
+    }
+
+    /// Revert this turn's in-place mutation through the server-owned restore. Returns
+    /// nil on success, else the server's honest refusal (it refuses if the tree
+    /// diverged from the recorded post-turn state). Refreshes the run/thread on success.
+    func revertRun(runId: String) async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let res = try await client.revertRun(runId: runId)
+            guard res.accepted else { return res.message ?? "Revert was refused (\(res.status))." }
+            await refreshRuns()
+            await loadRunDetail(runId)
+            if let tid = selectedThreadId { await openThread(tid) }
+            return nil
+        } catch {
+            return userMessage(for: error)
         }
     }
 
@@ -1118,6 +1124,10 @@ final class AppModel {
             task.status = RunStatus(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode, strategy: detail.summary.strategy)
             task.operatorDecisionAction = detail.operatorDecisionAction
+            if let result = detail.summary.result {
+                task.applyState = result.applyState
+                task.revertable = result.revertable
+            }
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }
             task.project = detail.summary.project?.projectName ?? detail.summary.project?.root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? task.project
@@ -1155,17 +1165,6 @@ final class AppModel {
                 task.capKnown = budget.maxUsd != nil
                 task.spendKnown = budget.spendUsd != nil
                 task.spendEstimated = budget.estimated
-                liveBudget = BudgetState(
-                    spend: budget.spendUsd ?? 0,
-                    cap: budget.maxUsd ?? 0,
-                    spendKnown: budget.spendUsd != nil,
-                    capKnown: budget.maxUsd != nil,
-                    spendEstimated: budget.estimated,
-                    source: budget.source,
-                    nativeQuota: budget.nativeQuota.map { "\($0.provider): \($0.label)\($0.remaining.map { " \($0)" } ?? "")" },
-                    breakerTier: 0,
-                    perHarness: [:]
-                )
             }
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {

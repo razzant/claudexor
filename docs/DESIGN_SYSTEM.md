@@ -143,8 +143,8 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   - **Hover:** clickable rows opt into a lift (deeper shadow + brighter veil);
     static panels never twitch.
   - Settings groups are flat and use no shadow. No heavy, stacked, or black
-    cutout shadows. Row lists (Home, Tasks) are **individual floating
-    row-cards with gaps**, not one slab with hairline dividers.
+    cutout shadows. Row lists (the thread list, any run/finding lists) are
+    **individual floating row-cards with gaps**, not one slab with hairline dividers.
 
 ### 2.5 Density
 
@@ -159,7 +159,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   and animated SF Symbols for state changes.
 - **Non-negotiable guardrails:** honor **Reduce Motion** (disable lensing/morph; cross-fade
   instead) and **Reduce Transparency** (fall back to solid surfaces). The always-on
-  monitoring surfaces (dashboard telemetry) use calm, low-frequency motion so a multi-hour
+  monitoring surfaces (live turn transcript + run-inspector telemetry) use calm, low-frequency motion so a multi-hour
   window never becomes distracting; expressive motion is reserved for interactions/transitions.
 
 ### 2.7 Iconography
@@ -264,19 +264,25 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 Each component lists purpose + key tokens. Components are reusable SwiftUI views in a
 `DesignSystem` module; screens compose them.
 
-- **Mission-control dashboard (signature screen).** A long run at a glance:
+- **Turn card + run inspector (the signature surface).** A long run at a glance —
+  not a separate dashboard screen, but the live turn in the conversation and its
+  detail in the trailing inspector:
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
-    node animates (calm).
+    node animates (calm). It rides the active turn's transcript and the inspector's
+    Timeline, not a top-level pane.
   - **Candidate cards**: per-harness chips colored by `harness/*`, showing gates, cost
-    (with estimated-vs-exact badge), review state.
+    (with estimated-vs-exact badge), review state. They live on a race turn and in the
+    inspector's Candidates tab.
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
     Money values are typed currency fields when editable; never use a slider for dollar input.
+    The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
   - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
     Summary; thinking/tool/file/message rendered distinctly; compact bubbles are collapsed by
-    default, raw native details expand inline, and code/log text sits on `surface/code`.
-  - **"What changed since you last looked"** marker + an **attention state** (working /
-    blocked / needs-permission / done).
+    default, raw native details expand inline, and code/log text sits on `surface/code`. It is
+    the live transcript on the turn and the inspector's Timeline tab.
+  - **"What changed since this turn"** marker + an **attention state** (working /
+    blocked / needs-permission / done) on the turn card and its thread row.
 - **Chat composer (v0.10 redesign).** ONE floating Liquid-Glass panel
   (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
   Two stacked zones, all with SOLID contents (no glass-on-glass):
@@ -335,20 +341,29 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   then re-run the harness doctor; a job stuck on "running" forever in the UI is
   a defect, not a state.
 - **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
-- **Cross-family review.** Solid-grid Review Queue: severity, finding, task, reviewer,
-  evidence, and state columns. Cards can still appear in task detail, but local accept/rebut
-  toggles are forbidden unless backed by a server endpoint.
+- **Cross-family review (inline, per turn).** Review/findings are NOT a separate
+  Review-Queue screen — they live on the turn that produced them and in the run
+  inspector's Review tab: severity, finding, reviewer, evidence, and state, on solid
+  `surface/code`-backed rows. Local accept/rebut toggles are forbidden unless backed by a
+  server endpoint (`POST /runs/:id/decision`).
 - **Convergence.** Round timeline; accepted findings fed back; convergence predicate state.
-- **Diff + Apply + Review queue.** Git-scoped diff from server artifacts. Apply/check actions
-  use `POST /runs/:id/apply/check` and `POST /runs/:id/apply`. Do not present per-file or
-  per-hunk apply controls until the backend exposes selected scope.
-- **Budget cockpit.** Spend, circuit breaker, portfolio weights, pre-exhaustion warnings.
-- **Harness Doctor.** Live `HarnessStatus` (ok/degraded/unavailable), intents, auth.
-  Manifest auth modes are source availability only; installed/session/key-present
-  must not be rendered as ready unless doctor/smoke checks pass. Rows should
-  separate Installed, Auth source, Smoke-ready, and Routable states.
-- **Run detail diagnostics.** Every live run detail has explicit `Outcome`, `Timeline`,
-  and `Diagnostics` tabs. `Outcome` reads the control API `primaryOutput` first and then
+- **Diff + Apply (inline, per turn).** Git-scoped diff from server artifacts, shown in the
+  run inspector's Diff tab. Apply/check actions use `POST /runs/:id/apply/check` and
+  `POST /runs/:id/apply` (an isolated thread delivers its accumulated diff via
+  `POST /threads/:id/apply`). Do not present per-file or per-hunk apply controls until the
+  backend exposes selected scope.
+- **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
+  pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
+  rides the run inspector.
+- **Harness Doctor (Settings tab).** Live `HarnessStatus` (ok/degraded/unavailable),
+  intents, auth — a Settings tab, not a top-level screen. Manifest auth modes are source
+  availability only; installed/session/key-present must not be rendered as ready unless
+  doctor/smoke checks pass. Rows should separate Installed, Auth source, Smoke-ready, and
+  Routable states.
+- **Run detail diagnostics.** Every live run detail (in the trailing inspector) has explicit
+  `Outcome`, `Timeline`, `Plan`, `Candidates`, `Diff`, `Review`, and `Diagnostics` tabs —
+  inline per-turn review and apply live here, not a separate screen. `Outcome` reads the
+  control API `primaryOutput` first and then
   falls back to `final/answer.md`, `final/explore.md`, `final/report.md`, `final/plan.md`, or
   `final/summary.md`. Active runs default to `Timeline`; completed runs default to
   `Outcome`; failures without output default to `Diagnostics`. `Diagnostics` reads engine
@@ -357,9 +372,10 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   hunting for invisible logs.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
-- **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped sections: General,
-  Appearance, Projects, Agent & Routing, Harness Doctor & Auth, Per-Harness
-  Defaults, Secrets, Budget, Review, Delivery, Advanced & About. Settings
+- **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped tabs: General,
+  Routing, Harnesses (per-harness defaults + doctor), Budget, Secrets, and
+  Appearance. (Review is inline per turn, not a Settings section; delivery is
+  server-owned via the run decision/apply endpoints.) Settings
   groups are flat, solid, and shadowless. The Per-Harness Defaults editor
   (enable/disable, model override, effort, web policy) saves PARTIAL patches to
   the engine config via `/settings`; quick-launch and Retry honor saved engine
@@ -414,21 +430,20 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   logo + label + chevron `Menu`, switching the thread's sticky primary harness (a change
   applies from the next turn).
 
-- **Screen header / H1.** Every primary screen shows ONE title via the shared `ScreenHeader`
-  (`.title2.weight(.bold)` + optional `.callout` secondary subtitle) — either through
-  `ScreenScaffold` (scrolling content), `ListScreen` (title + filter bar + collection), or
-  `TaskDetail`'s header. No screen may start straight into content with no title (Home is the
-  one deliberate exception: its floating composer *is* the hero). All screen H1s use the same
-  recipe — never re-implement the title inline.
-- **Screen scaffold.** Standard screens use `ScreenScaffold(title:subtitle:)`. List screens
-  (Tasks, Review) use `ListScreen(title:) { filters } content: { … }`. Gutter: horizontal
-  `Spacing.xxl` (32), vertical `Spacing.xl` (24). Content column is centered and capped at a
-  width token: `Layout.contentMaxWidth` (1040) for dashboards/lists, `Layout.readableMaxWidth`
-  (860) for forms/reading (interview, settings). Screen backgrounds use the
-  shared solid/glow surface without window-edge extension effects. Do **not**
-  hardcode per-screen widths or margins. No screen may force a very wide minimum window;
-  dense grids must adapt columns and/or scroll inside their content region instead of
-  resizing the whole app window.
+- **Titles / H1.** Headed surfaces (Settings tabs, the run inspector's `TaskDetail` header)
+  use the shared `ScreenHeader` recipe (`.title2.weight(.bold)` + optional `.callout`
+  secondary subtitle); never re-implement the title inline. The chat-first main window is
+  deliberately header-less: the thread title/subtitle live in the system window toolbar
+  (`.navigationTitle`/`.navigationSubtitle`) and the floating composer *is* the hero — the
+  conversation does not get a redundant in-content H1.
+- **Screen scaffold.** Settings tabs and other scrolling reading surfaces use a standard
+  scaffold/`settingsTab` scroll container. Gutter: horizontal `Spacing.xxl` (32), vertical
+  `Spacing.xl` (24). Content column is centered and capped at a width token:
+  `Layout.contentMaxWidth` (1040) for wide content, `Layout.readableMaxWidth` (860) for
+  forms/reading (settings). Backgrounds use the shared solid/glow surface without window-edge
+  extension effects. Do **not** hardcode per-screen widths or margins. Nothing may force a
+  very wide minimum window; dense content must adapt columns and/or scroll inside its own
+  region instead of resizing the whole app window.
 - **Segmented tabs.** In-content tab/segment rows use the shared `SegmentedTabs` (one font,
   `Radius.control` indicator via `matchedGeometryEffect`, optional per-tab count badge,
   `.isSelected` trait, Reduce-Motion-aware). Do not hand-roll a tab bar (TaskDetail wraps
@@ -448,15 +463,15 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   the system toolbar via `.navigationTitle`/`.navigationSubtitle` — never a second header strip.
   Project + primary harness chips live in the COMPOSER, not the toolbar. Monochrome SF Symbols;
   don't mix text+icon in one group.
-- **Sidebar selection.** `List(selection:)` binds `SidebarRoute` (a `Hashable` enum with a
-  distinct case per selectable concept). Every row gets a UNIQUE `.tag(SidebarRoute.…)`; the
-  detail is a `switch` over the route. NEVER alias two concepts to one tag (e.g. a spec row
-  must use `.spec(id)`, not the first run's `.task(id)`) — shared tags make one click select
-  multiple rows.
+- **Sidebar selection.** The glass sidebar is the THREAD LIST. `List(selection:)` binds a
+  `Hashable` route with a distinct case per selectable concept. Every row gets a UNIQUE
+  `.tag(…)`; the detail is a `switch` over the route. NEVER alias two concepts to one tag
+  (e.g. a thread row must use its own `.thread(id)`, not another thread's id) — shared tags
+  make one click select multiple rows.
 - **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
-  content uses `TaskRowView`/`FindingCard`. Run lists (Home sections, Tasks) render each
-  row as its OWN floating row-card — `cardSurface(hover: true)` with `Spacing.sm` gaps —
-  not one slab with inset dividers (v0.8 floating-rows decision).
+  content uses the shared row/`FindingCard` views. The thread list and any run/finding lists
+  render each row as its OWN floating row-card — `cardSurface(hover: true)` with `Spacing.sm`
+  gaps — not one slab with inset dividers (v0.8 floating-rows decision).
 - **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8): frosted
   `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one
   scheme-aware separation shadow cast by the shape, optional `hover` lift, and a

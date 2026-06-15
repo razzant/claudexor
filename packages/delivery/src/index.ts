@@ -3,6 +3,11 @@ import { newId } from "@claudexor/util";
 
 export * from "./gate.js";
 
+// Server-owned in-place revert (restore the live tree to a run's pre-turn
+// snapshot, refusing if the tree diverged). Co-located with apply; control-api
+// calls it for the revert_run operator decision.
+export { revertWorkingTreeTo as revertInPlace, type RevertResult } from "@claudexor/workspace";
+
 async function git(repo: string, args: string[], input?: string) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
 }

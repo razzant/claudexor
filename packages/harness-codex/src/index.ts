@@ -4,13 +4,21 @@ import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, normalizeEffort, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 
 const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+
+/**
+ * Ordered (weakest→strongest) reasoning-effort levels codex's
+ * `model_reasoning_effort` config accepts. SINGLE source: the manifest's
+ * `effort_levels` and the run-time normalizer both read this. The cross-harness
+ * `max` hint clamps to `xhigh` (the ceiling) via the shared normalizer.
+ */
+const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh"];
 
 /**
  * Resolve an OpenAI API key for codex from the environment. Claudexor-managed
@@ -188,17 +196,21 @@ export function codexExecArgs(
   // so a thread's later moves continue the same conversation instead of restarting.
   // LIVE-VERIFIED (codex 0.137): the resume subcommand does NOT accept --sandbox;
   // sandboxing must ride as `-c sandbox_mode="..."` config overrides there.
+  // Clamp the requested effort onto codex's supported ladder via the shared
+  // normalizer (single source: CODEX_EFFORT_LEVELS). Null = not requested OR
+  // effort not tunable -> pass no flag.
+  const effort = normalizeEffort(spec.effort_hint, CODEX_EFFORT_LEVELS);
   if (spec.resume_session_id) {
     const args = ["exec", "resume", spec.resume_session_id, "--json", ...sandboxConfigArgs(spec.access), "--skip-git-repo-check"];
     if (spec.model_hint) args.push("-m", spec.model_hint);
-    if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
+    if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
     args.push(spec.prompt);
     return args;
   }
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
   if (spec.model_hint) args.push("-m", spec.model_hint);
-  if (spec.effort_hint) args.push("-c", `model_reasoning_effort="${clampCodexEffort(spec.effort_hint)}"`);
+  if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   args.push(spec.prompt);
   return args;
@@ -217,15 +229,6 @@ function sandboxConfigArgs(access: AccessProfile): string[] {
     case "inherit_native":
       return [];
   }
-}
-
-/**
- * Codex accepts minimal|low|medium|high|xhigh for model_reasoning_effort; the
- * cross-harness `max` hint (valid for Claude) must clamp to xhigh instead of
- * producing an invalid config value that breaks mixed-effort races.
- */
-export function clampCodexEffort(effort: EffortHint): EffortHint {
-  return effort === "max" ? "xhigh" : effort;
 }
 
 function codexWebArgs(policy: HarnessRunSpec["external_context_policy"]): string[] {
@@ -262,7 +265,7 @@ export function createCodexAdapter(): HarnessAdapter {
         display_name: "Codex CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.9.0",
+        adapter_version: CLAUDEXOR_VERSION,
         provider_family: "openai",
         capabilities: {
           plan: true,
@@ -290,6 +293,9 @@ export function createCodexAdapter(): HarnessAdapter {
           web_policy: "native",
           quota_signal: "observed",
           usage_signal: "native",
+          // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
+          // to xhigh). Single source for the manifest AND the run-time normalizer.
+          effort_levels: [...CODEX_EFFORT_LEVELS],
         },
         capability_profile: {
           execution_surfaces: [
@@ -302,7 +308,6 @@ export function createCodexAdapter(): HarnessAdapter {
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
-        models: { discovery: "experimental" },
       });
     },
 

@@ -33,27 +33,6 @@
           "type": "string",
           "default": ""
         },
-        "contract_ref": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "open_tasks": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
-        },
-        "diff_state": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
         "reason": {
           "type": "string",
           "enum": [

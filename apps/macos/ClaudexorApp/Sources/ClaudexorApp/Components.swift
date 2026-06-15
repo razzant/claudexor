@@ -110,27 +110,6 @@ struct SectionLabel: View {
     }
 }
 
-// MARK: - Metric tile
-
-struct MetricTile: View {
-    let title: String
-    let value: String
-    var caption: String?
-    var tint: Color = Theme.accent
-    var systemImage: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            HStack(spacing: Theme.Spacing.xs) {
-                if let systemImage { Image(systemName: systemImage).imageScale(.small).foregroundStyle(tint) }
-                Text(title).font(.caption).foregroundStyle(.secondary)
-            }
-            Text(value).font(.title3.weight(.semibold)).monospacedDigit().lineLimit(1)
-            if let caption { Text(caption).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 // MARK: - Meter bar
 
 struct MeterBar: View {
@@ -293,10 +272,10 @@ struct SegmentedTabs<T: Hashable>: View {
     }
 }
 
-// MARK: - Filter chip + bar (ONE canonical selection chip for every filter row)
+// MARK: - Filter chip (ONE canonical selection chip for every filter row)
 
-/// The single source of truth for a selectable filter pill. Every filter bar (Tasks,
-/// Review Queue, etc.) uses this so typography, padding, and the selected fill are identical.
+/// The single source of truth for a selectable filter pill, so typography, padding,
+/// and the selected fill are identical wherever filters appear.
 struct FilterChip: View {
     let label: String
     var systemImage: String?
@@ -324,18 +303,6 @@ struct FilterChip: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
         .help(isActive ? "\(label) filter is selected." : "Filter by \(label).")
-    }
-}
-
-/// A wrapping row of filter chips with the standard screen gutter — same margins on every
-/// screen so filter bars line up with the content column beneath them.
-struct FilterBar<Content: View>: View {
-    @ViewBuilder var content: Content
-    var body: some View {
-        FlowLayout(spacing: Theme.Spacing.sm) { content }
-            .padding(.horizontal, Theme.Spacing.xxl)
-            .padding(.vertical, Theme.Spacing.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -391,49 +358,3 @@ struct ScreenHeader: View {
     }
 }
 
-// MARK: - Standard screen scaffold (consistent margins + title + scroll)
-
-struct ScreenScaffold<Content: View>: View {
-    let title: String
-    var subtitle: String?
-    var maxWidth: CGFloat = Theme.Layout.contentMaxWidth
-    @ViewBuilder var content: Content
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                ScreenHeader(title: title, subtitle: subtitle)
-                content
-            }
-            .padding(.horizontal, Theme.Spacing.xxl)
-            .padding(.vertical, Theme.Spacing.xl)
-            .frame(maxWidth: maxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .scrollContentBackground(.hidden)
-        .glowBackdrop()
-    }
-}
-
-// MARK: - List screen scaffold (title + filter bar + collection — Tasks/Review share this)
-
-/// The canonical shell for list screens: an H1 (same recipe as `ScreenScaffold`), a filter
-/// bar, a hairline, then the collection. Tasks and Review use this so their headers are
-/// identical instead of each hand-rolling a bare filter bar with no title.
-struct ListScreen<Filters: View, Content: View>: View {
-    let title: String
-    var subtitle: String?
-    @ViewBuilder var filters: Filters
-    @ViewBuilder var content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScreenHeader(title: title, subtitle: subtitle)
-                .padding(.horizontal, Theme.Spacing.xxl)
-                .padding(.top, Theme.Spacing.xl)
-                .padding(.bottom, Theme.Spacing.sm)
-            filters
-            Divider().overlay(Theme.separator)
-            content
-        }
-        .glowBackdrop()
-    }
-}

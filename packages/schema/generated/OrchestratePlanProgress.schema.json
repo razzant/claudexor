@@ -1,0 +1,92 @@
+{
+  "$ref": "#/definitions/OrchestratePlanProgress",
+  "definitions": {
+    "OrchestratePlanProgress": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tool": {
+                "type": "string",
+                "enum": [
+                  "start_run",
+                  "race",
+                  "status",
+                  "answer_question",
+                  "apply",
+                  "review"
+                ]
+              },
+              "risk": {
+                "type": "string",
+                "enum": [
+                  "safe",
+                  "risky"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "running",
+                  "done",
+                  "skipped",
+                  "blocked",
+                  "failed"
+                ]
+              },
+              "run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "index",
+              "tool",
+              "risk",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "autonomy": {
+          "type": "string",
+          "enum": [
+            "suggest",
+            "auto_safe",
+            "auto_full"
+          ]
+        },
+        "stopped_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "autonomy"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

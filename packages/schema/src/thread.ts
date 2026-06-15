@@ -129,9 +129,6 @@ export const SessionReboundLineage = z.object({
   from_native_session_id: z.string().nullable().default(null),
   to_session_id: Id.nullable().default(null),
   summary: z.string().default(""),
-  contract_ref: z.string().nullable().default(null),
-  open_tasks: z.array(z.string()).default([]),
-  diff_state: z.string().nullable().default(null),
   reason: FallbackReason.default("not_portable"),
 });
 export type SessionReboundLineage = z.infer<typeof SessionReboundLineage>;

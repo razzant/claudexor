@@ -118,6 +118,10 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
 
 /// Honest terminal outcome of a run (projected from work_product.yaml): answers
 /// "what did this turn actually do?" — `plan` means a plan, NO files changed.
+/// `applyState` decouples honest application from a clean terminal: a winner can be
+/// `applied` (live tree mutated AND review clean) or `applied_review_blocked` (mutated
+/// but review unconverged — never a green "succeeded"). `revertable` is true while the
+/// live mutation can still be safely restored to `preTurnSha` (tree unchanged since).
 public struct RunResult: Codable, Sendable, Equatable {
     public struct DiffStat: Codable, Sendable, Equatable {
         public let files: Int
@@ -128,6 +132,45 @@ public struct RunResult: Codable, Sendable, Equatable {
     public let diffStat: DiffStat?
     public let blockers: Int
     public let adopted: Bool?
+    /// not_applied | applied | applied_review_blocked | reverted.
+    public let applyState: String
+    /// Tree SHA before this turn mutated the in-place tree (revert restore target).
+    public let preTurnSha: String?
+    /// Tree SHA right after this turn's mutation (revert divergence fence).
+    public let postTurnSha: String?
+    /// True when the in-place mutation can still be safely reverted.
+    public let revertable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind, diffStat, blockers, adopted, applyState, preTurnSha, postTurnSha, revertable
+    }
+
+    public init(kind: String, diffStat: DiffStat?, blockers: Int, adopted: Bool?,
+                applyState: String = "not_applied", preTurnSha: String? = nil,
+                postTurnSha: String? = nil, revertable: Bool = false) {
+        self.kind = kind
+        self.diffStat = diffStat
+        self.blockers = blockers
+        self.adopted = adopted
+        self.applyState = applyState
+        self.preTurnSha = preTurnSha
+        self.postTurnSha = postTurnSha
+        self.revertable = revertable
+    }
+
+    /// Tolerate older runs (and the embedded turn-card payloads) that predate the
+    /// honest apply-state fields: default applyState "not_applied", revertable false.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "none"
+        diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
+        blockers = try c.decodeIfPresent(Int.self, forKey: .blockers) ?? 0
+        adopted = try c.decodeIfPresent(Bool.self, forKey: .adopted)
+        applyState = try c.decodeIfPresent(String.self, forKey: .applyState) ?? "not_applied"
+        preTurnSha = try c.decodeIfPresent(String.self, forKey: .preTurnSha)
+        postTurnSha = try c.decodeIfPresent(String.self, forKey: .postTurnSha)
+        revertable = try c.decodeIfPresent(Bool.self, forKey: .revertable) ?? false
+    }
 }
 
 /// Compact run state embedded on a thread turn (so the chat renders without N+1).
@@ -536,15 +579,6 @@ public struct BudgetSnapshot: Codable, Sendable, Equatable {
     public let remainingUsd: Double?
     public let estimated: Bool
     public let source: String
-    public let nativeQuota: [NativeQuota]
-}
-
-public struct NativeQuota: Codable, Sendable, Equatable {
-    public let provider: String
-    public let label: String
-    public let remaining: String?
-    public let resetsAt: String?
-    public let source: String
 }
 
 /// One option of a pending interactive question.
@@ -727,24 +761,60 @@ public struct HarnessListResponse: Codable, Sendable {
     public let harnesses: [HarnessStatus]
 }
 
-public struct HarnessSetupRequest: Codable, Sendable, Equatable {
-    public let harness: String
-    public let action: String
+/// One enumerable model a harness offers. Mirrors the control-api `HarnessModel`
+/// (deliberately small: only fields a real `GET /v1/models` enumeration can
+/// honestly populate). `label`/`contextWindow` are nullable on the wire.
+public struct HarnessModel: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public let id: String
+    public let label: String?
+    public let contextWindow: Int?
 
-    public init(harness: String, action: String = "login") {
-        self.harness = harness
-        self.action = action
+    enum CodingKeys: String, CodingKey {
+        case id, label
+        case contextWindow = "context_window"
+    }
+
+    public init(id: String, label: String? = nil, contextWindow: Int? = nil) {
+        self.id = id
+        self.label = label
+        self.contextWindow = contextWindow
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow)
     }
 }
 
-public struct HarnessSetupResponse: Codable, Sendable, Equatable {
-    public let harness: String
-    public let action: String
-    public let status: String
-    public let command: String?
-    public let guideUrl: String?
-    public let logPath: String?
-    public let message: String
+/// Models enumerable for one harness (GET /harnesses/:id/models). `source` is
+/// honest about provenance: "api" when the adapter implemented a real
+/// enumeration, "manifest" reserved for a future manifest list, "none" when the
+/// adapter cannot enumerate (the list is then empty).
+public struct HarnessModelsResponse: Codable, Sendable, Equatable {
+    public let harnessId: String
+    public let models: [HarnessModel]
+    /// "api" | "manifest" | "none".
+    public let source: String
+
+    enum CodingKeys: String, CodingKey { case harnessId, models, source }
+
+    public init(harnessId: String, models: [HarnessModel] = [], source: String) {
+        self.harnessId = harnessId
+        self.models = models
+        self.source = source
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        harnessId = try c.decode(String.self, forKey: .harnessId)
+        models = try c.decodeIfPresent([HarnessModel].self, forKey: .models) ?? []
+        source = try c.decode(String.self, forKey: .source)
+    }
+
+    /// True when the harness honestly cannot enumerate models (empty picker → free text).
+    public var canEnumerate: Bool { source != "none" && !models.isEmpty }
 }
 
 public struct SetupJobCreateRequest: Codable, Sendable, Equatable {
@@ -774,10 +844,6 @@ public struct SetupJob: Codable, Sendable, Equatable {
     public let lastOutputAt: String?
     public let finishedAt: String?
     public let retryCount: Int?
-}
-
-public struct SetupJobListResponse: Codable, Sendable, Equatable {
-    public let jobs: [SetupJob]
 }
 
 public struct SetupJobConfirmRequest: Codable, Sendable, Equatable {
@@ -811,7 +877,6 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
 
 public struct BudgetSettings: Codable, Sendable, Equatable {
     public let maxUsdPerRun: Double?
-    public let maxUsdPerDay: Double?
 }
 
 public struct HarnessSettings: Codable, Sendable, Equatable {
@@ -886,9 +951,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var envInheritance: String?
     public var authPreference: String?
     public var maxUsdPerRun: Double?
-    public var maxUsdPerDay: Double?
     public var clearMaxUsdPerRun: Bool
-    public var clearMaxUsdPerDay: Bool
     public var interactionTimeoutMs: Int?
     public var harnesses: [String: HarnessSettingsPatch]?
 
@@ -896,8 +959,8 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
                 primaryHarness: String? = nil, defaultModel: String? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 authPreference: String? = nil,
-                maxUsdPerRun: Double? = nil, maxUsdPerDay: Double? = nil,
-                clearMaxUsdPerRun: Bool = false, clearMaxUsdPerDay: Bool = false,
+                maxUsdPerRun: Double? = nil,
+                clearMaxUsdPerRun: Bool = false,
                 interactionTimeoutMs: Int? = nil,
                 harnesses: [String: HarnessSettingsPatch]? = nil) {
         self.defaultPortfolio = defaultPortfolio
@@ -908,15 +971,13 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.envInheritance = envInheritance
         self.authPreference = authPreference
         self.maxUsdPerRun = maxUsdPerRun
-        self.maxUsdPerDay = maxUsdPerDay
         self.clearMaxUsdPerRun = clearMaxUsdPerRun
-        self.clearMaxUsdPerDay = clearMaxUsdPerDay
         self.interactionTimeoutMs = interactionTimeoutMs
         self.harnesses = harnesses
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, maxUsdPerDay, clearMaxUsdPerRun, clearMaxUsdPerDay, interactionTimeoutMs, harnesses
+        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, clearMaxUsdPerRun, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -929,9 +990,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
         try c.encodeIfPresent(authPreference, forKey: .authPreference)
         try c.encodeIfPresent(maxUsdPerRun, forKey: .maxUsdPerRun)
-        try c.encodeIfPresent(maxUsdPerDay, forKey: .maxUsdPerDay)
         if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
-        if clearMaxUsdPerDay { try c.encode(true, forKey: .clearMaxUsdPerDay) }
         try c.encodeIfPresent(interactionTimeoutMs, forKey: .interactionTimeoutMs)
         try c.encodeIfPresent(harnesses, forKey: .harnesses)
     }
@@ -972,6 +1031,4 @@ public enum GatewayError: Error, Sendable, Equatable {
     case http(status: Int, body: String)
     case decoding(String)
     case transport(String)
-    /// Transient: the engine queue did not start the work in the wait window.
-    case queueBusy(message: String)
 }

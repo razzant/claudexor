@@ -26,7 +26,9 @@ Reproducible benchmark harnesses for Claudexor. Two families, two paradigms:
 - Model slugs rotate over time and are therefore **not hardcoded** — set the current
   ones via env (see each suite's `config.example.env` / README).
 - Run artifacts default to `~/.claudexor/cache/bench-experiments/` (gitignored).
-- Anti-cheating: Claudexor never reads a benchmark's hidden grading tests; convergence is
-  driven by cross-family review and the agent's own checks.
+- Anti-cheating: convergence is driven by cross-family review and the agent's own
+  checks. The agent is **instructed** not to read a benchmark's hidden grading tests;
+  this is prompt-enforced, not sandbox-enforced — real filesystem read-protection of the
+  held-out tests is a future improvement. Treat it as an instruction, not a guarantee.
 
 Start with each suite's `README.md`.

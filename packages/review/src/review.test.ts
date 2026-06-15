@@ -6,12 +6,12 @@ import type { HarnessAdapter } from "@claudexor/core";
 import type { ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, ConvergencePredicate, HarnessManifest, ReviewFinding } from "@claudexor/schema";
 import { evaluateConvergence } from "./convergence.js";
-import { dedupeFindings, parseFindings } from "./findings.js";
+import { dedupeFindings, parseFindingsDetailed } from "./findings.js";
 import { gatesPassed, runGate } from "./gates.js";
 import { ReadinessLedger, failureSignature } from "./readiness.js";
 import { revalidateFindings } from "./revalidate.js";
 import { type ReviewerSpec, reviewCandidate } from "./reviewEngine.js";
-import { buildRouteProof, classifyDiversity, verifyCrossFamily } from "./route.js";
+import { buildRouteProof, classifyDiversity } from "./route.js";
 
 function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): ReviewerSpec {
   const adapter: HarnessAdapter = {
@@ -83,10 +83,6 @@ describe("route proof", () => {
     ).toBe("accepted_model_arg");
     expect(buildRouteProof({ harness_id: "x", provider_family: "openai" }, {}).status).toBe("unverified");
   });
-  it("cross-family needs >= 2 distinct families", () => {
-    expect(verifyCrossFamily(["openai", "anthropic"]).verified).toBe(true);
-    expect(verifyCrossFamily(["openai", "openai"]).verified).toBe(false);
-  });
   it("classifyDiversity marks same-model fallback", () => {
     const proofs = [
       buildRouteProof({ harness_id: "a", provider_family: "openai" }, { model_id: "m", evidence_source: "stream_event" }),
@@ -105,11 +101,22 @@ describe("findings", () => {
         { severity: "BLOCK", category: "correctness", claim: "x", evidence: { files: [{ path: "a.ts" }] } },
       ]) +
       "\n```";
-    const parsed = parseFindings(text, { harness_id: "r" });
+    const parsed = parseFindingsDetailed(text, { harness_id: "r" }).findings;
     expect(parsed.length).toBe(2);
     const deduped = dedupeFindings(parsed);
     expect(deduped.length).toBe(1);
     expect(deduped[0]?.severity).toBe("BLOCK");
+  });
+
+  it("never collapses a NEEDS_HUMAN escalation into a same-key BLOCK", () => {
+    const base = { category: "correctness" as const, claim: "x", evidence: { files: [{ path: "a.ts" }] } };
+    const findings = [
+      ReviewFinding.parse({ id: "h", severity: "NEEDS_HUMAN", reviewer: { harness_id: "a" }, ...base }),
+      ReviewFinding.parse({ id: "b", severity: "BLOCK", reviewer: { harness_id: "b" }, ...base }),
+    ];
+    const deduped = dedupeFindings(findings);
+    expect(deduped.some((f) => f.severity === "NEEDS_HUMAN")).toBe(true);
+    expect(deduped.some((f) => f.severity === "BLOCK")).toBe(true);
   });
 });
 
@@ -403,6 +410,35 @@ describe("reviewEngine", () => {
     expect(res.crossFamilyVerified).toBe(false);
     expect(res.distinctProviders).toEqual([]);
     expect(res.routeProofs.every((p) => p.status === "unverified")).toBe(true);
+  });
+
+  it("RR1: argv-echo (accepted_model_arg) does NOT satisfy crossFamilyVerified", async () => {
+    // Reviewers that accepted an explicit model arg but never echoed an observed
+    // model in the stream → metadata-tier proof. It must not unblock apply.
+    const argvEcho = (id: string, family: ProviderFamily): ReviewerSpec => {
+      const spec = makeReviewer(id, family, []);
+      return {
+        ...spec,
+        requestedModel: `${id}-model`,
+        adapter: {
+          ...spec.adapter,
+          async *run(runSpec) {
+            const ts = new Date().toISOString();
+            yield { type: "message", session_id: runSpec.session_id, ts, text: "[]\n" };
+          },
+        },
+      };
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [argvEcho("rev-openai", "openai"), argvEcho("rev-anthropic", "anthropic")],
+    });
+    expect(res.routeProofs.every((p) => p.status === "accepted_model_arg")).toBe(true);
+    expect(res.crossFamilyVerified).toBe(false);
+    expect(res.distinctProviders).toEqual([]);
   });
 
   it("keeps per-finding route proof status aligned with same-model fallback classification", async () => {

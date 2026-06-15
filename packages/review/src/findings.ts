@@ -90,11 +90,6 @@ export function parseFindingsDetailed(text: string, reviewer: ReviewerInfo): { f
   return { findings: out, malformed };
 }
 
-/** Normalize reviewer JSON into typed ReviewFindings (injecting reviewer + ids). */
-export function parseFindings(text: string, reviewer: ReviewerInfo): ReviewFinding[] {
-  return parseFindingsDetailed(text, reviewer).findings;
-}
-
 const SEVERITY_ORDER: Severity[] = [
   "INSUFFICIENT_EVIDENCE",
   "NIT",
@@ -109,10 +104,20 @@ function severityRank(s: Severity): number {
   return SEVERITY_ORDER.indexOf(s);
 }
 
-/** Merge near-duplicate findings (same category + claim + file set), keeping the most severe. */
+/**
+ * Merge near-duplicate findings (same category + claim + file set), keeping the
+ * most severe. NEEDS_HUMAN is an orthogonal human-gate, not a severity rung — it
+ * is never collapsed into (or replaced by) another finding, so a same-key BLOCK
+ * from a second reviewer can never silently swallow a human-approval escalation.
+ */
 export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
   const seen = new Map<string, ReviewFinding>();
+  const humanGates: ReviewFinding[] = [];
   for (const f of findings) {
+    if (f.severity === "NEEDS_HUMAN") {
+      humanGates.push(f);
+      continue;
+    }
     const files = f.evidence.files.map((x) => x.path).sort().join(",");
     const key = `${f.category}|${f.claim.toLowerCase().slice(0, 120)}|${files}`;
     const existing = seen.get(key);
@@ -120,5 +125,5 @@ export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
       seen.set(key, f);
     }
   }
-  return [...seen.values()];
+  return [...seen.values(), ...humanGates];
 }

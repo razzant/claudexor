@@ -5,8 +5,15 @@ import { AccessProfile, AuthPreference, ExternalContextPolicy, Id, Intent, Provi
 export const SignalQuality = z.enum(["exact", "native", "observed", "manual", "unknown"]);
 export type SignalQuality = z.infer<typeof SignalQuality>;
 
+/**
+ * Open cross-harness reasoning-effort vocabulary. Adapters declare the SUBSET
+ * they actually support via `HarnessCapabilities.effort_levels`; a shared
+ * normalizer maps any requested level onto the nearest supported one. New levels
+ * (e.g. a future `ultra`) extend this union without touching adapter logic.
+ */
 export const EffortHint = z.enum(["low", "medium", "high", "xhigh", "max"]);
 export type EffortHint = z.infer<typeof EffortHint>;
+
 
 export const HarnessKind = z.enum([
   "local_cli",
@@ -72,6 +79,12 @@ export const HarnessCapabilities = z.object({
   orchestrate: z.boolean().default(false),
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
+  /**
+   * Ordered (weakest→strongest) reasoning-effort levels this harness actually
+   * accepts. Empty = effort is not a tunable surface. The shared effort
+   * normalizer clamps any requested EffortHint onto the nearest member.
+   */
+  effort_levels: z.array(EffortHint).default([]),
 });
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
 
@@ -168,6 +181,19 @@ export const HarnessCapabilityProfile = z
   .default({});
 export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
+/**
+ * One enumerable model offered by a harness. Deliberately small: only the
+ * fields a real enumeration source (an OpenAI-compatible `GET /v1/models`)
+ * can honestly populate. `label`/`context_window` are nullable because the
+ * raw `{data:[{id}]}` list rarely carries them.
+ */
+export const HarnessModel = z.object({
+  id: z.string(),
+  label: z.string().nullable().default(null),
+  context_window: z.number().int().positive().nullable().default(null),
+});
+export type HarnessModel = z.infer<typeof HarnessModel>;
+
 export const HarnessManifest = z.object({
   id: Id,
   display_name: z.string(),
@@ -180,9 +206,6 @@ export const HarnessManifest = z.object({
   capabilities: HarnessCapabilities,
   auth_modes: z.array(z.enum(["local_session", "api_key", "none"])).default([]),
   access_profiles_supported: z.array(AccessProfile).default([]),
-  models: z
-    .object({ discovery: z.enum(["available", "unavailable", "experimental"]).default("unavailable") })
-    .default({ discovery: "unavailable" }),
 });
 export type HarnessManifest = z.infer<typeof HarnessManifest>;
 
@@ -237,6 +260,12 @@ export const HarnessRunSpec = z.object({
    * cursor `agent --resume`, opencode `run --session`). Null starts a fresh session.
    */
   resume_session_id: z.string().nullable().default(null),
+  /**
+   * How the child harness env is composed. `mirror_native` inherits the parent
+   * env (minus provider-secret scrub); `clean` spawns from a minimal allowlist
+   * (agent env isolation). Threaded from routing.env_inheritance at spawn.
+   */
+  env_inheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
   env: z.record(z.string(), z.string()).default({}),
   output_schema: z.unknown().optional(),
   extra: z.record(z.string(), z.unknown()).default({}),

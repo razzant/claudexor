@@ -42,7 +42,10 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     ];
   }
   if (type === "turn.failed") {
-    return [{ type: "error", session_id: sessionId, ts, error: obj.error?.message ?? "turn failed" }];
+    const message = obj.error?.message ?? "turn failed";
+    const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
+    applyCodexRateLimit(ev, message, obj.error?.resets_at ?? obj.resets_at);
+    return [ev];
   }
   if (type === "turn.started") {
     return [{ type: "thinking", session_id: sessionId, ts, text: "turn started", payload: { turn_id: obj.turn_id } }];
@@ -50,13 +53,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   if (type === "error") {
     const message = typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error");
     const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
-    // Adapter-layer parsing of codex's native error text into a TYPED rate-limit
-    // signal. The budget layer reads this typed field instead of regex-matching
-    // model/CLI prose (Bible: no regex governance).
-    if (CODEX_RATE_LIMIT_RE.test(message)) {
-      const resets = typeof obj.resets_at === "string" ? obj.resets_at : null;
-      ev.rate_limit = { resets_at: resets, retry_delay_ms: null };
-    }
+    applyCodexRateLimit(ev, message, obj.resets_at ?? obj.error?.resets_at);
     return [ev];
   }
   if (type === "item.started" || type === "item.updated") {
@@ -98,7 +95,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
             type: "tool_call",
             session_id: sessionId,
             ts,
-            text: String(item.query ?? "web search"),
+            text: webSearchQuery(item) ?? "web search",
             tool: webSearchToolRef(item),
             payload: { status: item.status ?? type, item_id: item.id },
           },
@@ -181,6 +178,21 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   return null;
 }
 
+/**
+ * Set the TYPED `rate_limit` signal on an error event when codex's native error
+ * text indicates a 429 / quota / overload. Fires for BOTH `error` and
+ * `turn.failed` (the two ways codex surfaces a rate limit). The budget layer
+ * reads `ev.rate_limit` instead of regex-matching prose; this adapter-local
+ * recognition of its OWN CLI's native error phrasing is the allowed knowledge.
+ */
+function applyCodexRateLimit(ev: HarnessEvent, message: string, resetsAt: unknown): void {
+  if (!CODEX_RATE_LIMIT_RE.test(message)) return;
+  ev.rate_limit = {
+    resets_at: typeof resetsAt === "string" ? resetsAt : null,
+    retry_delay_ms: null,
+  };
+}
+
 function commandToolRef(item: Json): ToolRef {
   return {
     name: "command",
@@ -204,8 +216,30 @@ function webSearchToolRef(item: Json): ToolRef {
     name: "web_search",
     kind: "web",
     use_id: stringOrUndef(item.id),
-    target: boundedTarget(item.query),
+    target: boundedTarget(webSearchQuery(item)),
   };
+}
+
+/**
+ * Resolve a codex web_search query. On `item.started` the top-level `query` is
+ * often EMPTY ("") while the real query lives in `action.query` (or the first
+ * of `action.queries[]`) — live-verified on codex 0.137. Prefer a non-empty
+ * top-level query, then fall back to the action shape so a started web search is
+ * never surfaced as a query-less "web search".
+ */
+function webSearchQuery(item: Json): string | undefined {
+  const direct = stringOrUndef(item.query);
+  if (direct) return direct;
+  const action = item.action;
+  if (action && typeof action === "object") {
+    const fromAction = stringOrUndef(action.query);
+    if (fromAction) return fromAction;
+    if (Array.isArray(action.queries)) {
+      const first = action.queries.find((q: unknown) => typeof q === "string" && q.trim());
+      if (first) return first as string;
+    }
+  }
+  return undefined;
 }
 
 function fileToolRef(item: Json): ToolRef {

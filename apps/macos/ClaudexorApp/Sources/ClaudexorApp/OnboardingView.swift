@@ -77,7 +77,7 @@ struct OnboardingView: View {
             Label("Current project", systemImage: "folder")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.accent)
-            Text("Pick the repo Claudexor should read and mutate. Ask can run without a project; Agent, Plan, Create, Audit, and Explore require a Current Project.")
+            Text("Pick the repo Claudexor should read and mutate. Ask can run without a project; Agent, Plan, Audit, and Race require a Current Project.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 HStack(spacing: Theme.Spacing.sm) {
@@ -130,12 +130,12 @@ struct OnboardingView: View {
             Label("Ready", systemImage: "checkmark.seal")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.status(.succeeded))
-            Text("The composer opens in Ask. Switch to Agent for direct edits, Best-of-N for tournament runs, or Plan when you need a draft spec interview.")
+            Text("Everything happens in one chat. On a project thread the composer opens in Agent for direct edits (Ask is the fallback with no project); switch to Race to run the harness pool against each other, or Plan to draft an approach you can then implement in the same thread.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 KeyValueRow(key: "Settings", value: "Cmd+,")
-                KeyValueRow(key: "Live operations", value: "Budget, Harness Doctor")
-                KeyValueRow(key: "Review", value: "Solid grid queue")
+                KeyValueRow(key: "Budget & Doctor", value: "Settings tabs")
+                KeyValueRow(key: "Review & apply", value: "On each chat turn")
                 Button {
                     Task {
                         let harnesses = model.availableHarnesses(for: .ask, selected: [.codex, .claude, .cursor, .opencode])

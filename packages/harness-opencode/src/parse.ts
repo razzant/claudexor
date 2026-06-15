@@ -94,13 +94,22 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
     return [{ type: "tool_call", session_id: sessionId, ts, text: name, tool }];
   }
 
-  if (type === "usage" || typeof obj.cost === "number") {
+  if (type === "usage" || type === "finish" || typeof obj.cost === "number") {
+    // Token counts arrive under two recorded shapes across opencode versions:
+    //  - flat:   { tokens: { input, output, cache } }
+    //  - nested: { usage: { input_tokens, output_tokens, cache_read_input_tokens } }
+    //    (the `finish` event uses this nested form). Read both so a nested-shape
+    //    finish does not silently drop its token counts.
     const tokens = obj.tokens ?? {};
+    const nested = obj.usage ?? {};
     const usage: NonNullable<HarnessEvent["usage"]> = {};
     if (typeof obj.cost === "number") usage.cost_usd = obj.cost;
-    if (typeof tokens.input === "number") usage.input_tokens = tokens.input;
-    if (typeof tokens.output === "number") usage.output_tokens = tokens.output;
-    if (typeof tokens.cache === "number") usage.cached_input_tokens = tokens.cache;
+    const input = firstNumber(tokens.input, nested.input_tokens);
+    const output = firstNumber(tokens.output, nested.output_tokens);
+    const cache = firstNumber(tokens.cache, nested.cache_read_input_tokens, nested.cache);
+    if (input !== undefined) usage.input_tokens = input;
+    if (output !== undefined) usage.output_tokens = output;
+    if (cache !== undefined) usage.cached_input_tokens = cache;
     if (Object.keys(usage).length === 0) return [];
     return [{ type: "usage", session_id: sessionId, ts, usage }];
   }
@@ -120,4 +129,10 @@ function boundedTarget(value: unknown): string | undefined {
 
 function stringOrUndef(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;
+}
+
+/** First numeric value among the candidates (lets one usage branch read multiple recorded shapes). */
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const v of values) if (typeof v === "number") return v;
+  return undefined;
 }

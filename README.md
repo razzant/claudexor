@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.9.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.10.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -43,7 +43,8 @@ values fail loudly with exit code 2 — a typo never silently runs with defaults
 
 Canonical mode ids (v0.9: five intents; engine strategies are FLAGS, not modes):
 
-- `ask` - read-only answer/explanation route. Default in the macOS composer.
+- `ask` - read-only answer/explanation route. The macOS composer's no-project
+  fallback intent (Agent is the default on a project thread).
 - `plan` - read-only multi-harness planning and draft SpecPack grounding.
 - `audit` - read-only audit/map report; `--swarm` runs the bounded research
   swarm (per-explorer findings, synthesis, omissions, follow-up questions).
@@ -52,21 +53,31 @@ Canonical mode ids (v0.9: five intents; engine strategies are FLAGS, not modes):
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop
   until gates/review converge, budget/quota exhausts, cancellation happens, or
   the run stalls), `--create` (create-from-scratch intent).
-- `orchestrate` - the brain: routed like reviewers, read-only, produces a typed
+- `orchestrate` - the brain: routed like reviewers, produces a typed
   orchestration plan over the tool belt (start_run / race / status /
-  answer_question / apply / review).
+  answer_question / apply / review). `--autonomy suggest|auto_safe|auto_full`
+  controls how much the executor runs: `suggest` (default) plans only;
+  `auto_safe` runs the safe steps (isolated envelope sub-runs / pure reads) and
+  blocks at the risky `apply` step for a human decision; `auto_full` also
+  applies through the single shared delivery gate, so it can mutate the live
+  project.
 
 Unknown modes fail loudly. The old strategy mode ids (`best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`) and the
 pre-v0.8 ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
 
 Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
-thread. Read-only turns (ask/plan/audit/orchestrate) RESUME the routed
+thread. Read-only turns (ask/plan/audit, and orchestrate with the default
+`suggest` autonomy) RESUME the routed
 harness's own native CLI session (codex `exec resume`, claude `--resume`) —
-plan first, then keep asking, in ONE conversation. Write (agent) turns run in
-fresh isolated envelopes where the native session is not portable: the engine
-emits a typed `session.rebound` disclosure and continuity rides on the thread
-prompt plus repo state (envelope-per-session lifetime is future work).
+plan first, then keep asking, in ONE conversation. Write (agent) turns run
+IN-PLACE: a single-candidate turn mutates the thread's live execution tree
+directly (the project for an `in_place` thread, or the thread's persistent git
+worktree for an `isolated` thread) and resumes the native vendor session, so
+the next turn sees the work. A race (`--n N` > 1) runs its candidates in
+isolated throwaway envelopes and AUTO-ADOPTS the winner's patch into the live
+tree. `session.rebound` is emitted only when a thread re-hosts onto a DIFFERENT
+harness, not on every write turn.
 
 Examples:
 
@@ -155,26 +166,26 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `PATCH /threads/:id` (rename / archive a thread)
 - `POST /threads/:id/turns` (follow-up turn; turns run in-place in the project — or the thread's worktree for an isolated thread — so the native session resumes and the next turn sees the work; a best-of-N race runs isolated candidates and auto-applies the winner)
 - `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
-- `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
+- `POST /runs/:id/decision` (typed operator decision: `accept_clean_patch` / `accept_risk` / `override_needs_human` / `rerun_with_feedback` / `revert_run` — `revert_run` restores the live in-place tree to the turn's pre-turn snapshot and refuses if the tree has diverged from the recorded post-turn state)
 - `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
 - `GET /events` (global live-only run-event multiplex)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
-- `GET /harnesses`, `POST /harnesses/setup`
+- `GET /harnesses`, `GET /harnesses/:id/models`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
   `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
   `POST /setup/jobs/:id/cancel`
 - `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
 - `POST /spec/questions`, `POST /spec/freeze`
 
-Harness setup is server-owned. `/harnesses/setup` is the typed prepare surface;
-`/setup/jobs` is the execution lifecycle for allowlisted install/login jobs
-with redacted logs, risk flags, persistence across restarts, watchdog
-timeouts, and an SSE lifecycle stream; doctor verification runs in-process
-inside the daemon (no PATH dependency). UI surfaces must not invent harness
-setup commands or accept inline secrets.
+Harness setup is server-owned. `/setup/jobs` (create / status / confirm /
+cancel) is the only supported setup surface: the execution lifecycle for
+allowlisted install/login jobs with redacted logs, risk flags, persistence
+across restarts, watchdog timeouts, and an SSE lifecycle stream; doctor
+verification runs in-process inside the daemon (no PATH dependency). UI surfaces
+must not invent harness setup commands or accept inline secrets.
 
 Run events carry a monotonic per-run `seq`; `GET /runs/:id` returns the
 snapshot plus `lastSeq`, so clients subscribe to `GET /runs/:id/events` with
@@ -224,6 +235,9 @@ final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?
 final/plan.md?
+final/orchestration.md?            # human-readable orchestration summary (orchestrate)
+final/orchestration.yaml?          # the typed orchestration plan (orchestrate)
+final/orchestration_progress.yaml? # per-step executor progress (auto_safe/auto_full)
 context/context_error.md?
 ```
 

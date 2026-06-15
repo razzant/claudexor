@@ -11,7 +11,8 @@ CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export CLAUDEXOR_REPO_ROOT
 
 # Toolchain + Docker (Colima) discovery. Override DOCKER_HOST if you use a different VM.
-export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
+# The Claudexor runtime Node lives under ~/.claudex/node (homebrew node OOMs the build).
+export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:/opt/homebrew/bin:$PATH"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
 # So Harbor can import the Claudexor agent as a dotted module.
 export PYTHONPATH="${CLAUDEXOR_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"

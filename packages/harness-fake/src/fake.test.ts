@@ -52,6 +52,15 @@ describe("fake harness adapters", () => {
     expect(events[events.length - 1]?.type).toBe("completed");
   });
 
+  it("fake-rate-limit emits a TYPED rate_limit signal (budget cooldown fixture)", async () => {
+    const events = await collect(createFakeHarness("fake-rate-limit").run(spec()));
+    const errored = events.find((e) => e.type === "error");
+    expect(errored?.rate_limit).toBeTruthy();
+    expect(errored?.rate_limit?.retry_delay_ms).toBe(2500);
+    expect(typeof errored?.rate_limit?.resets_at).toBe("string");
+    expect(events[events.length - 1]?.type).toBe("completed");
+  });
+
   it("doctor reports fake-invalid-json as degraded with disabled review", async () => {
     const reports = await runDoctor(registry(), { cwd: "/tmp" });
     const degraded = reports.find((r) => r.harness_id === "fake-invalid-json");

@@ -23,6 +23,10 @@ export interface ReviewCandidateInput {
   cwd: string;
   reviewers: ReviewerSpec[];
   reviewerTimeoutMs?: number;
+  /** Child-env composition for the reviewer harnesses (defaults to mirror_native).
+   * Reviewer runs are paid harness children too, so they must honor the configured
+   * env isolation (clean) the same way candidate runs do. */
+  envInheritance?: "mirror_native" | "clean";
   onReviewerEvent?: (event: ReviewerProgressEvent) => void;
 }
 
@@ -126,6 +130,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     diff_sha256: persistentPatch.diffSha256,
   });
   const artifactByHarness = new Map<string, ReviewerArtifactContext>();
+  const reviewerFamilies = input.reviewers.map((r) => r.providerFamily);
 
   for (const [index, reviewer] of input.reviewers.entries()) {
     reviewerRequests.push({
@@ -152,6 +157,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       access: "readonly",
       model_hint: reviewer.requestedModel ?? null,
       effort_hint: reviewer.requestedEffort ?? null,
+      env_inheritance: input.envInheritance ?? "mirror_native",
     });
     writeText(
       artifact.promptPath,
@@ -167,23 +173,32 @@ ${runtimePrompt}
     );
 
     let text = "";
-    let observedModel: string | undefined;
-    let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
+    // Stream-observed model: ONLY a model the native CLI actually emitted in its
+    // stream (stream_event/transcript/model_catalog). This is the honest
+    // `observed_model` for findings — an accepted argv echo is NOT an observation.
+    let streamObservedModel: string | undefined;
+    // Route-proof model: stream-observed when present, else the accepted argv arg
+    // (metadata tier). Drives RouteProof.observed.model_id + status.
+    let routeModel: string | undefined;
+    let routeSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     let reviewerError: string | null = null;
     try {
       const out = await collectReviewerOutput(reviewer, spec, reviewerTimeoutMs, artifact, input.onReviewerEvent);
       text = out.text;
-      observedModel = out.observedModel;
-      observedSource = out.observedSource;
+      streamObservedModel = out.observedModel;
+      routeModel = out.observedModel;
+      routeSource = out.observedSource;
       reviewSpendUsd += out.costUsd;
       if (out.costEstimated) reviewSpendEstimated = true;
       // accepted_model_arg semantics: when WE passed an explicit model argument
       // and the native CLI completed without rejecting it, the accepted argv is
       // metadata-level route evidence (weaker than stream-observed, stronger
-      // than nothing). Some CLIs (codex exec --json) never echo the model.
-      if (!observedModel && reviewer.requestedModel) {
-        observedModel = reviewer.requestedModel;
-        observedSource = "metadata";
+      // than nothing). Some CLIs (codex exec --json) never echo the model. This
+      // populates ONLY the route proof — never streamObservedModel, so the
+      // finding's observed_model stays null (an argv echo is not an observation).
+      if (!routeModel && reviewer.requestedModel) {
+        routeModel = reviewer.requestedModel;
+        routeSource = "metadata";
       }
     } catch (err) {
       reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -206,9 +221,13 @@ ${runtimePrompt}
       },
       {
         provider: reviewer.providerFamily,
-        model_id: observedModel ?? null,
-        evidence_source: observedModel ? observedSource : "unavailable",
+        model_id: routeModel ?? null,
+        evidence_source: routeModel ? routeSource : "unavailable",
       },
+      // The other reviewers' families this route is meant to be diverse against
+      // (mirrors the implementer route proof; reviewer diversity is otherwise
+      // enforced via classifyDiversity's same_model_fallback status below).
+      reviewerFamilies.filter((_, i) => i !== index),
     );
     routeProofs.push(proof);
 
@@ -216,7 +235,10 @@ ${runtimePrompt}
       harness_id: reviewer.adapter.id,
       requested_model: reviewer.requestedModel ?? null,
       requested_effort: reviewer.requestedEffort ?? null,
-      observed_model: observedModel ?? null,
+      // Honest observation only: a finding's observed_model is the STREAM-observed
+      // model or null. An accepted argv arg lives in the route proof's model_id,
+      // not here — it must not masquerade as an observed model.
+      observed_model: streamObservedModel ?? null,
       route_proof_status: proof.status,
     };
     if (reviewerError) {
@@ -260,10 +282,15 @@ ${runtimePrompt}
     });
   });
   const healthyProviders = [...healthyFamilies];
-  const verifiedFamilies = [
+  // RR1 two-tier route proof: crossFamilyVerified — the strong tier that unblocks
+  // apply — requires the model to have been OBSERVED in the reviewer stream
+  // (status "verified"). An argv/metadata echo ("accepted_model_arg") is a weaker
+  // tier: it proves we PASSED a model arg, not that the CLI ran it, so it must
+  // NOT unblock apply on unobserved proof. same_model_fallback never counts.
+  const observedFamilies = [
     ...new Set(
       classifiedProofs
-        .filter((p) => p.status === "verified" || p.status === "accepted_model_arg")
+        .filter((p) => p.status === "verified")
         .map((p) => p.requested.provider_family)
         .filter((f) => f !== "unknown"),
     ),
@@ -274,8 +301,8 @@ ${runtimePrompt}
     reviewerRequests,
     crossFamilyHealthy: healthyProviders.length >= 2,
     healthyProviders,
-    crossFamilyVerified: verifiedFamilies.length >= 2,
-    distinctProviders: verifiedFamilies,
+    crossFamilyVerified: observedFamilies.length >= 2,
+    distinctProviders: observedFamilies,
     reviewSpendUsd,
     reviewSpendEstimated,
   };

@@ -3,7 +3,7 @@ import { ConformanceReport as ConformanceReportSchema, HarnessManifest as Harnes
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createCursorParser } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
@@ -63,7 +63,7 @@ export function createCursorAdapter(): HarnessAdapter {
         display_name: "Cursor CLI",
         kind: "local_cli",
         version,
-        adapter_version: "0.9.0",
+        adapter_version: CLAUDEXOR_VERSION,
         provider_family: "cursor",
         capabilities: {
           plan: true,
@@ -88,21 +88,26 @@ export function createCursorAdapter(): HarnessAdapter {
           plugins: true,
           worktree_native: true,
           web_policy: "uncontrolled",
-          quota_signal: "observed",
+          // No real rate-limit detector for cursor yet (a detector waits on a
+          // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
+          quota_signal: "unknown",
           usage_signal: "observed",
+          // cursor-agent exposes no reasoning-effort flag -> effort is not tunable.
+          effort_levels: [],
         },
         capability_profile: {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
           output: { ndjson_events: true, tool_lifecycle: true, file_changes: true, final_json: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
-          auth: { supported_sources: ["native_session", "api_key_env", "api_key_flag"], preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["cursor-agent", "status"], env_vars: ["CURSOR_API_KEY"] },
+          // The key is injected ONLY via the CURSOR_API_KEY env var (no --api-key
+          // flag exists) -> honest sources: native_session + api_key_env only.
+          auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["cursor-agent", "status"], env_vars: ["CURSOR_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: false, mechanism: "cursor-agent flags (feature-probed)" },
         },
         // Source AVAILABILITY truth: each mode is listed only when its source
         // actually exists right now (a native session does not imply a key).
         auth_modes: [...(nativeAuthed ? ["local_session" as const] : []), ...(apiKey ? ["api_key" as const] : [])],
         access_profiles_supported: ["readonly", "workspace_write", "inherit_native"],
-        models: { discovery: "available" },
       });
     },
 

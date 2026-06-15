@@ -1,9 +1,6 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { matchAny } from "@claudexor/context";
 
-/** Default commands that always require a human (never auto-run). */
-export const DEFAULT_DENY_COMMANDS = ["git push --force", "git push -f", "rm -rf /", "rm -rf ~", ":(){:|:&};:"];
-
 /** Default path globs whose changes require human approval. */
 export const DEFAULT_REQUIRE_HUMAN_PATHS = [
   "**/auth/**",
@@ -13,9 +10,6 @@ export const DEFAULT_REQUIRE_HUMAN_PATHS = [
   "**/secrets/**",
   "**/.github/workflows/**",
 ];
-
-/** Actions that require human approval regardless of paths. */
-export const HUMAN_APPROVAL_ACTIONS = ["package_publish", "production_deploy", "force_push", "data_deletion"];
 
 export interface PathGuardResult {
   allowed: boolean;
@@ -39,24 +33,22 @@ export function pathGuard(workspaceRoot: string, targetPath: string): PathGuardR
 export interface RequireHumanResult {
   required: boolean;
   reasons: string[];
+  /** The changed paths that matched a human-approval pattern (structured evidence,
+   * never reconstructed by substring-matching the reason prose). */
+  matchedPaths: string[];
 }
 
 export function requireHuman(
   changedPaths: string[],
-  actions: string[] = [],
   patterns: string[] = DEFAULT_REQUIRE_HUMAN_PATHS,
 ): RequireHumanResult {
   const reasons: string[] = [];
+  const matchedPaths: string[] = [];
   for (const p of changedPaths) {
-    if (matchAny(p, patterns)) reasons.push(`change to ${p} requires human approval`);
+    if (matchAny(p, patterns)) {
+      reasons.push(`change to ${p} requires human approval`);
+      matchedPaths.push(p);
+    }
   }
-  for (const a of actions) {
-    if (HUMAN_APPROVAL_ACTIONS.includes(a)) reasons.push(`action '${a}' requires human approval`);
-  }
-  return { required: reasons.length > 0, reasons };
-}
-
-export function isDeniedCommand(command: string, denyList: string[] = DEFAULT_DENY_COMMANDS): boolean {
-  const norm = command.trim().replace(/\s+/g, " ");
-  return denyList.some((d) => norm === d || norm.startsWith(d + " ") || norm.includes(d));
+  return { required: reasons.length > 0, reasons, matchedPaths };
 }

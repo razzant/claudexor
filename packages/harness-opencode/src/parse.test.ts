@@ -18,6 +18,19 @@ describe("parseOpenCodeEvent", () => {
     const err = parseOpenCodeEvent({ type: "error", error: "boom" }, "s1");
     expect(err[0]?.type).toBe("error");
 
-    for (const e of [...msg, ...edit, ...tool, ...err]) expect(() => HarnessEvent.parse(e)).not.toThrow();
+    for (const e of [...(msg ?? []), ...(edit ?? []), ...(tool ?? []), ...(err ?? [])]) expect(() => HarnessEvent.parse(e)).not.toThrow();
+  });
+
+  it("reads token counts from BOTH the flat tokens shape and the nested usage shape", () => {
+    // Flat shape: { tokens: { input, output, cache } }.
+    const flat = parseOpenCodeEvent({ type: "usage", cost: 0.03, tokens: { input: 500, output: 80, cache: 100 } }, "s1");
+    expect(flat?.[0]?.usage).toMatchObject({ cost_usd: 0.03, input_tokens: 500, output_tokens: 80, cached_input_tokens: 100 });
+
+    // Nested shape on a `finish` event: { usage: { input_tokens, output_tokens } }.
+    // Previously the cost-only branch dropped these token counts silently.
+    const nested = parseOpenCodeEvent({ type: "finish", usage: { input_tokens: 300, output_tokens: 60 }, cost: 0.004 }, "s1");
+    expect(nested?.[0]?.type).toBe("usage");
+    expect(nested?.[0]?.usage).toMatchObject({ cost_usd: 0.004, input_tokens: 300, output_tokens: 60 });
+    expect(() => HarnessEvent.parse(nested?.[0])).not.toThrow();
   });
 });

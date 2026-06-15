@@ -78,7 +78,7 @@ describe("AcpServer", () => {
     expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
   });
 
-  it("session/cancel aborts the active run and the prompt resolves cancelled", async () => {
+  it("session/cancel (id-less NOTIFICATION) aborts the run, the prompt resolves cancelled, and nothing is replied to the notification", async () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();
     const server = new AcpServer({
@@ -101,13 +101,17 @@ describe("AcpServer", () => {
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "long" } }) + "\n");
     await sleep(20);
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/cancel", params: { sessionId: sid } }) + "\n");
+    // session/cancel is a JSON-RPC notification: NO id, and the server must NOT reply.
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: sid } }) + "\n");
     await sleep(40);
     c2s.end();
     await serving;
 
-    expect(messages.find((m) => m.id === 3)?.result?.cancelled).toBe(true);
+    // The prompt is cancelled.
     expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("cancelled");
+    // No response was emitted for the notification (no message lacking a request id / no id-less response).
+    const responses = messages.filter((m) => Object.prototype.hasOwnProperty.call(m, "result") || Object.prototype.hasOwnProperty.call(m, "error"));
+    expect(responses.every((m) => m.id === 1 || m.id === 2)).toBe(true);
   });
 
   it("rejects a second prompt while one is active for the same session", async () => {
@@ -138,8 +142,195 @@ describe("AcpServer", () => {
     c2s.end();
     await serving;
 
-    expect(messages.find((m) => m.id === 3)?.result?.stopReason).toBe("error");
-    expect(messages.find((m) => m.id === 3)?.result?.error).toContain("active prompt");
+    // A second concurrent prompt is a protocol misuse -> JSON-RPC error, not an
+    // invented StopReason (the ACP StopReason enum has no "error" member).
+    const dup = messages.find((m) => m.id === 3);
+    expect(dup?.result).toBeUndefined();
+    expect(dup?.error?.code).toBe(-32600);
+    expect(dup?.error?.message).toContain("active prompt");
     expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
+  });
+
+  it("returns a JSON-RPC -32601 error for an unknown method (proper {code,message}, no result)", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    const server = new AcpServer({ runner: async () => ({ ok: true }), transport: { read: c2s, write: s2c } });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "does/not-exist", params: {} }) + "\n");
+    await sleep(20);
+    c2s.end();
+    await serving;
+
+    const resp = messages.find((m) => m.id === 7);
+    expect(resp?.result).toBeUndefined();
+    expect(resp?.error?.code).toBe(-32601);
+    expect(resp?.error?.message).toContain("method not found");
+  });
+
+  it("emits the run SUMMARY (not raw JSON) as the turn result content", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    const server = new AcpServer({
+      runner: async () => ({ runId: "r1", status: "succeeded", summary: "Did the thing.", winner: "A" }),
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    await sleep(40);
+    c2s.end();
+    await serving;
+
+    const chunk = messages.find((m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "agent_message_chunk");
+    expect(chunk?.params?.update?.content?.text).toBe("Did the thing.");
+    // Never the raw internal object.
+    expect(chunk?.params?.update?.content?.text).not.toContain("runId");
+    expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
+  });
+
+  it("free-text question (no options): benign decline, honest note, NO fake answer affordance", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let received: any = "unset";
+    const server = new AcpServer({
+      runner: async (_p, hooks) => {
+        received = await hooks?.onInteraction?.({
+          request: {
+            interaction_id: "int-ft",
+            questions: [{ id: "q1", question: "What name do you want?", options: [] }],
+          },
+        });
+        return { summary: "done" };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "ask" } }) + "\n");
+    await sleep(60);
+    c2s.end();
+    await serving;
+
+    // No session/request_permission was sent (no fake "Answer in chat" affordance).
+    expect(messages.some((m) => m.method === "session/request_permission")).toBe(false);
+    // The interaction was declined benignly (null answer set).
+    expect(received).toBe(null);
+    // An honest note was surfaced to the client.
+    const note = messages.find(
+      (m) =>
+        m.method === "session/update" &&
+        typeof m.params?.update?.content?.text === "string" &&
+        m.params.update.content.text.includes("could not be answered over ACP"),
+    );
+    expect(note).toBeTruthy();
+    // The run still completed normally.
+    expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
+  });
+
+  it("emits a terminal tool_call_update (completion) for every started tool_call", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    const server = new AcpServer({
+      runner: async (_p, hooks) => {
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { use_id: "u1", name: "read" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { use_id: "u1", name: "read", status: "ok" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { use_id: "u2", name: "bash" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { use_id: "u2", name: "bash", status: "error" } } });
+        return { summary: "ok" };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    await sleep(40);
+    c2s.end();
+    await serving;
+
+    const updates = messages.filter((m) => m.method === "session/update").map((m) => m.params.update);
+    const u1Done = updates.find((u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u1");
+    const u2Done = updates.find((u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u2");
+    expect(u1Done?.status).toBe("completed");
+    expect(u2Done?.status).toBe("failed");
+    // Every started tool_call reached a terminal status (no client hang).
+    const started = updates.filter((u) => u.sessionUpdate === "tool_call").map((u) => u.toolCallId);
+    const completed = updates.filter((u) => u.sessionUpdate === "tool_call_update").map((u) => u.toolCallId);
+    for (const id of started) expect(completed).toContain(id);
+  });
+
+  it("completes BOTH of two concurrent same-name use_id-less tool calls (FIFO fallback, no clobber)", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    const server = new AcpServer({
+      runner: async (_p, hooks) => {
+        // Two in-flight calls to the SAME tool, neither carrying a use_id. The
+        // fallback must queue both synthetic ids so each result completes its own
+        // call (the old single-slot map dropped the first started call).
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { name: "bash" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { name: "bash" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { name: "bash", status: "ok" } } });
+        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { name: "bash", status: "error" } } });
+        return { summary: "ok" };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    await sleep(40);
+    c2s.end();
+    await serving;
+
+    const updates = messages.filter((m) => m.method === "session/update").map((m) => m.params.update);
+    const startedIds = updates.filter((u) => u.sessionUpdate === "tool_call").map((u) => u.toolCallId);
+    const completions = updates.filter((u) => u.sessionUpdate === "tool_call_update");
+    // Two distinct synthetic ids were started...
+    expect(startedIds.length).toBe(2);
+    expect(new Set(startedIds).size).toBe(2);
+    // ...and BOTH reached a terminal status — no started call was orphaned.
+    expect(completions.length).toBe(2);
+    for (const id of startedIds) expect(completions.some((u) => u.toolCallId === id)).toBe(true);
+    // FIFO: the first result (ok) completes the first started call; the second
+    // (error) completes the second.
+    expect(completions.find((u) => u.toolCallId === startedIds[0])?.status).toBe("completed");
+    expect(completions.find((u) => u.toolCallId === startedIds[1])?.status).toBe("failed");
   });
 });

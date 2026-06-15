@@ -10,7 +10,8 @@
             "accept_clean_patch",
             "rerun_with_feedback",
             "accept_risk",
-            "override_needs_human"
+            "override_needs_human",
+            "revert_run"
           ]
         },
         "findingIds": {

@@ -3,20 +3,26 @@ import { ConformanceReport as ConformanceReportSchema, HarnessManifest as Harnes
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
 
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
-    case "workspace_write":
     case "full":
     case "external_sandbox_full":
       return ["--dangerously-skip-permissions"];
     case "readonly":
     case "inherit_native":
       return [];
+    case "workspace_write":
+      // Unreachable: runOpenCode rejects workspace_write up front (no proven
+      // scoped confinement). Returning the full-access flag here would silently
+      // upgrade the access, so refuse loudly instead.
+      throw new HarnessUnavailableError(
+        "opencode workspace_write has no conformance-proven scoped confinement; this profile is rejected before run",
+      );
   }
 }
 
@@ -62,7 +68,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         display_name: "OpenCode",
         kind: "local_cli",
         version,
-        adapter_version: "0.9.0",
+        adapter_version: CLAUDEXOR_VERSION,
         provider_family: "opencode",
         capabilities: {
           plan: authReady,
@@ -87,19 +93,28 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           plugins: true,
           worktree_native: false,
           web_policy: "uncontrolled",
-          quota_signal: "observed",
+          // No real rate-limit detector for opencode yet (a detector waits on a
+          // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
+          quota_signal: "unknown",
           usage_signal: "observed",
+          // opencode exposes no reasoning-effort flag -> effort is not tunable.
+          effort_levels: [],
         },
         capability_profile: {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true, fork: true },
           output: { ndjson_events: true, final_json: false, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
           auth: { supported_sources: ["api_key_env"], preferred_source: authReady ? "api_key_env" : null, probe_command: [], env_vars: [...PROVIDER_KEY_ENV] },
-          access_control: { readonly: false, workspace_write: true, full: true, mechanism: "opencode permissions not yet conformance-proven" },
+          // HONEST access surface: the only permission flag the adapter drives is
+          // `--dangerously-skip-permissions` (full access). opencode exposes no
+          // CONFIRMED scoped workspace-write confinement the adapter can map to
+          // (and opencode is not installed to live-verify one), so advertising
+          // workspace_write would silently grant full. full-only until a scoped
+          // mechanism is conformance-proven.
+          access_control: { readonly: false, workspace_write: false, full: true, mechanism: "opencode --dangerously-skip-permissions (full access only; no proven scoped workspace-write)" },
         },
         auth_modes: authReady ? ["api_key"] : [],
-        access_profiles_supported: ["workspace_write", "full", "inherit_native"],
-        models: { discovery: "available" },
+        access_profiles_supported: ["full", "inherit_native"],
       });
     },
 
@@ -156,6 +171,15 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
+  }
+  // The only permission flag the adapter drives is --dangerously-skip-permissions
+  // (full access). A workspace_write request has NO proven scoped confinement, so
+  // honoring it would SILENTLY grant full. Reject loudly instead of downgrading
+  // the access guarantee (manifest advertises full-only).
+  if (spec.access === "workspace_write") {
+    throw new HarnessUnavailableError(
+      "opencode does not support a conformance-proven workspace_write (scoped) profile; it can only run with full access (--dangerously-skip-permissions). Use full access explicitly or another harness for confined writes.",
+    );
   }
   const args = ["run", "--format", "json", ...accessArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);

@@ -15,10 +15,8 @@ struct SettingsScreen: View {
     @State private var envInheritance = "mirror_native"
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
     @State private var maxUsdPerRun = ""
-    @State private var maxUsdPerDay = ""
     @State private var interactionTimeoutMinutes = ""
     private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var dayCapValid: Bool { parseOptionalDouble(maxUsdPerDay) != nil || maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var interactionTimeoutValid: Bool {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
@@ -153,7 +151,6 @@ struct SettingsScreen: View {
                     Picker("Env inheritance", selection: $envInheritance) {
                         Text("Mirror native").tag("mirror_native")
                         Text("Clean").tag("clean")
-                        Text("Profile only").tag("profile_only")
                     }
                     .help("mirror_native reuses native CLI auth/session context by default.")
                     Picker("Auth route", selection: $authPreference) {
@@ -238,20 +235,17 @@ struct SettingsScreen: View {
                         TextField("Max USD per run", text: $maxUsdPerRun)
                             .textFieldStyle(.roundedBorder)
                             .help("Default cap for runs. Composer per-run cap can still override it.")
-                        TextField("Max USD per day", text: $maxUsdPerDay)
-                            .textFieldStyle(.roundedBorder)
-                            .help("Display threshold for the Budget view (listed-run spend vs this value). NOT an enforced engine cap — persistent day ledgers do not exist yet.")
                     }
-                    if !runCapValid || !dayCapValid {
+                    if !runCapValid {
                         Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(Theme.status(.failed))
                     }
                     Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "checkmark.circle") }
                         .buttonStyle(.bordered)
-                        .disabled(!runCapValid || !dayCapValid)
+                        .disabled(!runCapValid)
                         .help("Save validated budget defaults. Empty fields clear the corresponding cap.")
-                    KeyValueRow(key: "Circuit breaker", value: "Operations -> Budget")
+                    KeyValueRow(key: "Circuit breaker", value: "Per-run cap above")
                 }
     }
 
@@ -281,7 +275,7 @@ struct SettingsScreen: View {
                     // (a hardcoded string here shipped stale in the past).
                     KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev") beta")
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
-                    KeyValueRow(key: "Review protocol", value: "Solid grid queue; apply/check server endpoints only")
+                    KeyValueRow(key: "Review protocol", value: "Inline per-turn review; server-owned decision/apply endpoints")
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
                     KeyValueRow(key: "Public architecture", value: "CLAUDEXOR_BIBLE.md + docs/ARCHITECTURE.md", mono: true)
                 }
@@ -360,7 +354,6 @@ struct SettingsScreen: View {
         envInheritance = s.routing.envInheritance
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
         maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
-        maxUsdPerDay = s.budget.maxUsdPerDay.map { String(format: "%.2f", $0) } ?? ""
         interactionTimeoutMinutes = s.interactionTimeoutMs.map { String(max(1, $0 / 60_000)) } ?? ""
     }
 
@@ -371,14 +364,12 @@ struct SettingsScreen: View {
     }
 
     private func saveEngineDefaults() async {
-        guard runCapValid && dayCapValid else {
+        guard runCapValid else {
             model.settingsStatus = "Budget defaults were not saved: enter non-negative USD numbers or leave fields empty."
             return
         }
         let runCap = parseOptionalDouble(maxUsdPerRun)
-        let dayCap = parseOptionalDouble(maxUsdPerDay)
         let clearRunCap = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let clearDayCap = maxUsdPerDay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let patch = SettingsUpdateRequest(
             defaultPortfolio: defaultPortfolio,
             routingPolicy: routingPolicy,
@@ -388,9 +379,7 @@ struct SettingsScreen: View {
             envInheritance: envInheritance,
             authPreference: authPreference,
             maxUsdPerRun: runCap,
-            maxUsdPerDay: dayCap,
-            clearMaxUsdPerRun: clearRunCap,
-            clearMaxUsdPerDay: clearDayCap
+            clearMaxUsdPerRun: clearRunCap
         )
         _ = await model.saveSettings(patch)
     }
@@ -418,6 +407,10 @@ private struct HarnessDefaultsRow: View {
     @State private var toolsAllowDraft = ""
     @State private var toolsDenyDraft = ""
     @State private var saving = false
+    /// Enumerated models for this harness (ADP4). nil = not yet loaded; an empty
+    /// list or a response that cannot enumerate falls back to the free-text field.
+    @State private var models: HarnessModelsResponse?
+    @State private var loadingModels = false
 
     private static let efforts = ["__default", "low", "medium", "high", "xhigh", "max"]
 
@@ -432,10 +425,7 @@ private struct HarnessDefaultsRow: View {
                     .help("Disabled harnesses are excluded from routing and pools.")
             }
             HStack(spacing: Theme.Spacing.sm) {
-                TextField("Model override", text: $modelDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
-                    .help("Optional model forwarded to \(family.label). Empty keeps the harness default.")
+                modelOverrideField
                 Picker("Effort", selection: $effort) {
                     Text("Default").tag("__default")
                     ForEach(Self.efforts.dropFirst(), id: \.self) { Text($0).tag($0) }
@@ -492,6 +482,57 @@ private struct HarnessDefaultsRow: View {
         .background(Theme.surfaceRaisedHi.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .onAppear { sync() }
         .onChange(of: settings) { _, _ in sync() }
+        // Lazily enumerate this harness's models when the row first appears.
+        .task { await loadModels() }
+    }
+
+    /// Model override: a Picker over enumerated model ids+labels when the harness
+    /// can honestly enumerate, with an HONEST fallback to free text otherwise
+    /// (empty list / source "none" / engine offline) so the user can still type.
+    @ViewBuilder private var modelOverrideField: some View {
+        if let models, models.canEnumerate {
+            Picker("Model override", selection: $modelDraft) {
+                Text("Harness default").tag("")
+                // Preserve a stored override that the enumeration doesn't list
+                // (custom/legacy model) instead of silently dropping it on save.
+                if !modelDraft.isEmpty, !models.models.contains(where: { $0.id == modelDraft }) {
+                    Text("\(modelDraft) (custom)").tag(modelDraft)
+                }
+                ForEach(models.models) { m in
+                    Text(modelMenuLabel(m)).tag(m.id)
+                }
+            }
+            .labelsHidden()
+            .help("Model forwarded to \(family.label) (source: \(models.source)). Harness default keeps the engine choice.")
+        } else {
+            TextField("Model override", text: $modelDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .help(modelFallbackHelp)
+        }
+    }
+
+    private func modelMenuLabel(_ m: HarnessModel) -> String {
+        let name = (m.label.map { $0.isEmpty ? m.id : $0 } ?? m.id)
+        let suffix = name == m.id ? "" : " (\(m.id))"
+        return name + suffix
+    }
+
+    private var modelFallbackHelp: String {
+        if loadingModels { return "Loading \(family.label) models…" }
+        if models?.source == "none" {
+            return "\(family.label) cannot enumerate models — type a model id, or leave empty for the harness default."
+        }
+        return "Optional model forwarded to \(family.label). Empty keeps the harness default."
+    }
+
+    /// One-shot enumeration; thin consumer of the control-api DTO. A nil result
+    /// (offline/failed) leaves `models` nil so the free-text fallback renders.
+    private func loadModels() async {
+        guard models == nil, !loadingModels else { return }
+        loadingModels = true
+        defer { loadingModels = false }
+        models = await model.harnessModels(for: family)
     }
 
     private var maxUsdValid: Bool {

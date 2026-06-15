@@ -7,6 +7,10 @@ struct TaskDetailView: View {
     @State private var tab: Tab = .answer
     @State private var verbosity: Verbosity = .normal
     @State private var userSelectedTab = false
+    /// True while a Revert request is in flight; the server owns the outcome.
+    @State private var reverting = false
+    /// Honest revert refusal (e.g. the tree diverged since the turn). nil => none.
+    @State private var revertError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case answer, plan, activity, candidates, diff, review, diagnostics
@@ -124,6 +128,14 @@ struct TaskDetailView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .help("Access profile the engine enforced (requested vs effective).")
                 }
+                // Honest apply-state: applied / applied · review blocked / reverted.
+                // Never a green "Succeeded" next to a review-blocked apply.
+                if let (text, glyph, tint) = Self.applyStateBadge(task.applyState) {
+                    Label(text, systemImage: glyph)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(tint)
+                        .help("Honest application state of this turn's in-place change.")
+                }
                 if let outputReady = task.outputReadyState, outputReady != "ready" {
                     // Honest output state; the "ready" case is the norm and stays quiet.
                     Label(Self.outputReadyLabel(outputReady), systemImage: outputReady == "diagnostic" ? "exclamationmark.triangle" : "clock")
@@ -205,7 +217,37 @@ struct TaskDetailView: View {
         case .candidates:
             candidatesContent(task)
         case .diff:
-            DiffView(files: task.diff)
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                // Offer Revert here when the server says this turn's in-place change
+                // is still safely revertable (tree unchanged since). Server-owned.
+                if task.revertable {
+                    Panel(padding: Theme.Spacing.md) {
+                        HStack(spacing: Theme.Spacing.sm) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label("Applied in place", systemImage: "arrow.uturn.backward.circle")
+                                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                if let revertError {
+                                    Text(revertError).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                                }
+                            }
+                            Spacer()
+                            Button(reverting ? "Reverting…" : "Revert") {
+                                reverting = true
+                                Task {
+                                    let err = await model.revertRun(runId: task.id)
+                                    reverting = false
+                                    revertError = err
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(reverting)
+                            .help("Restore the project to this turn's pre-turn state (server refuses if you've edited since).")
+                        }
+                    }
+                }
+                DiffView(files: task.diff)
+            }
         case .review:
             reviewContent(task)
         case .diagnostics:
@@ -237,6 +279,17 @@ struct TaskDetailView: View {
         case "diagnostic": return "Diagnostic output"
         case "ready": return "Output ready"
         default: return state
+        }
+    }
+
+    /// Honest apply-state badge mapping (shared shape across detail + chat surfaces).
+    /// nil => not_applied/unknown: render nothing (envelope-only, plan/answer, no change).
+    static func applyStateBadge(_ state: String) -> (String, String, Color)? {
+        switch state {
+        case "applied": return ("Applied", "checkmark.seal.fill", Theme.status(.succeeded))
+        case "applied_review_blocked": return ("Applied · review blocked", "exclamationmark.triangle.fill", Theme.status(.blocked))
+        case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
+        default: return nil
         }
     }
 

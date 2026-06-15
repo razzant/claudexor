@@ -31,12 +31,26 @@ describe("decideSynthesis", () => {
     expect(decideSynthesis([a, b], "auto").synthesize).toBe(false);
   });
 
-  it("synthesizes on complementary strengths (top wins tests, second is simpler)", () => {
+  it("auto does NOT synthesize on best-of-2 (n<3): it just picks the winner", () => {
+    // Same complementary inputs that DO synthesize at n>=3 (below).
     const a = cand("A", { testsPassed: 10, testsTotal: 10, diffSize: 100 });
     const b = cand("B", { testsPassed: 8, testsTotal: 10, diffSize: 10 });
     const d = decideSynthesis([a, b], "auto");
+    expect(d.synthesize).toBe(false);
+    expect(d.reason).toContain("best-of-2");
+  });
+
+  it("synthesizes on complementary strengths at n>=3 (top wins tests, second is simpler)", () => {
+    const a = cand("A", { testsPassed: 10, testsTotal: 10, diffSize: 100 });
+    const b = cand("B", { testsPassed: 8, testsTotal: 10, diffSize: 10 });
+    const c = cand("C", { testsPassed: 5, testsTotal: 10, diffSize: 200 });
+    const d = decideSynthesis([a, b, c], "auto");
     expect(d.synthesize).toBe(true);
     expect(d.reason).toContain("complementary");
+  });
+
+  it("always still forces synthesis even on best-of-2", () => {
+    expect(decideSynthesis([cand("A"), cand("B")], "always").synthesize).toBe(true);
   });
 
   it("builds a plan: base = overall winner, borrow tests from the best-tests candidate", () => {

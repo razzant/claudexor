@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDeniedCommand, pathGuard, requireHuman } from "./policy.js";
+import { pathGuard, requireHuman } from "./policy.js";
 import { classifyRisk, reviewDepthForRisk } from "./risk.js";
 
 describe("classifyRisk", () => {
@@ -35,14 +35,10 @@ describe("pathGuard", () => {
   });
 });
 
-describe("requireHuman + denied commands", () => {
-  it("requires human for protected paths and dangerous actions", () => {
+describe("requireHuman", () => {
+  it("requires human for protected paths, additional patterns escalate too", () => {
     expect(requireHuman(["src/auth/x.ts"]).required).toBe(true);
     expect(requireHuman(["src/util.ts"]).required).toBe(false);
-    expect(requireHuman([], ["production_deploy"]).required).toBe(true);
-  });
-  it("detects denied commands", () => {
-    expect(isDeniedCommand("git push --force origin main")).toBe(true);
-    expect(isDeniedCommand("git status")).toBe(false);
+    expect(requireHuman(["infra/prod.tf"], ["**/infra/**"]).required).toBe(true);
   });
 });

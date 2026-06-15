@@ -52,13 +52,13 @@ Core endpoints:
 - `PATCH /threads/:id` (rename / archive a thread)
 - `POST /threads/:id/turns` (follow-up turn; turns run in-place — project or thread worktree — so the native session resumes and the next turn sees the work; a race runs isolated candidates and auto-applies the winner)
 - `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
-- `POST /runs/:id/decision` (typed operator decision: accept risk / rerun / apply)
+- `POST /runs/:id/decision` (typed operator decision: `accept_clean_patch` / `accept_risk` / `override_needs_human` / `rerun_with_feedback` / `revert_run` — `revert_run` restores the live in-place tree to the turn's pre-turn snapshot and refuses if the tree has diverged from the recorded post-turn state)
 - `GET /events` (global live-only run-event multiplex, no replay)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
-- `GET /harnesses`, `POST /harnesses/setup`
+- `GET /harnesses`, `GET /harnesses/:id/models`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
   `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
   `POST /setup/jobs/:id/cancel`

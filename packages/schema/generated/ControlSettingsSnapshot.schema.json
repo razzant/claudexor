@@ -69,8 +69,7 @@
               "type": "string",
               "enum": [
                 "mirror_native",
-                "clean",
-                "profile_only"
+                "clean"
               ],
               "default": "mirror_native"
             },
@@ -91,13 +90,6 @@
           "type": "object",
           "properties": {
             "maxUsdPerRun": {
-              "type": [
-                "number",
-                "null"
-              ],
-              "default": null
-            },
-            "maxUsdPerDay": {
               "type": [
                 "number",
                 "null"

@@ -13,7 +13,7 @@
  * Exit 1 with an explicit list on any mismatch.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const failures = [];
 
@@ -122,6 +122,124 @@ if (!knownMatch) {
   }
   for (const m of help.matchAll(/--([a-z-]+)/g)) {
     if (!flags.includes(m[1])) failures.push(`cli.ts help documents '--${m[1]}' but KNOWN_FLAGS does not accept it`);
+  }
+}
+
+// --------------------------------------------------------------------------
+// 4. Version parity (DV3): the generated CLAUDEXOR_VERSION constant, the root
+//    package.json, and EVERY workspace manifest must agree. This makes the
+//    single-version SSOT (DV1) enforceable so versions can never drift again.
+// --------------------------------------------------------------------------
+
+const versionTs = readFileSync("packages/util/src/version.ts", "utf8");
+const constMatch = /CLAUDEXOR_VERSION\s*=\s*"([^"]+)"/.exec(versionTs);
+if (!constMatch) {
+  failures.push("could not locate CLAUDEXOR_VERSION in packages/util/src/version.ts (run `pnpm gen:version`)");
+} else {
+  const constant = constMatch[1];
+  const rootVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
+  if (constant !== rootVersion) {
+    failures.push(`CLAUDEXOR_VERSION (${constant}) != root package.json version (${rootVersion}); run \`pnpm gen:version\``);
+  }
+  // Every workspace manifest must match (changesets `fixed` keeps them in lockstep).
+  const manifests = [];
+  for (const pkg of readdirSync("packages")) {
+    const path = `packages/${pkg}/package.json`;
+    try {
+      manifests.push([path, JSON.parse(readFileSync(path, "utf8")).version]);
+    } catch {
+      /* not a package dir */
+    }
+  }
+  try {
+    manifests.push(["benchmarks/runner/package.json", JSON.parse(readFileSync("benchmarks/runner/package.json", "utf8")).version]);
+  } catch {
+    /* runner absent */
+  }
+  for (const [path, version] of manifests) {
+    if (version !== constant) {
+      failures.push(`${path} version (${version}) != CLAUDEXOR_VERSION (${constant}); bump it (changesets fixed lockstep)`);
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 5. Debug-route parity (DV3): the CLAUDEXOR_DEBUG_ROUTE values the macOS app
+//    actually handles (the `switch` cases in AppModel.swift) MUST equal the set
+//    documented in apps/macos/README.md. A route the code handles but doesn't
+//    document — or a documented route the code dropped — is a docs lie.
+// --------------------------------------------------------------------------
+
+const appModelSrc = readFileSync("apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift", "utf8");
+// Isolate the `switch …CLAUDEXOR_DEBUG_ROUTE… { … }` block, then collect its
+// non-default `case "x":` labels.
+const switchMatch = /switch ProcessInfo\.processInfo\.environment\["CLAUDEXOR_DEBUG_ROUTE"\]\s*\{([\s\S]*?)\n\s*\}/.exec(
+  appModelSrc,
+);
+if (!switchMatch) {
+  failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE switch in AppModel.swift");
+} else {
+  const handledRoutes = new Set([...switchMatch[1].matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]));
+  const macReadme = readFileSync("apps/macos/README.md", "utf8");
+  // The documented set is the backticked tokens on the README lines describing
+  // what `CLAUDEXOR_DEBUG_ROUTE` handles: take the bullet plus its continuation
+  // up to the next bullet, and read `code` spans that aren't the env-var name.
+  const bulletMatch = /- `CLAUDEXOR_DEBUG_ROUTE`:[\s\S]*?(?=\n- `|\n\n)/.exec(macReadme);
+  const documentedRoutes = new Set();
+  if (bulletMatch) {
+    for (const m of bulletMatch[0].matchAll(/`([a-z_]+)`/g)) {
+      if (m[1] !== "CLAUDEXOR_DEBUG_ROUTE") documentedRoutes.add(m[1]);
+    }
+  } else {
+    failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE bullet in apps/macos/README.md");
+  }
+  for (const r of handledRoutes) {
+    if (!documentedRoutes.has(r)) failures.push(`AppModel.swift handles debug route '${r}' but apps/macos/README.md does not document it`);
+  }
+  for (const r of documentedRoutes) {
+    if (!handledRoutes.has(r)) failures.push(`apps/macos/README.md documents debug route '${r}' but AppModel.swift does not handle it`);
+  }
+}
+
+// --------------------------------------------------------------------------
+// 6. Deleted-screen guard (DV3): the v0.9 screens removed in the v0.10
+//    chat-first collapse must not reappear as SCREENS in the design/arch docs.
+//    Conservative: we flag only the specific affirmative deleted-screen
+//    phrasings, and explicitly allow honest negations ("no separate Review
+//    Queue screen") so the docs can still SAY a screen was removed.
+// --------------------------------------------------------------------------
+
+const DELETED_SCREEN_PHRASES = [
+  "Mission-control dashboard",
+  "Mission control dashboard",
+  "Home screen",
+  "Tasks list screen",
+  "Task list screen",
+  "Review Queue screen",
+];
+// Negation cues that, immediately before a phrase, mark an honest "this screen
+// is gone" statement rather than a reintroduction.
+const NEGATION_BEFORE = /\b(no|not|never|without|removed|deleted|dropped|former|old|legacy|previous|no longer|instead of)\b[^.]*$/i;
+
+for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
+  const text = readFileSync(docPath, "utf8");
+  for (const phrase of DELETED_SCREEN_PHRASES) {
+    let idx = text.indexOf(phrase);
+    while (idx !== -1) {
+      // Look back to the start of the SENTENCE (markdown soft-wraps sentences
+      // across single newlines, so the boundary is "." or a paragraph break,
+      // not a lone "\n"); newlines within the sentence collapse to spaces so a
+      // negation cue on the previous wrapped line is still seen.
+      const paraStart = text.lastIndexOf("\n\n", idx);
+      const dotStart = text.lastIndexOf(".", idx);
+      const sentenceStart = Math.max(paraStart, dotStart) + 1;
+      const before = text.slice(sentenceStart, idx).replace(/\s+/g, " ");
+      if (!NEGATION_BEFORE.test(before)) {
+        const line = text.slice(0, idx).split("\n").length;
+        failures.push(`${docPath}:${line} reintroduces deleted v0.10 screen '${phrase}' as a current screen (use a negation if describing its removal)`);
+      }
+      idx = text.indexOf(phrase, idx + phrase.length);
+    }
   }
 }
 

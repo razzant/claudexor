@@ -7,33 +7,200 @@
         "tool_calls": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "tool": {
-                "type": "string",
-                "enum": [
-                  "start_run",
-                  "race",
-                  "status",
-                  "answer_question",
-                  "apply",
-                  "review"
-                ]
-              },
-              "args": {
+            "anyOf": [
+              {
                 "type": "object",
-                "additionalProperties": {},
-                "default": {}
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "start_run"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "plan",
+                      "audit",
+                      "agent",
+                      "orchestrate"
+                    ],
+                    "default": "agent"
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "prompt"
+                ],
+                "additionalProperties": false
               },
-              "why": {
-                "type": "string",
-                "default": ""
+              {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "race"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "default": 2
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "review"
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "run_id"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "status"
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "run_id"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "answer_question"
+                  },
+                  "interaction_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "answers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "question_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "selected_labels": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        },
+                        "free_text": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        }
+                      },
+                      "required": [
+                        "question_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "default": []
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "interaction_id"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "const": "apply"
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "apply",
+                      "branch",
+                      "commit",
+                      "pr"
+                    ],
+                    "default": "apply"
+                  },
+                  "why": {
+                    "type": "string",
+                    "default": ""
+                  }
+                },
+                "required": [
+                  "tool",
+                  "run_id"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "tool"
-            ],
-            "additionalProperties": false
+            ]
           },
           "minItems": 1
         }

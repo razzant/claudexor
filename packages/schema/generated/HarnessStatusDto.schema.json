@@ -423,6 +423,20 @@
                     "usage_signal": {
                       "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
                       "default": "unknown"
+                    },
+                    "effort_levels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      },
+                      "default": []
                     }
                   },
                   "additionalProperties": false
@@ -452,24 +466,6 @@
                     ]
                   },
                   "default": []
-                },
-                "models": {
-                  "type": "object",
-                  "properties": {
-                    "discovery": {
-                      "type": "string",
-                      "enum": [
-                        "available",
-                        "unavailable",
-                        "experimental"
-                      ],
-                      "default": "unavailable"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "default": {
-                    "discovery": "unavailable"
-                  }
                 }
               },
               "required": [

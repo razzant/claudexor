@@ -40,6 +40,14 @@ export const RunEventType = z.enum([
   /** A race/agent winner's patch was auto-applied to the live in-place tree
    * (or the apply was attempted and failed). Payload: {applied, patch_sha256, detail}. */
   "work_product.adopted",
+  /** Orchestrate executor (auto_safe/auto_full): a SAFE plan step spawned an
+   * isolated envelope sub-run. Payload: {tool, mode, n}. */
+  "orchestrate.subrun.started",
+  /** Orchestrate executor: a plan step completed. Payload: {index, tool, status/ok, run_id}. */
+  "orchestrate.step.done",
+  /** Orchestrate executor: a RISKY plan step (apply) was blocked under auto_safe
+   * (not executed; awaiting a human decision). Payload: {index, tool, autonomy}. */
+  "orchestrate.step.blocked",
   "control.requested",
   "control.applied",
   "control.rejected",

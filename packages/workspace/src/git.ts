@@ -197,6 +197,69 @@ export async function diffTrees(repo: string, baseSha: string, endSha: string): 
   return r.stdout;
 }
 
+/** Resolve the TREE object sha for a commit-ish. snapshotTree returns COMMIT
+ * shas whose ids vary by timestamp even for identical content; comparing the
+ * underlying tree shas is the content-stable equality test. */
+async function treeOf(repo: string, sha: string): Promise<string> {
+  const r = await git(repo, ["rev-parse", `${sha}^{tree}`]);
+  if (r.code !== 0) throw new WorkspaceError(`rev-parse ${sha}^{tree} failed: ${r.stderr.trim()}`);
+  return r.stdout.trim();
+}
+
+export interface RevertResult {
+  reverted: boolean;
+  /** Turn-added files removed to restore the pre-turn state (`.claudexor` preserved). */
+  removed: string[];
+  reason?: string;
+}
+
+/**
+ * Server-owned in-place revert: restore the live working tree to a recorded
+ * pre-turn snapshot, but ONLY when the tree still matches the recorded post-turn
+ * snapshot (i.e. the user hasn't edited since) — otherwise it fails loudly and
+ * touches nothing. Reverts tracked modifications/deletions AND removes files the
+ * turn added; `.claudexor` (run artifacts) is always preserved.
+ */
+export async function revertWorkingTreeTo(
+  repo: string,
+  preTurnSha: string,
+  expectedPostSha: string,
+): Promise<RevertResult> {
+  // Divergence fence (compare content-stable tree shas, never commit shas).
+  const current = await snapshotTree(repo);
+  const [currentTree, expectedTree] = await Promise.all([treeOf(repo, current), treeOf(repo, expectedPostSha)]);
+  if (currentTree !== expectedTree) {
+    return { reverted: false, removed: [], reason: "working tree diverged from the recorded post-turn state; refusing to revert" };
+  }
+  // Files the turn ADDED (in post, absent in pre) must be removed; restore alone
+  // only reverts tracked modifications/deletions, never deletes extra files.
+  // `--no-renames` forces a turn rename to surface as delete-old + ADD-new so the
+  // new path is caught here (rename detection would hide it under an R status).
+  const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", preTurnSha, expectedPostSha]);
+  if (added.code !== 0) throw new WorkspaceError(`revert diff failed: ${added.stderr.trim()}`);
+  const toRemove = added.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((p) => p.length > 0 && !p.startsWith(".claudexor"));
+  // Restore every path present in the pre-turn snapshot (mods + deletions).
+  const restore = await git(repo, ["checkout", preTurnSha, "--", "."]);
+  if (restore.code !== 0) throw new WorkspaceError(`revert checkout failed: ${restore.stderr.trim()}`);
+  const removed: string[] = [];
+  for (const rel of toRemove) {
+    try {
+      rmSync(join(repo, rel), { force: true });
+      removed.push(rel);
+    } catch {
+      /* best-effort: a file already gone is fine */
+    }
+  }
+  // Re-sync the index so `git status` reflects the restored tree (checkout left
+  // turn-added paths staged-for-delete handling to us).
+  await git(repo, ["add", "-A", "--", "."]);
+  await git(repo, ["reset", "--quiet"]);
+  return { reverted: true, removed };
+}
+
 export async function worktreeAdd(repo: string, path: string, branch: string, baseSha: string): Promise<void> {
   const r = await git(repo, ["worktree", "add", "-b", branch, path, baseSha]);
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);

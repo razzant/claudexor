@@ -93,35 +93,7 @@
         "constraints": {
           "type": "object",
           "properties": {
-            "allowed_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "forbidden_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
             "protected_paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "compatibility": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "style": {
               "type": "array",
               "items": {
                 "type": "string"

@@ -10,11 +10,12 @@ import {
   ProviderFamily,
 } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, InteractionQuestion } from "./harness.js";
+import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, HarnessModel, InteractionQuestion } from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
+import { OrchestrateAutonomy, OrchestratePlanProgress } from "./orchestrate.js";
 
 export const RunScopeContext = z.enum(["auto", "deep"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
@@ -53,6 +54,10 @@ export const ControlRunStartRequest = z
     swarm: z.boolean().optional(),
     /** agent flag: create-from-scratch intent (the old `create` mode). */
     create: z.boolean().optional(),
+    /** Best-of-N synthesis policy. `auto` (default) only synthesizes a 3rd
+     * candidate when n>=3 and candidates genuinely complement; `always`/`never`
+     * force it. Threaded to the orchestrator's decideSynthesis. */
+    synthesis: z.enum(["auto", "always", "never"]).optional(),
     maxUsd: z.number().nonnegative().nullable().optional(),
     /** Requested access profile. Effective access is derived by the engine and never client-supplied. */
     access: AccessProfile.optional(),
@@ -74,31 +79,17 @@ export const ControlRunStartRequest = z
     planRunId: Id.optional(),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional(),
+    /** How much the orchestrate brain may act without confirmation
+     * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;
+     * consumed by the executor in runOrchestrate. */
+    autonomy: OrchestrateAutonomy.optional(),
   })
   .strict();
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
 
-export const ControlHarnessSetupAction = z.enum(["install_guide", "install", "login", "doctor"]);
-export type ControlHarnessSetupAction = z.infer<typeof ControlHarnessSetupAction>;
+/** Harness ids that have a managed setup flow (shared by the async setup-jobs path). */
 export const ControlHarnessSetupHarness = z.enum(["codex", "claude", "cursor", "opencode", "raw"]);
 export type ControlHarnessSetupHarness = z.infer<typeof ControlHarnessSetupHarness>;
-
-export const ControlHarnessSetupRequest = z.object({
-  harness: ControlHarnessSetupHarness,
-  action: ControlHarnessSetupAction.default("login"),
-}).strict();
-export type ControlHarnessSetupRequest = z.infer<typeof ControlHarnessSetupRequest>;
-
-export const ControlHarnessSetupResponse = z.object({
-  harness: ControlHarnessSetupHarness,
-  action: ControlHarnessSetupAction,
-  status: z.enum(["prepared", "not_supported"]),
-  command: z.string().nullable().default(null),
-  guideUrl: z.string().url().nullable().default(null),
-  logPath: z.string().nullable().default(null),
-  message: z.string(),
-});
-export type ControlHarnessSetupResponse = z.infer<typeof ControlHarnessSetupResponse>;
 
 export const ControlSetupJobAction = z.enum(["install", "login", "doctor", "store_key"]);
 export type ControlSetupJobAction = z.infer<typeof ControlSetupJobAction>;
@@ -288,9 +279,22 @@ export type ControlRouteInfo = z.infer<typeof ControlRouteInfo>;
  * the presence of final/answer.md. Answers "what did this turn actually do?" so
  * a chat surface never shows a green "succeeded" next to nothing (the v0.9 plan
  * bug): `kind:"plan"` means a plan was produced and NO files changed; `diffStat`
- * is null unless a patch exists; `adopted` is true when a race winner was
- * auto-applied to the live in-place tree.
+ * is null unless a patch exists; `adopted` is true when the live in-place tree
+ * was actually mutated this turn (decoupled from a clean review — see applyState).
  */
+export const RunApplyState = z.enum([
+  /** No in-place mutation happened (envelope-only, plan/answer, or nothing produced). */
+  "not_applied",
+  /** Winner applied to the live tree AND review converged clean. */
+  "applied",
+  /** Winner applied to the live tree but review is blocked/unconverged — honest
+   * "Applied · review blocked"; the Revert affordance is offered. */
+  "applied_review_blocked",
+  /** A prior in-place application was reverted to its pre-turn snapshot. */
+  "reverted",
+]);
+export type RunApplyState = z.infer<typeof RunApplyState>;
+
 export const ControlRunResult = z.object({
   kind: z.enum(["patch", "answer", "plan", "report", "none"]).default("none"),
   diffStat: z
@@ -302,7 +306,20 @@ export const ControlRunResult = z.object({
     .nullable()
     .default(null),
   blockers: z.number().int().nonnegative().default(0),
+  /** True when the live in-place tree was mutated this turn (regardless of review). */
   adopted: z.boolean().nullable().default(null),
+  /** Honest application state (decoupled from clean-terminal). */
+  applyState: RunApplyState.default("not_applied"),
+  /** Tree SHA before this turn mutated the in-place tree (revert restore target). */
+  preTurnSha: z.string().nullable().default(null),
+  /** Tree SHA right after this turn's mutation (revert divergence fence: refuse
+   * to revert if the working tree has diverged from this since). */
+  postTurnSha: z.string().nullable().default(null),
+  /** Revert metadata is available (the turn mutated the live tree in place and
+   * pre/post-turn snapshots were recorded), so a Revert affordance may be offered.
+   * This is NOT a live-safe guarantee: the server re-checks tree divergence at
+   * revert time and refuses (fail loud) if the working tree changed since. */
+  revertable: z.boolean().default(false),
 });
 export type ControlRunResult = z.infer<typeof ControlRunResult>;
 
@@ -380,15 +397,6 @@ export const ControlBudgetSnapshot = z.object({
   remainingUsd: z.number().nullable().default(null),
   estimated: z.boolean().default(false),
   source: z.enum(["decision", "events", "settings", "unknown"]).default("unknown"),
-  nativeQuota: z
-    .array(z.object({
-      provider: z.string(),
-      label: z.string(),
-      remaining: z.string().nullable().default(null),
-      resetsAt: z.string().nullable().default(null),
-      source: z.string(),
-    }))
-    .default([]),
 });
 export type ControlBudgetSnapshot = z.infer<typeof ControlBudgetSnapshot>;
 
@@ -458,6 +466,10 @@ export const ControlRunDetail = z.object({
   workProduct: WorkProduct.nullable().default(null),
   reviewFindings: z.array(ReviewFinding).default([]),
   pendingInteractions: z.array(ControlPendingInteraction).default([]),
+  /** Typed executor progress for an orchestrate run (auto_safe/auto_full);
+   * null for non-orchestrate runs or suggest autonomy. Projected from
+   * final/orchestration_progress.yaml. */
+  orchestrate: OrchestratePlanProgress.nullable().default(null),
   failure: RunFailure.nullable().default(null),
 });
 export type ControlRunDetail = z.infer<typeof ControlRunDetail>;
@@ -474,7 +486,6 @@ export const RunControl = z.object({
   kind: z.enum(["cancel", "interrupt"]),
   target: RunControlTarget.default({}),
   reason: z.string().optional(),
-  idempotencyKey: z.string().optional(),
 });
 export type RunControl = z.infer<typeof RunControl>;
 
@@ -524,6 +535,9 @@ export const RunDecisionAction = z.enum([
   "rerun_with_feedback",
   "accept_risk",
   "override_needs_human",
+  /** Restore the live in-place tree to this turn's pre-turn snapshot (server-owned;
+   * refuses if the tree has diverged from the recorded post-turn state). */
+  "revert_run",
 ]);
 export type RunDecisionAction = z.infer<typeof RunDecisionAction>;
 
@@ -692,6 +706,19 @@ export const ControlHarnessListResponse = z.object({
 });
 export type ControlHarnessListResponse = z.infer<typeof ControlHarnessListResponse>;
 
+/**
+ * Models enumerable for one harness. `source` is honest about provenance:
+ * "api" when the adapter implemented a real enumeration (raw-api / OpenAI
+ * `GET /v1/models`), "manifest" reserved for a future manifest-declared list,
+ * "none" when the adapter cannot enumerate (the list is then empty).
+ */
+export const ControlHarnessModelsResponse = z.object({
+  harnessId: z.string(),
+  models: z.array(HarnessModel).default([]),
+  source: z.enum(["api", "manifest", "none"]),
+});
+export type ControlHarnessModelsResponse = z.infer<typeof ControlHarnessModelsResponse>;
+
 export const ControlSettingsSnapshot = z.object({
   sources: z.array(z.string()).default([]),
   defaultPortfolio: Portfolio.default("subscription-first"),
@@ -703,14 +730,13 @@ export const ControlSettingsSnapshot = z.object({
       primaryHarness: z.string().nullable().default(null),
       eligibleHarnesses: z.array(z.string()).default([]),
       defaultModel: z.string().nullable().default(null),
-      envInheritance: z.enum(["mirror_native", "clean", "profile_only"]).default("mirror_native"),
+      envInheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
       authPreference: AuthPreference.default("auto"),
     })
     .default({}),
   budget: z
     .object({
       maxUsdPerRun: z.number().nullable().default(null),
-      maxUsdPerDay: z.number().nullable().default(null),
     })
     .default({}),
   harnesses: z
@@ -764,11 +790,9 @@ export const ControlSettingsUpdateRequest = z
     primaryHarness: z.string().nullable().optional(),
     defaultModel: z.string().nullable().optional(),
     eligibleHarnesses: z.array(z.string()).optional(),
-    envInheritance: z.enum(["mirror_native", "clean", "profile_only"]).optional(),
+    envInheritance: z.enum(["mirror_native", "clean"]).optional(),
     maxUsdPerRun: z.number().nonnegative().optional(),
-    maxUsdPerDay: z.number().nonnegative().optional(),
     clearMaxUsdPerRun: z.boolean().optional(),
-    clearMaxUsdPerDay: z.boolean().optional(),
     authPreference: AuthPreference.optional(),
     harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
   })
@@ -776,9 +800,6 @@ export const ControlSettingsUpdateRequest = z
   .superRefine((value, ctx) => {
     if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerRun"], message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive" });
-    }
-    if (value.maxUsdPerDay !== undefined && value.clearMaxUsdPerDay === true) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerDay"], message: "maxUsdPerDay and clearMaxUsdPerDay are mutually exclusive" });
     }
   });
 export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;

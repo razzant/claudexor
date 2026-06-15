@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Id } from "./primitives.js";
+import { Id, ModeKind } from "./primitives.js";
 
 /**
  * The autonomous `orchestrate` brain (A3). It is NOT a privileged harness: it is
@@ -29,9 +29,12 @@ export const DEFAULT_ORCHESTRATE_TOOL_BELT: OrchestrateToolName[] = [
   "start_run",
   "race",
   "status",
-  "answer_question",
   "apply",
   "review",
+  // `answer_question` is intentionally NOT offered by default: safe sub-runs are
+  // non-interactive, so an autonomously-executed plan has no pending sub-run
+  // interaction to answer. It stays in the vocabulary + executor (honest skip) for
+  // future interactive sub-runs; a caller can add it to a custom tool_belt.
 ];
 
 export const OrchestrateContract = z.object({
@@ -44,17 +47,84 @@ export const OrchestrateContract = z.object({
       max_tool_calls: z.number().int().positive().nullable().default(null),
     })
     .default({}),
-  stop_conditions: z.array(z.string()).default([]),
   autonomy: OrchestrateAutonomy.default("suggest"),
 });
 export type OrchestrateContract = z.infer<typeof OrchestrateContract>;
 
-/** One suggested tool invocation in a brain plan (suggest autonomy: the engine validates, the user executes). */
-export const OrchestratePlanCall = z.object({
-  tool: OrchestrateToolName,
-  args: z.record(z.string(), z.unknown()).default({}),
-  why: z.string().default(""),
-});
+/**
+ * Data-driven tool-risk classification. SAFE = provably no live-tree mutation
+ * (isolated envelope sub-runs or pure reads); RISKY = mutates the live tree.
+ * This is the SSOT the executor classifies against — never a hardcoded
+ * enum-in-logic switch. `apply` is the only mutating tool.
+ */
+export const TOOL_RISK: Record<OrchestrateToolName, "safe" | "risky"> = {
+  start_run: "safe",
+  race: "safe",
+  status: "safe",
+  answer_question: "safe",
+  review: "safe",
+  apply: "risky",
+};
+
+/**
+ * Classify a tool's risk, FAIL-CLOSED: any unknown/undeclared tool is risky.
+ * The executor must never auto-run a tool it cannot prove is safe.
+ */
+export function toolRisk(tool: string): "safe" | "risky" {
+  return (TOOL_RISK as Record<string, "safe" | "risky">)[tool] ?? "risky";
+}
+
+/**
+ * One concrete tool invocation in a brain plan, with PER-TOOL TYPED args via a
+ * discriminated union on `tool`. The executor (auto_safe/auto_full) runs these
+ * in order; under `suggest` the user executes them. Args are validated by the
+ * variant — never an open `z.record` bag — so a malformed plan fails loudly.
+ */
+export const OrchestratePlanCall = z.discriminatedUnion("tool", [
+  z.object({
+    tool: z.literal("start_run"),
+    prompt: z.string().min(1),
+    mode: ModeKind.default("agent"),
+    harness: z.string().optional(),
+    why: z.string().default(""),
+  }),
+  z.object({
+    tool: z.literal("race"),
+    prompt: z.string().min(1),
+    n: z.number().int().min(2).default(2),
+    why: z.string().default(""),
+  }),
+  z.object({
+    tool: z.literal("review"),
+    run_id: z.string().min(1),
+    why: z.string().default(""),
+  }),
+  z.object({
+    tool: z.literal("status"),
+    run_id: z.string().min(1),
+    why: z.string().default(""),
+  }),
+  z.object({
+    tool: z.literal("answer_question"),
+    interaction_id: z.string().min(1),
+    answers: z
+      .array(
+        z.object({
+          question_id: z.string().min(1),
+          selected_labels: z.array(z.string()).default([]),
+          free_text: z.string().nullable().default(null),
+        }),
+      )
+      .default([]),
+    why: z.string().default(""),
+  }),
+  z.object({
+    tool: z.literal("apply"),
+    run_id: z.string().min(1),
+    mode: z.enum(["apply", "branch", "commit", "pr"]).default("apply"),
+    why: z.string().default(""),
+  }),
+]);
 export type OrchestratePlanCall = z.infer<typeof OrchestratePlanCall>;
 
 /**
@@ -67,3 +137,41 @@ export const OrchestratePlan = z.object({
   tool_calls: z.array(OrchestratePlanCall).min(1),
 });
 export type OrchestratePlan = z.infer<typeof OrchestratePlan>;
+
+/** Per-step executor status (auto_safe/auto_full). */
+export const OrchestrateStepStatus = z.enum([
+  "pending",
+  "running",
+  "done",
+  "skipped",
+  "blocked",
+  "failed",
+]);
+export type OrchestrateStepStatus = z.infer<typeof OrchestrateStepStatus>;
+
+/**
+ * Typed executor progress over a plan's tool_calls. Persisted as
+ * `final/orchestration_progress.yaml` and projected into the run detail so a
+ * surface renders honest per-step outcomes (which safe steps ran, where a risky
+ * step blocked, why it stopped). Producer: the orchestrator executor; consumer:
+ * the control-api run-detail projection.
+ */
+export const OrchestratePlanProgress = z.object({
+  steps: z
+    .array(
+      z.object({
+        index: z.number().int().nonnegative(),
+        tool: OrchestrateToolName,
+        risk: z.enum(["safe", "risky"]),
+        status: OrchestrateStepStatus,
+        /** Sub-run id this step started/targeted (start_run/race/review/status/apply), when known. */
+        run_id: z.string().nullable().default(null),
+        detail: z.string().nullable().default(null),
+      }),
+    )
+    .default([]),
+  autonomy: OrchestrateAutonomy,
+  /** Set when the executor stopped early (first risky step under auto_safe, budget, abort). */
+  stopped_reason: z.string().nullable().default(null),
+});
+export type OrchestratePlanProgress = z.infer<typeof OrchestratePlanProgress>;

@@ -86,6 +86,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     for await (const ev of spawnProcess(opts.bin, opts.args, {
       cwd: spec.cwd,
       env: opts.env,
+      inheritEnv: spec.env_inheritance,
       abortSignal,
       ...(opts.session
         ? {

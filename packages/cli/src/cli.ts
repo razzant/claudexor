@@ -2,12 +2,12 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { assertNoInlineSecretValues, containsSecretLikeToken, ensureDir, hashJson, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
+import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, hashJson, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
@@ -19,6 +19,7 @@ import {
   EffortHint,
   ExternalContextPolicy,
   ModeKind as ModeKindSchema,
+  type OrchestrateAutonomy,
   Portfolio,
   type ModeKind,
   SpecPack as SpecPackSchema,
@@ -28,8 +29,10 @@ import {
 } from "@claudexor/schema";
 import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
+import { ensureDaemon, enqueueAndAwait, exitCodeForState } from "./daemon-run.js";
+import { resolveDecisionBody } from "./decision.js";
 import { PLUGIN_HOSTS, type PluginHost, installPlugin } from "./plugins.js";
-import { buildGateway, buildRegistry } from "./registry.js";
+import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
@@ -39,6 +42,7 @@ import {
   type SpecCommandResult,
 } from "./spec.js";
 import { parseReviewerEffortMap } from "./reviewer-options.js";
+import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -75,15 +79,9 @@ function orchestratorRunner() {
   };
 }
 
-// Version is read from the package manifest so the banner can never ship stale.
-const CLI_VERSION = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
-    return pkg.version ?? "dev";
-  } catch {
-    return "dev";
-  }
-})();
+// Single version SSOT: the generated CLAUDEXOR_VERSION constant (from the root
+// package.json) so the banner / --version can never ship stale or drift.
+const CLI_VERSION = CLAUDEXOR_VERSION;
 
 const HELP = `claudexor — harness-agnostic AI coding control plane (v${CLI_VERSION})
 
@@ -102,6 +100,7 @@ Usage:
   claudexor inspect <run_id>              Inspect a run's decision + artifacts
   claudexor follow <run_id> [--json]      Live-tail a daemon run (replay + push; answer questions in the TTY)
   claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
+  claudexor decision <run_id> <action>    Decide a blocked run: --accept-risk|--override|--revert|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"
   claudexor settings show|set             Show/update user defaults
   claudexor auth status|login             Inspect native harness auth
   claudexor secrets list|set|delete       Manage stored API-key refs (Keychain/0600 file)
@@ -110,17 +109,21 @@ Usage:
   claudexor mcp serve                     Expose Claudexor as an MCP server (stdio)
   claudexor acp serve                     Expose Claudexor as an ACP agent (stdio)
   claudexor plugin install <host>         Install thin host plugin (cursor|claude|codex|opencode)
-  claudexor harness list                  List registered harnesses
+  claudexor harness list [--all]          List real harnesses (--all includes fakes)
+  claudexor models [--harness <id>]       List a harness's enumerable models (raw-api: OpenAI GET /v1/models)
   claudexor help                          Show this help
 
 Options:
   --harness <id[,id...]>   Force harness(es)
   --mode <mode>            ask | plan | audit | agent | orchestrate (strategies are flags, not modes)
   --n <N>                  Race width (agent): N isolated candidates + cross-review
+  --synthesis <mode>       Best-of-N synthesis: auto (default, only n>=3)|always|never
   --attempts <N>           Convergence cap (agent): repair loop up to N attempts
   --until-clean            Convergence (agent): iterate until the review/gates are clean
   --swarm                  Research swarm (audit): bounded read-only explorer fan-out
   --create                 Create-from-scratch intent (agent)
+  --autonomy <level>       Orchestrate: how much the brain may act without confirmation:
+                           suggest (default, read-only plan) | auto_safe | auto_full
   --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
   --max-usd <amount>       Hard per-run spend cap (USD)
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
@@ -131,8 +134,9 @@ Options:
   --effort <level>         Reasoning effort hint: low|medium|high|xhigh|max
   --primary-harness <id>   Bias single-route modes and first candidate choice
   --portfolio <id>         Budget/routing portfolio (default: subscription-first)
-  --in-place               Explicit stateful adapter path for convergence only
-                           (for example Terminal-Bench live containers)
+  --in-place               Run write turns against the live project tree (single-candidate
+                           in-place; race candidates stay isolated and the winner is adopted)
+                           instead of a throwaway envelope
   --answers <file>         Answers JSON for claudexor spec (batch mode)
   --previous <spec.json>   Previous SpecPack JSON for section-level diff
   --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
@@ -143,11 +147,11 @@ Options:
 
 const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
 
-/** Accept hyphenated spellings for canonical ids (until-clean, max-attempts). */
+/** Canonical mode ids are single words; trim and validate against the schema. */
 function normalizeMode(s: string): ModeKind {
-  const normalized = s.trim().replace(/-/g, "_");
-  const parsed = ModeKindSchema.safeParse(normalized);
-  if (!parsed.success) return normalized as ModeKind;
+  const trimmed = s.trim();
+  const parsed = ModeKindSchema.safeParse(trimmed);
+  if (!parsed.success) return trimmed as ModeKind;
   return parsed.data;
 }
 
@@ -199,6 +203,15 @@ function effortHint(args: ParsedArgs): EffortHint | undefined {
   const parsed = EffortHint.safeParse(v);
   if (!parsed.success) throw new Error(`invalid --effort '${v}' (expected low|medium|high|xhigh|max)`);
   return parsed.data;
+}
+
+function synthesisMode(args: ParsedArgs): "auto" | "always" | "never" | undefined {
+  const v = flagStr(args, "synthesis");
+  if (v === undefined) return undefined;
+  if (v !== "auto" && v !== "always" && v !== "never") {
+    throw new Error(`invalid --synthesis '${v}' (expected auto|always|never)`);
+  }
+  return v;
 }
 
 function webPolicy(args: ParsedArgs): "off" | "auto" | "cached" | "live" | undefined {
@@ -274,6 +287,7 @@ async function orchestrate(
   let maxUsd: number | undefined;
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
+  let autonomy: OrchestrateAutonomy | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
@@ -282,10 +296,58 @@ async function orchestrate(
     maxUsd = floatFlag(args, "max-usd");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
+    autonomy = parseAutonomy(flagStr(args, "autonomy"));
   } catch (err) {
     process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
   }
+  let tests: string[] | undefined;
+  try {
+    tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
+    assertNoInlineSecretValues({ tests }, "$", "CLI run params");
+  } catch (err) {
+    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+
+  // `--autonomy` only governs the orchestrate brain's executor; on any other
+  // mode it would silently do nothing, so reject it loudly (a misplaced flag is
+  // an error, not a no-op).
+  if (autonomy !== undefined && mode !== "orchestrate") {
+    process.stderr.write(`claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')\n`);
+    return 2;
+  }
+
+  // The mutating run paths are DAEMON-TRACKED: they enqueue via the daemon
+  // (auto-started if needed) so the control-api can see/unblock them and a
+  // blocked run is unblockable through `claudexor decision`. This covers `agent`
+  // and an `orchestrate` run that actually ACTS (auto_safe/auto_full execute the
+  // plan against the tree). Read-only routes (ask/plan/audit and orchestrate in
+  // the default `suggest` autonomy, where the plan IS the work product) have
+  // nothing to apply or unblock, so they stay in-process.
+  const orchestrateExecutes = mode === "orchestrate" && autonomy !== undefined && autonomy !== "suggest";
+  if (mode === "agent" || orchestrateExecutes) {
+    return daemonAgentRun(args, json, {
+      mode,
+      autonomy,
+      prompt,
+      tests,
+      portfolio: portfolio?.success ? portfolio.data : undefined,
+      maxUsd,
+      reviewerModels: reviewerModels(args),
+      reviewerEfforts: reviewerEffortOverrides,
+      resolvedWebPolicy,
+      resolvedAccess,
+      resolvedEffort,
+      nFlag,
+      attemptsFlag,
+      specId: spec?.id,
+      specHash: spec ? hashJson(spec) : undefined,
+      specPath: specPath ? realpathSync(specPath) : undefined,
+      forced,
+    });
+  }
+
   const orch = new Orchestrator({
     registry: buildRegistry(),
     portfolio: portfolio?.success ? portfolio.data : undefined,
@@ -294,12 +356,14 @@ async function orchestrate(
     reviewerEfforts: reviewerEffortOverrides,
   });
   try {
-    const tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
-    assertNoInlineSecretValues({ tests }, "$", "CLI run params");
     const res = await orch.run({
       repoRoot: process.cwd(),
       prompt: prompt || "audit this repository",
       mode,
+      // Only `suggest` (or unset) reaches the in-process path; auto_safe/auto_full
+      // are routed to the daemon above. Forward it so an explicit --autonomy
+      // suggest is honoured rather than silently dropped.
+      ...(autonomy ? { autonomy } : {}),
       harnesses: harnessList(args),
       primaryHarness: flagStr(args, "primary-harness"),
       portfolio: portfolio?.success ? portfolio.data : undefined,
@@ -315,6 +379,7 @@ async function orchestrate(
       externalContextPolicy: resolvedWebPolicy,
       model: flagStr(args, "model"),
       effort: resolvedEffort,
+      synthesis: synthesisMode(args),
       specId: spec?.id,
       specHash: spec ? hashJson(spec) : undefined,
       specPath: specPath ? realpathSync(specPath) : undefined,
@@ -345,6 +410,205 @@ async function orchestrate(
     process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
+}
+
+interface DaemonRunParams {
+  /** The daemon-tracked mode: "agent" (write turn) or "orchestrate" (executing brain). */
+  mode: ModeKind;
+  /** Orchestrate executor autonomy; only meaningful (and only sent) for mode=orchestrate. */
+  autonomy: OrchestrateAutonomy | undefined;
+  prompt: string;
+  tests: string[] | undefined;
+  portfolio: ReturnType<typeof Portfolio.parse> | undefined;
+  maxUsd: number | undefined;
+  reviewerModels: Record<string, string> | undefined;
+  reviewerEfforts: Partial<Record<"anthropic", EffortHint>> | undefined;
+  resolvedWebPolicy: ReturnType<typeof webPolicy>;
+  resolvedAccess: ReturnType<typeof accessProfile>;
+  resolvedEffort: EffortHint | undefined;
+  nFlag: number | undefined;
+  attemptsFlag: number | undefined;
+  specId: string | undefined;
+  specHash: string | undefined;
+  specPath: string | undefined;
+  forced: { swarm?: boolean; create?: boolean; race?: boolean };
+}
+
+/**
+ * DAEMON-TRACKED mutating run (the unified `run`/`race`/`create` path, and an
+ * `orchestrate` brain running with auto_safe/auto_full autonomy). Auto-starts
+ * the daemon if needed, enqueues via the control API (so the run is registered
+ * and the control-api can see/unblock it), streams its events to the TTY (text
+ * mode) and resolves the runDir from the daemon (the run lives under the daemon
+ * dir, not project-local) so apply/decision/inspect can find it. `--json` prints
+ * exactly one object `{ runId, runDir, status }` — the SWE/TB benchmark runner
+ * parses this to read <runDir>/final/patch.diff.
+ */
+async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): Promise<number> {
+  // The run is always project-scoped (the cwd is its repo); execution is
+  // live in-place only under the explicit --in-place convergence path.
+  const inPlace = flagBool(args, "in-place");
+  const body: Record<string, unknown> = {
+    prompt: p.prompt,
+    mode: p.mode,
+    // Autonomy only governs the orchestrate executor; send it only for that mode.
+    ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
+    scope: { kind: "project", root: process.cwd() },
+    execution: { isolation: inPlace ? "live" : "envelope" },
+    ...(harnessList(args) ? { harnesses: harnessList(args) } : {}),
+    ...(flagStr(args, "primary-harness") ? { primaryHarness: flagStr(args, "primary-harness") } : {}),
+    ...(p.portfolio ? { portfolio: p.portfolio } : {}),
+    ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
+    ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
+    ...(flagBool(args, "until-clean") ? { untilClean: true } : {}),
+    ...(p.forced.swarm === true || flagBool(args, "swarm") ? { swarm: true } : {}),
+    ...(p.forced.create === true || flagBool(args, "create") ? { create: true } : {}),
+    ...(synthesisMode(args) ? { synthesis: synthesisMode(args) } : {}),
+    ...(p.tests ? { tests: p.tests } : {}),
+    ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
+    ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
+    ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
+    ...(flagStr(args, "model") ? { model: flagStr(args, "model") } : {}),
+    ...(p.resolvedEffort ? { effort: p.resolvedEffort } : {}),
+    ...(p.reviewerModels ? { reviewerModels: p.reviewerModels } : {}),
+    ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),
+    ...(p.specId ? { specId: p.specId } : {}),
+    ...(p.specHash ? { specHash: p.specHash } : {}),
+    ...(p.specPath ? { specPath: p.specPath } : {}),
+  };
+
+  try {
+    const { client, addr } = await ensureDaemon();
+    if (json) {
+      // Pure machine surface: enqueue, wait for the terminal outcome, print
+      // exactly one JSON object. No event printer, no TTY prompts.
+      const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
+      printJson({ runId: out.runId, runDir: out.runDir, status: out.status, jobId: out.jobId, ...(out.error ? { error: out.error } : {}) });
+      return exitCodeForState(out.status);
+    }
+    // Text mode: enqueue, then live-stream the run through the shared follow
+    // pipeline (replay + push + interactive TTY question answering), then print
+    // the honest terminal line + artifacts dir resolved from the daemon.
+    const started = await enqueueAndAwait(client, addr, body, { waitForTerminal: false });
+    if (!started.runId) {
+      print(`run did not start: ${started.status}${started.error ? ` — ${started.error}` : ""}`);
+      return exitCodeForState(started.status);
+    }
+    await followRun(started.runId, false);
+    const final = started.jobId ? await client.status(started.jobId) : null;
+    const status = final?.state ?? started.status;
+    print("");
+    print(`run ${started.runId} [${status}]`);
+    print(`  artifacts: ${final?.runDir ?? started.runDir}`);
+    if (status === "blocked") {
+      print(`  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``);
+    } else if (exitCodeForState(status) === 0) {
+      print(`  apply with: claudexor apply ${started.runId}`);
+    }
+    return exitCodeForState(status);
+  } catch (err) {
+    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+/**
+ * `claudexor decision <runId> ...` — the CLI safety net that unblocks a
+ * daemon-tracked blocked run (the surface that closes the un-unblockable gap).
+ * Maps the flag to a typed RunDecisionAction and POSTs to /runs/:id/decision via
+ * the daemon control API, printing the response honestly.
+ */
+async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const runId = args._[1];
+  if (!runId) {
+    print("usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun [--feedback \"<text>\"]");
+    return 2;
+  }
+  const resolved = resolveDecisionBody(args);
+  if (!resolved.ok) {
+    process.stderr.write(`claudexor decision: ${resolved.message}\n`);
+    return 2;
+  }
+  const { action, body } = resolved;
+
+  try {
+    const { addr } = await ensureDaemon();
+    const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/decision`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    if (!res.ok) {
+      // A typed decision rejection (e.g. revert refused: tree diverged) carries
+      // its reason in `message`; transport/gate failures use `error`. Surface
+      // whichever is present so the concrete reason is never lost behind "HTTP 409".
+      const msg =
+        typeof data["error"] === "string"
+          ? (data["error"] as string)
+          : typeof data["message"] === "string"
+            ? (data["message"] as string)
+            : `decision failed (HTTP ${res.status})`;
+      if (json) printJson({ accepted: false, status: "rejected", message: msg });
+      else process.stderr.write(`claudexor decision: ${msg}\n`);
+      return 1;
+    }
+    if (json) {
+      printJson(data);
+    } else {
+      const accepted = data["accepted"] === true;
+      print(`decision ${action} on ${runId}: ${accepted ? "accepted" : "rejected"} [${String(data["status"] ?? "?")}]`);
+      if (typeof data["newRunId"] === "string") print(`  new run: ${data["newRunId"]}`);
+      if (typeof data["message"] === "string") print(`  ${data["message"]}`);
+    }
+    return data["accepted"] === true ? 0 : 1;
+  } catch (err) {
+    process.stderr.write(`claudexor decision: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+/**
+ * Resolve the ArtifactStore that owns a given run, regardless of the cwd the
+ * CLI is invoked from. Order:
+ *   1. the project store rooted at the current cwd (the common case);
+ *   2. the user-level store (~/.claudexor/runs) used by no-project Ask runs;
+ *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
+ *      runs live under `<thatProjectRoot>/.claudexor/runs/<runId>`, so we ask
+ *      the daemon for the run's absolute runDir (GET /runs/:id ->
+ *      summary.runDir) and rebuild a store whose runPaths(runId).root matches.
+ * Returns null when no store can be located (the run does not exist anywhere
+ * reachable). Never throws on daemon unavailability — it falls through.
+ */
+async function resolveRunStore(runId: string): Promise<{ store: ArtifactStore; root: string } | null> {
+  // 1. project cwd store
+  const cwdStore = new ArtifactStore(process.cwd());
+  if (existsSync(cwdStore.runPaths(runId).root)) return { store: cwdStore, root: cwdStore.runPaths(runId).root };
+  // 2. user-level (no-project Ask) store
+  const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
+  if (existsSync(userStore.runPaths(runId).root)) return { store: userStore, root: userStore.runPaths(runId).root };
+  // 3. daemon-tracked run in another project: ask the daemon for its runDir
+  try {
+    const { addr } = await ensureDaemon();
+    const resp = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      headers: { Authorization: `Bearer ${addr.token}` },
+    });
+    if (resp.ok) {
+      const detail = (await resp.json()) as { summary?: { runDir?: string } };
+      const runDir = detail.summary?.runDir;
+      if (runDir && existsSync(runDir)) {
+        // runDir = <repoRoot>/.claudexor/runs/<runId>; reconstruct a store whose
+        // runPaths(runId).root === runDir: runId -> runs -> .claudexor.
+        const claudexorDir = resolve(runDir, "..", "..");
+        const ds = new ArtifactStore(dirname(claudexorDir), { claudexorDir });
+        if (existsSync(ds.runPaths(runId).root)) return { store: ds, root: ds.runPaths(runId).root };
+      }
+    }
+  } catch {
+    /* daemon unavailable: fall through */
+  }
+  return null;
 }
 
 async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
@@ -559,7 +823,6 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`routing.default_model: ${cfg.global.routing.default_model ?? "(none)"}`);
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
-      print(`budget.max_usd_per_day: ${cfg.global.budget.max_usd_per_day ?? "(none)"}`);
       print(`interaction_timeout_ms: ${cfg.global.interaction_timeout_ms}`);
       const harnessIds = Object.keys(cfg.global.harnesses);
       if (harnessIds.length) {
@@ -576,7 +839,7 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
     const key = args._[2];
     const value = args._[3];
     if (!key || value === undefined) {
-      print("usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|budget_max_usd_per_day|interaction_timeout_ms <value>");
+      print("usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>");
       return 2;
     }
     try {
@@ -596,24 +859,18 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
           return { ...cfg, routing: { ...cfg.routing, default_model: value === "none" ? null : value } };
         }
         if (key === "env_inheritance") {
-          if (!["mirror_native", "clean", "profile_only"].includes(value)) throw new Error("env_inheritance must be mirror_native|clean|profile_only");
+          if (!["mirror_native", "clean"].includes(value)) throw new Error("env_inheritance must be mirror_native|clean");
           return { ...cfg, routing: { ...cfg.routing, env_inheritance: value as never } };
         }
         if (key === "routing_policy") {
           if (!["auto", "primary", "portfolio"].includes(value)) throw new Error("routing_policy must be auto|primary|portfolio");
           return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
         }
-        if (key === "budget_max_usd_per_run" || key === "budget_max_usd_per_day") {
+        if (key === "budget_max_usd_per_run") {
           // Number() parses the WHOLE string ('1abc' -> NaN), unlike parseFloat.
           const parsed = value === "none" ? null : Number(value.trim());
           if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0 || value.trim() === "")) throw new Error(`${key} must be a non-negative number or none`);
-          return {
-            ...cfg,
-            budget: {
-              ...cfg.budget,
-              [key === "budget_max_usd_per_run" ? "max_usd_per_run" : "max_usd_per_day"]: parsed,
-            },
-          };
+          return { ...cfg, budget: { ...cfg.budget, max_usd_per_run: parsed } };
         }
         if (key === "interaction_timeout_ms") {
           const parsed = Number(value.trim());
@@ -632,6 +889,42 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
   }
   print("usage: claudexor settings show|set");
   return 2;
+}
+
+/**
+ * The real CONSUMER (ADP4) of the adapter models() producer: list a harness's
+ * enumerable models. With --harness it queries that one; otherwise it tries
+ * every non-unavailable harness and shows which can honestly enumerate.
+ */
+async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const only = flagStr(args, "harness");
+  let ids: string[];
+  if (only) {
+    ids = only.split(",").map((s) => s.trim()).filter(Boolean);
+  } else {
+    // Default to harnesses that doctor considers usable (not unavailable);
+    // each harnessModels() reports source "none" when it cannot enumerate.
+    const statuses = await buildGateway({ includeFakes: false }).statusAll({ cwd: process.cwd() });
+    ids = statuses.filter((s) => s.status !== "unavailable").map((s) => s.id);
+  }
+  const results = await Promise.all(ids.map((id) => harnessModels(id, process.cwd())));
+  if (json) {
+    printJson({ harnesses: results });
+    return 0;
+  }
+  for (const r of results) {
+    if (r.source === "none") {
+      print(`${r.harnessId}: no model enumeration (adapter cannot list models)`);
+      continue;
+    }
+    print(`${r.harnessId}: ${r.models.length} model(s) [source=${r.source}]`);
+    for (const m of r.models) {
+      const ctx = m.context_window ? ` (${m.context_window} ctx)` : "";
+      const label = m.label && m.label !== m.id ? ` — ${m.label}` : "";
+      print(`    ${m.id}${label}${ctx}`);
+    }
+  }
+  return 0;
 }
 
 async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
@@ -695,7 +988,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       return 2;
     }
     if (!isManagedSecretName(name)) {
-      print("secret name must be openai, anthropic, cursor, opencode, or raw");
+      print("secret name must be openai, anthropic, openrouter, cursor, opencode, or raw");
       return 2;
     }
     const envVar = flagStr(args, "from-env");
@@ -720,7 +1013,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       return 2;
     }
     if (!isManagedSecretName(name)) {
-      print("secret name must be openai, anthropic, cursor, opencode, or raw");
+      print("secret name must be openai, anthropic, openrouter, cursor, opencode, or raw");
       return 2;
     }
     store.delete(name);
@@ -732,7 +1025,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   return 2;
 }
 
-const MANAGED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw"]);
+const MANAGED_SECRET_NAMES = new Set(["openai", "anthropic", "openrouter", "cursor", "opencode", "raw"]);
 
 function isManagedSecretName(name: string): boolean {
   return MANAGED_SECRET_NAMES.has(name);
@@ -740,10 +1033,12 @@ function isManagedSecretName(name: string): boolean {
 
 /** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
 const KNOWN_FLAGS = new Set([
-  "harness", "mode", "n", "attempts", "until-clean", "swarm", "create",
+  "harness", "mode", "n", "attempts", "until-clean", "swarm", "create", "synthesis",
   "test", "max-usd", "reviewer-model", "reviewer-effort",
-  "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place",
+  "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place", "autonomy",
   "answers", "previous", "spec", "json", "all", "dry-run", "from-env",
+  // `decision` command action/option flags (subcommand-scoped).
+  "accept-risk", "override", "revert", "accept-clean-patch", "apply-mode", "rerun", "feedback",
   "help", "version",
 ]);
 
@@ -855,12 +1150,16 @@ async function main(): Promise<number> {
     case "auth":
       return authCommand(args, json);
 
+    case "models":
+      return modelsCommand(args, json);
+
     case "secrets":
       return secretsCommand(args, json);
 
     case "mcp": {
       if (args._[1] === "serve") {
         await new McpServer({
+          version: CLAUDEXOR_VERSION,
           tools: defaultClaudexorTools(orchestratorRunner()),
           transport: { read: process.stdin, write: process.stdout },
         }).serve();
@@ -873,6 +1172,7 @@ async function main(): Promise<number> {
     case "acp": {
       if (args._[1] === "serve") {
         await new AcpServer({
+          version: CLAUDEXOR_VERSION,
           runner: orchestratorRunner(),
           transport: { read: process.stdin, write: process.stdout },
         }).serve();
@@ -897,13 +1197,14 @@ async function main(): Promise<number> {
         print("usage: claudexor inspect <run_id>");
         return 2;
       }
-      // Project store first; no-project Ask runs live in the USER-LEVEL store
-      // (~/.claudexor/runs) and must be inspectable from any cwd.
-      let store = new ArtifactStore(process.cwd());
-      if (!existsSync(store.runPaths(runId).root)) {
-        const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
-        if (existsSync(userStore.runPaths(runId).root)) store = userStore;
+      // Resolve the owning store from any cwd: project store, user-level Ask
+      // store, or a daemon-tracked run that started in another project.
+      const resolved = await resolveRunStore(runId);
+      if (!resolved) {
+        print(`no such run ${runId}`);
+        return 1;
       }
+      const store = resolved.store;
       const paths = store.runPaths(runId);
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
@@ -975,7 +1276,14 @@ async function main(): Promise<number> {
         print("usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]");
         return 2;
       }
-      const store = new ArtifactStore(process.cwd());
+      // Resolve the owning store from any cwd (project / user Ask / daemon-tracked
+      // run in another project) before reading the patch artifact.
+      const resolved = await resolveRunStore(runId);
+      if (!resolved) {
+        print(`no such run ${runId}`);
+        return 1;
+      }
+      const store = resolved.store;
       const paths = store.runPaths(runId);
       const patch = readTextSafe(join(paths.finalDir, "patch.diff"));
       if (!patch || patch.trim().length === 0) {
@@ -1002,13 +1310,18 @@ async function main(): Promise<number> {
               patch_sha256: typeof operatorDecisionRaw["patch_sha256"] === "string" ? (operatorDecisionRaw["patch_sha256"] as string) : undefined,
             }
           : null;
+      // The default apply target is the run's ORIGINAL project (from its contract),
+      // not the current working directory — so a daemon-tracked run resolved via
+      // the registry applies correctly from any cwd (CLI1 namespace unification).
+      // Fall back to cwd only for a legacy run with no readable contract.
+      const applyRoot = contract.success ? contract.data.repo.root : process.cwd();
       const gateError = validateApplyGate({
         state: null, // artifact-only path: daemon job state is not available here
         decision: applyDecision.success ? applyDecision.data : null,
         workProduct: workProduct.success ? workProduct.data : null,
         patch,
         originalRepoRoot: contract.success ? contract.data.repo.root : null,
-        targetRepoRoot: process.cwd(),
+        targetRepoRoot: applyRoot,
         operatorDecision,
       });
       if (gateError) {
@@ -1016,7 +1329,7 @@ async function main(): Promise<number> {
         return 1;
       }
       if (flagBool(args, "dry-run")) {
-        const r = await checkPatch(process.cwd(), patch);
+        const r = await checkPatch(applyRoot, patch);
         print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
         return r.ok ? 0 : 1;
       }
@@ -1025,8 +1338,15 @@ async function main(): Promise<number> {
         print(`unsupported apply mode: ${rawMode}`);
         return 2;
       }
+      // `apply` mutates the tree; `artifact_only` produces no mutation and the
+      // patch artifact was already emitted by the run — reject it here (it stays
+      // valid on the control-api for clients that want a dry materialization).
+      if (rawMode === "artifact_only") {
+        print("apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly");
+        return 2;
+      }
       const mode = rawMode as DeliverMode;
-      const res = await deliver(process.cwd(), patch, { mode, message: `claudexor: apply ${runId}` });
+      const res = await deliver(applyRoot, patch, { mode, message: `claudexor: apply ${runId}` });
       if (json) printJson(res);
       else
         print(
@@ -1035,8 +1355,11 @@ async function main(): Promise<number> {
             (res.branch ? ` branch=${res.branch}` : "") +
             (res.detail ? ` (${res.detail})` : ""),
         );
-      return res.applied || res.mode === "artifact_only" ? 0 : 1;
+      return res.applied ? 0 : 1;
     }
+
+    case "decision":
+      return decisionCommand(args, json);
 
     case "release": {
       if (args._[1] === "check-name") {
@@ -1076,12 +1399,14 @@ async function main(): Promise<number> {
     case "harness": {
       const sub = args._[1];
       if (sub === "list") {
-        const ids = [...buildRegistry().keys()];
+        // Fakes are test fixtures, not real harnesses; `--all` reveals them.
+        const includeFakes = flagBool(args, "all");
+        const ids = [...buildRegistry({ includeFakes }).keys()];
         if (json) printJson({ harnesses: ids });
         else ids.forEach((id) => print(id));
         return 0;
       }
-      print("usage: claudexor harness list");
+      print("usage: claudexor harness list [--all]");
       return 2;
     }
 

@@ -1,13 +1,5 @@
 import type { ConformanceReport, HarnessCapabilities, HarnessManifest, Intent } from "@claudexor/schema";
 
-/** Intents that must not be played by a degraded adapter unless it explicitly still enables them. */
-export const CRITICAL_INTENTS: Intent[] = [
-  "review",
-  "arbitrate",
-  "synthesize",
-  "verify",
-];
-
 /** Map declared capabilities to the intents an adapter could in principle play. */
 export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   const intents: Intent[] = [];

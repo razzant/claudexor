@@ -250,55 +250,6 @@ struct CandidateCard: View {
     }
 }
 
-// MARK: - Task row (inbox/list)
-
-struct TaskRowView: View {
-    let task: TaskRun
-    var body: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            ZStack {
-                Circle().fill(Theme.accent.opacity(0.12)).frame(width: 32, height: 32)
-                Image(systemName: task.mode.glyph).imageScale(.small).foregroundStyle(Theme.accent)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: Theme.Spacing.sm) {
-                    Text(task.title).font(.callout.weight(.medium)).lineLimit(1)
-                    ProvenanceTag(isLive: task.isLive)
-                    if task.waitingOnUser {
-                        Label("Answer", systemImage: "questionmark.bubble.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Theme.status(.needsReview))
-                            .labelStyle(.titleAndIcon)
-                            .help("This run is waiting for your answer.")
-                    }
-                }
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(task.project).font(.caption2).foregroundStyle(.secondary)
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(task.mode.label).font(.caption2).foregroundStyle(.secondary)
-                    ForEach(task.harnesses.prefix(3)) { HarnessDot(family: $0, size: 6) }
-                    if !task.diff.isEmpty {
-                        Text("· \(task.filesChanged) files").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            Spacer(minLength: Theme.Spacing.md)
-            VStack(alignment: .trailing, spacing: 4) {
-                // Output-readiness contract holds in LISTS too: a terminal
-                // status is only presented with its content loaded.
-                if task.isFinalizing {
-                    FinalizingPill()
-                } else {
-                    StatusPill(status: task.status, compact: false)
-                }
-                Text(task.updatedAt, style: .relative).font(.caption2).foregroundStyle(.tertiary).fixedSize()
-            }
-        }
-        .padding(.vertical, Theme.Spacing.sm)
-        .contentShape(Rectangle())
-    }
-}
-
 // MARK: - Budget mini meter
 
 struct BudgetMini: View {

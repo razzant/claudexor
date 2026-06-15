@@ -12,10 +12,19 @@ export interface SynthesisDecision {
 const FIXABLE_STATUSES = new Set(["accepted", "accepted_risk"]);
 
 /**
+ * Auto mode only synthesizes a 3rd candidate when there are at least this many
+ * candidates. best-of-2 just picks the winner: synthesizing on n=2 adds a 3rd
+ * paid harness run + a 3rd full review pass (~3x cost) for marginal benefit.
+ * `--synthesis always` overrides this; `never` disables.
+ */
+export const AUTO_SYNTHESIS_MIN_CANDIDATES = 3;
+
+/**
  * Decide whether synthesizing a new candidate is worthwhile. Auto mode
- * synthesizes when there is no clear winner, the best candidate has fixable
- * accepted findings, or candidates have complementary strengths. A single
- * clearly-winning candidate is NOT synthesized.
+ * synthesizes (when >= AUTO_SYNTHESIS_MIN_CANDIDATES) if there is no clear
+ * winner, the best candidate has fixable accepted findings, or candidates have
+ * complementary strengths. A single clearly-winning candidate — and any n<3
+ * auto race — is NOT synthesized.
  */
 export function decideSynthesis(candidates: CandidateEvidence[], mode: SynthesisMode = "auto"): SynthesisDecision {
   if (mode === "never") return { synthesize: false, reason: "synthesis disabled", sources: [] };
@@ -24,6 +33,13 @@ export function decideSynthesis(candidates: CandidateEvidence[], mode: Synthesis
   }
   if (mode === "always") {
     return { synthesize: true, reason: "synthesis forced (always)", sources: candidates.map((c) => c.attemptId) };
+  }
+  if (candidates.length < AUTO_SYNTHESIS_MIN_CANDIDATES) {
+    return {
+      synthesize: false,
+      reason: `auto synthesis needs >= ${AUTO_SYNTHESIS_MIN_CANDIDATES} candidates (best-of-${candidates.length} picks the winner)`,
+      sources: candidates.map((c) => c.attemptId),
+    };
   }
 
   const ranked = [...candidates].sort(compareCandidates);

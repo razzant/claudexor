@@ -130,8 +130,6 @@ export class WorkspaceManager {
         home_dir: homeDir,
         harness_config_dirs: harnessConfigDirs,
         ports: { allocated: ports },
-        services: [],
-        sandbox: { mode: "none" },
         policy_profile: opts.accessProfile ?? "workspace_write",
         dirty_policy: opts.dirtyPolicy ?? "refuse",
         logs_dir: logsDir,

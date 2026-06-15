@@ -32,9 +32,6 @@
         },
         "reason": {
           "type": "string"
-        },
-        "idempotencyKey": {
-          "type": "string"
         }
       },
       "required": [

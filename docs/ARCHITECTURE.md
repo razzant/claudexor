@@ -1,4 +1,4 @@
-# Claudexor v0.9.0 Architecture Reference
+# Claudexor v0.10.0 Architecture Reference
 
 This document is the current codebase map: package boundaries, run flow,
 artifact layout, and invariants. It describes what is implemented now, not a
@@ -44,11 +44,23 @@ became flags, not modes:
   with no fixed cap; stops on clean review/gates, budget/quota exhaustion,
   cancellation, or no-progress stall), `--create` (create-from-scratch intent).
 - `orchestrate` - the autonomous brain: routed like reviewers (doctor-ok +
-  `orchestrate` capability + quota headroom), runs READ-ONLY, and produces a
-  typed orchestration plan over the six-tool belt (`start_run`, `race`,
-  `status`, `answer_question`, `apply`, `review`); writes
-  `final/orchestration.md`. With one verified harness it plans single-route;
-  with two or more it may plan cross-family race/review.
+  `orchestrate` capability + quota headroom), it produces a typed orchestration
+  plan over the six-tool belt (`start_run`, `race`, `status`, `answer_question`,
+  `apply`, `review`) and writes `final/orchestration.md`. With one verified
+  harness it plans single-route; with two or more it may plan cross-family
+  race/review. `--autonomy suggest|auto_safe|auto_full` controls how much of
+  that plan the executor runs without confirmation. Risk is data-driven (the
+  `TOOL_RISK` SSOT, fail-closed): SAFE steps (`start_run`/`race`/`status`/
+  `answer_question`/`review`) provably never mutate the live tree — they run as
+  isolated envelope sub-runs (asserted `inPlace=false`) or pure reads; `apply`
+  is the only RISKY (mutating) step.
+  - `suggest` (default) plans only; the human executes the plan.
+  - `auto_safe` runs the SAFE steps and then BLOCKS at the first risky `apply`
+    step (terminal `blocked`), awaiting a human decision.
+  - `auto_full` also applies, sending the risky step through the single shared
+    delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
+    project. Per-step progress is persisted to
+    `final/orchestration_progress.yaml`.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
 `readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
@@ -330,12 +342,15 @@ artifact/delivery facade:
 - `POST /runs/:id/decision` (typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;
-  `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up)
+  `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
+  `revert_run` restores the live in-place tree to the turn's pre-turn snapshot —
+  a server-owned, tree-SHA divergence-fenced revert that refuses (fail loud) if
+  the tree has diverged from the recorded post-turn state)
 - `POST /runs/:id/interactions/:id/answer` (deliver a waiting_on_user answer)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
-- `GET /harnesses`, `POST /harnesses/setup`
+- `GET /harnesses`, `GET /harnesses/:id/models`
 - `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
   `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
   `POST /setup/jobs/:id/cancel`
@@ -377,11 +392,11 @@ decline (`interaction.timeout`) — the model continues with stated assumptions
 and the run never hangs forever. Declined/timed-out interactive flow-control
 tools are benign timeline events, never blocking tool errors.
 
-`POST /harnesses/setup` owns setup preparation. It validates typed setup
-actions, rejects inline secrets, and returns only server-side allowlisted
-commands, official guide URLs, and redacted setup log metadata.
-`/setup/jobs` owns execution lifecycle for install/login/doctor setup work:
-jobs have state, risk flags, command preview, log path, cancel, and an SSE
+`/setup/jobs` (create / status / confirm / cancel) is the only supported setup
+surface; it owns the execution lifecycle for install/login/doctor setup work.
+Jobs validate typed setup actions, reject inline secrets, and expose only
+server-side allowlisted commands, official guide URLs, and redacted log
+metadata, plus state, risk flags, command preview, log path, cancel, and an SSE
 status projection. Native clients may open the job's Terminal handoff or show
 the returned command; they do not construct setup commands locally.
 
@@ -397,8 +412,9 @@ forwarding into a running harness is not a v0.7 surface; the former
 an always-`unsupported` stub.
 
 A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
-change, critical-risk diff) is a terminal `blocked` state whose findings appear
-in the Review Queue. Since v0.9 the human decision is a TYPED server action:
+change, critical-risk diff) is a terminal `blocked` state whose findings surface
+inline on the blocking turn and in the run inspector's Review tab (there is no
+separate Review Queue screen). Since v0.9 the human decision is a TYPED server action:
 `POST /runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound `arbitration/operator_decision.yaml` that the
 single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
@@ -407,10 +423,10 @@ apply`); `accept_clean_patch` delivers through the gate and
 override. UI must not fake local accept/unblock state.
 
 Budget caps: the engine enforces `max_usd` per run (explicit run input, then
-surface defaults, then the global `budget.max_usd_per_run`). The configured
-`budget.max_usd_per_day` is a display/threshold value for budget UI (engine-side
-day ledgers require persistent cross-run spend tracking, which does not exist
-yet); it must not be presented as an enforced engine cap.
+surface defaults, then the global `budget.max_usd_per_run`). There is no daily
+`$`/day cap — `budget.max_usd_per_day` was removed; the only enforced money cap
+is per-run. Subscription/quota pressure is respected through the harness-reported
+quota/rate-limit signals, not a `$`/day ledger.
 
 Run detail includes terminal state and output-ready state. `summary.state` is the
 daemon terminal/lifecycle state. `summary.outputReadyState` is
@@ -456,6 +472,9 @@ final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?
 final/plan.md?
+final/orchestration.md?            (orchestrate: human-readable orchestration summary)
+final/orchestration.yaml?          (orchestrate: the typed orchestration plan)
+final/orchestration_progress.yaml? (orchestrate: per-step executor progress, auto_safe/auto_full)
 plans/<harness>.md?           (plan mode)
 attempts/aNN/events.jsonl?    (read-only modes)
 ```
@@ -483,11 +502,18 @@ show fake zero spend/quota values.
 
 The macOS app is a native control surface over the control API:
 
-- default composer mode is `Ask`;
-- Home and the full composer expose a Current Project picker; project-aware
-  modes are disabled until a project is selected, while Ask can run without one;
-- composer exposes mode, eligible pool, primary harness, portfolio, model hint,
-  budget, access profile, and deterministic gates;
+- the app is chat-first: ONE screen — the thread list (glass sidebar), the
+  conversation (turns), and the always-live floating composer — with the selected
+  run's detail in the trailing `.inspector`; there is no Home, Tasks, or
+  Review-Queue screen;
+- the default composer intent is `Agent` on a project thread; a no-project thread
+  is `Ask`-only (project-aware intents are hidden until a project is picked, and
+  Ask can run without one);
+- the composer's `ProjectChip` picks the working directory (MRU recents +
+  Browse…); the composer exposes intent (`ask`/`plan`/`audit`/`agent`, plus Race
+  as an agent strategy; `orchestrate` is CLI-only), the eligible pool, the sticky
+  primary harness, portfolio, model hint, budget, access profile, and
+  deterministic gates;
 - Settings is a real macOS `Settings` scene (`Cmd+,`) with grouped preferences;
 - Settings edits app preferences and engine defaults exposed by `/settings`,
   including appearance/motion, Current Project, routing/model defaults, budget,
@@ -495,11 +521,14 @@ The macOS app is a native control surface over the control API:
 - Budget and the Harness Doctor are Settings tabs (not a sidebar Operations
   section); the chat-first main window is the thread list + conversation, with run
   detail in the trailing inspector;
-- run detail has explicit `Outcome`, `Timeline`, `Plan`, `Candidates`, `Diff`,
-  `Review`, and `Diagnostics` tabs; completed runs open on Outcome, active runs
-  on Timeline, and failures without output on Diagnostics;
-- Review Queue uses an adaptive solid SwiftUI grid with stable row metrics; it
-  must not force the app window to a very wide minimum size;
+- run detail (in the trailing inspector) has explicit `Outcome`, `Timeline`,
+  `Plan`, `Candidates`, `Diff`, `Review`, and `Diagnostics` tabs; completed runs
+  open on Outcome, active runs on Timeline, and failures without output on
+  Diagnostics;
+- review/findings and diff/apply are INLINE per turn (on the turn that produced
+  them and in the inspector's Review/Diff tabs), not a separate Review-Queue
+  screen; their rows use stable solid metrics and must not force the app window to
+  a very wide minimum size;
 - budget cap editing uses validated currency text fields, never a money slider;
 - hover help is required on compact/non-obvious controls, modes, harness chips,
   route proof, auth/setup actions, budget controls, and dangerous actions;

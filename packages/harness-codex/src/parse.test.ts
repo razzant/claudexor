@@ -93,6 +93,27 @@ describe("parseCodexEvent", () => {
     expect(parseCodexEvent({ type: "something.new" }, "s1")).toBeNull();
   });
 
+  it("resolves a started web_search query from action when the top-level query is empty", () => {
+    // Live shape (codex 0.137): item.started carries query:"" with the real
+    // query under action; the call must NOT surface as a query-less "web search".
+    const started = parseCodexEvent(
+      { type: "item.started", item: { id: "ws1", type: "web_search", query: "", action: { type: "search", query: "node lts version", queries: ["node lts version"] } } },
+      "s1",
+    )?.[0];
+    expect(started?.type).toBe("tool_call");
+    expect(started?.text).toBe("node lts version");
+    expect(started?.tool?.target).toContain("node lts version");
+    // Falls back to action.queries[0] when action.query is absent.
+    const fromQueries = parseCodexEvent(
+      { type: "item.started", item: { id: "ws2", type: "web_search", query: "", action: { type: "search", queries: ["fallback query"] } } },
+      "s1",
+    )?.[0];
+    expect(fromQueries?.text).toBe("fallback query");
+    // No query anywhere -> the honest generic label, no crash.
+    const none = parseCodexEvent({ type: "item.started", item: { id: "ws3", type: "web_search", query: "", action: { type: "other" } } }, "s1")?.[0];
+    expect(none?.text).toBe("web search");
+  });
+
   it("maps error and turn.failed to error events", () => {
     expect(parseCodexEvent({ type: "error", message: "boom" }, "s1")?.[0]?.type).toBe("error");
     expect(parseCodexEvent({ type: "turn.failed", error: { message: "x" } }, "s1")?.[0]?.error).toBe("x");
@@ -110,5 +131,17 @@ describe("parseCodexEvent", () => {
     // A resets_at hint is carried through onto the typed signal.
     const withReset = parseCodexEvent({ type: "error", message: "rate limit", resets_at: "2026-06-12T09:00:00Z" }, "s1")?.[0];
     expect(withReset?.rate_limit?.resets_at).toBe("2026-06-12T09:00:00Z");
+  });
+
+  it("sets the typed rate_limit signal on a turn.failed (not only top-level error)", () => {
+    // codex surfaces a rate limit via EITHER event; both must produce the typed signal.
+    const failed = parseCodexEvent({ type: "turn.failed", error: { message: "HTTP 429 Too Many Requests", resets_at: "2026-06-12T10:00:00Z" } }, "s1")?.[0];
+    expect(failed?.type).toBe("error");
+    expect(failed?.rate_limit).toBeTruthy();
+    expect(failed?.rate_limit?.resets_at).toBe("2026-06-12T10:00:00Z");
+    // A non-rate-limit turn.failed carries NO false signal.
+    const benign = parseCodexEvent({ type: "turn.failed", error: { message: "compile error" } }, "s1")?.[0];
+    expect(benign?.type).toBe("error");
+    expect(benign?.rate_limit).toBeUndefined();
   });
 });

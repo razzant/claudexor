@@ -59,35 +59,6 @@ export class HarnessGateway {
     return out;
   }
 
-  async resolve(requestedId?: string, spec: DoctorSpec = { cwd: process.cwd() }): Promise<HarnessAdapter> {
-    if (requestedId) {
-      const adapter = this.registry.get(requestedId);
-      if (!adapter) throw new HarnessUnavailableError(`Harness not registered: ${requestedId}`);
-      const [status] = await this.statusAllForAdapters([adapter], spec);
-      if (!status?.available || status.enabledIntents.length === 0) {
-        throw new HarnessUnavailableError(`Harness is not smoke-ready: ${requestedId}`);
-      }
-      return adapter;
-    }
-    const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
-    for (const status of statuses) {
-      if (status.manifest?.kind === "fake") continue;
-      if (!status.available || status.enabledIntents.length === 0) continue;
-      const adapter = this.registry.get(status.id);
-      if (adapter) return adapter;
-    }
-    throw new HarnessUnavailableError(
-      "No available harness. Install codex/claude/cursor/opencode, or pass --harness fake-success.",
-    );
-  }
-
-  async availableReal(spec: DoctorSpec = { cwd: process.cwd() }): Promise<string[]> {
-    const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
-    return statuses
-      .filter((s) => s.manifest?.kind !== "fake" && s.available && s.enabledIntents.length > 0)
-      .map((s) => s.id);
-  }
-
   /**
    * Doctor-VERIFIED real harnesses only (`status === "ok"`). Degraded routes
    * (key present but unproven) are excluded — claims of "doctor-verified"

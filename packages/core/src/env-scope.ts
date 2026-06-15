@@ -68,3 +68,68 @@ export function providerScrubEnv(keep: readonly string[] = []): Record<string, n
   }
   return out;
 }
+
+/**
+ * Minimal env an interactive CLI genuinely needs to run (locale, terminal, temp,
+ * and PATH to find its own binary + tools). Everything else is dropped under
+ * `env_inheritance: "clean"` — agent env isolation. Exact var values still come
+ * from the parent; only the KEY SET is restricted. Provider secrets are NOT in
+ * the allowlist (defense-in-depth on top of providerScrubEnv), and the adapter
+ * re-adds its single chosen credential explicitly afterward.
+ */
+export const CLEAN_ENV_ALLOWLIST: readonly string[] = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "TZ",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LANGUAGE",
+  // Node/runtime discovery the spawned CLI may itself need to locate a runtime.
+  "NODE_PATH",
+  "NVM_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "SYSTEMROOT", // Windows CLIs fail to start without it
+  // Proxy + TLS trust: NOT provider secrets, but a harness behind a corporate
+  // proxy / custom CA loses egress and TLS trust without them — `clean` must keep
+  // the network path working. (Both cases: curl/openssl read lower, Node reads upper.)
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+];
+
+/**
+ * Build the base child env for a given inheritance mode. `mirror_native` copies
+ * the parent env (the native CLIs' default); `clean` copies only the minimal
+ * allowlist (agent isolation). The adapter's `spec.env` overrides + the
+ * providerScrubEnv patch are applied ON TOP of this by the spawn layer.
+ */
+export function composeBaseEnv(
+  inheritance: "mirror_native" | "clean",
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (inheritance !== "clean") return { ...source };
+  const out: NodeJS.ProcessEnv = {};
+  for (const key of CLEAN_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}

@@ -66,55 +66,6 @@ function inProcessDoctorLabel(harness: string): string {
   return harness === "raw" ? "(in-process doctor: all harnesses)" : `(in-process doctor: ${harness})`;
 }
 
-export function setupHarness(input: unknown) {
-  const p = (input ?? {}) as Record<string, unknown>;
-  const harness = typeof p["harness"] === "string" ? p["harness"] : "";
-  const action = typeof p["action"] === "string" ? p["action"] : "login";
-  const profile = SETUP_PROFILES[harness];
-  if (!profile) throw new Error("unknown harness");
-
-  let command: string | null = null;
-  let message = profile.note;
-  let status: "prepared" | "not_supported" = "prepared";
-  if (action === "login") {
-    if (profile.loginCommand) {
-      command = profile.loginCommand;
-      message = `Prepared allowlisted ${harness} native login command. Run it in Terminal, then recheck Harness Doctor.`;
-    } else {
-      status = "not_supported";
-      message = `${harness} has no native login command; store API-key fallback refs in Settings.`;
-    }
-  } else if (action === "doctor") {
-    // Doctor is not a shell command anymore: it runs in-process inside the
-    // daemon (see setup jobs). Nothing to copy into a terminal.
-    command = null;
-    message = `Doctor for ${harness} runs in-process via a setup job or the Harness Doctor screen; no shell command is needed.`;
-  } else if (action === "install") {
-    if (profile.installCommand) {
-      command = profile.installCommand;
-      message = `Prepared allowlisted ${harness} install command. Start a setup job to execute it with confirmation and logs.`;
-    } else {
-      status = "not_supported";
-      message = `${harness} has no native installer; store API-key fallback refs in Settings.`;
-    }
-  } else if (action === "install_guide") {
-    message = `Prepared official ${harness} install/login guide URL.`;
-  } else {
-    throw new Error(`unsupported setup action: ${action}`);
-  }
-
-  appendLine(SETUP_LOG, `[${new Date().toISOString()}] setup ${harness} ${action}: ${message}`);
-  return {
-    harness,
-    action,
-    status,
-    command,
-    guideUrl: profile.guideUrl,
-    logPath: SETUP_LOG,
-    message,
-  };
-}
-
 const SETUP_JOBS_DIR = join(daemonDir(), "setup-jobs");
 const SETUP_JOBS_REGISTRY = join(SETUP_JOBS_DIR, "jobs.json");
 /** A hung installer must reach a visible terminal state, not run forever. */

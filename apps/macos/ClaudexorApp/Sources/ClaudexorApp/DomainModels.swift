@@ -644,6 +644,12 @@ struct TaskRun: Identifiable, Hashable {
     var waitingOnUser: Bool = false
     /// Server-persisted operator unblock decision action (accept_risk/override), if any.
     var operatorDecisionAction: String?
+    /// Honest in-place application state (projected from the run's work_product):
+    /// not_applied | applied | applied_review_blocked | reverted. Decoupled from the
+    /// terminal status so a green "Succeeded" never sits next to a review-blocked apply.
+    var applyState: String = "not_applied"
+    /// True when this turn's in-place mutation can still be safely reverted (server-owned).
+    var revertable: Bool = false
 
     /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
     var accessLabel: String? {
@@ -737,61 +743,3 @@ struct HarnessAvailability: Hashable {
     var info: HarnessInfo?
 }
 
-// MARK: - Budget cockpit
-
-struct BudgetState: Hashable {
-    var spend: Double
-    var cap: Double
-    var spendKnown: Bool = true
-    var capKnown: Bool = true
-    var spendEstimated: Bool = false
-    var source: String = "unknown"
-    var nativeQuota: [String] = []
-    var breakerTier: Int            // 0 = healthy, 1 = warn, 2 = throttle, 3 = open
-    var perHarness: [HarnessFamily: Double]
-    static let empty = BudgetState(spend: 0, cap: 0, spendKnown: false, capKnown: false, source: "unknown", nativeQuota: [], breakerTier: 0, perHarness: [:])
-    var fraction: Double { cap > 0 ? min(spend / cap, 1) : 0 }
-    var spendLabel: String { spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spend))" : "Unknown" }
-    var capLabel: String { capKnown ? String(format: "$%.2f", cap) : "Unknown" }
-    var remainingLabel: String {
-        spendKnown && capKnown ? String(format: "$%.4f", max(0, cap - spend)) : "Unknown"
-    }
-    var breakerLabel: String {
-        if !spendKnown && !capKnown { return "Unknown" }
-        switch breakerTier {
-        case 0: return "Healthy"
-        case 1: return "Watch"
-        case 2: return "Throttling"
-        default: return "Breaker open"
-        }
-    }
-    var breakerColor: Color {
-        switch breakerTier {
-        case 0: return Theme.status(.succeeded)
-        case 1: return Theme.status(.needsReview)
-        case 2: return Theme.status(.blocked)
-        default: return Theme.status(.failed)
-        }
-    }
-}
-
-// MARK: - Spec interview
-
-enum QuestionKind { case single, multi, text }
-
-struct InterviewOption: Identifiable, Hashable {
-    let id = UUID()
-    var text: String
-    var detail: String?
-}
-
-struct InterviewQuestion: Identifiable, Hashable {
-    let id: String
-    var tier: Int
-    var prompt: String
-    var rationale: String?
-    var kind: QuestionKind
-    var options: [InterviewOption]
-    var citationFile: String?
-    var needsClarification: Bool = false
-}

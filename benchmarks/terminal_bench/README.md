@@ -24,9 +24,11 @@ ways to use this suite:
      losing/disposed envelopes is NOT graded, so a race resolve% is a **lower bound** for
      runtime-state tasks. Use race only when you specifically want best-of-N semantics.
 
-Convergence is driven **only by cross-family review** (and the agent's own checks),
-**never** by Terminal-Bench's hidden grading tests — peeking would be reward hacking and
-is off-limits (note: this is prompt-enforced under `--access full`, not sandboxed).
+Convergence is driven by **cross-family review** (and the agent's own checks). The agent
+is **instructed** not to search for, read, or run Terminal-Bench's hidden grading tests
+— peeking would be reward hacking and is off-limits. ⚠️ This is **prompt-enforced** under
+`--access full`, **not** sandboxed: there is no filesystem read-protection of the
+held-out tests yet (a future improvement), so it's an instruction, not a hard guarantee.
 
 ```
 lift = resolve%(Claudexor dual)  -  max(resolve%(codex-only), resolve%(claude-only))
@@ -69,16 +71,21 @@ TB 2.x task images are **amd64-only**. Where you run them determines correctness
   Apple Silicon it enables VZ+Rosetta automatically (override with
   `CLAUDEXOR_COLIMA_ROSETTA=0`).
 - `uv tool install harbor`.
+- **Prebuilt Claudexor bundles** on the host (`pnpm build && pnpm bench:bundle`) — the
+  CLI and its daemon as two sibling files. The agent uploads both into each container,
+  so there is **no in-container clone** — `GITHUB_TOKEN` is no longer required for a
+  private repo. (The agent will try to build them on demand if missing, but build them
+  explicitly for speed.)
 - Keys exported, or loaded from an explicit `CLAUDEXOR_KEYS_FILE` (values never printed):
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GITHUB_TOKEN` **if the Claudexor repo you
-  build in-container is private** (the agent injects it via an env-based git credential
-  helper — token is never written to logs or `.gitconfig`).
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`.
 - Model slugs rotate — set `CLAUDEXOR_TB_CODEX_MODEL` / `CLAUDEXOR_TB_CLAUDE_MODEL` to
   current slugs. See `config.example.env`.
 
 ## Quickstart
 
 ```bash
+export PATH="$HOME/.claudex/node/bin:$PATH"
+pnpm build && pnpm bench:bundle  # prebuilt CLI + daemon bundles the agent uploads per container
 cd benchmarks/terminal_bench
 ./scripts/colima-setup.sh        # start/resize Colima (+Rosetta on Apple Silicon)
 ./scripts/preflight.sh           # toolchain, docker, keys (presence only), agent import
@@ -96,8 +103,8 @@ per-arm resolve% + `dual − max(single)` lift. The dual arm is the **best-of-N 
 ```bash
 cd benchmarks/terminal_bench
 export CLAUDEXOR_KEYS_FILE="$HOME/file1.txt"     # or export the keys directly
-export CLAUDEXOR_TB_REPO="https://github.com/<org>/claudexor.git"  # repo built in-container
-export CLAUDEXOR_TB_REF="<branch-or-sha>"        # the exact code under test
+# The code under test is the prebuilt bundle (pnpm bench:bundle on the host); to test a
+# different ref, check it out and rebuild the bundle. CLAUDEXOR_TB_REPO/REF are legacy.
 export CLAUDEXOR_TB_CLAUDE_MODEL="anthropic/claude-sonnet-4-6"
 export CLAUDEXOR_TB_CODEX_MODEL="openai/gpt-5.5"
 export CLAUDEXOR_TB_MAX_USD="5"                   # per-task spend cap
@@ -127,9 +134,32 @@ python3 scripts/summarize-results.py <root>     # per-arm resolve% + lift
 
 `claudexor_agent.py` is a `BaseInstalledAgent` loaded by import path; Harbor needs the
 repo root on `PYTHONPATH` (the scripts set this). `install()` provisions Node 22 (nvm) +
-Claude Code + Codex + the Claudexor CLI **built from `CLAUDEXOR_TB_REPO@CLAUDEXOR_TB_REF`
-inside each task container**; `run()` invokes `claudexor run --in-place ...` and exports
-`/app/.claudexor/runs` to `/logs/agent/`.
+Claude Code + Codex, then **uploads two prebuilt sibling Claudexor bundles** into the
+container — the CLI (`/opt/claudexor/claudexor-cli.js`) and its daemon
+(`/opt/claudexor/claudexord.js`) — no in-container clone, `pnpm install`, or `tsc`.
+`run()` invokes `claudexor run --in-place ...` and exports `/app/.claudexor/runs` to
+`/logs/agent/`.
+
+Why two files: `claudexor run` (agent mode) routes through `ensureDaemon()`, which
+auto-starts the daemon by spawning the **sibling** `new URL("./claudexord.js",
+import.meta.url)` next to the running CLI bundle (there is no in-process `--local`
+fallback — CLI runs are always daemon-tracked). So `claudexord.js` must sit right beside
+`claudexor-cli.js` in `/opt/claudexor`; `bundle-cli.mjs` emits both and `install()`
+uploads both, preserving that sibling relationship.
+
+**Build the bundles once on the host** before running (the agent will also try to build
+them on demand, but explicit is faster):
+
+```bash
+export PATH="$HOME/.claudex/node/bin:$PATH"
+pnpm build           # build the workspace (produces packages/cli/dist/{cli,claudexord}.js)
+pnpm bench:bundle    # esbuild → dist/claudexor-cli.js + dist/claudexord.js (sibling bundles)
+node benchmarks/terminal_bench/dist/claudexor-cli.js --version   # sanity: prints 0.10.0
+```
+
+The bundles **are the code under test** — to test a different ref, check it out and
+rebuild them on the host. (`claudexor_repo` / `claudexor_ref` kwargs are still accepted
+for backward compatibility but no longer drive an in-container clone.)
 
 Agent kwargs (`--ak key=value`):
 
@@ -141,17 +171,17 @@ Agent kwargs (`--ak key=value`):
 | `attempts` | convergence cap (single mode) | 2 |
 | `reviewer_model` / `codex_model` / `claude_model` | per-family models (race seeds `~/.claudexor/config.yaml` `harnesses.<id>.default_model` per candidate; a single `--model` would collide across race candidates) | — |
 | `max_usd` | per-task spend cap | — |
-| `claudexor_repo` / `claudexor_ref` | code under test | env / `main` |
+| `claudexor_repo` / `claudexor_ref` | **legacy / accepted-but-unused** — the bundled CLI is the code under test; rebuild the bundle to change it | — |
 
-## Per-container build cost & timeouts (important on Mac)
+## Per-container setup cost & timeouts (important on Mac)
 
-Every task container re-clones and rebuilds the Claudexor monorepo (`pnpm install` +
-`tsc` for ~30 packages). The `tsc` build is ~2 min, but under Rosetta + high concurrency
-the *total* setup (nvm + node + `npm i -g` + `pnpm install` + build) can exceed Harbor's
-default setup deadline and fail every trial with `AgentSetupTimeoutError`. Mitigate with
-`CLAUDEXOR_TB_TIMEOUT_MULT` (setup budget = 360s × mult) and lower `*_N_CONCURRENT`. For
-large runs, prefer the native cloud sandbox (no Rosetta) or ship a prebuilt Claudexor
-image so no in-container `pnpm build` runs.
+Setup is now just **Node 22 (nvm) + `npm i -g` the two harness CLIs + uploading the
+two prebuilt sibling bundles** — no in-container `pnpm install` or `tsc`. This was the
+main cause of `AgentSetupTimeoutError` under Rosetta (a serialized ~30-package `tsc` build
+inside each emulated container); shipping the prebuilt bundle removes it entirely. The
+remaining cost is `npm i -g claude-code + codex`, which is comparatively small. If you
+still hit a setup-timeout under heavy concurrency, raise `CLAUDEXOR_TB_TIMEOUT_MULT`
+(setup budget = 360s × mult) and/or lower `*_N_CONCURRENT`.
 
 ## Status / limitations (validated 2026-06)
 
@@ -159,8 +189,10 @@ image so no in-container `pnpm build` runs.
   `sqlite-db-truncate` resolved (reward 1.0) for codex-only, claude-only, and dual-race;
   a full 89-task run completed for the single arms. Three real blockers were fixed:
   1. **claude-code Bun crash under qemu** → switch Colima to VZ+Rosetta (this script).
-  2. **Private-repo clone in-container** failed `could not read Username` → env-based git
-     credential helper (token from `GITHUB_TOKEN`, never logged).
+  2. **In-container monorepo build** (`pnpm install` + `tsc`) blew Harbor's
+     `AgentSetupTimeoutError` under Rosetta → replaced by uploading **prebuilt sibling
+     CLI + daemon bundles** (`pnpm bench:bundle`), eliminating the in-container build
+     (and the private-repo clone / `GITHUB_TOKEN` it required) entirely.
   3. **claude auth route** — `harness-claude` mistook an API key for a native session and
      took the (unauthenticated) subscription route → "Not logged in"; fixed in the engine
      (`authStatusOk` scrubs `ANTHROPIC_API_KEY` from its native-session probe).

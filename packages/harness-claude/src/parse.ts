@@ -193,7 +193,23 @@ function parseClaudeEventStateful(
       out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
     }
     if (obj.subtype && obj.subtype !== "success") {
-      out.push({ type: "error", session_id: sessionId, ts, error: `result subtype: ${obj.subtype}` });
+      // `error_max_turns` is NOT a run failure: the turn ended because it hit the
+      // configured --max-turns ceiling, with all partial work already streamed
+      // (file_change / message events). Mirror the ExitPlanMode / AskUserQuestion
+      // benign-event handling above — surface it as a normal timeline event so
+      // the run is NOT marked errored. (CLAUDEXOR_BIBLE §5: benign turn-control
+      // outcomes never fail a run.)
+      if (obj.subtype === "error_max_turns") {
+        out.push({
+          type: "thinking",
+          session_id: sessionId,
+          ts,
+          text: "turn ended at the configured max-turns limit (partial work preserved)",
+          payload: { max_turns_reached: true, num_turns: numberOrUndef(obj.num_turns) },
+        });
+      } else {
+        out.push({ type: "error", session_id: sessionId, ts, error: `result subtype: ${obj.subtype}` });
+      }
     }
     return out;
   }

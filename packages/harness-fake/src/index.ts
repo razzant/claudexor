@@ -6,7 +6,7 @@ import type {
   ProviderFamily,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { nowIso } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso } from "@claudexor/util";
 
 export type FakeKind =
   | "fake-success"
@@ -41,8 +41,8 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
     id,
     display_name: `Fake (${id})`,
     kind: "fake",
-    version: "0.9.0",
-    adapter_version: "0.9.0",
+    version: CLAUDEXOR_VERSION,
+    adapter_version: CLAUDEXOR_VERSION,
     provider_family: provider,
     capability_profile: {
       execution_surfaces: [{
@@ -107,10 +107,12 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       orchestrate: true,
       quota_signal: id === "fake-rate-limit" ? "observed" : "unknown",
       usage_signal: "exact",
+      // Partial ladder: a deliberate clamp fixture for the effort normalizer
+      // (requests for xhigh/max clamp down to high).
+      effort_levels: ["low", "medium", "high"],
     },
     auth_modes: ["none"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],
-    models: { discovery: "available" },
   };
 }
 
@@ -151,13 +153,19 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
       yield ev(s, "error", { error: "timeout after 0ms (simulated)" });
       yield ev(s, "completed", { observed_model: observedModel });
       return;
-    case "fake-rate-limit":
+    case "fake-rate-limit": {
+      // Positive conformance fixture for the budget cooldown path: a TYPED
+      // rate_limit signal (not just prose) so the budget layer can read
+      // ev.rate_limit without regex over the error text.
+      const resetsAt = new Date(Date.now() + 3600_000).toISOString();
       yield ev(s, "error", {
         error: "rate limited",
-        payload: { resets_at: new Date(Date.now() + 3600_000).toISOString() },
+        rate_limit: { resets_at: resetsAt, retry_delay_ms: 2500 },
+        payload: { resets_at: resetsAt },
       });
       yield ev(s, "completed", { observed_model: observedModel });
       return;
+    }
   }
 }
 

@@ -64,8 +64,17 @@ describe("parseClaudeEvent", () => {
     expect(ok[0]?.usage?.cached_input_tokens).toBe(100);
     expect(ok[1]?.text).toBe("[]");
 
-    const failed = parseClaudeEvent({ type: "result", subtype: "error_max_turns" }, "s1") as HarnessEvent[];
-    expect(failed.map((e) => e.type)).toEqual(["usage", "error"]);
+    // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns
+    // with partial work preserved), NOT a run failure -> a timeline thinking
+    // event, never an error (mirrors ExitPlanMode/AskUserQuestion handling).
+    const maxTurns = parseClaudeEvent({ type: "result", subtype: "error_max_turns", num_turns: 12 }, "s1") as HarnessEvent[];
+    expect(maxTurns.map((e) => e.type)).toEqual(["usage", "thinking"]);
+    expect(maxTurns[1]?.text).toContain("max-turns");
+    expect(maxTurns[1]?.payload?.["max_turns_reached"]).toBe(true);
+
+    // Other non-success subtypes remain real errors.
+    const realError = parseClaudeEvent({ type: "result", subtype: "error_during_execution" }, "s1") as HarnessEvent[];
+    expect(realError.map((e) => e.type)).toEqual(["usage", "error"]);
   });
 
   it("emits typed tool_result with redacted detail resolved to the originating tool", () => {
@@ -126,7 +135,7 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
-  it("forwards model/effort/max-turns hints with comma-form tool flags", () => {
+  it("forwards model/effort/max-turns hints, clamping effort onto claude's ladder", () => {
     const spec = HarnessRunSpec.parse({
       session_id: "ses-test",
       intent: "review",
@@ -134,6 +143,8 @@ describe("parseClaudeEvent", () => {
       cwd: "/tmp",
       access: "readonly",
       model_hint: "opus",
+      // claude --effort does NOT accept max/xhigh -> the shared normalizer clamps
+      // it onto the supported ceiling (high) so no invalid level is ever passed.
       effort_hint: "max",
       max_turns: 12,
     });
@@ -148,7 +159,7 @@ describe("parseClaudeEvent", () => {
       "--model",
       "opus",
       "--effort",
-      "max",
+      "high",
       "--max-turns",
       "12",
       "--allowedTools",

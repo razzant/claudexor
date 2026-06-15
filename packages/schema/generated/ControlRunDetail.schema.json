@@ -411,6 +411,34 @@
                     "null"
                   ],
                   "default": null
+                },
+                "applyState": {
+                  "type": "string",
+                  "enum": [
+                    "not_applied",
+                    "applied",
+                    "applied_review_blocked",
+                    "reverted"
+                  ],
+                  "default": "not_applied"
+                },
+                "preTurnSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "postTurnSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "revertable": {
+                  "type": "boolean",
+                  "default": false
                 }
               },
               "additionalProperties": false,
@@ -683,44 +711,6 @@
                 "unknown"
               ],
               "default": "unknown"
-            },
-            "nativeQuota": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "provider": {
-                    "type": "string"
-                  },
-                  "label": {
-                    "type": "string"
-                  },
-                  "remaining": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null
-                  },
-                  "resetsAt": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null
-                  },
-                  "source": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "provider",
-                  "label",
-                  "source"
-                ],
-                "additionalProperties": false
-              },
-              "default": []
             }
           },
           "additionalProperties": false,
@@ -904,13 +894,7 @@
                 "producer_attempt_id": {
                   "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
                 },
-                "manifest_path": {
-                  "type": "string"
-                },
                 "evidence_dir": {
-                  "type": "string"
-                },
-                "decision_record_path": {
                   "type": "string"
                 },
                 "files": {
@@ -1023,9 +1007,6 @@
                       "type": "object",
                       "properties": {
                         "command": {
-                          "type": "string"
-                        },
-                        "result_ref": {
                           "type": "string"
                         }
                       },
@@ -1268,6 +1249,101 @@
             "additionalProperties": false
           },
           "default": []
+        },
+        "orchestrate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "tool": {
+                        "type": "string",
+                        "enum": [
+                          "start_run",
+                          "race",
+                          "status",
+                          "answer_question",
+                          "apply",
+                          "review"
+                        ]
+                      },
+                      "risk": {
+                        "type": "string",
+                        "enum": [
+                          "safe",
+                          "risky"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "running",
+                          "done",
+                          "skipped",
+                          "blocked",
+                          "failed"
+                        ]
+                      },
+                      "run_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "detail": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "index",
+                      "tool",
+                      "risk",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "default": []
+                },
+                "autonomy": {
+                  "type": "string",
+                  "enum": [
+                    "suggest",
+                    "auto_safe",
+                    "auto_full"
+                  ]
+                },
+                "stopped_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "autonomy"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "failure": {
           "anyOf": [

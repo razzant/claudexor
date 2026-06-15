@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  ControlHarnessSetupRequest,
-  ControlHarnessSetupResponse,
   ControlRunDecisionRequest,
   ControlRunStartRequest,
   ControlSetupJob,
@@ -13,6 +11,10 @@ import {
   HarnessManifest,
   HarnessRunSpec,
   OrchestrateContract,
+  OrchestratePlan,
+  OrchestratePlanProgress,
+  TOOL_RISK,
+  toolRisk,
   ReviewFinding,
   RouteProof,
   Session,
@@ -33,7 +35,6 @@ describe("TaskContract", () => {
       mode: { kind: "agent" },
       user_intent: { raw: "do the thing" },
     });
-    expect(tc.delivery.mutation_mode).toBe("envelope_live");
     expect(tc.access.requested_profile).toBe("workspace_write");
     expect(tc.access.effective_profile).toBe("workspace_write");
     expect(tc.external_context.effective_mode).toBe("auto");
@@ -143,31 +144,7 @@ describe("Control API schemas", () => {
     ).toThrow();
   });
 
-  it("parses harness setup request/response contracts", () => {
-    const req = ControlHarnessSetupRequest.parse({ harness: "codex" });
-    expect(req.action).toBe("login");
-    expect(() => ControlHarnessSetupRequest.parse({ harness: "unknown", action: "login" })).toThrow();
-    expect(() => ControlHarnessSetupRequest.parse({ harness: "codex", action: "rm_rf" })).toThrow();
-    expect(() => ControlHarnessSetupRequest.parse({ harness: "codex", repoRoot: "/repo" })).toThrow();
-
-    const res = ControlHarnessSetupResponse.parse({
-      harness: "codex",
-      action: "doctor",
-      status: "prepared",
-      message: "prepared",
-    });
-    expect(res.command).toBeNull();
-    expect(res.guideUrl).toBeNull();
-    expect(res.logPath).toBeNull();
-    expect(() =>
-      ControlHarnessSetupResponse.parse({
-        harness: "unknown",
-        action: "doctor",
-        status: "prepared",
-        message: "prepared",
-      }),
-    ).toThrow();
-
+  it("parses setup-job + spec contracts", () => {
     const jobReq = ControlSetupJobCreateRequest.parse({ harness: "cursor", action: "install" });
     expect(jobReq).toEqual({ harness: "cursor", action: "install" });
     expect(ControlSetupJobCreateRequest.parse({ harness: "codex", action: "store_key" })).toEqual({ harness: "codex", action: "store_key" });
@@ -239,13 +216,78 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     expect(turn.kind).toBe("followup");
     const reb = SessionReboundLineage.parse({ thread_id: "th-1", harness_id: "claude", reason: "harness_error" });
     expect(reb.reason).toBe("harness_error");
-    expect(reb.open_tasks).toEqual([]);
   });
 
-  it("defaults the orchestrate tool belt to all six tools", () => {
+  it("defaults the orchestrate tool belt to the autonomously-executable tools (answer_question excluded)", () => {
     const c = OrchestrateContract.parse({ thread_id: "th-1", goal: "ship v0.9" });
-    expect(c.tool_belt).toEqual(["start_run", "race", "status", "answer_question", "apply", "review"]);
+    // answer_question is intentionally not in the default belt: safe sub-runs are
+    // non-interactive so an auto-executed plan has nothing to answer.
+    expect(c.tool_belt).toEqual(["start_run", "race", "status", "apply", "review"]);
     expect(c.autonomy).toBe("suggest");
+  });
+
+  it("classifies tool risk FAIL-CLOSED: apply risky, the 5 others safe, unknown risky", () => {
+    expect(TOOL_RISK).toEqual({
+      start_run: "safe",
+      race: "safe",
+      status: "safe",
+      answer_question: "safe",
+      review: "safe",
+      apply: "risky",
+    });
+    expect(toolRisk("apply")).toBe("risky");
+    for (const t of ["start_run", "race", "status", "answer_question", "review"]) {
+      expect(toolRisk(t)).toBe("safe");
+    }
+    // Any unknown/undeclared tool is risky (the executor never auto-runs it).
+    expect(toolRisk("totally_unknown_tool")).toBe("risky");
+    expect(toolRisk("")).toBe("risky");
+  });
+
+  it("parses PER-TOOL typed plan-call args (discriminated union) and applies defaults", () => {
+    const plan = OrchestratePlan.parse({
+      tool_calls: [
+        { tool: "start_run", prompt: "fix the bug" },
+        { tool: "race", prompt: "two ways", n: 3 },
+        { tool: "review", run_id: "run-1" },
+        { tool: "status", run_id: "run-2" },
+        { tool: "answer_question", interaction_id: "int-1", answers: [{ question_id: "q1", selected_labels: ["yes"] }] },
+        { tool: "apply", run_id: "run-3" },
+      ],
+    });
+    const start = plan.tool_calls[0];
+    expect(start.tool === "start_run" && start.mode).toBe("agent"); // default mode
+    const race = plan.tool_calls[1];
+    expect(race.tool === "race" && race.n).toBe(3);
+    const apply = plan.tool_calls[5];
+    expect(apply.tool === "apply" && apply.mode).toBe("apply"); // default apply mode
+  });
+
+  it("rejects malformed per-tool args loudly (wrong/missing fields, n<2, unknown tool)", () => {
+    // start_run requires a non-empty prompt.
+    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "start_run", prompt: "" }] })).toThrow();
+    // race n must be >= 2.
+    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "race", prompt: "x", n: 1 }] })).toThrow();
+    // apply requires a run_id.
+    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "apply" }] })).toThrow();
+    // an undeclared tool is not in the discriminated union.
+    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "rm_rf", prompt: "x" }] })).toThrow();
+    // empty plan rejected (min 1).
+    expect(() => OrchestratePlan.parse({ tool_calls: [] })).toThrow();
+  });
+
+  it("validates typed executor progress (OrchestratePlanProgress)", () => {
+    const p = OrchestratePlanProgress.parse({
+      autonomy: "auto_safe",
+      steps: [
+        { index: 0, tool: "start_run", risk: "safe", status: "done", run_id: "run-9" },
+        { index: 1, tool: "apply", risk: "risky", status: "blocked", detail: "needs human" },
+      ],
+      stopped_reason: "blocked at risky step #1",
+    });
+    expect(p.steps[1]?.status).toBe("blocked");
+    expect(p.steps[1]?.run_id).toBeNull();
+    expect(p.stopped_reason).toContain("risky");
   });
 
   it("carries auth_preference + resume_session_id on a HarnessRunSpec", () => {

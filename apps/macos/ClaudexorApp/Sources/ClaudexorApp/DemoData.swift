@@ -256,30 +256,4 @@ enum DemoData {
         HarnessInfo(family: .opencode, health: .unavailable, version: "—", auth: "not installed", intents: []),
         HarnessInfo(family: .raw, health: .ok, version: "openrouter", auth: "api_key", intents: ["review", "plan"]),
     ]
-
-    // MARK: Budget
-
-    static let budget = BudgetState(
-        spend: 0.4129, cap: 2.50, breakerTier: 1,
-        perHarness: [.codex: 0.142, .claude: 0.198, .cursor: 0.046, .raw: 0.027]
-    )
-
-    // MARK: Spec interview
-
-    static let interviewSpecTitle = "macOS mission-control"
-    static let interviewQuestions: [InterviewQuestion] = [
-        InterviewQuestion(id: "q1", tier: 1, prompt: "What is the primary job of this app for you?", rationale: "Anchors scope before detail. Shapes the default landing surface.", kind: .single, options: [
-            InterviewOption(text: "Watch long autonomous runs across projects", detail: "Optimize the dashboard + attention states."),
-            InterviewOption(text: "Compose & launch new tasks quickly", detail: "Optimize the composer + task inbox."),
-            InterviewOption(text: "Review & approve diffs", detail: "Optimize the review queue + diff/apply."),
-        ], citationFile: nil),
-        InterviewQuestion(id: "q2", tier: 1, prompt: "Which harness families should be selectable by default?", rationale: "Determines composer defaults and per-family budgeting.", kind: .multi, options: [
-            InterviewOption(text: "Codex"), InterviewOption(text: "Claude"), InterviewOption(text: "Cursor"), InterviewOption(text: "OpenCode"),
-        ], citationFile: "packages/gateway/src/registry.ts"),
-        InterviewQuestion(id: "q3", tier: 2, prompt: "When a run needs permission outside workspace_write, what should happen?", rationale: "Trust model. Affects the access profile + notifications.", kind: .single, options: [
-            InterviewOption(text: "Pause and notify me", detail: "Safest; default."),
-            InterviewOption(text: "Auto-grant for pre-approved paths", detail: "Faster; requires a trust list."),
-        ], citationFile: "packages/policy/src/risk.ts", needsClarification: true),
-        InterviewQuestion(id: "q4", tier: 2, prompt: "Acceptance criteria for 'done' on a default task?", rationale: "Becomes SpecPack acceptance + deterministic gates.", kind: .text, options: [], citationFile: nil),
-    ]
 }

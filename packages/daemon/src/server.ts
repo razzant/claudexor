@@ -238,11 +238,13 @@ export class DaemonServer {
     }
   }
 
-  /** Bound memory/disk: prune the oldest terminal jobs beyond maxHistory. */
+  /** Bound memory/disk: prune the oldest terminal jobs beyond maxHistory.
+   * `blocked` runs are NEVER pruned — they are the needs-human inbox awaiting an
+   * operator decision; dropping one would silently lose a pending action. */
   private pruneHistory(): void {
     const cap = this.opts.maxHistory ?? 500;
     const terminal = [...this.records.values()].filter(
-      (r) => r.state !== "running" && r.state !== "queued",
+      (r) => r.state !== "running" && r.state !== "queued" && r.state !== "blocked",
     );
     if (terminal.length <= cap) return;
     terminal.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));

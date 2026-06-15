@@ -1,9 +1,16 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { composeBaseEnv } from "./env-scope.js";
 
 export interface SpawnOptions {
   cwd?: string;
   env?: Record<string, string | null | undefined>;
+  /**
+   * Base env composition for the child: `mirror_native` (default) inherits the
+   * parent env; `clean` starts from a minimal allowlist (agent env isolation).
+   * `env` patches + scrub are applied on top either way.
+   */
+  inheritEnv?: "mirror_native" | "clean";
   input?: string;
   timeoutMs?: number;
   /** Signal sent when the consumer closes the stream before process exit. */
@@ -45,7 +52,7 @@ export async function* spawnProcess(
   args: string[],
   opts: SpawnOptions = {},
 ): AsyncGenerator<ProcEvent> {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = composeBaseEnv(opts.inheritEnv ?? "mirror_native");
   for (const [key, value] of Object.entries(opts.env ?? {})) {
     if (value === undefined || value === null) delete env[key];
     else env[key] = value;

@@ -1,19 +1,11 @@
 {
   "name": "claudexor-benchmark-runner",
-  "version": "0.9.0",
-  "description": "BenchmarkRunner + SWE-bench Verified (predictions/report) with ablations; scaffolds for Terminal-Bench/OSWorld/ProgramBench.",
+  "version": "0.10.0",
+  "description": "SWE-bench Verified prediction runner (claudexor-bench): exported tasks -> claudexor run per instance -> official-shape predictions.",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "bin": {
     "claudexor-bench": "./dist/cli.js"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
   },
   "files": [
     "dist"
@@ -23,7 +15,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   }
 }

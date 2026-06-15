@@ -47,11 +47,6 @@ export async function runGates(specs: GateSpec[], opts: RunGatesOptions): Promis
   return out;
 }
 
-/** `git apply --check` gate: does this patch apply cleanly to the repo? */
-export async function patchAppliesGate(repoRoot: string, patchPath: string): Promise<GateResult> {
-  return runGate({ id: "patch-applies", command: `git apply --check "${patchPath}"` }, { cwd: repoRoot });
-}
-
 export function gatesPassed(gates: GateResult[]): boolean {
   return gates.filter((g) => g.required).every((g) => g.status === "passed");
 }

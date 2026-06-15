@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { AccessProfile, DirtyPolicy, ExternalContextPolicy, Id, IsoTimestamp, ModeKind, SchemaVersion } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { DeliveryPolicy } from "./workproduct.js";
 
 export const SuccessCriterion = z.object({
   id: Id,
@@ -18,11 +17,9 @@ export const TestCommand = z.object({
 export type TestCommand = z.infer<typeof TestCommand>;
 
 export const TaskConstraints = z.object({
-  allowed_paths: z.array(z.string()).default([]),
-  forbidden_paths: z.array(z.string()).default([]),
+  /** Globs whose changes escalate risk to a human-approval gate (wired into
+   * classifyRisk/requireHuman). The other constraint kinds were unwired and removed. */
   protected_paths: z.array(z.string()).default([]),
-  compatibility: z.array(z.string()).default([]),
-  style: z.array(z.string()).default([]),
 });
 export type TaskConstraints = z.infer<typeof TaskConstraints>;
 
@@ -91,7 +88,6 @@ export const TaskContract = z.object({
   task_graph: TaskGraph.nullable().default(null),
   constraints: TaskConstraints.default({}),
   tests: z.object({ commands: z.array(TestCommand).default([]) }).default({ commands: [] }),
-  delivery: DeliveryPolicy.default({}),
   access: z
     .object({
       requested_profile: AccessProfile.default("workspace_write"),

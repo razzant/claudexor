@@ -26,13 +26,7 @@
         "producer_attempt_id": {
           "$ref": "#/definitions/WorkProduct/properties/id"
         },
-        "manifest_path": {
-          "type": "string"
-        },
         "evidence_dir": {
-          "type": "string"
-        },
-        "decision_record_path": {
           "type": "string"
         },
         "files": {

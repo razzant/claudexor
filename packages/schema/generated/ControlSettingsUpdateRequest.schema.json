@@ -53,22 +53,14 @@
           "type": "string",
           "enum": [
             "mirror_native",
-            "clean",
-            "profile_only"
+            "clean"
           ]
         },
         "maxUsdPerRun": {
           "type": "number",
           "minimum": 0
         },
-        "maxUsdPerDay": {
-          "type": "number",
-          "minimum": 0
-        },
         "clearMaxUsdPerRun": {
-          "type": "boolean"
-        },
-        "clearMaxUsdPerDay": {
           "type": "boolean"
         },
         "authPreference": {

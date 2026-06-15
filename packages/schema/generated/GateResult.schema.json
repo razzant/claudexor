@@ -30,12 +30,6 @@
             "timed_out"
           ]
         },
-        "stdout_path": {
-          "type": "string"
-        },
-        "stderr_path": {
-          "type": "string"
-        },
         "duration_ms": {
           "type": "integer",
           "minimum": 0,

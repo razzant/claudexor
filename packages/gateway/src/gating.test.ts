@@ -35,7 +35,6 @@ function manifest(): HarnessManifest {
     },
     auth_modes: ["local_session"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],
-    models: { discovery: "available" },
   };
 }
 

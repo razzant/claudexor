@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from "@claudexor/core";
+import type { ControlHarnessModelsResponse } from "@claudexor/schema";
 import { HarnessGateway } from "@claudexor/gateway";
 import { createClaudeAdapter } from "@claudexor/harness-claude";
 import { createCodexAdapter } from "@claudexor/harness-codex";
@@ -44,4 +45,20 @@ export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
 
 export function buildGateway(opts: RegistryOptions = {}): HarnessGateway {
   return new HarnessGateway(buildRegistry(opts));
+}
+
+/**
+ * Resolve enumerable models for one harness (ADP4). The SSOT shared by the
+ * control-api `harnessModels` service and the CLI `models` command, so both
+ * surfaces report identical truth: `source: "api"` when the adapter has a real
+ * models() producer, "none" (empty) when it cannot enumerate. Fails soft —
+ * adapter models() already swallows network/auth errors and returns [].
+ */
+export async function harnessModels(harnessId: string, cwd: string): Promise<ControlHarnessModelsResponse> {
+  const adapter = buildRegistry({ includeFakes: false }).get(harnessId);
+  if (!adapter || typeof adapter.models !== "function") {
+    return { harnessId, models: [], source: "none" };
+  }
+  const models = await adapter.models({ cwd });
+  return { harnessId, models, source: "api" };
 }

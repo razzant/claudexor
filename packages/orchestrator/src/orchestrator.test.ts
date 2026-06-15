@@ -286,7 +286,7 @@ describe("Orchestrator", () => {
         non_goals: ["no redesign"],
         forbidden_approaches: ["no global state"],
         decided_tradeoffs: [],
-        constraints: { allowed_paths: [], forbidden_paths: [], protected_paths: [], compatibility: [], style: [] },
+        constraints: { protected_paths: [] },
         tests: [],
         tasks: [
           { id: "t1", title: "scaffold", depends_on: [] },
@@ -1030,6 +1030,27 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("in-place convergence records honest apply-state + revert fence in work_product", async () => {
+    // An in-place convergence run mutates the LIVE tree directly across attempts,
+    // so its work_product must carry adopted/apply_state/pre_turn_sha/post_turn_sha
+    // (parity with runRace) — otherwise the control-api projects applyState
+    // "not_applied"/revertable=false and the Revert affordance is lost.
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["impl", diffImplementer("impl", "local")]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], attempts: 2, inPlace: true });
+    expect(["success", "ungated"]).toContain(res.status);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("adopted: true");
+    expect(wp).toMatch(/apply_state: (applied|applied_review_blocked)/);
+    // Both fences are real SHAs (not null) so the server-owned revert can run.
+    expect(wp).toMatch(/pre_turn_sha: ['"]?[0-9a-f]{6,}/);
+    expect(wp).toMatch(/post_turn_sha: ['"]?[0-9a-f]{6,}/);
+  });
+
   it("refuses access=full without a user-level trust allow (loud, no silent downgrade)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-notrust-"));
@@ -1086,6 +1107,167 @@ describe("Orchestrator", () => {
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
     }
+  });
+});
+
+/** A brain adapter that doctor-OKs the orchestrate intent and emits a fenced
+ * JSON plan in its message (the typed plan the executor consumes). */
+function brainAdapter(id: string, plan: unknown, family: ProviderFamily = "anthropic"): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: family,
+        capabilities: { orchestrate: true, plan: true, review: true, read_files: true, structured_events: true },
+        access_profiles_supported: ["readonly"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["orchestrate", "plan", "review"] });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+      yield { type: "message", session_id: spec.session_id, ts, text: "Plan:\n\n```json\n" + JSON.stringify(plan) + "\n```\n" };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
+describe("Orchestrate executor (auto_safe / auto_full)", () => {
+  it("FAIL-CLOSED risk: an apply step blocks an auto_safe run and is NOT executed", async () => {
+    const repo = await initRepo();
+    // Plan = a single risky apply step referencing some run. Under auto_safe the
+    // executor must STOP at it (blocked terminal), never deliver it.
+    const plan = { tool_calls: [{ tool: "apply", run_id: "run-nonexistent", why: "ship it" }] };
+    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo, prompt: "do the thing", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+    });
+    expect(res.status).toBe("blocked");
+    // The plan was still produced (suggest artifact), and progress records the block.
+    expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
+    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
+    expect(progress).toContain("autonomy: auto_safe");
+    expect(progress).toContain("status: blocked");
+    expect(progress).toContain("risk: risky");
+    // Terminal: a NEEDS_HUMAN-style block awaiting an operator decision.
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("risky step");
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).toContain("orchestrate.step.blocked");
+    expect(types).toContain("run.blocked");
+    // The live tree was NEVER mutated (no apply happened): the only working-tree
+    // change is the engine's own .claudexor/ artifacts, never user source.
+    const status = await runCapture("git", ["-C", repo, "status", "--porcelain", "--", ".", ":(exclude).claudexor"]);
+    expect(status.stdout.trim()).toBe("");
+  });
+
+  it("SAFE step runs as an isolated ENVELOPE sub-run (inPlace=false), never the live tree", async () => {
+    const repo = await initRepo();
+    // The plan asks for one safe start_run. The sub-run's implementer writes a
+    // file; because it runs in an isolated envelope, the LIVE repo tree is NOT
+    // mutated by the sub-run (the envelope is disposed; nothing adopted).
+    const plan = { tool_calls: [{ tool: "start_run", prompt: "edit something", mode: "agent", why: "kick it off" }] };
+    const registry = new Map<string, HarnessAdapter>([
+      ["brain", brainAdapter("brain", plan)],
+      ["impl", diffImplementer("impl", "local")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      // harnesses pins the brain; the sub-run auto-resolves the impl harness.
+      repoRoot: repo, prompt: "go", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+    });
+    // The executor ran the safe step and the orchestrate run succeeded.
+    expect(res.status).toBe("success");
+    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
+    expect(progress).toContain("tool: start_run");
+    expect(progress).toContain("risk: safe");
+    expect(progress).toContain("status: done");
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).toContain("orchestrate.subrun.started");
+    // SAFETY: the live repo tree was NOT mutated by the safe envelope sub-run.
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("ENVELOPE ENFORCEMENT: a start_run sub-run executes in an isolated worktree, not the live repo root", async () => {
+    const repo = await initRepo();
+    // Capture the cwd the sub-run's implementer actually executes in. A safe
+    // envelope sub-run runs in an isolated worktree under .claudexor/workspaces,
+    // NEVER the live repo root (inPlace=false enforced by assertEnvelopeSubRun).
+    let subCwd: string | null = null;
+    const recordingImpl: HarnessAdapter = {
+      id: "rec",
+      async discover() {
+        return HarnessManifest.parse({ id: "rec", display_name: "rec", kind: "local_cli", provider_family: "local", capabilities: { implement: true, structured_events: true }, access_profiles_supported: ["workspace_write"] });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "rec", status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        subCwd = spec.cwd;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "rec-model" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const plan = { tool_calls: [{ tool: "start_run", prompt: "do it", mode: "agent", why: "spawn" }] };
+    const registry = new Map<string, HarnessAdapter>([["brain", brainAdapter("brain", plan)], ["rec", recordingImpl]]);
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: repo, prompt: "go", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+    });
+    expect(res.status).toBe("success");
+    expect(subCwd).not.toBeNull();
+    // The sub-run executed in an ISOLATED envelope worktree, not the live tree.
+    expect(subCwd).not.toBe(repo);
+    expect(subCwd as unknown as string).toContain(".claudexor");
+  });
+
+  it("auto_full applies a referenced run's clean patch through the single apply gate", async () => {
+    const repo = await initRepo();
+    // First, produce a real clean patch via a normal envelope race (n=1 -> single
+    // candidate); the resulting run's final/patch.diff + work_product feed apply.
+    const seed = await new Orchestrator({
+      registry: new Map([["impl", diffImplementer("impl", "local")]]),
+      reviewers: reviewers(),
+    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1, tests: ["true"] });
+    expect(existsSync(join(seed.runDir, "final", "patch.diff"))).toBe(true);
+    const seedRunId = seed.runId;
+
+    // Now an orchestrate auto_full run whose plan applies that referenced run.
+    const plan = { tool_calls: [{ tool: "apply", run_id: seedRunId, mode: "apply", why: "land it" }] };
+    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo, prompt: "land the work", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_full",
+    });
+    expect(res.status).toBe("success");
+    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
+    expect(progress).toContain("tool: apply");
+    expect(progress).toContain("status: done");
+    // The referenced patch wrote CHANGED.txt into the LIVE tree (auto_full applied).
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+  });
+
+  it("suggest autonomy never executes: the plan is the work product (read-only)", async () => {
+    const repo = await initRepo();
+    const plan = { tool_calls: [{ tool: "apply", run_id: "run-x", why: "would mutate" }] };
+    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "plan only", mode: "orchestrate", harnesses: ["brain"] });
+    expect(res.status).toBe("success");
+    // No executor ran under suggest: no progress artifact, no apply.
+    expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "orchestration_progress.yaml"))).toBe(false);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("forbids orchestrate-within-orchestrate (recursion guard)", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", { tool_calls: [{ tool: "status", run_id: "r" }] })]]), reviewers: [] });
+    await expect(
+      orch.run({ repoRoot: repo, prompt: "x", mode: "orchestrate", harnesses: ["brain"], orchestrateDepth: 1 }),
+    ).rejects.toThrow(/orchestrate-within-orchestrate is forbidden/);
   });
 });
 

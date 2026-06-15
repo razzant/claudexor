@@ -10,8 +10,6 @@ export const GateResult = z.object({
   command: z.string(),
   exit_code: z.number().int().nullable(),
   status: GateStatus,
-  stdout_path: z.string().optional(),
-  stderr_path: z.string().optional(),
   duration_ms: z.number().int().nonnegative().default(0),
   required: z.boolean().default(true),
 });

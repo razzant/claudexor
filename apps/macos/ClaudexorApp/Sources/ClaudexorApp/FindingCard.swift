@@ -4,7 +4,6 @@ import SwiftUI
 /// inspector's Review section. Extracted from the deleted Review Queue screen.
 struct FindingCard: View {
     let finding: Finding
-    var showTask = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -24,9 +23,6 @@ struct FindingCard: View {
                     RouteProofBadge(proof: finding.routeProof)
                 }
                 Text(finding.title).font(.callout.weight(.semibold))
-                if showTask, !finding.taskTitle.isEmpty {
-                    Text(finding.taskTitle).font(.caption2).foregroundStyle(Theme.accent)
-                }
                 Text(finding.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Theme.Spacing.md) {
                     if let file = finding.evidenceFile {

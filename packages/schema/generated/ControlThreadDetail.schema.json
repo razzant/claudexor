@@ -343,6 +343,34 @@
                               "null"
                             ],
                             "default": null
+                          },
+                          "applyState": {
+                            "type": "string",
+                            "enum": [
+                              "not_applied",
+                              "applied",
+                              "applied_review_blocked",
+                              "reverted"
+                            ],
+                            "default": "not_applied"
+                          },
+                          "preTurnSha": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          },
+                          "postTurnSha": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          },
+                          "revertable": {
+                            "type": "boolean",
+                            "default": false
                           }
                         },
                         "additionalProperties": false,
