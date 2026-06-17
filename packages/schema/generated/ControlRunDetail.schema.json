@@ -827,6 +827,15 @@
                     "human_review"
                   ],
                   "default": "inspect"
+                },
+                "verification_basis": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "cross_family_review",
+                    "both"
+                  ],
+                  "default": "none"
                 }
               },
               "required": [

@@ -110,6 +110,8 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       // Partial ladder: a deliberate clamp fixture for the effort normalizer
       // (requests for xhigh/max clamp down to high).
       effort_levels: ["low", "medium", "high"],
+      known_models: [],
+      models_authoritative: false,
     },
     auth_modes: ["none"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],

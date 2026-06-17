@@ -203,6 +203,12 @@ export function arbitrate(
   const hasDiff = (winner.diffBytes ?? winner.diffSize ?? 0) > 0;
   const hasGates = winner.testsTotal > 0 || winner.gates.length > 0;
   const reviewRan = winner.reviewVerified === true;
+  // A clean, route-proof-VERIFIED cross-family review is real verification even
+  // when no deterministic test gate is configured (D2). `reviewRan` already
+  // requires crossFamilyVerified (observed route proofs, §5), so this never
+  // adopts an unobserved/argv-echo review. The patch-hash binding is enforced
+  // separately by the apply gate.
+  const reviewCleanVerified = reviewRan && winner.finalReviewClean && blockerCount === 0;
   const harnessFailed = winner.gates.some((g) => g.id === "harness" && g.status === "failed");
   const outcome =
     harnessFailed
@@ -212,12 +218,20 @@ export function arbitrate(
           ? "no_op"
           : "blocked"
       : !hasGates
-        ? "ungated"
+        ? reviewCleanVerified
+          ? "ready"
+          : "ungated"
         : !reviewRan
           ? "review_not_run"
           : winnerOk
             ? "ready"
             : "blocked";
+  // Honest disclosure of WHAT verified an applyable run. "both" requires a
+  // DETERMINISTIC gate — a real test count or a REQUIRED gate that passed — not
+  // mere gate presence (a non-required/diagnostic gate must not read as "tests
+  // passed"). A no-gate run adopted on review evidence is cross_family_review.
+  const gateVerified = (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) || winner.gates.some((g) => g.required && g.status === "passed");
+  const verificationBasis = outcome === "ready" ? (gateVerified ? "both" : "cross_family_review") : "none";
   const status =
     harnessFailed
       ? "failed"
@@ -280,6 +294,7 @@ export function arbitrate(
             : openBlockerCount(winner) > 0
               ? "human_review"
               : "continue",
+    verification_basis: verificationBasis,
   });
 
   const pairs: PairwiseComparison[] = [];

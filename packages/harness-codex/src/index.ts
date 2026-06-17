@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
@@ -296,6 +296,11 @@ export function createCodexAdapter(): HarnessAdapter {
           // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
           // to xhigh). Single source for the manifest AND the run-time normalizer.
           effort_levels: [...CODEX_EFFORT_LEVELS],
+          // Known-good model ids (NOT exhaustive — the codex CLI is the final
+          // authority; non-authoritative, so an unknown model is warned, not
+          // blocked). Data-driven like effort_levels.
+          known_models: ["gpt-5.5", "gpt-5", "gpt-5-codex", "gpt-5-mini", "o3", "o4-mini"],
+          models_authoritative: false,
         },
         capability_profile: {
           execution_surfaces: [
@@ -358,6 +363,79 @@ export function createCodexAdapter(): HarnessAdapter {
       return runCodex(spec);
     },
   };
+}
+
+/**
+ * B9 / route proof: recover the model codex ACTUALLY ran from its own session
+ * rollout file (`$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`,
+ * `turn_context.payload.model`). This is the codex CLI's OWN record — a real
+ * observation, not an argv echo — so it honestly upgrades the cross-family route
+ * proof to `verified` (CLAUDEXOR_BIBLE §5) for a CLI whose `--json` stream never
+ * carries the model. Best-effort: any missing/ambiguous/unreadable state returns
+ * null and the proof stays unobserved (safe degradation, never throws).
+ */
+export function codexTranscriptModel(codexHome: string | null | undefined, threadId: string | undefined): string | null {
+  if (!threadId) return null;
+  const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
+  const rollout = findCodexRollout(join(home, "sessions"), threadId);
+  if (!rollout) return null;
+  let observed: string | null = null;
+  try {
+    for (const line of readFileSync(rollout, "utf8").split("\n")) {
+      if (!line.includes("turn_context")) continue;
+      let obj: unknown;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const model = (obj as { payload?: { model?: unknown } })?.payload?.model;
+      // Keep the LAST turn_context, not the first: a RESUMED codex session
+      // (`exec resume <id>`) accumulates multiple turns in one rollout, so the
+      // observed model must reflect the most recent turn — the one the usage
+      // event this is attached to actually ran — not a stale earlier turn.
+      if (typeof model === "string" && model.trim()) observed = model;
+    }
+  } catch {
+    /* unreadable rollout: stay unobserved */
+  }
+  return observed;
+}
+
+/** Locate the rollout file whose name binds to this run's threadId (the id is unique per session). */
+function findCodexRollout(sessionsDir: string, threadId: string): string | null {
+  if (!existsSync(sessionsDir)) return null;
+  try {
+    for (const y of listDirsDesc(sessionsDir)) {
+      for (const m of listDirsDesc(join(sessionsDir, y))) {
+        for (const d of listDirsDesc(join(sessionsDir, y, m))) {
+          const dayDir = join(sessionsDir, y, m, d);
+          const hit = readdirSync(dayDir).find((f) => f.includes(threadId) && f.endsWith(".jsonl"));
+          if (hit) return join(dayDir, hit);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/** Subdirectory names sorted newest-first (date partitions), directories only. */
+function listDirsDesc(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((n) => {
+        try {
+          return statSync(join(dir, n)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  } catch {
+    return [];
+  }
 }
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
@@ -455,6 +533,10 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
+  // B9: capture the native thread id (thread.started) so we can read the model
+  // codex recorded in its own rollout transcript; cache that one read.
+  let codexThreadId: string | undefined;
+  let transcriptModel: string | null | undefined;
 
   try {
     yield* runCliHarness({
@@ -465,6 +547,9 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       label: "codex",
       redact: redactSecrets,
       parseEvent: (obj, sessionId) => {
+        // Bind the rollout transcript to THIS run via the native thread id.
+        const raw = obj as { type?: unknown; thread_id?: unknown };
+        if (raw?.type === "thread.started" && typeof raw.thread_id === "string") codexThreadId = raw.thread_id;
         const out = parseCodexEvent(obj, sessionId);
         if (out === null) return null;
         for (const ev of out) {
@@ -473,6 +558,19 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
           // unobserved. Record the requested model for diagnostics only.
           if (ev.type === "started" && spec.model_hint && !ev.observed_model) {
             ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
+          }
+          // B9: codex's --json stream never carries the model, but the CLI
+          // records it in its own session rollout. Read that transcript ONCE and
+          // attach it as a real `transcript`-sourced observation on the usage
+          // event, so cross-family route proof verifies honestly (§5). The
+          // transcript's turn_context is written at turn start, so it is on disk
+          // by turn.completed (the usage event); a missing read stays unobserved.
+          if (ev.type === "usage" && !ev.observed_model) {
+            if (transcriptModel === undefined) transcriptModel = codexTranscriptModel(env["CODEX_HOME"], codexThreadId);
+            if (transcriptModel) {
+              ev.observed_model = transcriptModel;
+              ev.payload = { ...(ev.payload ?? {}), observed_model_source: "transcript" };
+            }
           }
           // #16: an api_key run uses a TEMPORARY CODEX_HOME that this process
           // deletes on exit, so the native session it created is gone next turn.

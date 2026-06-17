@@ -1,4 +1,5 @@
-import { cpSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
@@ -240,7 +241,45 @@ export class WorkspaceManager {
       HOME: env.home_dir,
       CODEX_HOME: env.harness_config_dirs["codex_home"] ?? join(env.home_dir, ".codex"),
       CLAUDE_CONFIG_DIR: env.harness_config_dirs["claude_config"] ?? join(env.home_dir, ".claude"),
+      // Pin XDG_CONFIG_HOME to the scoped home so an XDG-aware harness
+      // (opencode/cursor) cannot follow an INHERITED XDG_CONFIG_HOME back into the
+      // operator's real ~/.config under `mirror_native` (§6 containment).
+      XDG_CONFIG_HOME: join(env.home_dir, ".config"),
       CLAUDEXOR_ENV_DIR: env.env_dir,
+    };
+  }
+
+  /**
+   * Provision a SCOPED, worktree-less harness HOME for READ-ONLY routes (plan,
+   * ask, audit, orchestrate, reviewers). Read-only modes build no git worktree,
+   * but a harness still writes native state — claude-code plan files, codex
+   * session rollouts, transcripts — into `$HOME/.claude`, `$CODEX_HOME`, etc.
+   * Without this, those land in the operator's REAL home (the B10 leak: a
+   * read-only `plan` wrote into `~/.claude/plans`). Same env shape as `envFor`,
+   * so the adapters seed auth (subscription creds / api key) into these scoped
+   * dirs exactly as they do for a write envelope (CLAUDEXOR_BIBLE §6). Caller
+   * disposes when the run ends.
+   */
+  readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => void } {
+    // A throwaway temp base — never under the project / synthetic repo root, so a
+    // no-project Ask leaves nothing in its cwd (§7) and nothing in any worktree (§6).
+    const base = mkdtempSync(join(tmpdir(), "claudexor-ro-"));
+    const homeDir = join(base, "home");
+    const envDir = join(base, "env");
+    const codexHome = join(homeDir, ".codex");
+    const claudeConfig = join(homeDir, ".claude");
+    const cursorConfig = join(homeDir, ".cursor");
+    const opencodeConfig = join(homeDir, ".config", "opencode");
+    for (const d of [homeDir, envDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) ensureDir(d);
+    return {
+      env: { HOME: homeDir, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeConfig, XDG_CONFIG_HOME: join(homeDir, ".config"), CLAUDEXOR_ENV_DIR: envDir },
+      dispose: () => {
+        try {
+          rmSync(base, { recursive: true, force: true });
+        } catch {
+          /* best-effort: a leftover scoped home is harmless and gc-able */
+        }
+      },
     };
   }
 

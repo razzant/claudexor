@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCapture } from "@claudexor/core";
-import { checkPatch, deliver } from "./index.js";
+import { DecisionRecord } from "@claudexor/schema";
+import { checkPatch, deliver, validateApplyGate } from "./index.js";
 
 async function git(repo: string, args: string[]) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 30_000 });
@@ -90,5 +91,37 @@ describe("delivery", () => {
     expect(res.applied).toBe(false);
     expect(res.commit).toBeTruthy();
     expect(res.detail).toContain("push failed");
+  });
+
+  // CLI/daemon parity: the artifact-only CLI apply feeds work_product.meta.status
+  // into this gate, so a recorded non-succeeded terminal state is refused even
+  // when decision.status=success — the v0.12 convergence stale-diff + D2 case
+  // where decision is success but the run terminal stayed not_converged.
+  it("refuses apply for a non-succeeded recorded terminal state despite a success decision", () => {
+    const decision = DecisionRecord.parse({ winner: "a01", status: "success", outcome: "ready" });
+    const err = validateApplyGate({
+      state: "not_converged",
+      decision,
+      workProduct: null,
+      patch: "diff --git a/x b/x\n",
+      originalRepoRoot: "/x",
+      targetRepoRoot: "/x",
+    });
+    expect(err).toContain("not applyable while state is not_converged");
+  });
+
+  it("a succeeded state with a success decision is NOT refused by the state/decision checks", () => {
+    const decision = DecisionRecord.parse({ winner: "a01", status: "success", outcome: "ready" });
+    // workProduct null trips a LATER check, not the state/decision gates — proving
+    // those two gates pass for a succeeded+success run (parity with the daemon).
+    const err = validateApplyGate({
+      state: "succeeded",
+      decision,
+      workProduct: null,
+      patch: "diff --git a/x b/x\n",
+      originalRepoRoot: "/x",
+      targetRepoRoot: "/x",
+    });
+    expect(err).toBe("work product is required before apply");
   });
 });

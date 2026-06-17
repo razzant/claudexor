@@ -155,10 +155,10 @@ describe("plugin lifecycle", () => {
       expect(opencodePlugin).toContain("\"experimental.chat.system.transform\"");
       const claudeSkill = readFileSync(join(home, ".claude", "skills", "claudexor", "skills", "claudexor", "SKILL.md"), "utf8");
       expect(claudeSkill.startsWith("---\nname: claudexor\n")).toBe(true);
-      expect(claudeSkill).toContain("---\n<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->\n# Claudexor");
+      expect(claudeSkill).toContain("---\n<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->\n# Claudexor");
       const cursorCommand = readFileSync(join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"), "utf8");
       expect(cursorCommand.startsWith("---\ndescription: Use Claudexor CLI/MCP for harness-agnostic coding workflows\n---\n")).toBe(true);
-      expect(cursorCommand).toContain("---\n<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->\nUse Claudexor");
+      expect(cursorCommand).toContain("---\n<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->\nUse Claudexor");
 
       const marketplace = readJson(join(home, ".agents", "plugins", "marketplace.json"));
       expect(marketplace.plugins[0].source.path).toBe("./.codex/plugins/claudexor");
@@ -206,11 +206,11 @@ describe("plugin lifecycle", () => {
           "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
         ],
         ".claude/skills/claudexor/commands/claudexor.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".claude/skills/claudexor/skills/claudexor/SKILL.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
         ],
         ".codex/plugins/claudexor/.codex-plugin/plugin.json": [
@@ -226,7 +226,7 @@ describe("plugin lifecycle", () => {
           "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
         ],
         ".codex/plugins/claudexor/skills/claudexor/SKILL.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
         ],
         ".cursor/plugins/local/claudexor/.cursor-plugin/plugin.json": [
@@ -235,7 +235,7 @@ describe("plugin lifecycle", () => {
           "  \"mcpServers\": \"./mcp.json\"",
         ],
         ".cursor/plugins/local/claudexor/commands/claudexor.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".cursor/plugins/local/claudexor/mcp.json": [
@@ -245,15 +245,15 @@ describe("plugin lifecycle", () => {
           "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
         ],
         ".config/opencode/commands/claudexor.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".config/opencode/plugins/claudexor.js": [
-          "// claudexor:managed host-plugin-lifecycle; version=0.11.0",
+          "// claudexor:managed host-plugin-lifecycle; version=0.12.0",
           "    \"experimental.chat.system.transform\": async (_input, output) => {",
         ],
         ".config/opencode/skills/claudexor/SKILL.md": [
-          "<!-- claudexor:managed host-plugin-lifecycle; version=0.11.0 -->",
+          "<!-- claudexor:managed host-plugin-lifecycle; version=0.12.0 -->",
           "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
         ],
       });

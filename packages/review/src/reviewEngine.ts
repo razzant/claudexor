@@ -27,6 +27,13 @@ export interface ReviewCandidateInput {
    * Reviewer runs are paid harness children too, so they must honor the configured
    * env isolation (clean) the same way candidate runs do. */
   envInheritance?: "mirror_native" | "clean";
+  /** Scoped harness HOME/config-dir env (HOME, CODEX_HOME, CLAUDE_CONFIG_DIR, …)
+   * for the reviewer children, so a reviewer's native state (codex session
+   * rollouts, claude config) is contained in a per-review scoped home instead of
+   * the operator's real ~/.codex / ~/.claude (CLAUDEXOR_BIBLE §6). The codex
+   * route-proof transcript is read from this same CODEX_HOME, so B9 still
+   * verifies. Adapters seed auth into these dirs. */
+  env?: Record<string, string>;
   onReviewerEvent?: (event: ReviewerProgressEvent) => void;
 }
 
@@ -158,6 +165,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       model_hint: reviewer.requestedModel ?? null,
       effort_hint: reviewer.requestedEffort ?? null,
       env_inheritance: input.envInheritance ?? "mirror_native",
+      ...(input.env ? { env: input.env } : {}),
     });
     writeText(
       artifact.promptPath,
@@ -622,9 +630,19 @@ export interface ReviewMatrixOptions {
   artifactsDir?: string;
   reviewerTimeoutMs?: number;
   onReviewerEvent?: (event: ReviewerProgressEvent) => void;
+  /** Scoped harness HOME/config-dir env for the reviewer children (HOME,
+   * CODEX_HOME, CLAUDE_CONFIG_DIR, …). REQUIRED for any caller that runs real
+   * paid harnesses, so reviewer native state stays contained outside the
+   * operator's real home (CLAUDEXOR_BIBLE §6) — mirror the orchestrator's
+   * `reviewScoped` funnel. (No in-repo caller today; threaded for correctness if
+   * one is added.) */
+  env?: Record<string, string>;
 }
 
-/** Cross-review matrix: review every candidate with the same panel of reviewers. */
+/**
+ * Cross-review matrix: review every candidate with the same panel of reviewers.
+ * NOTE: any caller must pass `options.env` (a scoped harness home) — see §6.
+ */
 export async function reviewMatrix(
   candidates: MatrixCandidate[],
   reviewers: ReviewerSpec[],
@@ -640,6 +658,7 @@ export async function reviewMatrix(
       reviewers,
       artifactsDir: options.artifactsDir ? join(options.artifactsDir, c.attemptId) : undefined,
       reviewerTimeoutMs: options.reviewerTimeoutMs,
+      ...(options.env ? { env: options.env } : {}),
       onReviewerEvent: options.onReviewerEvent,
     });
     out.push({ attemptId: c.attemptId, label: c.label, result });

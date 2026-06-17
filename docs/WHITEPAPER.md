@@ -109,6 +109,17 @@ winners, and tests-passed are not inferred from ad hoc string matching over fina
 answers. They come from typed contracts, settings, normalized events, gates,
 artifacts, and reviewer evidence.
 
+Verification is honest about WHAT it observed. A run is applyable on a clean
+cross-family review even without a deterministic test gate, but the decision
+records a typed `verification_basis` (cross-family review, or both that review
+and deterministic gates) so a review-backed adoption never reads as "tests passed". Cross-family verification
+requires each reviewer family's route proof to be OBSERVED, not an argv echo:
+a model reported in the harness stream, or — for a CLI whose stream omits the
+model (codex) — the model the CLI recorded in its own session transcript. An
+unobserved reviewer does not count toward verification. Read-only and reviewer
+harness runs execute in a scoped, throwaway home so their native state (plan
+files, session rollouts) never escapes into the operator's real home.
+
 ## Web And External Context
 
 External web context is a typed policy: `off | auto | cached | live`. It is

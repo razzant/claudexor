@@ -83,7 +83,9 @@ are NOT aliases: they hard-error at every wire boundary.
   harness resolution.
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
   translate native CLI/API streams into typed `HarnessEvent`s.
-- `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs,
+- `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs
+  (for write envelopes AND read-only routes via `readOnlyHomeEnv`, so plan files,
+  session rollouts, and transcripts never escape into the operator's real home),
   diff capture, cleanup with path-safe dispose.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
@@ -157,7 +159,14 @@ but gate them out of launch and routing.
 
 Harness manifests include both compatibility booleans and a structured
 `capability_profile`: execution surface, session/resume support, output/event
-shape, auth sources, and access-control proof. UI and future RunControl behavior
+shape, auth sources, and access-control proof. Capabilities are data-driven and
+declared by the adapter: `effort_levels` (a shared normalizer clamps a requested
+hint onto the nearest supported level) and `known_models` + `models_authoritative`
+(a shared `validateModel` rejects an unknown model when the list is authoritative,
+else WARNS and passes it through, since the vendor CLI is the final authority).
+`doctor` validates each harness's CONFIGURED default model this way, so a broken
+default (e.g. a model the CLI cannot run) is reported honestly instead of masked
+by a smoke that used a different model. UI and future RunControl behavior
 must prefer the structured profile and only derive flat booleans from it.
 Manifest `auth_modes` and `capability_profile.auth.preferred_source` describe
 possible source availability only. They are not readiness. UI, routing, and
@@ -453,6 +462,20 @@ single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
 apply`); `accept_clean_patch` delivers through the gate and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
 override. UI must not fake local accept/unblock state.
+
+A run is applyable only at `succeeded`/decision `success` (or a `blocked` run
+unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is
+sufficient verification even without a deterministic test gate;
+`DecisionRecord.verification_basis` (`cross_family_review | both`)
+discloses what backed an applyable outcome, so a no-test run adopted on review
+evidence never reads as "tests passed". Cross-family verification requires each
+reviewer family's route proof to be OBSERVED, not an argv echo: claude reports
+its model in the stream, and codex (whose `--json` stream omits the model)
+recovers the model it actually ran from its own session rollout transcript
+(`observed_model_source: "transcript"`). An unobserved reviewer stays
+`accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
+`review_not_run` outcomes the apply gate states the real path forward (add a gate
+or obtain a verified review) — the risk override applies only to `blocked` runs.
 
 Budget caps: the engine enforces `max_usd` per run (explicit run input, then
 surface defaults, then the global `budget.max_usd_per_run`). There is no daily

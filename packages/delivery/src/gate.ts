@@ -29,6 +29,27 @@ export interface ApplyGateInput {
   operatorDecision?: { action: string; patch_sha256?: string } | null;
 }
 
+/**
+ * Honest, state-specific guidance for why a run is not applyable and what
+ * actually unblocks it. The operator risk override (accept_risk /
+ * override_needs_human) unblocks ONLY a `blocked` run (CLAUDEXOR_BIBLE §11) — so
+ * never point an operator at a decision the daemon will refuse for this state
+ * (the B8 contradiction: apply used to suggest accept_risk for ungated runs).
+ */
+function applyHint(state: string): string {
+  switch (state) {
+    case "blocked":
+      return "an operator accept_risk/override_needs_human decision (POST /runs/:id/decision) can unblock apply for this patch";
+    case "ungated":
+    case "review_not_run":
+      return "not verified-applyable — add a --test gate or obtain a clean cross-family review, then re-run (risk overrides apply only to blocked runs)";
+    case "no_op":
+      return "the run made no changes; nothing to apply";
+    default:
+      return "re-run to reach a successful, verified outcome";
+  }
+}
+
 export function validateApplyGate(input: ApplyGateInput): string | null {
   const override =
     input.operatorDecision &&
@@ -36,11 +57,11 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     typeof input.operatorDecision.patch_sha256 === "string" &&
     input.operatorDecision.patch_sha256 === sha256(input.patch);
   if (input.state && input.state !== "succeeded" && !(override && input.state === "blocked")) {
-    return `run is not applyable while state is ${input.state}`;
+    return `run is not applyable while state is ${input.state}; ${applyHint(input.state)}`;
   }
   if (!input.decision) return "decision record is required before apply";
   if (input.decision.status !== "success" && !override) {
-    return `decision status is ${input.decision.status}; refusing apply (an operator accept_risk/override decision can unblock it)`;
+    return `decision status is ${input.decision.status}; refusing apply (${applyHint(input.decision.status)})`;
   }
   if (!input.workProduct) return "work product is required before apply";
   if (input.workProduct.kind !== "patch") return `work product kind ${input.workProduct.kind} is not applyable as a patch`;

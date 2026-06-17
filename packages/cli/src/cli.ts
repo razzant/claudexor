@@ -13,6 +13,7 @@ import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
+import { validateModel } from "@claudexor/core";
 import { SecretStore } from "@claudexor/secrets";
 import {
   DecisionRecord,
@@ -1120,10 +1121,29 @@ async function main(): Promise<number> {
     case "doctor": {
       const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
       const statuses = await gateway.statusAll({ cwd });
+      const cfg = loadConfig(cwd);
       const only = flagStr(args, "harness");
       const filtered = only ? statuses.filter((s) => s.id === only) : statuses;
+      // B2: a configured default model that the harness does not recognize must
+      // not be silently masked by a smoke that ran a DIFFERENT model. Validate
+      // each harness's configured default against its declared known_models and
+      // surface it honestly (warn for non-authoritative, INVALID for authoritative).
+      const modelNote = (s: (typeof statuses)[number]): string | null => {
+        const configured = cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
+        const caps = s.manifest?.capabilities;
+        if (!configured || !caps) return null;
+        const check = validateModel(configured, caps.known_models, caps.models_authoritative);
+        if (check.status === "ok") return null;
+        return `    model: ${check.status === "rejected" ? "INVALID" : "unverified"} — ${check.message}`;
+      };
       if (json) {
-        printJson({ harnesses: filtered });
+        printJson({
+          harnesses: filtered.map((s) => {
+            const configured = cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
+            const caps = s.manifest?.capabilities;
+            return { ...s, configured_model: configured, configured_model_check: configured && caps ? validateModel(configured, caps.known_models, caps.models_authoritative) : null };
+          }),
+        });
         return 0;
       }
       for (const s of filtered) {
@@ -1133,6 +1153,8 @@ async function main(): Promise<number> {
         print(`    auth sources: ${authSourceAvailability(s)}`);
         print(`    checks: ${checksSummary(s)}`);
         if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
+        const mn = modelNote(s);
+        if (mn) print(mn);
       }
       return 0;
     }
@@ -1291,7 +1313,8 @@ async function main(): Promise<number> {
       }
       print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
       if (parsedDecision.success) {
-        print(`decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}`);
+        const vb = parsedDecision.data.verification_basis;
+        print(`decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}${vb !== "none" ? ` verified_by=${vb}` : ""}`);
         const budget = parsedDecision.data.budget_summary;
         print(`budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`);
       }
@@ -1361,8 +1384,16 @@ async function main(): Promise<number> {
       // the registry applies correctly from any cwd (CLI1 namespace unification).
       // Fall back to cwd only for a legacy run with no readable contract.
       const applyRoot = contract.success ? contract.data.repo.root : process.cwd();
+      // Artifact-only path: the live daemon job state is unavailable, but the
+      // orchestrator records the terminal run status in work_product.meta.status.
+      // Feed it (mapped to daemon-state vocab) into the shared gate so the CLI
+      // enforces the SAME terminal-state bar the Control API does — e.g. a
+      // convergence run that persists decision.status=success but terminal
+      // not_converged (stale diff after a D2 review) is refused identically.
+      const recordedStatus = workProduct.success ? (workProduct.data.meta?.["status"] as string | undefined) : undefined;
+      const recordedState = recordedStatus ? (recordedStatus === "success" ? "succeeded" : recordedStatus) : null;
       const gateError = validateApplyGate({
-        state: null, // artifact-only path: daemon job state is not available here
+        state: recordedState,
         decision: applyDecision.success ? applyDecision.data : null,
         workProduct: workProduct.success ? workProduct.data : null,
         patch,
@@ -1414,7 +1445,10 @@ async function main(): Promise<number> {
         if (json) printJson({ name, checks });
         else {
           print(`naming gate for "${name}":`);
-          for (const c of checks) print(`  ${c.available ? "[free] " : "[taken]"} ${c.registry}: ${c.detail}`);
+          for (const c of checks) {
+            const tag = c.availability === "free" ? "[free]   " : c.availability === "taken" ? "[taken]  " : "[unknown]";
+            print(`  ${tag} ${c.registry}: ${c.detail}`);
+          }
         }
         return 0;
       }

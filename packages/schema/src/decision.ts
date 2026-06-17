@@ -45,6 +45,20 @@ export const DecisionOutcome = z.enum([
 ]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcome>;
 
+// What backed a `ready`/applyable outcome: a clean cross-family verified review,
+// or both deterministic gates AND that review. `none` for non-applyable outcomes.
+// Surfaced honestly so a no-test run adopted on review evidence never reads as
+// "tests passed" (CLAUDEXOR_BIBLE §5 evidence, §11 delivery). A gates-ONLY basis
+// is intentionally absent: a `ready` run always carries a verified review (a
+// gate-pass without cross-family verification resolves to review_not_run, not
+// ready), so the enum ships only values the arbitrator actually produces.
+export const VerificationBasis = z.enum([
+  "none",
+  "cross_family_review",
+  "both",
+]);
+export type VerificationBasis = z.infer<typeof VerificationBasis>;
+
 export const DecisionRecord = z.object({
   winner: Id.nullable(),
   status: RunStatus,
@@ -63,5 +77,8 @@ export const DecisionRecord = z.object({
     })
     .default({ spend_usd: null, estimated: false }),
   apply_recommendation: ApplyRecommendation.default("inspect"),
+  // Honest disclosure of WHAT verified an applyable run (gates, cross-family
+  // review, or both). Producer: arbitration. Consumer: CLI/UI apply affordance.
+  verification_basis: VerificationBasis.default("none"),
 });
 export type DecisionRecord = z.infer<typeof DecisionRecord>;

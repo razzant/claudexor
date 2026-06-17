@@ -442,6 +442,17 @@
                               ]
                             },
                             "default": []
+                          },
+                          "known_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "default": []
+                          },
+                          "models_authoritative": {
+                            "type": "boolean",
+                            "default": false
                           }
                         },
                         "additionalProperties": false

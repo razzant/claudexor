@@ -85,6 +85,16 @@ export const HarnessCapabilities = z.object({
    * normalizer clamps any requested EffortHint onto the nearest member.
    */
   effort_levels: z.array(EffortHint).default([]),
+  /**
+   * Known model ids/aliases this harness accepts. When `models_authoritative`
+   * is true the list is exhaustive (an unknown model is rejected); otherwise it
+   * is a known-good hint set (an unknown model is WARNED about but passed
+   * through, since the vendor CLI is the final authority and may gain new
+   * models). Data-driven like `effort_levels` — no model id is hardcoded in
+   * routing logic.
+   */
+  known_models: z.array(z.string()).default([]),
+  models_authoritative: z.boolean().default(false),
 });
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
 

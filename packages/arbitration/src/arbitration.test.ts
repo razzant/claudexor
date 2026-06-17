@@ -40,6 +40,7 @@ describe("arbitrate", () => {
     expect(res.decision.winner).toBe("A");
     expect(res.decision.status).toBe("success");
     expect(res.decision.apply_recommendation).toBe("apply");
+    expect(res.decision.verification_basis).toBe("both");
   });
 
   it("discloses an exact tie (winner by route order, not silently decisive)", () => {
@@ -100,11 +101,36 @@ describe("arbitrate", () => {
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
-  it("marks missing gates as ungated instead of success", () => {
+  it("adopts a no-gate run on a VERIFIED clean cross-family review (D2), basis disclosed", () => {
+    // No deterministic test gate, but the cross-family review is route-proof
+    // verified and clean → applyable, recorded honestly as review-based.
     const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);
+    expect(res.decision.status).toBe("success");
+    expect(res.decision.outcome).toBe("ready");
+    expect(res.decision.apply_recommendation).toBe("apply");
+    expect(res.decision.verification_basis).toBe("cross_family_review");
+  });
+
+  it("reports cross_family_review (not both) when only a NON-required gate is present", () => {
+    // A non-required/diagnostic gate is not deterministic verification; a clean
+    // verified review backs this run, so the basis must be cross_family_review.
+    const res = arbitrate([
+      candidate("A", {
+        testsPassed: 0,
+        testsTotal: 0,
+        gates: [{ id: "lint", command: "lint", exit_code: 0, status: "passed", duration_ms: 1, required: false }],
+      }),
+    ]);
+    expect(res.decision.status).toBe("success");
+    expect(res.decision.verification_basis).toBe("cross_family_review");
+  });
+
+  it("keeps a no-gate run ungated when the review is NOT verified (no observed evidence)", () => {
+    const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0, reviewVerified: false })]);
     expect(res.decision.status).toBe("ungated");
     expect(res.decision.outcome).toBe("ungated");
     expect(res.decision.apply_recommendation).toBe("human_review");
+    expect(res.decision.verification_basis).toBe("none");
   });
 
   it("marks missing verified review as review_not_run instead of success", () => {

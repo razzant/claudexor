@@ -2103,6 +2103,20 @@ export class Orchestrator {
     return { findings, risk: { level: risk.level, reasons: risk.reasons, changedFiles: stats.paths.length } };
   }
 
+  /**
+   * SINGLE funnel for every reviewer-panel invocation: run it inside a per-review
+   * scoped harness HOME (B10/§6) so reviewer children (codex session rollouts,
+   * claude config) never write native state into the operator's real ~/.codex /
+   * ~/.claude. The codex route-proof transcript is read from this same scoped
+   * CODEX_HOME, so cross-family verification (B9) is unaffected. Every call site
+   * MUST go through here so the scoping cannot drift. Disposed once the panel
+   * settles (resolve OR reject).
+   */
+  private reviewScoped(input: Omit<Parameters<typeof reviewCandidate>[0], "env">): ReturnType<typeof reviewCandidate> {
+    const reviewHome = new WorkspaceManager(input.cwd).readOnlyHomeEnv();
+    return reviewCandidate({ ...input, env: reviewHome.env }).finally(() => reviewHome.dispose());
+  }
+
   private async reviewRuns(
     runs: CandidateRun[],
     reviewers: ReviewerSpec[],
@@ -2129,7 +2143,7 @@ export class Orchestrator {
       const reviewLease = hasDiff ? ledger?.reserve({ taskId: taskId ?? "task", attemptId: run.attemptId, intent: "review", harnessId: "review-panel" }) : undefined;
       const result =
         hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
-          ? await reviewCandidate({
+          ? await this.reviewScoped({
               candidateLabel: run.label,
               diff: run.diff,
               evidenceDir: candidateEvidenceDir,
@@ -2459,7 +2473,7 @@ export class Orchestrator {
             const reviewLease = reviewers.length > 0 ? ledger.reserve({ taskId, attemptId, intent: "review", harnessId: "review-panel" }) : null;
             const reviewResult =
               reviewers.length > 0 && (reviewLease?.granted ?? false)
-                ? await reviewCandidate({
+                ? await this.reviewScoped({
                     candidateLabel: `Attempt ${attempt}`,
                     diff: run.diff,
                     evidenceDir: candidateReviewEvidenceDir,
@@ -2755,6 +2769,11 @@ export class Orchestrator {
     const plans: { id: string; text: string }[] = [];
     const planAttempts: { attemptId: string; harnessId: string; status: "success" | "failed" | "blocked"; error: string | null }[] = [];
     const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    // B10: scope the planners' HOME/config dirs so claude-code plan files (and any
+    // native session state) stay inside the run's scoped home, never the
+    // operator's real ~/.claude/plans. Disposed after the planners finish.
+    const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
+    try {
     for (const [idx, routed] of adapters.entries()) {
       if (input.signal?.aborted) break;
       const adapter = routed.adapter;
@@ -2783,6 +2802,7 @@ export class Orchestrator {
         effort_hint: knobs.effort,
         max_turns: knobs.maxTurns,
         env_inheritance: this.envInheritance(input.repoRoot),
+        env: roHome.env,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const planInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
@@ -2853,6 +2873,10 @@ export class Orchestrator {
       plans.push({ id: adapter.id, text });
       store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
     }
+    } finally {
+      // Planners done (or threw) — always reclaim the scoped home (it may hold seeded creds).
+      roHome.dispose();
+    }
 
     if (input.signal?.aborted) {
       return this.cancelledResult(
@@ -2904,7 +2928,7 @@ export class Orchestrator {
       // review from starting, not account for it after the fact.
       const lease = ledger.reserve({ taskId, attemptId: "plan-review", intent: "review", harnessId: "review-panel" });
       if (lease.granted) {
-        const res = await reviewCandidate({
+        const res = await this.reviewScoped({
           candidateLabel: "Plan",
           diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
           evidenceDir: reviewDir,
@@ -3068,7 +3092,12 @@ export class Orchestrator {
       ``,
       `## Required output`,
       `1. A concise markdown orchestration plan (numbered steps; each step names ONE tool and its arguments).`,
-      "2. A fenced ```json block with the typed plan: {\"tool_calls\": [{\"tool\": \"<tool name>\", \"args\": {…}, \"why\": \"…\"}]}.",
+      "2. A fenced ```json block: {\"tool_calls\": [ … ]}. Each call puts the tool name AND its arguments at the TOP LEVEL — there is NO nested \"args\" object. Per-tool shapes (use only belt tools):",
+      "   - start_run: {\"tool\":\"start_run\",\"prompt\":\"…\",\"mode\":\"agent\",\"harness\":\"<optional id>\",\"why\":\"…\"}",
+      "   - race:      {\"tool\":\"race\",\"prompt\":\"…\",\"n\":2,\"why\":\"…\"}",
+      "   - review:    {\"tool\":\"review\",\"run_id\":\"<id>\",\"why\":\"…\"}",
+      "   - status:    {\"tool\":\"status\",\"run_id\":\"<id>\",\"why\":\"…\"}",
+      "   - apply:     {\"tool\":\"apply\",\"run_id\":\"<id>\",\"mode\":\"apply\",\"why\":\"…\"}",
       `Keep the plan minimal and budget-aware. Do not propose tools outside the belt.`,
     ].join("\n");
     return this.runReadOnlyReport(
@@ -3171,6 +3200,11 @@ export class Orchestrator {
       };
     }
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    // B10: read-only routes still spawn harness processes that write native
+    // state (plan files, session rollouts). Scope their HOME/config dirs so they
+    // cannot escape into the operator's real ~/.claude, ~/.codex, etc. — the
+    // adapters seed auth into these scoped dirs (§6). Disposed at run end.
+    const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     interface ReadonlyAttempt {
       attemptId: string;
       harnessId: string;
@@ -3224,6 +3258,7 @@ export class Orchestrator {
         effort_hint: knobs.effort,
         max_turns: knobs.maxTurns,
         env_inheritance: this.envInheritance(input.repoRoot),
+        env: roHome.env,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
       const reportInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
@@ -3298,6 +3333,7 @@ export class Orchestrator {
       }
     };
 
+    try {
     if (opts.swarm) {
       // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
       await runBounded(adapters, Math.min(adapters.length, MAX_PARALLEL_CANDIDATES), runReadonlyAttempt);
@@ -3351,6 +3387,11 @@ export class Orchestrator {
         // Terminal failure (non-web failure, or no remaining fallback).
         break;
       }
+    }
+    } finally {
+      // All read-only attempts done (or threw) — reclaim the scoped harness home
+      // (it contained every native write for this run and may hold seeded creds).
+      roHome.dispose();
     }
 
     if (input.signal?.aborted) {
@@ -3482,6 +3523,11 @@ export class Orchestrator {
     // terminal outcome (success / blocked / failed) becomes the run's terminal.
     const autonomy: OrchestrateAutonomy = opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
     let terminal: RunStatus = "success";
+    // D5: orchestrate's contract output IS the typed plan. If the brain failed to
+    // produce a valid one, the run is NOT a clean success — disclose it honestly
+    // (the markdown plan stays as a diagnostic artifact) rather than reporting
+    // success alongside an orchestration_parse_error.md.
+    if (opts.mode === "orchestrate" && !orchestratePlan) terminal = "not_converged";
     if (opts.mode === "orchestrate" && autonomy !== "suggest" && orchestratePlan) {
       // Thread the GENERATED runId onto input so the executor's answer_question
       // step keys the interaction registry by this orchestrate run's id (callers
@@ -3740,7 +3786,7 @@ export class Orchestrator {
         const reviewers = await this.resolveReviewers(input.repoRoot);
         if (reviewers.length === 0) return { status: "skipped", runId: call.run_id, detail: "no doctor-OK reviewers available" };
         const evidenceDir = join(paths.reviewsDir, `orchestrate-${call.run_id}`, "evidence");
-        const result = await reviewCandidate({
+        const result = await this.reviewScoped({
           candidateLabel: `Run ${call.run_id}`,
           diff,
           evidenceDir,

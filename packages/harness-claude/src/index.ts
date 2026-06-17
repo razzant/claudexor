@@ -203,6 +203,12 @@ export function createClaudeAdapter(): HarnessAdapter {
           // claude --effort accepts low|medium|high ONLY (xhigh/max clamp to high
           // via the shared normalizer). Single source for the run-time normalizer.
           effort_levels: [...CLAUDE_EFFORT_LEVELS],
+          // Known-good model aliases/ids (NOT exhaustive — the claude CLI is the
+          // final authority and gains models over time, so this is non-authoritative:
+          // an unknown model is warned about, never blocked). Stable aliases plus
+          // current ids; data-driven like effort_levels.
+          known_models: ["sonnet", "opus", "haiku", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          models_authoritative: false,
         },
         capability_profile: {
           execution_surfaces: [

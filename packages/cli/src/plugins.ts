@@ -1389,6 +1389,12 @@ async function runHost(def: HostDefinition, verb: PluginVerb, options: PluginCom
     }
     if (def.host === "cursor") checkConfig("cursor", state, res, runtime);
     res.state = def.installState;
+    // B6: a dry-run must be legible even when nothing needs doing — otherwise an
+    // already-current host prints only its status and reads as if --dry-run was
+    // ignored. Disclose that the lifecycle was evaluated and found no changes.
+    if (dryRun && res.actions.length === 0) {
+      res.actions.push("no changes needed — Claudexor-owned files and config are already current");
+    }
     res.ok = res.errors.length === 0;
     return res;
   } catch (err) {
