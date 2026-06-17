@@ -268,6 +268,54 @@ Claudexor as the orchestration owner. Codex is registered in the personal plugin
 marketplace and still requires enablement from Codex Plugins. MCP tools are
 one-shot final-output calls, not live Claudexor thread parity.
 
+You can ask an agent host with shell access to install the integration for
+itself. Paste something like this into Cursor, Claude Code, Codex, or OpenCode:
+
+```text
+Install Claudexor's host integration for this app. First find the local
+Claudexor CLI: prefer an existing `claudexor` command; otherwise, if this repo
+is checked out at /Users/anton/Clawdexor, use
+`PATH="$HOME/.claudex/node/bin:$PATH" node /Users/anton/Clawdexor/packages/cli/dist/cli.js`.
+
+Run the matching command for this host:
+- Claude Code: `claudexor plugin install claude`
+- Codex: `claudexor plugin install codex`
+- Cursor: `claudexor plugin install cursor`
+- OpenCode: `claudexor plugin install opencode`
+
+Then run `claudexor plugin status <host>` and
+`claudexor plugin doctor <host>`. Do not overwrite unowned files. If the
+installer reports a conflict, show me the exact message and stop.
+
+After install: Claude Code/OpenCode may need a new session; Cursor may need a
+reload or manual local-plugin enablement; Codex is only registered in the
+personal marketplace, so tell me to open Codex Plugins and enable Claudexor
+manually.
+```
+
+Once enabled, ask the host to use Claudexor for work where orchestration,
+review, or evidence is useful. Examples:
+
+```text
+Use Claudexor to make a read-only plan for this refactor, then show me the
+plan and the open questions before changing files.
+```
+
+```text
+Use Claudexor race with 3 candidates for this bug fix, compare the attempts,
+and apply only the winning patch if the review is clean.
+```
+
+```text
+Use Claudexor doctor/status to check which harnesses are actually ready before
+choosing a route. Do not assume a provider is usable just because a token exists.
+```
+
+```text
+Use Claudexor audit on this repository and return the final report with concrete
+file references. Keep it read-only.
+```
+
 See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for the current integration
 matrix and limitations.
 
