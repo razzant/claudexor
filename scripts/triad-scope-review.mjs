@@ -20,6 +20,11 @@
  *     --goal-file <path>      # user intent / goal text file
  *     --skip-scope            # triad only
  *
+ * Optional infrastructure fallbacks, off by default:
+ *   TRIAD_MAX_OUTPUT_TOKENS=12000
+ *   TRIAD_DIRECT_OPENAI=1 OPENAI_API_KEY=...
+ *   TRIAD_DIRECT_ANTHROPIC=1 ANTHROPIC_API_KEY=...
+ *
  * Outputs (per round): raw per-model responses (NEVER truncated), parsed
  * findings JSON, and a markdown summary table. Exit code 1 when quorum is not
  * met or any reviewer infra call fails; 0 otherwise (findings themselves are
@@ -45,7 +50,18 @@ const SCOPE_ITEMS = [
   "cross_module_bugs",
   "implicit_contracts",
 ];
-const MAX_OUTPUT_TOKENS = 100_000;
+function positiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    console.error(`${name} must be a positive integer`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const MAX_OUTPUT_TOKENS = positiveIntEnv("TRIAD_MAX_OUTPUT_TOKENS", 100_000);
 const REQUEST_TIMEOUT_MS = 900_000;
 /** Per-file cap inside the touched-file pack; the diff itself is never cut. */
 const MAX_FILE_BYTES = 200_000;
@@ -331,16 +347,35 @@ ${diffText(base)}
 // ---------------------------------------------------------------------------
 
 async function callModel(model, prompt) {
+  if (process.env.TRIAD_DIRECT_OPENAI === "1" && model.startsWith("openai/")) {
+    return callOpenAI(model, prompt);
+  }
+  if (process.env.TRIAD_DIRECT_ANTHROPIC === "1" && model.startsWith("anthropic/")) {
+    return callAnthropic(model, prompt);
+  }
+  return callOpenRouter(model, prompt);
+}
+
+function isAbortError(err) {
+  return typeof err === "object" && err !== null && (err.name === "AbortError" || String(err).includes("AbortError"));
+}
+
+async function callOpenRouter(model, prompt) {
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const route = { transport: "openrouter", source: "openrouter", routeProof: "openrouter:/api/v1/chat/completions" };
   try {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      return { model, ...route, status: "error", raw: "", error: "OPENROUTER_API_KEY is required for OpenRouter-routed reviewer", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    }
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -349,18 +384,121 @@ async function callModel(model, prompt) {
         messages: [{ role: "user", content: prompt }],
       }),
     });
+    const firstEventAt = new Date().toISOString();
     const bodyText = await res.text();
     if (!res.ok) {
-      return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
+      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
     }
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
     const usage = body.usage ?? {};
     const observedModel = body.model ?? model;
-    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
-    return { model, observedModel, status: "responded", raw, usage, ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
+    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
   } catch (err) {
-    return { model, status: "error", raw: "", error: String(err), ms: Date.now() - started, startedAt, completedAt: new Date().toISOString() };
+    const timedOut = isAbortError(err);
+    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function openAiText(body) {
+  if (typeof body.output_text === "string") return body.output_text;
+  const chunks = [];
+  for (const item of body.output ?? []) {
+    for (const part of item.content ?? []) {
+      if (typeof part.text === "string") chunks.push(part.text);
+      else if (typeof part.output_text === "string") chunks.push(part.output_text);
+    }
+  }
+  return chunks.join("");
+}
+
+async function callOpenAI(model, prompt) {
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const route = { transport: "openai-responses", source: "direct-openai", routeProof: "openai:/v1/responses" };
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return { model, ...route, status: "error", raw: "", error: "OPENAI_API_KEY is required for TRIAD_DIRECT_OPENAI", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    const directModel = model.replace(/^openai\//, "");
+    const res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: directModel,
+        input: prompt,
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+      }),
+    });
+    const firstEventAt = new Date().toISOString();
+    const bodyText = await res.text();
+    if (!res.ok) {
+      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    }
+    const body = JSON.parse(bodyText);
+    const raw = openAiText(body);
+    const observedModel = body.model ?? directModel;
+    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+  } catch (err) {
+    const timedOut = isAbortError(err);
+    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function anthropicModelId(model) {
+  const direct = model.replace(/^anthropic\//, "");
+  if (direct === "claude-opus-4.8") return "claude-opus-4-8";
+  return direct;
+}
+
+async function callAnthropic(model, prompt) {
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const route = { transport: "anthropic-messages", source: "direct-anthropic", routeProof: "anthropic:/v1/messages" };
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return { model, ...route, status: "error", raw: "", error: "ANTHROPIC_API_KEY is required for TRIAD_DIRECT_ANTHROPIC", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    const directModel = anthropicModelId(model);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: directModel,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const firstEventAt = new Date().toISOString();
+    const bodyText = await res.text();
+    if (!res.ok) {
+      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    }
+    const body = JSON.parse(bodyText);
+    const raw = (body.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
+    const observedModel = body.model ?? directModel;
+    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+  } catch (err) {
+    const timedOut = isAbortError(err);
+    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
   } finally {
     clearTimeout(timer);
   }
@@ -424,10 +562,6 @@ function normalizeFindings(items, model) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.error("OPENROUTER_API_KEY is required");
-    process.exit(1);
-  }
   const base = arg("base", "HEAD~1");
   const round = arg("round", "1");
   const outDir = resolve(arg("out", ".adversarial-review/triad"), `round-${round}`);
@@ -470,14 +604,19 @@ async function main() {
     const record = {
       model_id: result.model,
       observed_model: result.observedModel ?? null,
+      requested_effort: null,
+      transport: result.transport ?? null,
+      source: result.source ?? null,
+      route_proof: result.routeProof ?? null,
+      response_id: result.responseId ?? null,
       status,
       slot: idx + 1,
       parsed_count: parsed.length,
       usage: result.usage ?? null,
       started_at: result.startedAt ?? null,
       // Non-streaming transport: there is no separate first-event timestamp;
-      // recorded as null deliberately rather than faked as completed_at.
-      first_event_at: null,
+      // use the first HTTP response timestamp rather than faking completion.
+      first_event_at: result.firstEventAt ?? null,
       completed_at: result.completedAt ?? null,
       duration_ms: result.ms,
       error: result.error ?? null,
@@ -485,11 +624,23 @@ async function main() {
     };
     actorRecords.push(record);
     writeFileSync(join(outDir, `triad-${slug}.metadata.json`), JSON.stringify(record, null, 2) + "\n");
+    if (record.first_event_at) {
+      progress({
+        ts: record.first_event_at,
+        type: "reviewer.first_event",
+        model: result.model,
+        observed_model: record.observed_model,
+        source: record.source,
+        transport: record.transport,
+      });
+    }
     progress({
       ts: record.completed_at ?? new Date().toISOString(),
-      type: status === "responded" ? "reviewer.completed" : result.error?.includes("abort") ? "reviewer.timed_out" : "reviewer.failed",
+      type: status === "responded" ? "reviewer.completed" : result.timedOut || status === "timed_out" ? "reviewer.timed_out" : "reviewer.failed",
       model: result.model,
       observed_model: record.observed_model,
+      source: record.source,
+      transport: record.transport,
       status,
       duration_ms: result.ms,
     });
@@ -510,28 +661,68 @@ async function main() {
     console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
     progress({ ts: new Date().toISOString(), type: "reviewer.started", model: SCOPE_MODEL, role: "scope" });
     const scopeResult = await callModel(SCOPE_MODEL, scopePrompt);
+    if (scopeResult.firstEventAt) {
+      progress({
+        ts: scopeResult.firstEventAt,
+        type: "reviewer.first_event",
+        model: SCOPE_MODEL,
+        observed_model: scopeResult.observedModel ?? null,
+        source: scopeResult.source ?? null,
+        transport: scopeResult.transport ?? null,
+        role: "scope",
+      });
+    }
     progress({
       ts: scopeResult.completedAt ?? new Date().toISOString(),
-      type: scopeResult.status === "responded" ? "reviewer.completed" : "reviewer.failed",
+      type: scopeResult.status === "responded" ? "reviewer.completed" : scopeResult.timedOut || scopeResult.status === "timed_out" ? "reviewer.timed_out" : "reviewer.failed",
       model: SCOPE_MODEL,
+      observed_model: scopeResult.observedModel ?? null,
+      source: scopeResult.source ?? null,
+      transport: scopeResult.transport ?? null,
       role: "scope",
       duration_ms: scopeResult.ms,
     });
     writeFileSync(join(outDir, "scope.raw.txt"), redactSecrets(scopeResult.raw ?? ""));
     let scopeStatus = scopeResult.status;
     let scopeFindings = [];
+    const scopeMeta = {
+      model_id: SCOPE_MODEL,
+      observed_model: scopeResult.observedModel ?? null,
+      requested_effort: null,
+      transport: scopeResult.transport ?? null,
+      source: scopeResult.source ?? null,
+      route_proof: scopeResult.routeProof ?? null,
+      response_id: scopeResult.responseId ?? null,
+      status: scopeStatus,
+      usage: scopeResult.usage ?? null,
+      started_at: scopeResult.startedAt ?? null,
+      first_event_at: scopeResult.firstEventAt ?? null,
+      completed_at: scopeResult.completedAt ?? null,
+      duration_ms: scopeResult.ms,
+      error: scopeResult.error ?? null,
+      raw_file: "scope.raw.txt",
+    };
     if (scopeStatus === "responded") {
       const arr = extractJsonArray(scopeResult.raw);
-      if (arr === null) scopeStatus = "parse_failure";
+      if (arr === null) {
+        scopeStatus = "parse_failure";
+        writeFileSync(join(outDir, "scope.parse-error.json"), JSON.stringify({ error: "no_parseable_json_array", raw_file: "scope.raw.txt" }, null, 2) + "\n");
+      }
       else {
         scopeFindings = normalizeFindings(arr, SCOPE_MODEL);
+        writeFileSync(join(outDir, "scope.parsed-json-blocks.json"), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
         const covered = new Set(scopeFindings.map((f) => f.item));
         const missing = SCOPE_ITEMS.filter((i) => !covered.has(i));
         if (missing.length > 0) scopeStatus = "partial";
-        scope = { status: scopeStatus, findings: scopeFindings, missing_items: missing, usage: scopeResult.usage ?? null };
+        scopeMeta.status = scopeStatus;
+        scope = { status: scopeStatus, findings: scopeFindings, missing_items: missing, usage: scopeResult.usage ?? null, metadata: scopeMeta };
       }
     }
-    if (!scope) scope = { status: scopeStatus, findings: scopeFindings, missing_items: SCOPE_ITEMS, error: scopeResult.error ?? null };
+    if (!scope) {
+      scopeMeta.status = scopeStatus;
+      scope = { status: scopeStatus, findings: scopeFindings, missing_items: SCOPE_ITEMS, error: scopeResult.error ?? null, metadata: scopeMeta };
+    }
+    writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
   }
 
   const summary = {

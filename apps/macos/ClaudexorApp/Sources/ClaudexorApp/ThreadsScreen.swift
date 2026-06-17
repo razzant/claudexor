@@ -81,40 +81,51 @@ struct ThreadsScreen: View {
     }
 
     var body: some View {
-        // Explicit width + drag handle instead of HSplitView (item 6): HSplitView
-        // resized from the "wrong side" — the divider didn't track the cursor. Here
-        // the left list owns its width and the handle adds the drag translation, so
-        // dragging RIGHT widens the list and LEFT narrows it (clamped to bounds).
+        // The threads list is a FLOATING Liquid Glass panel (nav layer) inset from the
+        // window edges over the behind-window backdrop — not a flush split pane with a
+        // hard divider (which read as flat/dated, esp. in light mode). The conversation
+        // is content and stays on its solid/backdrop surface (no glass-on-content). The
+        // hard divider is gone; the gap floats the panel and an INVISIBLE trailing hot
+        // zone keeps drag-resize (drag right ⇒ wider, clamped to [minThreadW, maxThreadW]).
         HStack(spacing: 0) {
             threadList
                 .frame(width: threadListWidth, alignment: .leading)
                 .frame(maxHeight: .infinity)
-            sectionDivider
+                .sidebarGlass()
+                .padding(.leading, sidebarInset)
+                .padding(.vertical, sidebarInset)
+                .overlay(alignment: .trailing) { sidebarResizeHandle }
             conversation
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.leading, sidebarGap)
         }
         .task { await model.refreshThreads() }
         .navigationTitle(navTitle)
         .navigationSubtitle(navSubtitle)
     }
 
-    /// A draggable divider between the thread list and the conversation. The drag's
-    /// horizontal translation is ADDED to the list width (drag right ⇒ wider list),
-    /// clamped to [minThreadW, maxThreadW]. A wide invisible hit area + resize cursor
-    /// make it grabbable; the visible hairline is a standard Divider.
-    private var sectionDivider: some View {
-        Divider()
-            .padding(.horizontal, 3)              // widen the grab target around the hairline
+    /// Inset of the floating sidebar panel from the window edges (leading + vertical).
+    private let sidebarInset: CGFloat = Theme.Metrics.floatingSidebarInset
+    /// Gap between the floating sidebar and the conversation (replaces the divider).
+    private let sidebarGap: CGFloat = Theme.Spacing.sm
+    /// Invisible drag strip width for the sidebar resize affordance.
+    private let sidebarResizeHandleWidth: CGFloat = Theme.Metrics.sidebarResizeHandleWidth
+
+    /// Invisible drag strip on the panel's trailing edge — keeps the resize affordance
+    /// without a visible divider. Offset into the gap so the cursor target sits between
+    /// the panel and the conversation. Width AT DRAG START is captured once so the
+    /// cumulative translation can't compound each frame and run away.
+    private var sidebarResizeHandle: some View {
+        Color.clear
+            .frame(width: sidebarResizeHandleWidth)
             .contentShape(Rectangle())
+            .offset(x: (sidebarGap + sidebarResizeHandleWidth) / 2)
             .onHover { inside in
                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
             }
             .gesture(
                 DragGesture(coordinateSpace: .global)
                     .onChanged { value in
-                        // Add the cursor-delta to the width AT DRAG START (captured
-                        // once), not the live width — otherwise the cumulative
-                        // translation would compound each frame and run away.
                         let base = dragStartWidth ?? threadListWidth
                         if dragStartWidth == nil { dragStartWidth = base }
                         threadListWidth = min(maxThreadW, max(minThreadW, base + value.translation.width))
@@ -152,8 +163,10 @@ struct ThreadsScreen: View {
                     threadRow(thread).tag(thread.id)
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)   // let the Liquid Glass panel show through
             }
         }
+        .padding(.top, Theme.Spacing.xs)
     }
 
     private func threadRow(_ thread: ThreadSummary) -> some View {
@@ -199,12 +212,7 @@ struct ThreadsScreen: View {
                     }
                 }
             } else {
-                ContentUnavailableView(
-                    "Start a thread",
-                    systemImage: "bubble.left.and.text.bubble.right",
-                    description: Text("Type below to begin. Turns run in-place so the next turn sees the work — plan, then implement, in one conversation.")
-                )
-                .frame(maxHeight: .infinity)
+                emptyConversation
             }
 
             if let status = model.threadStatus {
@@ -230,6 +238,23 @@ struct ThreadsScreen: View {
 
             composer
         }
+    }
+
+    private var emptyConversation: some View {
+        VStack(spacing: Theme.Spacing.md) {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(.secondary)
+            Text("Start a thread")
+                .font(.title2.weight(.bold))
+                .foregroundStyle(.primary)
+            Text("Type below to begin. Turns run in-place so the next turn sees the work — plan, then implement, in one conversation.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The SPEC-FLOW card(s) for the current thread: the question interview while
@@ -1184,8 +1209,9 @@ struct PrimaryHarnessChip: View {
     }
 }
 
-/// The intent picker (5 modes), styled to the design system with a visible
-/// selection. "Race" runs the eligible pool (engine `agent` + race strategy).
+/// The intent picker, styled to the design system with a visible selection.
+/// "Spec" starts the grounding flow; "Race" runs the eligible pool (engine
+/// `agent` + race strategy).
 /// Strategies (until-clean, max-attempts) live in the composer's "⋯" panel.
 struct IntentMenu: View {
     @Binding var selection: RunMode

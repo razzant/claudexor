@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/config",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Layered config loader (precedence + trust). Sensitive settings never from versioned repo config.",
   "type": "module",
   "main": "./dist/index.js",

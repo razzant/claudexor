@@ -154,7 +154,7 @@ them on demand, but explicit is faster):
 export PATH="$HOME/.claudex/node/bin:$PATH"
 pnpm build           # build the workspace (produces packages/cli/dist/{cli,claudexord}.js)
 pnpm bench:bundle    # esbuild → dist/claudexor-cli.js + dist/claudexord.js (sibling bundles)
-node benchmarks/terminal_bench/dist/claudexor-cli.js --version   # sanity: prints 0.10.0
+node benchmarks/terminal_bench/dist/claudexor-cli.js --version   # sanity: prints the root package version
 ```
 
 The bundles **are the code under test** — to test a different ref, check it out and

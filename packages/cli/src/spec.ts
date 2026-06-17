@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
@@ -37,7 +37,46 @@ export interface SpecCommandResult {
   changes?: SpecFieldChange[];
 }
 
+export interface LoadedFrozenSpec {
+  spec: SpecPack;
+  specPath: string;
+  specHash: string;
+}
+
 const INTERVIEW_KINDS = new Set(["single", "multi", "text"]);
+
+export function loadFrozenSpec(path: string): LoadedFrozenSpec {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new Error(`cannot read --spec '${path}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`invalid --spec '${path}' JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const result = SpecPackSchema.safeParse(parsed);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const where = issue?.path.length ? issue.path.join(".") : "root";
+    const what = issue?.message ?? "schema validation failed";
+    throw new Error(`invalid --spec '${path}' schema at ${where}: ${what}`);
+  }
+
+  let resolved: string;
+  try {
+    resolved = realpathSync(path);
+  } catch (err) {
+    throw new Error(`cannot resolve --spec '${path}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return { spec: result.data, specPath: resolved, specHash: hashJson(result.data) };
+}
 
 /**
  * The grounding-plan instruction that DRIVES extractQuestionsFromPlan: it tells the
@@ -79,6 +118,12 @@ function isMarkdownHeading(line: string): boolean {
   return i >= 1 && i <= 6 && line[i] === " ";
 }
 
+function markdownHeadingText(line: string): string {
+  let i = 0;
+  while (i < line.length && line[i] === "#") i++;
+  return line.slice(i).trim().replace(/\s+#+\s*$/, "");
+}
+
 /** A "no open decisions" sentinel bullet body, e.g. `(none)` / `(none — ...)`. */
 function isNoneBullet(body: string): boolean {
   return !body || body.toLowerCase().startsWith("(none");
@@ -116,22 +161,62 @@ function isPlaceholder(text: string): boolean {
  */
 export function extractQuestionsFromPlan(plan: string): InterviewQuestion[] {
   const lines = plan.split("\n");
-  // Use the LAST "Open Questions" heading, not the first: the grounding prompt is
-  // instructed to END the response with this section, and the prompt ITSELF contains
-  // a literal "## Open Questions" template — if a harness echoes the instruction, the
-  // template would appear earlier, so the real quiz is the final block. (Symmetric
-  // with the terminator: a REAL markdown heading whose text mentions the section, so
-  // a stray `#open questions` non-heading line can't start the block.)
-  let start = -1;
+  // A grounding plan can contain SEVERAL "open questions" headings:
+  //   1. the echoed grounding INSTRUCTION (placeholder template + "Rules:"),
+  //   2. the harness's REAL interview section (what we want),
+  //   3. an orchestrator-appended REVIEW-findings "Open questions" (e.g. a
+  //      NEEDS_HUMAN patch-identity error) — NOT interview questions.
+  // So we can't take the first or the last block. Parse EVERY block and pick the
+  // one with the most STRUCTURED (tagged single/multi) questions; the echoed
+  // instruction block is skipped outright by its signature. (Heading match is a
+  // REAL markdown heading whose text mentions the section, so a stray
+  // `#open questions` non-heading line can't start a block.)
+  const blocks: Array<{ questions: InterviewQuestion[]; afterReviewFindings: boolean }> = [];
+  let afterReviewFindings = false;
   for (let i = 0; i < lines.length; i++) {
     const t = (lines[i] ?? "").trim();
-    if (isMarkdownHeading(t) && t.toLowerCase().includes("open questions")) start = i;
+    if (!isMarkdownHeading(t)) continue;
+    const heading = markdownHeadingText(t).toLowerCase();
+    if (!heading.includes("open questions")) {
+      afterReviewFindings ||= heading.includes("review findings");
+      continue;
+    }
+    const blockLines: string[] = [];
+    for (const raw of lines.slice(i + 1)) {
+      if (isMarkdownHeading(raw.trim())) break; // next real heading ends the block
+      blockLines.push(raw);
+    }
+    // Skip the echoed grounding instruction itself (it carries the format spec, not
+    // real questions). Its placeholder bullets would be dropped anyway, but the
+    // "Rules:" lines could otherwise parse as junk questions.
+    if (blockLines.some((l) => {
+      const low = l.toLowerCase();
+      return low.includes("in exactly this format") || low.includes("[single] = pick exactly one");
+    })) continue;
+    blocks.push({ questions: parseQuestionBullets(blockLines), afterReviewFindings });
   }
-  if (start < 0) return [];
+  // Best block: most tagged (single/multi) questions, tie-broken by total count.
+  // Prefer blocks before a review-findings section so a legacy free-text interview
+  // is not displaced by an appended review error block.
+  let best: InterviewQuestion[] = [];
+  let bestScore: [number, number] = [-1, -1];
+  const candidates = blocks.some((b) => !b.afterReviewFindings) ? blocks.filter((b) => !b.afterReviewFindings) : blocks;
+  for (const { questions: qs } of candidates) {
+    const tagged = qs.filter((q) => q.kind === "single" || q.kind === "multi").length;
+    const score: [number, number] = [tagged, qs.length];
+    if (score[0] > bestScore[0] || (score[0] === bestScore[0] && score[1] > bestScore[1])) {
+      bestScore = score;
+      best = qs;
+    }
+  }
+  return best;
+}
+
+/** Parse the bullets of ONE "open questions" block into interview questions. */
+function parseQuestionBullets(blockLines: string[]): InterviewQuestion[] {
   const questions: InterviewQuestion[] = [];
-  for (const raw of lines.slice(start + 1)) {
+  for (const raw of blockLines) {
     const line = raw.trim();
-    if (isMarkdownHeading(line)) break; // the next real heading ends the block
     if (!line.startsWith("- ") && !line.startsWith("* ")) continue;
     let body = line.slice(2).trim();
     if (isNoneBullet(body)) continue;

@@ -151,6 +151,18 @@ jobs:
           cat > "$notes" <<EOF
           Claudexor ${version} unsigned beta build.
 
+          Highlights:
+          - CLI host plugin lifecycle for Claude Code, Codex, Cursor, and OpenCode:
+            install, status, doctor, repair, and uninstall.
+          - Generated host-native artifacts with Claudexor ownership state under
+            ~/.claudexor/plugins/state.json and uninstall limited to owned entries.
+          - MCP host tools are one-shot final-output calls, not live Claudexor
+            thread parity.
+          - Codex personal-marketplace registration still requires enablement from
+            Codex Plugins.
+          - OpenCode installs skill, command, MCP config, and an
+            experimental.chat.system.transform JS plugin hook.
+
           This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
           The macOS app, DMG, and ZIP are unsigned and not notarized for ${tag}.
           macOS 26 or newer is required.

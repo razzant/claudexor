@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, hashJson, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
+import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
@@ -22,20 +22,20 @@ import {
   type OrchestrateAutonomy,
   Portfolio,
   type ModeKind,
-  SpecPack as SpecPackSchema,
   RunTelemetry,
   TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
-import { flagBool, flagStr, parseArgs, type ParsedArgs } from "./args.js";
+import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, parseArgs, requiredStringFlagError, type ParsedArgs } from "./args.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
 import { ensureDaemon, enqueueAndAwait, exitCodeForState } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
-import { PLUGIN_HOSTS, type PluginHost, installPlugin } from "./plugins.js";
+import { PLUGIN_TARGETS, PLUGIN_VERBS, formatPluginResult, pluginCommandErrorResult, runPluginCommand, type PluginTarget, type PluginVerb } from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
+  loadFrozenSpec,
   loadPreviousSpec,
   persistSpec,
   readAnswers,
@@ -108,7 +108,11 @@ Usage:
   claudexor daemon start|status|stop|logs Optional local daemon (claudexord)
   claudexor mcp serve                     Expose Claudexor as an MCP server (stdio)
   claudexor acp serve                     Expose Claudexor as an ACP agent (stdio)
-  claudexor plugin install <host>         Install thin host plugin (cursor|claude|codex|opencode)
+  claudexor plugin install <host|all>     Install host integration (cursor|claude|codex|opencode|all)
+  claudexor plugin status <host|all>      Inspect host integration status
+  claudexor plugin doctor <host|all>      Verify installed files/config and MCP startup
+  claudexor plugin repair <host|all>      Reapply owned Claudexor host integration files/config
+  claudexor plugin uninstall <host|all>   Remove owned Claudexor host integration files/config
   claudexor harness list [--all]          List real harnesses (--all includes fakes)
   claudexor models [--harness <id>]       List a harness's enumerable models (raw-api: OpenAI GET /v1/models)
   claudexor help                          Show this help
@@ -141,6 +145,8 @@ Options:
   --previous <spec.json>   Previous SpecPack JSON for section-level diff
   --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
   --json                   Machine-readable JSON output
+  --dry-run                Plugin: show lifecycle actions; apply: check patch without mutating
+  --force                  Reapply verified Claudexor-owned plugin drift; never overwrites unowned files
   --help                   Show this help
   --version                Print the CLI version
 `;
@@ -247,38 +253,42 @@ async function orchestrate(
 ): Promise<number> {
   const rawPrompt = args._.slice(1).join(" ").trim();
   const specPath = flagStr(args, "spec");
-  const spec = specPath ? SpecPackSchema.parse(JSON.parse(readFileSync(specPath, "utf8"))) : null;
-  const prompt = spec
+  let loadedSpec: ReturnType<typeof loadFrozenSpec> | null = null;
+  try {
+    loadedSpec = specPath ? loadFrozenSpec(specPath) : null;
+  } catch (err) {
+    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const prompt = loadedSpec
     ? [
-        rawPrompt || spec.intent.raw,
+        rawPrompt || loadedSpec.spec.intent.raw,
         "",
         "Use this frozen Claudexor SpecPack as the contract. Do not re-litigate settled choices; implement against the acceptance criteria and tests.",
         "",
-        `Spec id: ${spec.id} v${spec.version}`,
-        `Spec hash: ${hashJson(spec)}`,
+        `Spec id: ${loadedSpec.spec.id} v${loadedSpec.spec.version}`,
+        `Spec hash: ${loadedSpec.specHash}`,
         "",
         "## Summary",
-        spec.summary || "(none)",
+        loadedSpec.spec.summary || "(none)",
         "",
         "## Acceptance Criteria",
-        ...(spec.success_criteria.length ? spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`) : ["- (none)"]),
+        ...(loadedSpec.spec.success_criteria.length ? loadedSpec.spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`) : ["- (none)"]),
         "",
         "## Non-goals",
-        ...(spec.non_goals.length ? spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),
+        ...(loadedSpec.spec.non_goals.length ? loadedSpec.spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),
         "",
         "## Forbidden approaches",
-        ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
+        ...(loadedSpec.spec.forbidden_approaches.length ? loadedSpec.spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
       ].join("\n")
     : rawPrompt;
+  const spec = loadedSpec?.spec ?? null;
   if (!prompt && mode !== "audit") {
-    process.stderr.write('claudexor: missing prompt\n');
-    return 2;
+    return printUsageError(json, "claudexor: missing prompt");
   }
   const portfolioRaw = flagStr(args, "portfolio");
   const portfolio = portfolioRaw !== undefined ? Portfolio.safeParse(portfolioRaw) : null;
   if (portfolioRaw !== undefined && !portfolio?.success) {
-    process.stderr.write(`claudexor: unknown --portfolio '${portfolioRaw}'\n`);
-    return 2;
+    return printUsageError(json, `claudexor: unknown --portfolio '${portfolioRaw}'`);
   }
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
@@ -288,6 +298,7 @@ async function orchestrate(
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
   let autonomy: OrchestrateAutonomy | undefined;
+  let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
@@ -297,25 +308,23 @@ async function orchestrate(
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
     autonomy = parseAutonomy(flagStr(args, "autonomy"));
+    resolvedSynthesis = synthesisMode(args);
   } catch (err) {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 2;
+    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
   let tests: string[] | undefined;
   try {
     tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
     assertNoInlineSecretValues({ tests }, "$", "CLI run params");
   } catch (err) {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 2;
+    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // `--autonomy` only governs the orchestrate brain's executor; on any other
   // mode it would silently do nothing, so reject it loudly (a misplaced flag is
   // an error, not a no-op).
   if (autonomy !== undefined && mode !== "orchestrate") {
-    process.stderr.write(`claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')\n`);
-    return 2;
+    return printUsageError(json, `claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')`);
   }
 
   // The mutating run paths are DAEMON-TRACKED: they enqueue via the daemon
@@ -339,11 +348,12 @@ async function orchestrate(
       resolvedWebPolicy,
       resolvedAccess,
       resolvedEffort,
+      resolvedSynthesis,
       nFlag,
       attemptsFlag,
       specId: spec?.id,
-      specHash: spec ? hashJson(spec) : undefined,
-      specPath: specPath ? realpathSync(specPath) : undefined,
+      specHash: loadedSpec?.specHash,
+      specPath: loadedSpec?.specPath,
       forced,
     });
   }
@@ -379,10 +389,10 @@ async function orchestrate(
       externalContextPolicy: resolvedWebPolicy,
       model: flagStr(args, "model"),
       effort: resolvedEffort,
-      synthesis: synthesisMode(args),
+      synthesis: resolvedSynthesis,
       specId: spec?.id,
-      specHash: spec ? hashJson(spec) : undefined,
-      specPath: specPath ? realpathSync(specPath) : undefined,
+      specHash: loadedSpec?.specHash,
+      specPath: loadedSpec?.specPath,
       inPlace: flagBool(args, "in-place"),
       // Live progress + interactive answers on a TTY; --json stays a pure
       // machine surface (no printer, no prompts — questions decline benignly).
@@ -407,7 +417,8 @@ async function orchestrate(
     }
     return res.status === "success" ? 0 : 1;
   } catch (err) {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
+    if (json) printJson({ ok: false, exitCode: 1, error: `claudexor: ${err instanceof Error ? err.message : String(err)}` });
+    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -426,6 +437,7 @@ interface DaemonRunParams {
   resolvedWebPolicy: ReturnType<typeof webPolicy>;
   resolvedAccess: ReturnType<typeof accessProfile>;
   resolvedEffort: EffortHint | undefined;
+  resolvedSynthesis: ReturnType<typeof synthesisMode>;
   nFlag: number | undefined;
   attemptsFlag: number | undefined;
   specId: string | undefined;
@@ -463,7 +475,7 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
     ...(flagBool(args, "until-clean") ? { untilClean: true } : {}),
     ...(p.forced.swarm === true || flagBool(args, "swarm") ? { swarm: true } : {}),
     ...(p.forced.create === true || flagBool(args, "create") ? { create: true } : {}),
-    ...(synthesisMode(args) ? { synthesis: synthesisMode(args) } : {}),
+    ...(p.resolvedSynthesis ? { synthesis: p.resolvedSynthesis } : {}),
     ...(p.tests ? { tests: p.tests } : {}),
     ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
@@ -507,7 +519,8 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
     }
     return exitCodeForState(status);
   } catch (err) {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
+    if (json) printJson({ ok: false, exitCode: 1, error: `claudexor: ${err instanceof Error ? err.message : String(err)}` });
+    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -710,6 +723,20 @@ function print(s: string): void {
 
 function printJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
+function printUsageError(json: boolean, error: string): number {
+  if (json) printJson({ ok: false, exitCode: 2, error });
+  else process.stderr.write(`${error}\n`);
+  return 2;
+}
+
+function printPreflightError(args: ParsedArgs, json: boolean, error: string): number {
+  if (json && (args._[0] ?? "help") === "plugin") {
+    printJson(pluginCommandErrorResult(args._[1], args._[2], flagBool(args, "dry-run"), 2, error));
+    return 2;
+  }
+  return printUsageError(json, error);
 }
 
 function primaryOutputForCli(root: string, mode?: ModeKind): { kind: string; path: string; text: string } | null {
@@ -1036,11 +1063,20 @@ const KNOWN_FLAGS = new Set([
   "harness", "mode", "n", "attempts", "until-clean", "swarm", "create", "synthesis",
   "test", "max-usd", "reviewer-model", "reviewer-effort",
   "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place", "autonomy",
-  "answers", "previous", "spec", "json", "all", "dry-run", "from-env",
+  "answers", "previous", "spec", "json", "all", "dry-run", "force", "from-env",
   // `decision` command action/option flags (subcommand-scoped).
   "accept-risk", "override", "revert", "accept-clean-patch", "apply-mode", "rerun", "feedback",
   "help", "version",
 ]);
+
+const VALUE_FLAGS = [
+  "harness", "mode", "n", "attempts", "synthesis", "test", "max-usd",
+  "reviewer-model", "reviewer-effort", "access", "web", "model", "effort",
+  "primary-harness", "portfolio", "autonomy", "answers", "previous", "spec",
+  "from-env", "apply-mode", "feedback",
+];
+
+const PLUGIN_FLAGS = ["json", "dry-run", "force", "help", "version"];
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
@@ -1053,18 +1089,24 @@ async function main(): Promise<number> {
     process.stdout.write(HELP);
     return 0;
   }
+  const json = flagBool(args, "json");
+  const cmd = args._[0] ?? "help";
   const unknownFlags = Object.keys(args.flags).filter((f) => !KNOWN_FLAGS.has(f));
   if (unknownFlags.length > 0) {
-    process.stderr.write(`claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)\n`);
-    return 2;
+    const error = `claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)`;
+    return printPreflightError(args, json, error);
   }
-  const json = flagBool(args, "json");
+  const valueFlagError = requiredStringFlagError(args, VALUE_FLAGS);
+  if (valueFlagError) return printPreflightError(args, json, valueFlagError);
+  const scopedFlagError = commandScopedFlagError(args);
+  if (scopedFlagError) return printPreflightError(args, json, scopedFlagError);
+  const pluginFlagError = commandAllowedFlagError(args, "plugin", PLUGIN_FLAGS);
+  if (pluginFlagError) return printPreflightError(args, json, pluginFlagError);
   // No arguments at all = the interactive REPL: a thread of turns over the
   // current project with native session continuity (chat is the normal loop).
   if (args._.length === 0 && process.stdin.isTTY) {
     return runRepl(process.cwd());
   }
-  const cmd = args._[0] ?? "help";
   const cwd = process.cwd();
 
   switch (cmd) {
@@ -1096,22 +1138,26 @@ async function main(): Promise<number> {
     }
 
     case "run": {
+      const specStrategyError = "claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'";
       const modeStr = flagStr(args, "mode");
       if (modeStr !== undefined) {
         const mode = normalizeMode(modeStr);
         if (!MODES.has(mode)) {
-          process.stderr.write(`claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}\n`);
-          return 2;
+          return printUsageError(json, `claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}`);
         }
         if ((mode === "ask" || mode === "audit") && flagStr(args, "spec")) {
-          process.stderr.write("claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'\n");
-          return 2;
+          return printUsageError(json, specStrategyError);
         }
         return orchestrate(args, mode, json);
       }
-      if (flagStr(args, "spec") && !flagBool(args, "until-clean") && intFlag(args, "attempts") === undefined && intFlag(args, "n") === undefined) {
-        process.stderr.write("claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'\n");
-        return 2;
+      if (flagStr(args, "spec") && !flagBool(args, "until-clean")) {
+        let hasGatedStrategy = false;
+        try {
+          hasGatedStrategy = intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
+        } catch (err) {
+          return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (!hasGatedStrategy) return printUsageError(json, specStrategyError);
       }
       return orchestrate(args, "agent", json);
     }
@@ -1378,22 +1424,42 @@ async function main(): Promise<number> {
 
     case "plugin": {
       const sub = args._[1];
-      const host = args._[2];
-      if (sub === "install" && host && !PLUGIN_HOSTS.includes(host as PluginHost)) {
-        process.stderr.write(`claudexor: unknown plugin host '${host}' (expected ${PLUGIN_HOSTS.join("|")})\n`);
+      const target = args._[2];
+      const dryRun = flagBool(args, "dry-run");
+      if (!sub || !PLUGIN_VERBS.includes(sub as PluginVerb)) {
+        const error = "usage: claudexor plugin <install|status|doctor|repair|uninstall> <cursor|claude|codex|opencode|all> [--dry-run] [--force] [--json]";
+        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
+        else print(error);
         return 2;
       }
-      if (sub === "install" && host) {
-        const r = installPlugin(host as PluginHost);
-        if (json) printJson(r);
-        else {
-          print(`installed claudexor plugin for ${host}: ${r.path}`);
-          print(`  ${r.note}`);
-        }
-        return 0;
+      if (!target || !PLUGIN_TARGETS.includes(target as PluginTarget)) {
+        const error = `claudexor: unknown plugin target '${target ?? ""}' (expected ${PLUGIN_TARGETS.join("|")})`;
+        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
+        else process.stderr.write(`${error}\n`);
+        return 2;
       }
-      print("usage: claudexor plugin install <cursor|claude|codex|opencode>");
-      return 2;
+      if (args._.length > 3) {
+        const error = `claudexor: unexpected plugin argument(s): ${args._.slice(3).join(" ")}`;
+        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
+        else process.stderr.write(`${error}\n`);
+        return 2;
+      }
+      try {
+        const r = await runPluginCommand(sub as PluginVerb, target as PluginTarget, {
+          dryRun,
+          force: flagBool(args, "force"),
+          json,
+        });
+        if (json) printJson(r);
+        else print(formatPluginResult(r));
+        return r.exitCode;
+      } catch (err) {
+        if (json) {
+          printJson(pluginCommandErrorResult(sub, target, dryRun, 1, err instanceof Error ? err.message : String(err)));
+          return 1;
+        }
+        throw err;
+      }
     }
 
     case "harness": {

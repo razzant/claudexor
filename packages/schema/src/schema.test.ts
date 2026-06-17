@@ -164,6 +164,12 @@ describe("Control API schemas", () => {
 
     const specReq = ControlSpecQuestionsRequest.parse({ prompt: "scope it", scope: { kind: "project", root: "/repo" } });
     expect(specReq.scope.root).toBe("/repo");
+    expect(specReq.scope.context).toBe("auto"); // defaulted
+    // The macOS RunScope serializes `context` — the spec scope MUST accept it (a
+    // strict scope without it 400'd /spec/questions before grounding ran).
+    const specWithCtx = ControlSpecQuestionsRequest.parse({ prompt: "x", scope: { kind: "project", root: "/repo", context: "deep" } });
+    expect(specWithCtx.scope.context).toBe("deep");
+    expect(ControlSpecFreezeRequest.parse({ prompt: "x", scope: { kind: "project", root: "/repo", context: "deep" } }).scope.context).toBe("deep");
     expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" })).toThrow();
     expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, contextMode: "off" })).toThrow();
     expect(() => ControlSpecFreezeRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, inPlace: true, plan: "x" })).toThrow();

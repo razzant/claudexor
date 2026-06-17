@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import {
   draftFromPlanAndAnswers,
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
+  loadFrozenSpec,
   persistSpec,
   readAnswers,
   validateAnswers,
@@ -149,6 +150,83 @@ do the thing
     expect(qs[0]?.options.map((o) => o.label)).toEqual(["<stdio.h>", "<stdlib.h>"]); // NOT dropped
   });
 
+  it("picks the harness interview block, NOT the echoed instruction or review-findings (real grounding plan)", () => {
+    // Reproduces a real grounding plan.md: (1) echoed grounding INSTRUCTION with the
+    // placeholder template + Rules, (2) the harness's REAL interview, (3) an
+    // orchestrator-appended review-findings "Open questions" carrying a NEEDS_HUMAN
+    // error. The interview must surface the REAL block, not the error.
+    const plan = `# Plan
+
+## Open Questions
+
+List 2–6 of the MOST important open decisions, one per bullet, in EXACTLY this format:
+
+- [single] <question> :: <option A> :: <option B> :: <option C>
+- [text] <question that has no good fixed options>
+
+Rules:
+- [single] = pick exactly one; [multi] = pick one or more; [text] = free-form (no "::" options).
+
+## Plan
+do the work
+
+## Open Questions
+- [single] How to organize the code? :: keep it in src/main.js :: split into src/*.js
+- [multi] Which combat actions in v1? :: melee :: dash :: ranged
+
+## Review findings
+- 🟠 NEEDS_HUMAN: The declared patch identity does not match the artifact on disk: ... 10550 bytes vs 10551 bytes.
+
+## Open questions
+- The declared patch identity does not match the artifact on disk: DIFF_SHA256.txt declares sha256:66713e and 10550 bytes, but recomputing DIFF.patch produced sha256:f8a439 and 10551 bytes.`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(2);
+    expect(qs[0]?.prompt).toBe("How to organize the code?");
+    expect(qs[0]?.kind).toBe("single");
+    expect(qs[1]?.kind).toBe("multi");
+    // The review-findings patch error must NOT appear as a question.
+    expect(qs.some((q) => q.prompt.includes("patch identity"))).toBe(false);
+  });
+
+  it("keeps a legacy free-text interview block before review-findings questions", () => {
+    const plan = `# Plan
+
+## Open Questions
+- Which session store should own refresh-token state?
+
+## Review findings
+- NEEDS_HUMAN: The implementation evidence is incomplete.
+
+## Open questions
+- The implementation evidence is incomplete.
+- The patch identity needs human review.`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.prompt).toBe("Which session store should own refresh-token state?");
+    expect(qs.some((q) => q.prompt.includes("patch identity"))).toBe(false);
+  });
+
+  it("keeps review-findings context sticky across intervening headings", () => {
+    const plan = `# Plan
+
+## Open Questions
+- Which session store should own refresh-token state?
+
+## Review findings
+- NEEDS_HUMAN: The implementation evidence is incomplete.
+
+## Summary
+Review blocked on evidence.
+
+## Open questions
+- The implementation evidence is incomplete.
+- The patch identity needs human review.`;
+    const qs = extractQuestionsFromPlan(plan);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.prompt).toBe("Which session store should own refresh-token state?");
+    expect(qs.some((q) => q.prompt.includes("patch identity"))).toBe(false);
+  });
+
   it("returns [] for an Open Questions section with only (none) or empty", () => {
     expect(extractQuestionsFromPlan("## Open Questions\n- (none)")).toEqual([]);
     expect(extractQuestionsFromPlan("## Open Questions\n- [text] (none)")).toEqual([]); // (none) after a tag
@@ -211,6 +289,36 @@ do the thing
     expect(specJson).toContain(spec.id);
     expect(projection).toContain(`Claudexor Spec ${spec.id}`);
     expect(projection).toContain("WHEN a magic link is used");
+  });
+
+  it("loads a frozen SpecPack for run commands with resolved path and hash", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-spec-load-"));
+    const spec = await freezeSpecFromGrounding("fix auth", PLAN, {
+      answers: [
+        { question_id: "q1", option_ids: [], text: "single-use" },
+        { question_id: "q2", option_ids: [], text: "sessions" },
+      ],
+    });
+    const persisted = persistSpec(repo, spec, PLAN);
+    const specPath = join(persisted.specDir, "spec.json");
+    const loaded = loadFrozenSpec(specPath);
+
+    expect(loaded.spec.id).toBe(spec.id);
+    expect(loaded.specPath).toBe(realpathSync(specPath));
+    expect(loaded.specHash).toBe(persisted.specHash);
+  });
+
+  it("fails loudly when a run --spec file is missing, malformed, or schema-invalid", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-spec-invalid-"));
+    expect(() => loadFrozenSpec(join(dir, "missing.json"))).toThrow(/cannot read --spec/);
+
+    const malformed = join(dir, "malformed.json");
+    writeFileSync(malformed, "{", "utf8");
+    expect(() => loadFrozenSpec(malformed)).toThrow(/invalid --spec '.*' JSON/);
+
+    const invalid = join(dir, "invalid.json");
+    writeFileSync(invalid, JSON.stringify({ schema_version: "1.0.0" }), "utf8");
+    expect(() => loadFrozenSpec(invalid)).toThrow(/invalid --spec '.*' schema/);
   });
 
   it("draft builder surfaces every unanswered question as NEEDS_CLARIFICATION", () => {

@@ -28,7 +28,7 @@
  *           dist/claudexord.js exist.
  *   Run:    node benchmarks/terminal_bench/scripts/bundle-cli.mjs
  *           (or `pnpm bench:bundle` from the repo root)
- *   Verify: node benchmarks/terminal_bench/dist/claudexor-cli.js --version  -> 0.10.0
+ *   Verify: node benchmarks/terminal_bench/dist/claudexor-cli.js --version  -> current root package version
  *           (claudexord.js is the daemon entry; it is spawned by the CLI, not run by hand)
  *
  * No workspace package pulls in a native (.node) addon, so nothing needs to stay
@@ -36,7 +36,7 @@
  * and ship it alongside the bundles.
  */
 import { build } from "esbuild";
-import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +45,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..", "..");
 const distDir = join(repoRoot, "packages", "cli", "dist");
 const outDir = join(repoRoot, "benchmarks", "terminal_bench", "dist");
+const rootVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version;
 
 // Two SIBLING bundles. The daemon outfile MUST be named exactly `claudexord.js` and
 // land in the SAME dir as the CLI bundle, because ensureDaemon() in daemon-run.ts
@@ -102,5 +103,5 @@ const daemonOut = TARGETS[1].outfile;
 process.stderr.write(
   `[bundle-cli] sibling daemon ${basename(daemonOut)} sits next to ${basename(cliOut)} — ` +
     `ensureDaemon() resolves \`./claudexord.js\` relative to the CLI bundle and finds it.\n` +
-    `[bundle-cli] verify: node ${cliOut} --version  # expect ${repoRoot.includes("Clawdexor") ? "0.10.0" : "the CLI version"}\n`,
+    `[bundle-cli] verify: node ${cliOut} --version  # expect ${rootVersion}\n`,
 );

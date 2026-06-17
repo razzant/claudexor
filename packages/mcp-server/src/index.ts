@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -87,6 +88,11 @@ export class McpServer {
           this.error(id, -32602, `unknown tool: ${params?.name}`);
           return;
         }
+        const validation = validateToolArguments(tool, params?.arguments ?? {});
+        if (validation) {
+          this.error(id, -32602, validation);
+          return;
+        }
         try {
           const text = await tool.handler(params?.arguments ?? {});
           this.reply(id, { content: [{ type: "text", text }] });
@@ -102,6 +108,24 @@ export class McpServer {
         this.error(id, -32601, `method not found: ${method}`);
     }
   }
+}
+
+function validateToolArguments(tool: McpTool, args: unknown): string | null {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "tool arguments must be an object";
+  const obj = args as Record<string, unknown>;
+  const allowed = new Set(Object.keys((tool.inputSchema.properties ?? {}) as Record<string, unknown>));
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) return `unknown argument: ${key}`;
+  }
+  if (tool.name !== "claudexor_status") {
+    if (typeof obj.prompt !== "string" || obj.prompt.trim().length === 0) return "prompt must be a non-empty string";
+  }
+  if (obj.harness !== undefined && typeof obj.harness !== "string") return "harness must be a string";
+  if (obj.repoPath !== undefined && (typeof obj.repoPath !== "string" || !isAbsolute(obj.repoPath))) return "repoPath must be an absolute path";
+  const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
+  const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
+  if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN)) return `n must be an integer >= ${minN}`;
+  return null;
 }
 
 export type RunnerFn = (params: any) => Promise<unknown>;
@@ -128,36 +152,37 @@ function summarizeResult(result: unknown): string {
 
 /** Default Claudexor tool surface for MCP (v0.9: 5 canonical modes + strategy flags). */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
-  const promptSchema = {
+  const promptSchema = (minN = 1) => ({
     type: "object",
+    additionalProperties: false,
     properties: {
-      prompt: { type: "string" },
-      harness: { type: "string" },
-      n: { type: "number" },
-      repoPath: { type: "string", description: "Absolute path of the target project (defaults to the server cwd)." },
+      prompt: { type: "string", minLength: 1, pattern: "\\S", description: "The user task or question to run through Claudexor." },
+      harness: { type: "string", description: "Optional harness id to force for this one-shot run." },
+      n: { type: "integer", minimum: minN, description: "Optional race width for best-of-N routes." },
+      repoPath: { type: "string", description: "Absolute path of the target project. Defaults to the MCP server cwd." },
     },
     required: ["prompt"],
-  };
-  const mk = (name: string, description: string, params: Record<string, unknown>): McpTool => ({
+  });
+  const mk = (name: string, description: string, params: Record<string, unknown>, minN = 1): McpTool => ({
     name,
     description,
-    inputSchema: promptSchema,
+    inputSchema: promptSchema(minN),
     // Return the run SUMMARY / primary output, not the raw internal run object
     // (parity with the ACP server — MCP hosts should not see raw JSON dumps).
     handler: async (args) => summarizeResult(await runner({ ...args, ...params })),
   });
   return [
-    mk("claudexor_ask", "Answer a question through a read-only selected harness route.", { mode: "ask" }),
-    mk("claudexor_explore", "Run a bounded read-only exploration and verified synthesis.", { mode: "audit", swarm: true }),
-    mk("claudexor_run", "Run a task in Agent mode and return the WorkProduct summary.", { mode: "agent" }),
-    mk("claudexor_race", "Best-of-N race (agent --n) with cross-family review.", { mode: "agent", race: true }),
-    mk("claudexor_plan", "Produce a read-only plan.", { mode: "plan" }),
-    mk("claudexor_create", "Create a new project from scratch.", { mode: "agent", create: true }),
-    mk("claudexor_orchestrate", "Brain: produce a typed orchestration plan over the tool belt.", { mode: "orchestrate" }),
+    mk("claudexor_ask", "One-shot read-only answer through Claudexor; returns final output, not a live thread.", { mode: "ask" }),
+    mk("claudexor_explore", "One-shot bounded read-only exploration and synthesis through Claudexor.", { mode: "audit", swarm: true }),
+    mk("claudexor_run", "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary.", { mode: "agent" }),
+    mk("claudexor_race", "One-shot best-of-N Claudexor race with cross-family review.", { mode: "agent", race: true }, 2),
+    mk("claudexor_plan", "One-shot read-only Claudexor implementation plan.", { mode: "plan" }),
+    mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", { mode: "agent", create: true }),
+    mk("claudexor_orchestrate", "One-shot typed Claudexor orchestration plan over the tool belt.", { mode: "orchestrate" }),
     {
       name: "claudexor_status",
-      description: "Return Claudexor/runtime status.",
-      inputSchema: { type: "object", properties: {} },
+      description: "Return doctor-backed Claudexor runtime status for this MCP server.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
       handler: async () => summarizeResult(await runner({ mode: "__status" })),
     },
   ];

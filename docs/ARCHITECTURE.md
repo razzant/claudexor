@@ -102,12 +102,22 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
 - `packages/daemon`: durable local Unix-socket queue and job registry.
 - `packages/interview`: spec interview engine for Plan/draft flows.
-- `packages/cli`, `packages/mcp-server`, `packages/acp-server`: thin surfaces.
+- `packages/cli`: thin command surface plus local host-integration lifecycle
+  (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
+  skill/MCP artifacts and command artifacts where hosts support them. Plugin
+  lifecycle state is user-level local setup state, not a schema/control-api
+  contract.
+- `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces.
 - `benchmarks/runner`: benchmark scaffolds (SWE-bench Verified et al.).
 - `apps/macos`: native app; displays/edits what the engine exposes.
 
 Adapters translate native I/O into `HarnessEvent`s. They do not select winners,
 manage budgets, decide review policy, or orchestrate.
+
+Host integrations are generated translational artifacts: Claude Code, Codex,
+Cursor, and OpenCode files point at the local CLI/MCP server and carry ownership
+markers for safe repair/uninstall. They do not route work or duplicate
+orchestration logic.
 
 ## 4. Routing
 

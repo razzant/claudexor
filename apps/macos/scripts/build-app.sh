@@ -38,7 +38,9 @@ APP="$DIST/Claudexor.app"
 # build). The CLAUDEXOR_VERSION env still overrides for ad-hoc builds.
 REPO_ROOT="$(cd "$MACOS_DIR/../.." && pwd)"
 DERIVED_VERSION="$(sed -nE 's/.*CLAUDEXOR_VERSION = "([^"]+)".*/\1/p' "$REPO_ROOT/packages/util/src/version.ts" 2>/dev/null | head -1)"
-VERSION="${CLAUDEXOR_VERSION:-${DERIVED_VERSION:-0.10.0}}"
+ROOT_VERSION="$(sed -nE 's/.*"version": "([^"]+)".*/\1/p' "$REPO_ROOT/package.json" 2>/dev/null | head -1)"
+VERSION="${CLAUDEXOR_VERSION:-${DERIVED_VERSION:-${ROOT_VERSION:-}}}"
+[ -n "$VERSION" ] || { echo "ERROR: unable to derive Claudexor version" >&2; exit 1; }
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 
 # On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be

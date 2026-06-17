@@ -38,3 +38,30 @@ export function flagStr(args: ParsedArgs, key: string): string | undefined {
 export function flagBool(args: ParsedArgs, key: string): boolean {
   return args.flags[key] === true || args.flags[key] === "true";
 }
+
+export function commandScopedFlagError(args: ParsedArgs): string | null {
+  const cmd = args._[0] ?? "help";
+  if (Object.prototype.hasOwnProperty.call(args.flags, "force") && cmd !== "plugin") return "claudexor: --force is only valid for plugin commands";
+  if (Object.prototype.hasOwnProperty.call(args.flags, "dry-run") && cmd !== "plugin" && cmd !== "apply") {
+    return "claudexor: --dry-run is only valid for plugin and apply commands";
+  }
+  return null;
+}
+
+export function requiredStringFlagError(args: ParsedArgs, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(args.flags, key)) continue;
+    const value = args.flags[key];
+    if (typeof value !== "string" || value.trim() === "") return `claudexor: --${key} requires a value`;
+  }
+  return null;
+}
+
+export function commandAllowedFlagError(args: ParsedArgs, command: string, allowed: readonly string[]): string | null {
+  const cmd = args._[0] ?? "help";
+  if (cmd !== command) return null;
+  const allowedSet = new Set(allowed);
+  const unexpected = Object.keys(args.flags).filter((flag) => !allowedSet.has(flag));
+  if (unexpected.length === 0) return null;
+  return `claudexor: flag(s) not valid for ${command} commands: ${unexpected.map((flag) => `--${flag}`).join(", ")}`;
+}

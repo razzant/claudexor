@@ -143,8 +143,10 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   - **Hover:** clickable rows opt into a lift (deeper shadow + brighter veil);
     static panels never twitch.
   - Settings groups are flat and use no shadow. No heavy, stacked, or black
-    cutout shadows. Row lists (the thread list, any run/finding lists) are
-    **individual floating row-cards with gaps**, not one slab with hairline dividers.
+    cutout shadows. Row lists are **individual floating row-cards with gaps**,
+    not one slab with hairline dividers, except the floating glass thread
+    sidebar: it uses a native `.sidebar` `List` with hidden scroll background so
+    the `sidebarGlass` panel carries the chrome treatment.
 
 ### 2.5 Density
 
@@ -176,6 +178,16 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - **Where Liquid Glass (`glassEffect`) goes:** sidebar, toolbars, the
   inspector/review panel, the floating composer, action controls, sheets,
   popovers, and menus.
+- **The threads sidebar is a FLOATING Liquid Glass panel** (`sidebarGlass`
+  modifier): the list is INSET from the window edges so it floats over the
+  behind-window backdrop, rendered with `.glassEffect(.regular, in:)` inside a
+  `GlassEffectContainer` — not a flush split pane with a hard divider (that read
+  flat/dated, especially in light mode). The `List` hides its scroll background
+  (`.scrollContentBackground(.hidden)`) so the glass shows through; there is no
+  visible divider (the gap floats the panel and an INVISIBLE trailing hot-zone
+  keeps drag-resize). Reduce Transparency → solid `surface/raised` panel +
+  hairline + a soft shadow so it still reads as floating. The conversation is
+  content and stays off glass.
 - **Where frosted materials go (v0.8):** content cards and row-cards — the
   `cardSurface` recipe (`.regularMaterial` + tint veil, top-lit hairline,
   scheme-aware shadow). Materials are NOT `glassEffect`; cards never lens or
@@ -183,7 +195,13 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - **Where neither goes:** behind code, diffs, terminal/transcript output,
   tables, or any dense small text. Those use `surface/code` solids.
 - Use standard structure (`NavigationSplitView` + `.inspector`, `Toolbar`, `Sheet`) to
-  get the material for free; avoid custom backgrounds behind bars/sheets.
+  get the material for free; avoid custom backgrounds behind bars/sheets. EXCEPTION:
+  the v0.10 chat cockpit uses a custom `HStack` (floating `sidebarGlass` panel +
+  conversation) rather than `NavigationSplitView` — the window is custom-clear with a
+  behind-window backdrop, the composer belongs to the detail (not the sidebar), and
+  drag-resize is custom. This is intentional; do not "fix" it by reintroducing
+  `NavigationSplitView` (it would re-plumb the window/backdrop/toolbar and relocate
+  the composer for no visual gain).
 - When a view intentionally uses custom morphing glass, group those elements in a
   `GlassEffectContainer` and share a namespace for morphs. Do not require every
   normal screen/card to opt into custom glass.
@@ -212,23 +230,29 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 - **`GlassEffectContainer { ... }`** — wrap a cluster of glass elements so they share
   one sampling region (constrains the sample zone — it *helps* perf). Group; don't
   scatter bare `glassEffect`s.
-- **Native glass button styles** — `.buttonStyle(.glass)` for chrome actions (intent
-  menu, project/primary chips, "⋯"). The one prominent action (Send) does NOT use
-  `.glassProminent` — system glass-prominent can render near-white on the light-mode
-  glass (invisible). Send uses `AccentButtonStyle`: a SOLID accent capsule with white
-  text, legible in BOTH themes (WCAG). See §5.1.
+- **Chrome controls inside glass** — the chat composer controls use custom solid
+  capsule/menu labels (`IntentMenu`, `ProjectChip`, `PrimaryHarnessChip`, and the
+  options icon button) inside `GlassEffectContainer`, not system `.glass` buttons.
+  That keeps repeated controls legible on the floating glass panel and avoids a
+  glass-on-glass read. Native `.buttonStyle(.glass)` remains available for sparse
+  chrome actions where it stays legible. The one prominent action (Send) does NOT
+  use `.glassProminent` — system glass-prominent can render near-white on the
+  light-mode glass (invisible). Send uses `AccentButtonStyle`: a SOLID
+  `accentSolid` capsule with white text, legible in BOTH themes (WCAG). See §5.1.
 - **Behind-window transparency (the desktop shows faintly through the window, Р5)** —
   three pieces, all required: (1) `GlassBackground` → `NSVisualEffectView`
-  (`.behindWindow` / `.hudWindow`) as the window backdrop, at FULL alpha; (2) the window
-  made non-opaque in `AppDelegate` (`isOpaque=false`, `backgroundColor=.clear`, set
+  with `.behindWindow` blending and appearance-aware material (`.hudWindow` in
+  dark mode, `.fullScreenUI` in light mode) as the window backdrop, at FULL
+  alpha; (2) the window made non-opaque in `AppDelegate` (`isOpaque=false`,
+  `backgroundColor=.clear`, set
   reliably once the window exists — a per-frame SwiftUI guard never fired); (3)
   `.containerBackground(.clear, for: .window)` + `.toolbarBackgroundVisibility(.hidden,
   for: .windowToolbar)` on the root so the SwiftUI container and toolbar don't paint an
   opaque panel over it. Miss any one and the window reads as solid gray. The frost
   comes from the MATERIAL, not a reduced `alphaValue`: lowering the vibrancy view's
   alpha fades the frost and reveals the un-blurred desktop (a flat, too-transparent
-  wash), so the backdrop stays full-alpha and `.hudWindow` (a substantial frosted
-  vibrancy) replaces the most-transparent `.underWindowBackground`. Reduce
+  wash), so the backdrop stays full-alpha and uses the appearance-aware material
+  pair above instead of the most-transparent `.underWindowBackground`. Reduce
   Transparency → solid `surfaceBase`.
 - **Glass vs `Material`** — Liquid Glass is the FLOATING chrome layer; `Material`
   (`.thinMaterial`/`.regularMaterial`, the `cardSurface` recipe) is the CONTENT
@@ -290,25 +314,31 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 - **Chat composer (v0.10 redesign).** ONE floating Liquid-Glass panel
   (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
   Two stacked zones, all with SOLID contents (no glass-on-glass):
-  - a controls row — the intent `Menu` (5 modes: `ask`/`plan`/`audit`/`agent`/Race),
+  - a controls row — the intent `Menu` (Ask, Agent, Plan, Spec, Audit, plus
+    Race as the best-of-N agent strategy),
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
     thread's project, an open thread's repo is bound), the `PrimaryHarnessChip` (which
-    harness answers in chat; sticky on the thread), and the "⋯" button (`.buttonStyle(.glass)`)
-    that opens the advanced options as a native dismissible **`.popover`** — NOT an
-    inline panel (the inline version read as glass-on-glass and was cramped);
+    harness answers in chat; sticky on the thread), and the borderless options icon
+    button with an active accent capsule that opens the advanced options as a native
+    dismissible **`.popover`** — NOT an inline panel (the inline version read as
+    glass-on-glass and was cramped);
   - the input — `GlassField`: a `TextField(axis:.vertical)` on a SOLID `surfaceRaised`
     inset with a real focus ring (scheme-aware — heavier in light mode where a faint
     ring vanishes on white) and 1→6-line growth, with `Send` (`AccentButtonStyle` —
-    solid accent + white text, visible in BOTH themes, ⌘↩, dims when empty).
+    solid `accentSolid` + white text, visible in BOTH themes, ⌘↩, dims when empty).
   The "⋯" popover holds the harness pool chips, per-turn budget/access/web, and agent
   repair strategies as clean SOLID `OptionSection`/`OptionRow` rows.
   Default intent is `Agent`; project intents need a project; a **no-project thread is
-  `Ask`-only** — the controls row hides the primary/"⋯" affordances and shows an inline
-  "Pick a project to use Agent · Plan · Race" hint, the `ProjectChip` highlighted as the
-  affordance (no sending into the void). The draft-state first message materializes the
-  thread. The composer's intent menu surfaces FOUR canonical modes — `ask` / `agent` /
-  `plan` / `audit` — plus **Race** (which is `agent` + the best-of-N strategy flag, not a
-  mode). The fifth canonical mode `orchestrate` (and `explore` / `create`) are intentionally
+  `Ask`-only** — the `ProjectChip` remains visible as the choose-project CTA, the
+  primary harness chip and project-scoped controls are hidden or disabled, the
+  "⋯" options popover remains available for no-project Ask, and an inline
+  "Pick a project to use Agent · Plan · Race" hint prevents sending into the void.
+  Project-only controls inside the options popover are hidden or disabled rather
+  than faking project scope. The draft-state first message materializes the
+  thread. The composer's intent menu surfaces four everyday canonical modes —
+  `ask` / `agent` / `plan` / `audit` — plus **Spec** as the grounding flow and
+  **Race** as `agent` + the best-of-N strategy flag, not a mode. The fifth
+  canonical mode `orchestrate` (and `explore` / `create`) are intentionally
   **CLI-only**: they are power-user / scripted flows, so the composer keeps the everyday
   surface small. race width / until-clean / attempts are engine strategy flags, not modes.
 - **One minimal toolbar, no second header.** The thread title/subtitle live in the
@@ -417,8 +447,9 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   0.6 / 1.5 in dark — a faint ring is invisible on a white field), animation scoped to
   the stroke overlay only. `.lineLimit(1...maxLines)`. NEVER the glass or code surface.
 - **`AccentButtonStyle`** — the Send button (and any "must be visible in both themes"
-  prominent action). SOLID `accent` capsule + white text (NOT system `.glassProminent`,
-  which can vanish on light-mode glass); dims to `accent.opacity(0.35)` when disabled.
+  prominent action). SOLID `accentSolid` capsule + white text (NOT system
+  `.glassProminent`, which can vanish on light-mode glass); dims to
+  `accentSolid.opacity(0.35)` when disabled.
 - **`ProjectChip`** — the composer's working-directory picker. Capsule (logo + folder
   name + chevron) opening a `Menu` of MRU recents (`model.recentProjects`, persisted) +
   "Browse…" (`NSOpenPanel`). In the draft state it sets the new thread's project; an
@@ -473,9 +504,11 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   (e.g. a thread row must use its own `.thread(id)`, not another thread's id) — shared tags
   make one click select multiple rows.
 - **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
-  content uses the shared row/`FindingCard` views. The thread list and any run/finding lists
-  render each row as its OWN floating row-card — `cardSurface(hover: true)` with `Spacing.sm`
-  gaps — not one slab with inset dividers (v0.8 floating-rows decision).
+  content uses the shared row/`FindingCard` views. Run/finding lists render
+  each row as its OWN floating row-card — `cardSurface(hover: true)` with
+  `Spacing.sm` gaps — not one slab with inset dividers (v0.8 floating-rows
+  decision). The thread sidebar is the exception: it uses the native `.sidebar`
+  `List` inside the floating `sidebarGlass` panel per §3.
 - **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8): frosted
   `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one
   scheme-aware separation shadow cast by the shape, optional `hover` lift, and a

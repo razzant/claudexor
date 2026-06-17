@@ -12,6 +12,7 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
+| Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Beta. Installs owned local files/config only; host enablement can still require reload/manual action. |
 
 ## CLI
 
@@ -110,6 +111,49 @@ claudexor mcp serve
 The MCP server is a thin surface over the same engine and run artifacts. Keep MCP
 clients honest: read-only modes stay read-only, unavailable harnesses fail
 loudly, and apply/delivery state comes from server-owned artifacts.
+
+MCP is one-shot in this release. A host receives the final Claudexor output from
+tools such as `claudexor_ask`, `claudexor_plan`, `claudexor_run`,
+`claudexor_race`, and `claudexor_status`; it does not gain live Claudexor
+thread parity through MCP.
+
+## Host Plugins
+
+`claudexor plugin` installs host-native integration artifacts that point Claude
+Code, Codex, Cursor, and OpenCode at the local Claudexor CLI/MCP server. These
+artifacts are translational consumers: they contain instructions, commands where
+the host supports them, and MCP configuration. They do not orchestrate, select
+winners, manage budgets, or decide review policy.
+
+```bash
+claudexor plugin install all
+claudexor plugin status all --json
+claudexor plugin doctor all
+claudexor plugin repair cursor
+claudexor plugin uninstall opencode
+```
+
+Lifecycle state lives under the user Claudexor config directory
+(`~/.claudexor/plugins/state.json` by default). Generated files carry Claudexor
+ownership markers, and uninstall removes only owned files or owned scoped config
+entries. Unknown user files fail loudly instead of being overwritten.
+
+Current host layouts:
+
+- Claude Code: `~/.claude/skills/claudexor/` with plugin manifest, skill,
+  command, and bundled `.mcp.json`.
+- Codex: source under `~/.codex/plugins/claudexor` plus a personal marketplace
+  entry in `~/.agents/plugins/marketplace.json`; this registers a plugin with
+  bundled skill and MCP config, but does not prove it is enabled in Codex.
+- Cursor: local plugin under `~/.cursor/plugins/local/claudexor` with manifest,
+  skill, command, and `mcp.json`.
+- OpenCode: global skill, command, `experimental.chat.system.transform` JS
+  plugin, and `mcp.claudexor` in `~/.config/opencode/opencode.json` or
+  strict-parseable `opencode.jsonc`.
+
+`plugin doctor` checks install health and starts the local Claudexor MCP server.
+It is not harness readiness. Use `claudexor doctor` for Codex/Claude/Cursor/
+OpenCode harness availability and smoke status.
 
 ## ACP
 

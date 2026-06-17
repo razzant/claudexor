@@ -125,6 +125,13 @@ enum Theme {
     enum Metrics {
         /// Leading inset for inter-row dividers so they start past the row's icon column.
         static let rowDividerInset: CGFloat = 56
+        /// Inset of the floating threads sidebar from the window edges. Between
+        /// `Spacing.sm` (8) and `Spacing.md` (12): this is a chrome composition
+        /// metric, not generic content spacing.
+        static let floatingSidebarInset: CGFloat = 10
+        /// Invisible resize affordance width for the floating threads sidebar.
+        /// Kept named so the hit target and offset derive from the same value.
+        static let sidebarResizeHandleWidth: CGFloat = 10
     }
 
     /// Links / inline references — brand, not a separate blue (keeps the palette tight).
@@ -279,12 +286,13 @@ extension View {
 /// nothing animates when the app is idle. Honors Reduce Transparency (solid).
 struct GlassBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if reduceTransparency {
             Theme.surfaceBase
         } else {
-            BehindWindowMaterial()
+            BehindWindowMaterial(colorScheme: colorScheme)
         }
     }
 }
@@ -298,6 +306,10 @@ struct GlassBackground: View {
 /// to flip `isOpaque` and never reliably fired (the desktop stayed hidden), so this
 /// view is now PURE blur with no window side effects.
 private struct BehindWindowMaterial: NSViewRepresentable {
+    /// Drives the material so it adapts to light/dark — `.hudWindow` is a DARK-leaning
+    /// HUD vibrancy: substantial and good in dark mode, but muddy/wrong in light mode.
+    let colorScheme: ColorScheme
+
     /// The window is fully clear (AppDelegate.makeWindowsTranslucent), so this view IS
     /// the visible backdrop — a behind-window frosted vibrancy (matte glass). This is
     /// NOT WWDC25 Liquid Glass (`glassEffect`), which the token doctrine reserves for
@@ -306,20 +318,25 @@ private struct BehindWindowMaterial: NSViewRepresentable {
     /// The frost = the vibrancy MATERIAL's built-in blur + translucency, applied at
     /// FULL alpha. Do NOT lower `alphaValue` to "let more desktop through": that fades
     /// the frost itself and reveals the un-blurred desktop, which reads as a flat,
-    /// too-transparent wash rather than frosted glass (the v0.10.1 bug). `.hudWindow`
-    /// is a substantial frosted vibrancy that still hints at the desktop behind it;
-    /// `.underWindowBackground` (the old material) was the most see-through option.
-    /// Content cards keep their own surfaces and code/diffs stay solid for legibility.
+    /// too-transparent wash rather than frosted glass (the v0.10.1 bug). The material
+    /// is APPEARANCE-AWARE: `.hudWindow` (a rich dark frost) in dark mode, and
+    /// `.fullScreenUI` (a substantial frost that renders correctly in light) in light
+    /// mode — `.hudWindow` in light read as muddy/odd-bordered. Content cards keep
+    /// their own surfaces and code/diffs stay solid for legibility.
+    private var material: NSVisualEffectView.Material {
+        colorScheme == .dark ? .hudWindow : .fullScreenUI
+    }
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.blendingMode = .behindWindow
-        v.material = .hudWindow
+        v.material = material
         v.state = .active
         return v
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = .hudWindow
+        nsView.material = material
     }
 }
 

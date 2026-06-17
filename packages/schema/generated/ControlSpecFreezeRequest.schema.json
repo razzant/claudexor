@@ -16,6 +16,14 @@
             },
             "root": {
               "type": "string"
+            },
+            "context": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "deep"
+              ],
+              "default": "auto"
             }
           },
           "required": [

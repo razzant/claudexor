@@ -170,6 +170,16 @@ extension View {
     func composerGlass(_ shape: RoundedRectangle = RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous)) -> some View {
         modifier(ComposerGlassModifier(shape: shape))
     }
+
+    /// Floating Liquid Glass for the NAVIGATION layer (the threads sidebar): a
+    /// weightless rounded panel that floats over the behind-window backdrop, per
+    /// Apple's macOS 26 guidance (Liquid Glass belongs on the nav layer, not on
+    /// content). The panel content (List) must hide its own scroll background so the
+    /// glass shows through. Degrades to a SOLID raised panel + hairline + soft shadow
+    /// under Reduce Transparency so it still reads as a distinct floating panel.
+    func sidebarGlass(_ shape: RoundedRectangle = RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous)) -> some View {
+        modifier(SidebarGlassModifier(shape: shape))
+    }
 }
 
 private struct ComposerGlassModifier: ViewModifier {
@@ -182,6 +192,29 @@ private struct ComposerGlassModifier: ViewModifier {
                 .overlay(shape.strokeBorder(Theme.separator, lineWidth: 1))
         } else {
             content.glassEffect(.regular, in: shape)
+        }
+    }
+}
+
+private struct SidebarGlassModifier: ViewModifier {
+    let shape: RoundedRectangle
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background(Theme.surfaceRaised, in: shape)
+                .overlay(shape.strokeBorder(Theme.separator, lineWidth: 1))
+                .clipShape(shape)
+                // Reduce-Transparency has no Liquid-Glass depth, so a soft shadow
+                // keeps the solid panel reading as FLOATING over the backdrop.
+                .shadow(color: .black.opacity(0.12), radius: 14, x: 0, y: 6)
+        } else {
+            // Liquid Glass provides its own ambient depth/edge — wrap in a
+            // GlassEffectContainer (Apple's coordinator for glass surfaces) and let
+            // the material float; no extra fill/stroke (that would be glass-on-fill).
+            GlassEffectContainer {
+                content.glassEffect(.regular, in: shape)
+            }
         }
     }
 }

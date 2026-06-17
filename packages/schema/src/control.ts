@@ -160,7 +160,7 @@ export type ControlSetupJobConfirmRequest = z.infer<typeof ControlSetupJobConfir
 export const ControlSpecQuestionsRequest = z
   .object({
     prompt: z.string(),
-    scope: z.object({ kind: z.literal("project"), root: z.string() }).strict(),
+    scope: z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
     harnesses: z.array(z.string()).optional(),
   })
   .strict();
@@ -169,7 +169,7 @@ export type ControlSpecQuestionsRequest = z.infer<typeof ControlSpecQuestionsReq
 export const ControlSpecFreezeRequest = z
   .object({
     prompt: z.string(),
-    scope: z.object({ kind: z.literal("project"), root: z.string() }).strict(),
+    scope: z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
     planDir: z.string().optional(),
     plan: z.string().optional(),
     answers: z.array(z.unknown()).optional(),

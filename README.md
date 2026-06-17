@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.10.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.11.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -261,6 +261,13 @@ local daemon/control API, MCP, and ACP (the external JSON-RPC adapter-protocol p
 surfaces are beta and capability-gated; integrations should not assume every
 subcommand has JSON output or every harness supports live steering.
 
+Host integrations are managed by `claudexor plugin
+install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.
+They install user-global host-native artifacts plus MCP wiring while keeping
+Claudexor as the orchestration owner. Codex is registered in the personal plugin
+marketplace and still requires enablement from Codex Plugins. MCP tools are
+one-shot final-output calls, not live Claudexor thread parity.
+
 See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for the current integration
 matrix and limitations.
 
@@ -323,6 +330,16 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
+- **v0.11.0** — host plugin lifecycle: `claudexor plugin` now manages
+  user-global Claude Code, Codex, Cursor, and OpenCode integrations with
+  generated skill/MCP artifacts plus command artifacts where the host supports
+  them, ownership state, dry-run/status/doctor/repair/uninstall flows, Codex
+  personal-marketplace registration, OpenCode skill/command/experimental
+  JS-plugin/MCP wiring, and install-health checks that keep host integration
+  readiness separate from harness doctor readiness.
+- **v0.10.0** — chat-first macOS beta: one-screen thread list, conversation,
+  and inspector; in-place thread turns; honest run outcomes; static
+  behind-window glass replacing the old animated mesh.
 - **v0.9.0** — chat/session-first + harness-agnostic truth: modes collapse 9→5
   (`ask`/`plan`/`audit`/`agent`/`orchestrate`; strategies are flags); threads
   with native session resume across read-only turns (codex `exec resume`,
