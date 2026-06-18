@@ -1,6 +1,6 @@
 {
   "name": "claudexor-benchmark-runner",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "SWE-bench Verified prediction runner (claudexor-bench): exported tasks -> claudexor run per instance -> official-shape predictions.",
   "private": true,
   "type": "module",

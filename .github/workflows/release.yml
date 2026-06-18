@@ -127,6 +127,16 @@ jobs:
           done
           shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256"
           shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256"
+          test -f "apps/macos/dist/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
+            echo "::error::Packaged app is missing the SwiftPM resource bundle."
+            exit 1
+          }
+          zipstage="$(mktemp -d)"
+          /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}-unsigned.zip" "$zipstage"
+          test -f "$zipstage/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
+            echo "::error::Release ZIP app is missing the SwiftPM resource bundle."
+            exit 1
+          }
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -152,16 +162,11 @@ jobs:
           Claudexor ${version} unsigned beta build.
 
           Highlights:
-          - CLI host plugin lifecycle for Claude Code, Codex, Cursor, and OpenCode:
-            install, status, doctor, repair, and uninstall.
-          - Generated host-native artifacts with Claudexor ownership state under
-            ~/.claudexor/plugins/state.json and uninstall limited to owned entries.
-          - MCP host tools are one-shot final-output calls, not live Claudexor
-            thread parity.
-          - Codex personal-marketplace registration still requires enablement from
-            Codex Plugins.
-          - OpenCode installs skill, command, MCP config, and an
-            experimental.chat.system.transform JS plugin hook.
+          - macOS packaging now embeds the SwiftPM resource bundle required by
+            Bundle.module, so release artifacts launch outside the build machine.
+          - The release workflow verifies the packaged app and ZIP contain that
+            resource bundle before uploading assets.
+          - Includes the self-contained macOS app with bundled claudexord and Node.
 
           This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
           The macOS app, DMG, and ZIP are unsigned and not notarized for ${tag}.
