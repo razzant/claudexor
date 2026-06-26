@@ -721,6 +721,16 @@ struct ThreadsScreen: View {
         // error) — restore the prompt in that case, mirroring composerSend below
         // (and only when the user hasn't typed a replacement in the meantime).
         if mode == .spec {
+            // Spec drives the server-owned interview — there is no turn to carry
+            // attachment bytes, so they'd be silently dropped here. Be honest:
+            // restore the staged chips + prompt and surface a visible status
+            // instead of pretending the attachment went along for the ride.
+            if !atts.isEmpty {
+                composerAttachments = atts
+                composerText = text
+                model.threadStatus = "Spec interview can't take attachments — remove them or switch out of Spec mode."
+                return
+            }
             Task {
                 // Carry the per-turn model + options so the eventual Implement turn
                 // honors the visible composer controls (not silently dropped).
@@ -746,23 +756,39 @@ struct ThreadsScreen: View {
            let info = model.harnesses.first(where: { $0.id == primary }) {
             return info.acceptsImages
         }
-        // No resolved primary (auto-pool / no-project): allow if ANY harness can.
-        return model.harnesses.contains { $0.acceptsImages }
+        // No resolved primary: the engine auto-pools and may route to ANY harness
+        // in the effective eligible pool, so only offer attach when EVERY routable
+        // harness can take images — otherwise the image would be silently dropped
+        // on whichever non-vision harness the pool picks.
+        let pool = model.effectiveEligiblePool
+        let routable = pool.isEmpty ? model.harnesses : model.harnesses.filter { pool.contains($0.id) }
+        guard !routable.isEmpty else { return false }
+        return routable.allSatisfy { $0.acceptsImages }
     }
+
+    /// Spec mode runs the server-owned interview, which has no turn to carry bytes —
+    /// gate attach/capture off in Spec so we never let the user stage an attachment
+    /// the send path would silently drop.
+    private var attachmentsAllowed: Bool { primaryAcceptsImages && composerMode != .spec }
 
     private var attachButton: some View {
         Button { pickAttachments() } label: {
             Image(systemName: "paperclip")
                 .imageScale(.medium)
-                .foregroundStyle(primaryAcceptsImages ? Color.secondary : Color.secondary.opacity(0.4))
+                .foregroundStyle(attachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
                 .padding(.horizontal, Theme.Spacing.xs)
                 .padding(.vertical, Theme.Controls.chipVPadding)
         }
         .buttonStyle(.borderless)
-        .disabled(!primaryAcceptsImages)
-        .help(primaryAcceptsImages
-              ? "Attach images or files for the primary harness"
-              : "The primary harness can't take attachments — switch it in the composer")
+        .disabled(!attachmentsAllowed)
+        .help(attachButtonHelp)
+    }
+
+    private var attachButtonHelp: String {
+        if composerMode == .spec { return "Spec interview can't take attachments" }
+        return primaryAcceptsImages
+            ? "Attach images for the primary harness"
+            : "The primary harness can't take attachments — switch it in the composer"
     }
 
     private var attachmentChips: some View {
@@ -793,13 +819,17 @@ struct ThreadsScreen: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
+        // Only images can ride the harness path today — restrict the picker so the
+        // UI never promises file support it can't honor, and defensively skip any
+        // non-image that slips through.
+        panel.allowedContentTypes = [.image]
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
             guard let data = try? Data(contentsOf: url) else { continue }
             let mime = Self.mimeType(for: url)
-            let kind = mime.hasPrefix("image/") ? "image" : "file"
+            guard mime.hasPrefix("image/") else { continue }
             composerAttachments.append(AttachmentInput(
-                kind: kind, mime: mime, name: url.lastPathComponent,
+                kind: "image", mime: mime, name: url.lastPathComponent,
                 data: data.base64EncodedString()))
         }
     }
@@ -813,15 +843,20 @@ struct ThreadsScreen: View {
         Button { captureScreenshot() } label: {
             Image(systemName: "camera.viewfinder")
                 .imageScale(.medium)
-                .foregroundStyle(primaryAcceptsImages ? Color.secondary : Color.secondary.opacity(0.4))
+                .foregroundStyle(attachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
                 .padding(.horizontal, Theme.Spacing.xs)
                 .padding(.vertical, Theme.Controls.chipVPadding)
         }
         .buttonStyle(.borderless)
-        .disabled(!primaryAcceptsImages)
-        .help(primaryAcceptsImages
-              ? "Capture a screen region to attach (you pick the area)"
-              : "The primary harness can't take attachments — switch it in the composer")
+        .disabled(!attachmentsAllowed)
+        .help(captureButtonHelp)
+    }
+
+    private var captureButtonHelp: String {
+        if composerMode == .spec { return "Spec interview can't take attachments" }
+        return primaryAcceptsImages
+            ? "Capture a screen region to attach (you pick the area)"
+            : "The primary harness can't take attachments — switch it in the composer"
     }
 
     /// Grab a screen region via the system `screencapture` (interactive crosshair),

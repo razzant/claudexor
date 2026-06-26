@@ -1398,8 +1398,12 @@ final class AppModel {
         setSpecFlow(.freezing, for: tid)
         do {
             let res = try await client.specFreeze(
+                // priorDecisions = every EARLIER tier's decisions (the current tier
+                // rides `answers`); folded into the frozen SpecPack so a multi-tier
+                // spec doesn't lose tiers 0..N-1 (#8/#9).
                 SpecFreezeRequest(prompt: prompt, scope: .project(root: repoRoot),
-                                  planDir: planDir, answers: answers)
+                                  planDir: planDir, answers: answers,
+                                  priorDecisions: specPrior[tid] ?? [])
             )
             // Keyed by `tid`: record on the owning thread even if the user navigated
             // away during the freeze await (the getter hides a non-current card), so

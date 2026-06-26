@@ -619,6 +619,12 @@ export class Orchestrator {
       }
     }
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
+    // Vision is a capability: a run carrying an image attachment must route to a
+    // harness that can actually deliver it (image_input != "none"). Routing an
+    // image to cursor/opencode (image_input="none") silently drops it and the
+    // model honestly reports it saw nothing — the schema's attachment contract
+    // (attachment.ts) promises the opposite. Gate the pool below, mirroring web.
+    const needsVision = (input.attachments ?? []).some((a) => a.kind === "image");
     const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
     for (const id of ids) {
@@ -676,6 +682,14 @@ export class Orchestrator {
         (routeWebRequired && (webSupport === "none" || webSupport === "uncontrolled"));
       if (webIncompatible) {
         const why = `${id} cannot enforce web policy '${routePolicy}' (manifest web_policy=${webSupport})`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
+      // Vision gate: an image-bearing run only routes to vision-capable harnesses.
+      // Exclude blind ones from auto-pools; fail loud if the user explicitly chose one.
+      if (needsVision && manifest.capability_profile.image_input === "none") {
+        const why = `${id} cannot accept image attachments (manifest image_input=none); route an image to a vision-capable harness (claude/codex/raw-api)`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;
@@ -2846,6 +2860,9 @@ export class Orchestrator {
         prompt: this.planPrompt(input.prompt) + contextSection + this.relayPriorPlansSection(plans),
         cwd: this.execRootOf(input),
         access: "readonly",
+        // Planners must SEE any image/file the user attached (e.g. "plan a fix for
+        // what's in this screenshot"), not just agent/race runs.
+        attachments: input.attachments ?? [],
         ...this.sessionSpecFields(input, adapter.id),
         external_context_policy: knobs.webPolicy,
         tool_permission_policy: {
@@ -2886,7 +2903,11 @@ export class Orchestrator {
             if (input.signal?.aborted) break;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
-            this.observeNativeSession(input, adapter.id, safeEv);
+            // NOT observed for resume: this read-only/plan attempt runs in a
+            // DISPOSABLE roHome (disposed below), so its native session id is
+            // unreachable afterwards. Recording it would poison the thread resume
+            // map with dead ids — the read-side mirror of the agent path's
+            // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
             this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));
@@ -3301,6 +3322,10 @@ export class Orchestrator {
         prompt: explorerPrompt,
         cwd: this.execRootOf(input),
         access: "readonly",
+        // ASK/EXPLORE/AUDIT read-only runs must forward the user's attachments —
+        // "что видишь на картинке?" sent an image that was being dropped here, so
+        // the model honestly reported it saw nothing (the v0.13 attachment bug).
+        attachments: input.attachments ?? [],
         auth_preference: sessionFields.auth_preference,
         resume_session_id: grantResume ? sessionFields.resume_session_id : null,
         external_context_policy: knobs.webPolicy,
@@ -3343,7 +3368,11 @@ export class Orchestrator {
             if (input.signal?.aborted) break;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(input.onHarnessEvent, safeEv);
-            this.observeNativeSession(input, adapter.id, safeEv);
+            // NOT observed for resume: this read-only/plan attempt runs in a
+            // DISPOSABLE roHome (disposed below), so its native session id is
+            // unreachable afterwards. Recording it would poison the thread resume
+            // map with dead ids — the read-side mirror of the agent path's
+            // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
             this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             appendLine(attemptEventsPath, JSON.stringify(safeEv));

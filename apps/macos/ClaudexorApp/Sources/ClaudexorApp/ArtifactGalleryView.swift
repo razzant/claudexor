@@ -60,6 +60,7 @@ private struct ArtifactCard: View {
     let runId: String
     let art: ArtifactInfo
     @State private var image: NSImage?
+    @State private var imageLoadFailed = false
     @State private var text: String?
     @State private var showText = false
 
@@ -89,6 +90,9 @@ private struct ArtifactCard: View {
         Group {
             if isImage, let image {
                 Image(nsImage: image).resizable().scaledToFit()
+            } else if isImage, imageLoadFailed {
+                Image(systemName: "photo.badge.exclamationmark").font(.system(size: 28)).foregroundStyle(.secondary)
+                    .help("Too large to preview — tap to open externally")
             } else {
                 Image(systemName: glyph).font(.system(size: 28)).foregroundStyle(.secondary)
             }
@@ -127,12 +131,24 @@ private struct ArtifactCard: View {
             Task { await loadText(); showText = true }
         } else if !isImage {
             Task { await openExternally() }
+        } else if image == nil {
+            // Un-previewable / oversize image: hand the bytes to the system opener
+            // instead of leaving a silent dead-end blank card.
+            Task { await openExternally() }
         }
     }
 
     private func loadImage() async {
-        guard image == nil, let data = await model.artifactBytes(runId: runId, path: art.path) else { return }
-        image = NSImage(data: data)
+        guard image == nil, !imageLoadFailed else { return }
+        guard let data = await model.artifactBytes(runId: runId, path: art.path) else {
+            imageLoadFailed = true
+            return
+        }
+        if let loaded = NSImage(data: data) {
+            image = loaded
+        } else {
+            imageLoadFailed = true
+        }
     }
 
     private func loadText() async {

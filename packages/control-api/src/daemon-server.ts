@@ -135,6 +135,9 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
 /** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
+/** Larger cap for binary artifacts (images, etc.): they are naturally bounded and
+ * the small cap exists to protect the event loop from multi-MB text logs, not binaries. */
+const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 /** Timeline projection cap (with explicit truncation marker). */
 const TIMELINE_EVENTS_MAX = 250;
 const NO_PROJECT_ROOT = noProjectRepoRoot();
@@ -633,10 +636,14 @@ export class DaemonControlApiServer {
       if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
       // Size cap: a multi-MB events.jsonl must not block the event loop or the
       // client; refuse loudly with the real size so callers can range/tail it.
+      // Binary artifacts (images) are naturally bounded and get a larger cap —
+      // the small cap only ever protected the event loop from huge text logs.
       const stats = lstatSync(target);
-      if (stats.size > MAX_ARTIFACT_FETCH_BYTES) {
+      const isText = isTextArtifact(target);
+      const cap = isText ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
+      if (stats.size > cap) {
         return this.json(res, 413, {
-          error: `artifact is ${stats.size} bytes (limit ${MAX_ARTIFACT_FETCH_BYTES}); read it from disk at ${target}`,
+          error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`,
           bytes: stats.size,
         });
       }

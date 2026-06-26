@@ -470,13 +470,26 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       // (missing/typed question_id, bad option_ids) fails loudly with a typed error,
       // rather than slipping through an `as never[]` cast. Absent => no answers.
       const answers = p["answers"] === undefined ? [] : InterviewAnswer.array().parse(p["answers"]);
+      // Multi-tier interview: prior-tier decisions are folded into decided_tradeoffs
+      // so the frozen SpecPack carries EVERY tier, not just the last one the client
+      // sent as `answers` (the v0.13 freeze-drops-prior-tiers bug, #8/#9).
+      const priorDecisions = Array.isArray(p["priorDecisions"])
+        ? (p["priorDecisions"] as unknown[]).filter(
+            (d): d is { question: string; answer: string } =>
+              !!d && typeof (d as { question?: unknown }).question === "string" && typeof (d as { answer?: unknown }).answer === "string",
+          )
+        : [];
+      const priorLines = priorDecisions.map((d) => `Interview (prior tier) — ${d.question} → ${d.answer}`);
+      const explicitTradeoffs = strArr(p["decided_tradeoffs"], "decided_tradeoffs") ?? [];
+      const mergedTradeoffs = [...priorLines, ...explicitTradeoffs];
       const spec = await freezeSpecFromGrounding(prompt, plan, {
         answers,
         summary: strOpt(p["summary"], "summary"),
         success_criteria: strArr(p["success_criteria"], "success_criteria"),
         non_goals: strArr(p["non_goals"], "non_goals"),
         forbidden_approaches: strArr(p["forbidden_approaches"], "forbidden_approaches"),
-        decided_tradeoffs: strArr(p["decided_tradeoffs"], "decided_tradeoffs"),
+        // undefined-when-empty keeps single-tier behavior byte-identical.
+        decided_tradeoffs: mergedTradeoffs.length ? mergedTradeoffs : undefined,
         tests: strArr(p["tests"], "tests"),
       });
       const persisted = persistSpec(repoRoot, spec, plan);

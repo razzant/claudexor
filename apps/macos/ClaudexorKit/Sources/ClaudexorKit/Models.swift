@@ -498,14 +498,18 @@ public struct SpecFreezeRequest: Codable, Sendable {
     public var planDir: String?
     public var plan: String?
     public var answers: [SpecAnswer]?
+    /// Accumulated prior-tier interview decisions, folded into the frozen
+    /// SpecPack's decided_tradeoffs so a multi-tier spec keeps every tier.
+    public var priorDecisions: [SpecPriorDecision]?
 
     public init(prompt: String, scope: RunScope, planDir: String? = nil,
-                plan: String? = nil, answers: [SpecAnswer]? = nil) {
+                plan: String? = nil, answers: [SpecAnswer]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
         self.prompt = prompt
         self.scope = scope
         self.planDir = planDir
         self.plan = plan
         self.answers = answers
+        self.priorDecisions = priorDecisions
     }
 }
 

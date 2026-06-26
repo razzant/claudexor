@@ -41,6 +41,25 @@
         "answers": {
           "type": "array",
           "items": {}
+        },
+        "priorDecisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "answer"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

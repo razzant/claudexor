@@ -236,8 +236,15 @@ export function codexExecArgs(
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
-    args.push(...codexImageArgs(spec.attachments));
+    const imageArgs = codexImageArgs(spec.attachments);
+    args.push(...imageArgs);
     args.push(...codexBrowserArgs(spec.browser));
+    // `codex exec -i/--image <FILE>...` is VARIADIC, so a positional prompt placed
+    // right after it is swallowed as another "image" — the model then receives no
+    // prompt and never sees the attachment (the v0.13 "I don't see the image" bug).
+    // Terminate option parsing with `--` so the prompt stays the prompt.
+    // LIVE-VERIFIED on codex 0.142: `-i <path> -- "<prompt>"` => image IS described.
+    if (imageArgs.length > 0) args.push("--");
     args.push(spec.prompt);
     return args;
   }
@@ -245,8 +252,13 @@ export function codexExecArgs(
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
-  args.push(...codexImageArgs(spec.attachments));
+  const imageArgs = codexImageArgs(spec.attachments);
+  args.push(...imageArgs);
   args.push(...codexBrowserArgs(spec.browser));
+  // Variadic `-i/--image <FILE>...` would swallow the positional prompt — terminate
+  // option parsing with `--` so the prompt survives (the v0.13 image bug). See the
+  // resume branch above; LIVE-VERIFIED on codex 0.142.
+  if (imageArgs.length > 0) args.push("--");
   args.push(spec.prompt);
   return args;
 }

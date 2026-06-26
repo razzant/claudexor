@@ -52,3 +52,46 @@ describe("codexBrowserArgs", () => {
     expect(args.join(" ")).not.toContain("mcp_servers.browser");
   });
 });
+
+describe("codexExecArgs image attachments", () => {
+  const imageSpec = (resume: boolean) => ({
+    access: "readonly" as const,
+    model_hint: null,
+    effort_hint: null,
+    external_context_policy: "auto" as const,
+    prompt: "что видишь на картинке?",
+    attachments: [{ id: "a1", kind: "image" as const, mime: "image/png", name: "f.png", path: "/tmp/f.png" }],
+    browser: null,
+    ...(resume ? { resume_session_id: "ses-x" } : {}),
+  });
+
+  // Regression: `codex exec -i/--image <FILE>...` is VARIADIC, so a positional
+  // prompt placed directly after `-i <path>` is swallowed as a second "image" and
+  // codex falls back to (empty) stdin -> the model sees neither image nor prompt
+  // (the v0.13 "I don't see the image" bug). A `--` terminator must separate them.
+  for (const resume of [false, true]) {
+    it(`terminates -i with -- so the prompt survives (${resume ? "resume" : "fresh"} path)`, () => {
+      const args = codexExecArgs(imageSpec(resume));
+      const iIdx = args.indexOf("-i");
+      const dashIdx = args.indexOf("--");
+      expect(iIdx).toBeGreaterThanOrEqual(0); // image is passed
+      expect(args[iIdx + 1]).toBe("/tmp/f.png"); // path follows -i
+      expect(dashIdx).toBeGreaterThan(iIdx); // -- comes AFTER -i
+      expect(args[args.length - 1]).toBe("что видишь на картинке?"); // prompt is the final positional, not eaten
+    });
+  }
+
+  it("adds no -- terminator when there are no image attachments", () => {
+    const args = codexExecArgs({
+      access: "readonly",
+      model_hint: null,
+      effort_hint: null,
+      external_context_policy: "auto",
+      prompt: "plain",
+      attachments: [],
+      browser: null,
+    });
+    expect(args).not.toContain("--");
+    expect(args[args.length - 1]).toBe("plain");
+  });
+});

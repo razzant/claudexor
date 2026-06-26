@@ -183,6 +183,10 @@ export const ControlSpecFreezeRequest = z
     planDir: z.string().optional(),
     plan: z.string().optional(),
     answers: z.array(z.unknown()).optional(),
+    /** Accumulated prior-tier interview decisions. Folded into the frozen
+     *  SpecPack's decided_tradeoffs so a MULTI-TIER spec carries every tier, not
+     *  just the last (mirror of ControlSpecQuestionsRequest.priorDecisions). */
+    priorDecisions: z.array(z.object({ question: z.string(), answer: z.string() })).optional(),
   })
   .strict();
 export type ControlSpecFreezeRequest = z.infer<typeof ControlSpecFreezeRequest>;
