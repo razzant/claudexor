@@ -61,7 +61,7 @@ struct RootView: View {
             .padding([.horizontal, .top], Theme.Spacing.sm)
             switch workbenchMode {
             case .runDetail: runDetailContent
-            case .canvas: CanvasView(runId: openRunId)
+            case .canvas: CanvasView(runId: openRunId, repoRoot: openRepoRoot)
             }
         }
     }
@@ -69,6 +69,12 @@ struct RootView: View {
     private var openRunId: String? {
         if case .task(let id) = model.route { return id }
         return nil
+    }
+
+    /// The open task's project root — drives the Canvas browser auto-load.
+    private var openRepoRoot: String? {
+        guard let id = openRunId else { return nil }
+        return model.task(id)?.repoRoot
     }
 
     @ViewBuilder private var runDetailContent: some View {

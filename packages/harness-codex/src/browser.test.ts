@@ -1,5 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { codexBrowserArgs, codexExecArgs } from "./index.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { codexBrowserArgs, codexConfigHasNodeRepl, codexExecArgs } from "./index.js";
+
+describe("node_repl suppression — config-aware (must never break scoped homes)", () => {
+  const spec = { access: "readonly" as const, model_hint: null, effort_hint: null, external_context_policy: "auto" as const, prompt: "go", attachments: [], browser: null };
+
+  it("does NOT touch node_repl by default (no opts) — the unconditional override created an invalid transport-less entry on scoped homes", () => {
+    expect(codexExecArgs(spec).join(" ")).not.toContain("node_repl");
+    expect(codexExecArgs({ ...spec, resume_session_id: "s" }).join(" ")).not.toContain("node_repl");
+  });
+
+  it("disables node_repl in BOTH exec branches when suppressNodeRepl is set", () => {
+    expect(codexExecArgs(spec, { suppressNodeRepl: true }).join(" ")).toContain("mcp_servers.node_repl.enabled=false");
+    expect(codexExecArgs({ ...spec, resume_session_id: "s" }, { suppressNodeRepl: true }).join(" ")).toContain("mcp_servers.node_repl.enabled=false");
+  });
+
+  it("codexConfigHasNodeRepl is true ONLY when the loaded config actually defines node_repl", () => {
+    const withNR = mkdtempSync(join(tmpdir(), "cdx-nr-"));
+    writeFileSync(join(withNR, "config.toml"), '[mcp_servers.node_repl]\ncommand = "x"\n');
+    expect(codexConfigHasNodeRepl(withNR)).toBe(true);
+    const without = mkdtempSync(join(tmpdir(), "cdx-empty-"));
+    writeFileSync(join(without, "config.toml"), 'model = "x"\n');
+    expect(codexConfigHasNodeRepl(without)).toBe(false); // scoped home with no node_repl => no injection => no "invalid transport"
+    const missing = mkdtempSync(join(tmpdir(), "cdx-none-"));
+    expect(codexConfigHasNodeRepl(missing)).toBe(false); // no config.toml at all
+  });
+});
 
 describe("codexBrowserArgs", () => {
   it("injects nothing when no browser this run", () => {
@@ -76,6 +104,7 @@ describe("codexExecArgs image attachments", () => {
       const dashIdx = args.indexOf("--");
       expect(iIdx).toBeGreaterThanOrEqual(0); // image is passed
       expect(args[iIdx + 1]).toBe("/tmp/f.png"); // path follows -i
+      expect(args[iIdx + 2]).toBe("--"); // `--` IMMEDIATELY after the path: no `-c` config wedged between -i and -- (would be eaten by variadic -i)
       expect(dashIdx).toBeGreaterThan(iIdx); // -- comes AFTER -i
       expect(args[args.length - 1]).toBe("что видишь на картинке?"); // prompt is the final positional, not eaten
     });
@@ -94,4 +123,5 @@ describe("codexExecArgs image attachments", () => {
     expect(args).not.toContain("--");
     expect(args[args.length - 1]).toBe("plain");
   });
+
 });

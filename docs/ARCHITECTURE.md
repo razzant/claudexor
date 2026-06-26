@@ -371,6 +371,7 @@ artifact/delivery facade:
   the tree has diverged from the recorded post-turn state)
 - `POST /runs/:id/interactions/:id/answer` (deliver a waiting_on_user answer)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
 - `GET /harnesses`, `GET /harnesses/:id/models`
@@ -601,10 +602,11 @@ The macOS app is a native control surface over the control API:
   Run Detail (a run's tabs) has explicit `Outcome`, `Timeline`, `Plan`,
   `Candidates`, `Diff`, `Review`, `Artifacts`, and `Diagnostics` tabs; completed
   runs open on Outcome, active runs on Timeline, and failures without output on
-  Diagnostics. **Canvas** hosts the artifacts gallery (markdown/code/image/pdf,
-  rendered from the binary-aware artifact serve) and a user-driven mini-browser
-  (`WKWebView`: localhost dev-server previews, rendered run outputs, arbitrary
-  URLs) on solid surfaces;
+  Diagnostics. **Canvas** hosts the artifacts gallery — the project's PRODUCED
+  outputs (the repo `artifacts/` dir) via `GET /runs/:id/produced`, images inline,
+  distinct from Run Detail's `/runs/:id/artifacts` orchestration tree — and a
+  user-driven mini-browser (`WKWebView` via `loadFileURL`: the project's
+  `index.html`, localhost dev-server previews, arbitrary URLs) on solid surfaces;
 - review/findings and diff/apply are INLINE per turn (on the turn that produced
   them and in the inspector's Review/Diff tabs), not a separate Review-Queue
   screen; their rows use stable solid metrics and must not force the app window to

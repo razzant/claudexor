@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.11.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.13.2 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -171,6 +171,7 @@ loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
 - `GET /events` (global live-only run-event multiplex)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
 - `GET /harnesses`, `GET /harnesses/:id/models`
@@ -274,8 +275,8 @@ itself. Paste something like this into Cursor, Claude Code, Codex, or OpenCode:
 ```text
 Install Claudexor's host integration for this app. First find the local
 Claudexor CLI: prefer an existing `claudexor` command; otherwise, if this repo
-is checked out at /Users/anton/Clawdexor, use
-`PATH="$HOME/.claudex/node/bin:$PATH" node /Users/anton/Clawdexor/packages/cli/dist/cli.js`.
+is checked out at <REPO_ROOT> (the directory containing this README), use
+`PATH="$HOME/.claudex/node/bin:$PATH" node <REPO_ROOT>/packages/cli/dist/cli.js`.
 
 Run the matching command for this host:
 - Claude Code: `claudexor plugin install claude`
@@ -378,6 +379,25 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
+- **v0.13.2** — Canvas + node_repl fix: the Canvas Artifacts panel now shows the
+  PROJECT's produced outputs (the repo `artifacts/` dir, served via
+  `GET /runs/:id/produced`, images inline, the Browser tab auto-renders the
+  project `index.html`) — distinct from Run Detail's run-internal artifact tree;
+  and Codex.app's inherited `node_repl` MCP, which can't run headless and failed
+  otherwise-clean runs, is now disabled config-aware (only when it is actually
+  defined in the config codex loads — never on a scoped home, which avoids an
+  "invalid transport" config-load break).
+- **v0.13.1** — attachment fix: user-attached images now reach the model
+  (orchestrator forwards attachments in every run path; the codex adapter
+  terminates the variadic `-i` with `--` so the prompt survives), an image-bearing
+  run only routes to vision-capable harnesses (or fails loudly), and large
+  agent-produced images render in the gallery.
+- **v0.13.0** — interactive workbench: composer attachments + in-app screenshots,
+  an artifacts gallery + mini-browser in a Canvas/Workbench, a deeper multi-tier
+  spec interview, a multi-harness planning relay, and an agent-driven browser
+  (Playwright MCP).
+- **v0.12.0** — restored the write/apply path (codex transcript route-proof,
+  scoped homes) and honesty fixes.
 - **v0.11.0** — host plugin lifecycle: `claudexor plugin` now manages
   user-global Claude Code, Codex, Cursor, and OpenCode integrations with
   generated skill/MCP artifacts plus command artifacts where the host supports

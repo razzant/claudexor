@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/gateway",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "HarnessGateway: discovery, conformance role-gating, and harness selection.",
   "type": "module",
   "main": "./dist/index.js",

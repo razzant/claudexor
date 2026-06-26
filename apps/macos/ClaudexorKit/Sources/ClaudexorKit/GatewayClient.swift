@@ -127,6 +127,33 @@ public final class GatewayClient: Sendable {
         return data
     }
 
+    /// List a run's PRODUCED outputs — the project's `artifacts/` dir, not the run
+    /// orchestration tree. Same shape/serving as `GET /runs/:id/artifacts`.
+    public func listProducedFiles(runId: String) async throws -> [ArtifactInfo] {
+        let req = request("runs/\(runId)/produced", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        struct Resp: Decodable { let artifacts: [ArtifactInfo] }
+        return (try? Self.decoder.decode(Resp.self, from: data))?.artifacts ?? []
+    }
+
+    /// Fetch raw bytes of one produced output (images, pdf) for inline rendering.
+    public func producedData(runId: String, path: String) async throws -> Data {
+        let escaped = path.split(separator: "/").map { part in
+            String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
+        }.joined(separator: "/")
+        let req = request("runs/\(runId)/produced/\(escaped)", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return data
+    }
+
     public func listHarnesses() async throws -> [HarnessStatus] {
         let req = request("harnesses", method: "GET")
         let (data, resp) = try await session.data(for: req)

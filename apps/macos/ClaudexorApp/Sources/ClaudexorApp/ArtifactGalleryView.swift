@@ -10,11 +10,19 @@ import ClaudexorKit
 struct ArtifactGalleryView: View {
     @Environment(AppModel.self) private var model
     let runId: String
+    /// When true, source the project's PRODUCED outputs (`/runs/:id/produced`)
+    /// instead of the run's orchestration tree — and skip the run-tree filter.
+    var produced: Bool = false
     @State private var artifacts: [ArtifactInfo] = []
     @State private var loadError: String?
 
     private var displayArtifacts: [ArtifactInfo] {
-        artifacts.filter {
+        // The produced endpoint already returns only project outputs, so show all
+        // files it returns. The run-tree filter only applies to the run artifacts.
+        if produced {
+            return artifacts.filter { $0.kind == "file" }
+        }
+        return artifacts.filter {
             $0.kind == "file"
                 && !$0.path.hasSuffix("events.jsonl")
                 && !$0.path.hasPrefix("context/")
@@ -28,14 +36,16 @@ struct ArtifactGalleryView: View {
                 Text(loadError).font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(Theme.Spacing.xl)
             } else if displayArtifacts.isEmpty {
-                Text("No artifacts produced yet — files appear here as the run finishes its output.")
+                Text(produced
+                     ? "No project outputs yet — files the run writes into the project's artifacts/ folder show up here."
+                     : "No artifacts produced yet — files appear here as the run finishes its output.")
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(Theme.Spacing.xl)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.Spacing.md)],
                           alignment: .leading, spacing: Theme.Spacing.md) {
                     ForEach(displayArtifacts) { art in
-                        ArtifactCard(runId: runId, art: art)
+                        ArtifactCard(runId: runId, art: art, produced: produced)
                     }
                 }
                 .padding(Theme.Spacing.md)
@@ -48,7 +58,9 @@ struct ArtifactGalleryView: View {
     }
 
     private func load() async {
-        let list = await model.runArtifacts(runId: runId)
+        let list = produced
+            ? await model.producedArtifacts(runId: runId)
+            : await model.runArtifacts(runId: runId)
         if list.isEmpty && !artifacts.isEmpty { return } // keep last-known on a transient empty
         artifacts = list
         loadError = nil
@@ -59,6 +71,8 @@ private struct ArtifactCard: View {
     @Environment(AppModel.self) private var model
     let runId: String
     let art: ArtifactInfo
+    /// Mirror of the gallery's flag — route byte/text fetches at the produced path.
+    var produced: Bool = false
     @State private var image: NSImage?
     @State private var imageLoadFailed = false
     @State private var text: String?
@@ -140,7 +154,10 @@ private struct ArtifactCard: View {
 
     private func loadImage() async {
         guard image == nil, !imageLoadFailed else { return }
-        guard let data = await model.artifactBytes(runId: runId, path: art.path) else {
+        let data = produced
+            ? await model.producedBytes(runId: runId, path: art.path)
+            : await model.artifactBytes(runId: runId, path: art.path)
+        guard let data else {
             imageLoadFailed = true
             return
         }
@@ -152,12 +169,19 @@ private struct ArtifactCard: View {
     }
 
     private func loadText() async {
-        if text == nil { text = await model.artifactTextContent(runId: runId, path: art.path) }
+        if text == nil {
+            text = produced
+                ? await model.producedTextContent(runId: runId, path: art.path)
+                : await model.artifactTextContent(runId: runId, path: art.path)
+        }
     }
 
     /// Write the bytes to a temp file and hand it to the system opener (pdf, etc.).
     private func openExternally() async {
-        guard let data = await model.artifactBytes(runId: runId, path: art.path) else { return }
+        let data = produced
+            ? await model.producedBytes(runId: runId, path: art.path)
+            : await model.artifactBytes(runId: runId, path: art.path)
+        guard let data else { return }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
         do {
             try data.write(to: url)

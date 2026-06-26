@@ -218,11 +218,35 @@ export function codexBrowserArgs(browser: HarnessRunSpec["browser"]): string[] {
   ];
 }
 
+/**
+ * True only when the config codex WILL load (the scoped `CODEX_HOME` if set,
+ * else `~/.codex`) actually defines `[mcp_servers.node_repl]`. We only ever
+ * disable node_repl when it already exists — a `-c mcp_servers.node_repl.*`
+ * override against a config that has NO node_repl creates a partial entry with
+ * no transport and codex refuses to load it ("invalid transport in
+ * mcp_servers.node_repl"), which broke every scoped-home / api_key / MCP run.
+ */
+export function codexConfigHasNodeRepl(codexHome: string | null | undefined): boolean {
+  const cfg = join(codexHome || defaultNativeCodexHome(), "config.toml");
+  try {
+    return existsSync(cfg) && readFileSync(cfg, "utf8").includes("[mcp_servers.node_repl]");
+  } catch {
+    return false;
+  }
+}
+
 export function codexExecArgs(
   spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt" | "attachments" | "browser"> & {
     resume_session_id?: string | null;
   },
+  opts: { suppressNodeRepl?: boolean } = {},
 ): string[] {
+  // Codex.app's inherited `node_repl` MCP (its in-app-browser controller) can't
+  // run in headless `codex exec` and fails every call → it used to flip an
+  // otherwise-clean run to "errored". Disable it — but ONLY when it is actually
+  // present in the loaded config (codexConfigHasNodeRepl), never unconditionally
+  // (that is what created the invalid partial entry above).
+  const nodeReplArgs = opts.suppressNodeRepl ? ["-c", "mcp_servers.node_repl.enabled=false"] : [];
   // Resume a native codex session as a follow-up turn (`codex exec resume <id>`),
   // so a thread's later moves continue the same conversation instead of restarting.
   // LIVE-VERIFIED (codex 0.137): the resume subcommand does NOT accept --sandbox;
@@ -236,13 +260,16 @@ export function codexExecArgs(
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
+    // ALL `-c` config overrides go BEFORE `-i` so the variadic `-i/--image
+    // <FILE>...` can't swallow them as image paths; then images, then `--` so the
+    // positional prompt survives, then the prompt.
+    args.push(...codexBrowserArgs(spec.browser));
+    args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
     args.push(...imageArgs);
-    args.push(...codexBrowserArgs(spec.browser));
     // `codex exec -i/--image <FILE>...` is VARIADIC, so a positional prompt placed
     // right after it is swallowed as another "image" — the model then receives no
     // prompt and never sees the attachment (the v0.13 "I don't see the image" bug).
-    // Terminate option parsing with `--` so the prompt stays the prompt.
     // LIVE-VERIFIED on codex 0.142: `-i <path> -- "<prompt>"` => image IS described.
     if (imageArgs.length > 0) args.push("--");
     args.push(spec.prompt);
@@ -252,12 +279,12 @@ export function codexExecArgs(
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
+  // ALL `-c` config overrides BEFORE `-i` (variadic) so they can't be eaten as
+  // image paths; then images, then `--`, then the prompt. See resume branch.
+  args.push(...codexBrowserArgs(spec.browser));
+  args.push(...nodeReplArgs);
   const imageArgs = codexImageArgs(spec.attachments);
   args.push(...imageArgs);
-  args.push(...codexBrowserArgs(spec.browser));
-  // Variadic `-i/--image <FILE>...` would swallow the positional prompt — terminate
-  // option parsing with `--` so the prompt survives (the v0.13 image bug). See the
-  // resume branch above; LIVE-VERIFIED on codex 0.142.
   if (imageArgs.length > 0) args.push("--");
   args.push(spec.prompt);
   return args;
@@ -581,7 +608,11 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     };
   }
 
-  const args = codexExecArgs(spec);
+  // Disable Codex.app's headless-incompatible node_repl MCP, but ONLY when the
+  // config codex will actually load (the resolved CODEX_HOME, else ~/.codex)
+  // already defines it — never create a transport-less partial entry on a scoped
+  // home (that broke codex startup, the "invalid transport" regression).
+  const args = codexExecArgs(spec, { suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]) });
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;

@@ -57,6 +57,7 @@ Core endpoints:
 - `GET /events` (global live-only run-event multiplex, no replay)
 - `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
 - `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
+- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
 - `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
 - `POST /runs/:id/control`
 - `GET /harnesses`, `GET /harnesses/:id/models`

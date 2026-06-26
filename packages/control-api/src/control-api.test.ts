@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DaemonControlApiServer, normalizeRunStartRequest, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
+import { DaemonControlApiServer, normalizeRunStartRequest, producedRepoRoot, type DaemonControlApiOptions, type DaemonFacadeClient, type DaemonRunRecord } from "./daemon-server.js";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -152,6 +152,36 @@ describe("DaemonControlApiServer", () => {
       await server.stop();
     }
   }
+
+  it("producedRepoRoot uses the typed scope and NEVER resolves a no-project run to the home dir", () => {
+    expect(producedRepoRoot({ id: "j", state: "succeeded", params: { scope: { kind: "project", root: "/Users/x/proj" } } })).toBe("/Users/x/proj");
+    // The CRITICAL fix: a no-project run's runDir is ~/.claudexor/runs/<id>; path-
+    // slicing would yield the HOME and let /produced serve ~/artifacts. scope
+    // `none` must resolve to null => no produced outputs, never the home dir.
+    expect(producedRepoRoot({ id: "j", state: "succeeded", runDir: "/Users/x/.claudexor/runs/run-1", params: { scope: { kind: "none" } } })).toBeNull();
+    expect(producedRepoRoot({ id: "j", state: "succeeded" })).toBeNull();
+  });
+
+  it("GET /runs/:id/produced lists the project's artifacts/ dir, serves files, and blocks traversal", async () => {
+    const { daemon, record } = fakeDaemon();
+    // record.params.scope.root === runDir; create the project's produced outputs.
+    mkdirSync(join(record.runDir as string, "artifacts"), { recursive: true });
+    writeFileSync(join(record.runDir as string, "artifacts", "preview.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await withDaemonServer(daemon, async (base) => {
+      const list = (await (await fetch(`${base}/runs/run-d1/produced`, { headers: { authorization: `Bearer ${token}` } })).json()) as {
+        artifacts: { path: string; mime?: string }[];
+      };
+      expect(list.artifacts.some((a) => a.path === "preview.png" && a.mime === "image/png")).toBe(true);
+      // The run-internal orchestration tree (decision.yaml etc.) must NOT leak in.
+      expect(list.artifacts.some((a) => a.path.includes("decision.yaml"))).toBe(false);
+      const png = await fetch(`${base}/runs/run-d1/produced/preview.png`, { headers: { authorization: `Bearer ${token}` } });
+      expect(png.status).toBe(200);
+      expect(png.headers.get("content-type")).toBe("image/png");
+      // Traversal out of <repoRoot>/artifacts is rejected by safeArtifactPath.
+      const esc = await fetch(`${base}/runs/run-d1/produced/..%2f..%2fcontext%2ftask.yaml`, { headers: { authorization: `Bearer ${token}` } });
+      expect(esc.status).toBe(404);
+    });
+  });
 
   it("threads: create -> list -> turn (enqueued with threadId + native resume anchors) -> detail", async () => {
     const { daemon, record } = fakeDaemon();

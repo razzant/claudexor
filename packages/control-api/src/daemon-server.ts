@@ -659,6 +659,40 @@ export class DaemonControlApiServer {
       return;
     }
 
+    // Produced PROJECT files — the run's real OUTPUTS (the repo's `artifacts/`
+    // convention dir where agents drop visuals like a rendered preview), distinct
+    // from the orchestration tree served by /artifacts (decision.yaml, telemetry,
+    // …) which belongs in Run Detail/Diagnostics. repoRoot comes from the TYPED
+    // run scope (producedRepoRoot — null for no-project, never the home dir);
+    // content is traversal-scoped to <repoRoot>/artifacts (never the whole repo).
+    const producedRootMatch = /^\/runs\/([^/]+)\/produced$/.exec(path);
+    if (method === "GET" && producedRootMatch) {
+      const rec = await this.findRun(decodeURIComponent(producedRootMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      const repoRoot = producedRepoRoot(rec);
+      const artifacts = repoRoot ? listArtifacts(join(repoRoot, "artifacts")) : [];
+      return this.json(res, 200, { runId: rec.runId ?? rec.id, artifacts });
+    }
+
+    const producedFetchMatch = /^\/runs\/([^/]+)\/produced\/(.+)$/.exec(path);
+    if (method === "GET" && producedFetchMatch) {
+      const rec = await this.findRun(decodeURIComponent(producedFetchMatch[1] as string));
+      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
+      const repoRoot = producedRepoRoot(rec);
+      if (!repoRoot) return this.json(res, 404, { error: "no project root for run" });
+      const target = safeArtifactPath(join(repoRoot, "artifacts"), decodeURIComponent(producedFetchMatch[2] as string));
+      if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      const stats = lstatSync(target);
+      const cap = isTextArtifact(target) ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
+      if (stats.size > cap) return this.json(res, 413, { error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`, bytes: stats.size });
+      let data = readFileSync(target);
+      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
+      if (isTextArtifact(target)) data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
+      res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
+      res.end(data);
+      return;
+    }
+
     const applyCheckMatch = /^\/runs\/([^/]+)\/apply\/check$/.exec(path);
     if (method === "POST" && applyCheckMatch) {
       const rec = await this.findRun(decodeURIComponent(applyCheckMatch[1] as string));
@@ -2013,6 +2047,15 @@ function safeArtifactPath(root: string, requested: string): string | null {
   if (lst.isSymbolicLink()) return null;
   const real = realpathSync(abs);
   return real === base || real.startsWith(base + sep) ? real : null;
+}
+
+/** A run's project root, taken from its TYPED scope — NOT by path-slicing the
+ *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
+ *  is `~/.claudexor/runs/<id>`) to the user's HOME and let /produced list
+ *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
+export function producedRepoRoot(rec: DaemonRunRecord): string | null {
+  const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;
+  return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim() ? scope.root : null;
 }
 
 function safeArtifactRoot(root: string): string | null {

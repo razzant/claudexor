@@ -8,7 +8,17 @@ import ClaudexorKit
 /// it. WebKit views are created on the main actor.
 @MainActor final class WebViewStore: ObservableObject {
     let webView: WKWebView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-    func load(_ url: URL) { webView.load(URLRequest(url: url)) }
+    func load(_ url: URL) {
+        // WKWebView CANNOT load a file:// URL via load(URLRequest:) — it needs
+        // loadFileURL(_:allowingReadAccessTo:) with explicit read access. Grant the
+        // project ROOT so the page's relative js/, css/ (and ES-module/importmap)
+        // assets resolve, not just the index.html's own directory.
+        if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            webView.load(URLRequest(url: url))
+        }
+    }
 }
 
 /// WKWebView bridged into SwiftUI. Web content is dense → it sits on a SOLID
@@ -24,8 +34,15 @@ struct WebPreview: NSViewRepresentable {
 /// arbitrary URLs the user types. (Agent-driven browsing is a separate mirrored
 /// Chromium via Playwright MCP — Phase 7.)
 struct BrowserView: View {
+    /// When set (and the file exists on disk), auto-load it once on first appear —
+    /// e.g. the project's index.html — without clobbering a URL the user typed.
+    var autoLoadFile: String? = nil
     @StateObject private var store = WebViewStore()
     @State private var urlString = ""
+    /// The file path last auto-loaded — so switching the open run/project re-loads
+    /// the new index.html, while never re-loading the same one or clobbering a URL
+    /// the user typed.
+    @State private var autoLoadedPath: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +64,22 @@ struct BrowserView: View {
             Divider()
             WebPreview(store: store)
         }
+        .onAppear(perform: autoLoadIfNeeded)
+        .onChange(of: autoLoadFile) { _, _ in autoLoadIfNeeded() }
+    }
+
+    /// Auto-load the project's index.html when it (or the open project) changes —
+    /// but never re-load the same path, and never clobber a URL the user typed
+    /// (only overwrite an empty field or a previous auto-load).
+    private func autoLoadIfNeeded() {
+        guard let path = autoLoadFile, path != autoLoadedPath, FileManager.default.fileExists(atPath: path) else { return }
+        let priorAuto = autoLoadedPath.map { URL(fileURLWithPath: $0).absoluteString }
+        let current = urlString.trimmingCharacters(in: .whitespaces)
+        guard current.isEmpty || current == priorAuto else { return }
+        autoLoadedPath = path
+        let url = URL(fileURLWithPath: path)
+        store.load(url)
+        urlString = url.absoluteString
     }
 
     private func navigate() {
@@ -64,6 +97,9 @@ struct BrowserView: View {
 /// and the agent-mirror browser arrive with Phase 7.)
 struct CanvasView: View {
     let runId: String?
+    /// The open run/task's project root — used to auto-load the project's
+    /// index.html in the browser and (via produced) to scope outputs.
+    let repoRoot: String?
     @State private var tab: CanvasTab = .artifacts
 
     enum CanvasTab: String, CaseIterable, Identifiable {
@@ -86,13 +122,15 @@ struct CanvasView: View {
             switch tab {
             case .artifacts:
                 if let runId {
-                    ArtifactGalleryView(runId: runId)
+                    ArtifactGalleryView(runId: runId, produced: true)
                 } else {
                     ContentUnavailableView("No run open", systemImage: "photo.on.rectangle.angled",
                         description: Text("Open a run from a turn to see its artifacts."))
                 }
             case .browser:
-                BrowserView()
+                // NSString.appendingPathComponent normalizes separators (a repoRoot
+                // with a trailing slash won't produce `//index.html`).
+                BrowserView(autoLoadFile: repoRoot.map { ($0 as NSString).appendingPathComponent("index.html") })
             }
         }
     }
