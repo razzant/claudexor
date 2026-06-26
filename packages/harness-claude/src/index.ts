@@ -1,14 +1,14 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, providerScrubEnv, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, playwrightMcpArgs, providerScrubEnv, resolveNpxBin, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
-import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame, isResultFrame } from "./interactive.js";
+import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame, isResultFrame, type ClaudeImageBlock } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
@@ -191,6 +191,9 @@ export function createClaudeAdapter(): HarnessAdapter {
           resume: true,
           cancel: true,
           mcp: true,
+          // Claude is an MCP client; we inject Playwright MCP via `--mcp-config`
+          // inline JSON (no disk write) — gated on web policy.
+          browser_tool: true,
           plugins: true,
           worktree_native: true,
           web_policy: "tools",
@@ -219,6 +222,8 @@ export function createClaudeAdapter(): HarnessAdapter {
           output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
           auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
+          // Claude accepts images as base64 blocks on the stdin stream-json transport.
+          image_input: "base64_stream",
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
@@ -293,6 +298,7 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
   // Resume a native Claude session as a follow-up turn of the same conversation.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
+  args.push(...claudeBrowserArgs(spec));
   args.push(...toolPermissionArgs(spec));
   // `--bare` disables OAuth/keychain auth, so it is mutually exclusive with the
   // subscription (native session) route — suppress it there or the run 401s.
@@ -321,15 +327,50 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
       if (!deny.has(tool)) allow.add(tool);
     }
   }
+  // A browser-tool run allows the injected MCP server's tools (claude names them
+  // `mcp__browser__*`; the server prefix `mcp__browser` allows the whole set).
+  // Gated on policy: under `off` the MCP is never injected (claudeBrowserArgs is
+  // empty), so this allow has no tool to match anyway.
+  if (spec.browser && policy !== "off") allow.add("mcp__browser");
   const args: string[] = [];
   if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
   if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
   return args;
 }
 
+/**
+ * Inject the Playwright browser MCP via `--mcp-config` inline JSON (no disk
+ * write — fits the scoped HOME and works under `--bare`). Empty when no browser
+ * this run OR when web policy is `off` (the browser is live egress and must ride
+ * `external_context_policy`, mirroring web-tool gating).
+ */
+function claudeBrowserArgs(spec: HarnessRunSpec): string[] {
+  if (!spec.browser || spec.external_context_policy === "off") return [];
+  const cfg = JSON.stringify({ mcpServers: { browser: { command: resolveNpxBin(), args: playwrightMcpArgs(spec.browser) } } });
+  return ["--mcp-config", cfg];
+}
+
+/** Build Claude base64 image blocks from image attachments (read at spec time). */
+function claudeImageBlocks(attachments: HarnessRunSpec["attachments"] | undefined): ClaudeImageBlock[] {
+  const blocks: ClaudeImageBlock[] = [];
+  for (const a of attachments ?? []) {
+    if (a.kind !== "image") continue;
+    try {
+      blocks.push({ type: "image", source: { type: "base64", media_type: a.mime, data: readFileSync(a.path).toString("base64") } });
+    } catch {
+      // A late-deleted attachment is non-fatal: proceed with the text prompt.
+    }
+  }
+  return blocks;
+}
+
 async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const channel: InteractionChannel | undefined = interactionChannelFromSpec(spec);
-  const interactive = channel !== undefined;
+  const imageBlocks = claudeImageBlocks(spec.attachments);
+  // Images ride ONLY the stdin stream-json transport, so an attachment forces
+  // the interactive path even with no interaction channel (control frames then
+  // auto-decline). claudeArgsForSpec(interactive) selects --input-format stream-json.
+  const interactive = channel !== undefined || imageBlocks.length > 0;
   const nativeAuthed = await authStatusOk();
   const key = anthropicApiKey();
   const oauthToken = claudeOAuthToken();
@@ -412,7 +453,7 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     ...(interactive
       ? {
           session: {
-            initialStdin: initialSessionFrames(spec.prompt),
+            initialStdin: initialSessionFrames(spec.prompt, imageBlocks),
             matches: isControlRequestFrame,
             handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
             closeStdinOn: isResultFrame,

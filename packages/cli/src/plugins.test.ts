@@ -151,8 +151,14 @@ describe("plugin lifecycle", () => {
       expect(cursorManifest.interface).toBeUndefined();
       expect(cursorManifest.claudexor).toBeUndefined();
       expect(cursorManifest.mcpServers).toBe("./mcp.json");
+      expect(cursorManifest.commands).toEqual(["commands/claudexor.md"]);
+      expect(cursorManifest.skills).toEqual(["skills/claudexor"]);
+      expect(cursorManifest.displayName).toBeUndefined();
+      expect(cursorManifest.publisher).toBeUndefined();
+      for (const p of [...cursorManifest.commands, ...cursorManifest.skills]) expect(p).not.toContain("*");
       expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"))).toBe(true);
       expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", ".mcp.json"))).toBe(false);
+      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", "skills", "claudexor", "SKILL.md"))).toBe(true);
 
       const opencodePlugin = readFileSync(join(home, ".config", "opencode", "plugins", "claudexor.js"), "utf8");
       expect(opencodePlugin).toContain("\"experimental.chat.system.transform\"");
@@ -234,7 +240,7 @@ describe("plugin lifecycle", () => {
         ],
         ".cursor/plugins/local/claudexor/.cursor-plugin/plugin.json": [
           "  \"description\": \"Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)\",",
-          "  \"skills\": \"./skills/*/SKILL.md\",",
+          "  \"skills\": [",
           "  \"mcpServers\": \"./mcp.json\"",
         ],
         ".cursor/plugins/local/claudexor/commands/claudexor.md": [

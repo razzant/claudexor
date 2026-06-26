@@ -133,6 +133,9 @@ final class AppModel {
     /// write turn that implements the frozen spec.
     private var specPendingModel: [String: String] = [:]
     private var specPendingOptions: [String: TurnOptions] = [:]
+    /// Accumulated decisions across interview tiers (per thread) — each "Ask deeper"
+    /// round carries them so the server surfaces the NEXT layer instead of re-asking.
+    private var specPrior: [String: [SpecPriorDecision]] = [:]
     /// The active SPEC-FLOW state — scoped to the selected thread (nil otherwise).
     var specFlow: SpecFlowState? {
         guard let tid = selectedThreadId else { return nil }
@@ -384,12 +387,35 @@ final class AppModel {
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
                 let auth = Self.harnessReadinessText(status: status, health: health)
                 let checks = status.checks.map { "\($0.id): \($0.status)" }
+                let acceptsImages = (status.manifest?["capability_profile"]?["image_input"]?.stringValue ?? "none") != "none"
+                let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
-                                   intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks)
+                                   intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks,
+                                   acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser)
             }
         } catch {
             // Keep last-known harness rows.
         }
+    }
+
+    // MARK: - Artifacts (Phase 3 gallery)
+
+    /// List a run's produced artifacts (path/kind/bytes/mime) for the gallery.
+    func runArtifacts(runId: String) async -> [ArtifactInfo] {
+        guard let client else { return [] }
+        return (try? await client.listRunArtifacts(runId: runId)) ?? []
+    }
+
+    /// Raw bytes of one artifact (images / pdf) for inline rendering or open.
+    func artifactBytes(runId: String, path: String) async -> Data? {
+        guard let client else { return nil }
+        return try? await client.artifactData(runId: runId, path: path)
+    }
+
+    /// Text content of one artifact (markdown / code / json / log).
+    func artifactTextContent(runId: String, path: String) async -> String? {
+        guard let client else { return nil }
+        return try? await client.artifactText(runId: runId, path: path)
     }
 
     private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
@@ -1084,7 +1110,7 @@ final class AppModel {
     /// Binding the target removes the thread-selection race: an action begun on one
     /// thread can't be re-pointed at a different thread the user switched to during
     /// the async send.
-    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [AttachmentInput] = [], options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
         let targetId = explicitThreadId ?? selectedThreadId
         // Single busy gate for EVERY turn-start path (composer, Implement-plan,
         // Implement-spec all funnel through here), so none can start a turn over a
@@ -1106,13 +1132,13 @@ final class AppModel {
             guard threadId != nil else { return false } // newThread set threadStatus on failure
         }
         guard let tid = threadId else { return false }
-        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, specPath: specPath, model: model, options: options)
+        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, specPath: specPath, model: model, attachments: attachments, options: options)
     }
 
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
-    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, options: TurnOptions = .init()) async -> Bool {
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [AttachmentInput] = [], options: TurnOptions = .init()) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before sending."
             return false
@@ -1172,8 +1198,10 @@ final class AppModel {
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
                 access: writeMode ? options.access : nil,
                 web: options.web,
+                browser: options.browser ? true : nil,
                 planRunId: planRunId,
-                specPath: specPath
+                specPath: specPath,
+                attachments: attachments.isEmpty ? nil : attachments
             ))
         } catch {
             threadStatus = userMessage(for: error)
@@ -1262,6 +1290,7 @@ final class AppModel {
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         specPendingModel[tid] = trimmedModel.isEmpty ? nil : trimmedModel
         specPendingOptions[tid] = options
+        specPrior[tid] = []  // fresh interview: drop any accumulated decisions
         setSpecFlow(.grounding, for: tid)  // "running the grounding plan" while it runs (minutes)
         threadStatus = nil
         // Honor the user's eligible pool for the grounding plan too (the composer
@@ -1327,6 +1356,38 @@ final class AppModel {
     /// 400 by re-deriving the asking state with the error attached. `priorQuestions`/
     /// `priorPlanRunId` are passed in by the caller (not re-read from mutable state),
     /// and `gen` guards the post-await writes against a superseding start/cancel.
+    /// Multi-tier interview (Q14): record this tier's answers as prior decisions and
+    /// re-run the grounding for the NEXT, DEEPER tier — or freeze if the model has no
+    /// further questions. Drives the 8A backend (`priorDecisions`).
+    func askDeeperSpec(threadId tid: String, decisions: [SpecPriorDecision]) async {
+        guard let client else { setSpecFlow(.error("Engine offline — reconnect before continuing."), for: tid); return }
+        guard case .askingQuestions(let prompt, _, _, _, _, _) = specFlowByThread[tid] else { return }
+        let repoRoot = currentThread?.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
+        guard !repoRoot.isEmpty else { setSpecFlow(.error("Spec needs a project."), for: tid); return }
+        specPrior[tid] = (specPrior[tid] ?? []) + decisions
+        let gen = nextSpecGen(tid)
+        setSpecFlow(.grounding, for: tid)  // re-grounding the repo for the deeper tier (minutes)
+        let pool = effectiveEligiblePool
+        do {
+            let res = try await client.specQuestions(
+                SpecQuestionsRequest(prompt: prompt, scope: .project(root: repoRoot),
+                                     harnesses: pool.isEmpty ? nil : pool, priorDecisions: specPrior[tid])
+            )
+            guard isCurrentSpecGen(tid, gen) else { return }
+            if res.questions.isEmpty {
+                // The model has no further open decisions: freeze the deeper-grounded plan.
+                await freezeSpec(prompt: prompt, repoRoot: repoRoot, planDir: res.planDir,
+                                 answers: [], threadId: tid, gen: gen, priorQuestions: [], priorPlanRunId: "")
+            } else {
+                setSpecFlow(.askingQuestions(prompt: prompt, questions: res.questions, planDir: res.planDir,
+                                             planRunId: res.planRunId, answers: [], error: nil), for: tid)
+            }
+        } catch {
+            guard isCurrentSpecGen(tid, gen) else { return }
+            setSpecFlow(.error(userMessage(for: error)), for: tid)
+        }
+    }
+
     private func freezeSpec(prompt: String, repoRoot: String, planDir: String,
                             answers: [SpecAnswer], threadId tid: String, gen: Int,
                             priorQuestions: [SpecQuestion], priorPlanRunId: String) async {

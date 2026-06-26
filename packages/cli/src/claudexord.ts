@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { DaemonClient, DaemonServer, InteractionRegistry, RunEventBus, ThreadStore, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
@@ -8,8 +8,8 @@ import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
 import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
 import { deliver } from "@claudexor/delivery";
-import { containsSecretLikeToken, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
-import { type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig, InterviewAnswer } from "@claudexor/schema";
+import { containsSecretLikeToken, newId, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
+import { type Attachment, type AttachmentInput, type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig, InterviewAnswer } from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
@@ -18,6 +18,37 @@ import { buildGroundingPrompt, extractQuestionsFromPlan, freezeSpecFromGrounding
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
+
+/** Filename allowlist (no regex governance): keep only safe chars for the stored name. */
+function safeAttachmentName(name: string): string {
+  const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
+  let s = "";
+  for (const ch of name) s += allowed.includes(ch) ? ch : "_";
+  return (s || "attachment").slice(0, 120);
+}
+
+/**
+ * Resolve inbound attachments (base64 `data`, or an existing `path`) to durable
+ * Attachments under a scoped dir OUTSIDE any worktree, so they never enter a git
+ * diff. base64 is decoded ONCE here and `jobs.json` never carries the bytes.
+ */
+function resolveAttachments(inputs: AttachmentInput[] | undefined): Attachment[] {
+  if (!inputs || inputs.length === 0) return [];
+  const dir = join(daemonDir(), "attachments", newId("attb"));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const out: Attachment[] = [];
+  for (const a of inputs) {
+    if (a.data) {
+      const path = join(dir, `${newId("f")}-${safeAttachmentName(a.name)}`);
+      writeFileSync(path, Buffer.from(a.data, "base64"), { mode: 0o600 });
+      out.push({ id: newId("att"), kind: a.kind, mime: a.mime, name: a.name, path });
+    } else if (a.path && existsSync(a.path)) {
+      out.push({ id: newId("att"), kind: a.kind, mime: a.mime, name: a.name, path: a.path });
+    }
+    // Neither data nor a readable path => skip (fail soft; the turn still runs).
+  }
+  return out;
+}
 
 async function main(): Promise<void> {
   // The daemon dir holds the auth token, jobs registry, and setup logs: it must
@@ -114,6 +145,12 @@ async function main(): Promise<void> {
           interactions.answer(subRunId, interactionId, answers).status === "delivered",
         repoRoot,
         prompt: String(p.prompt ?? ""),
+        // Attachments ride on the turn (resolved to scoped paths); a direct
+        // POST /runs without a turn resolves them here. Never base64 in jobs.json.
+        attachments: turnId ? (threads.getTurn(turnId)?.attachments ?? []) : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
+        // Agent-driven browser opt-in (Playwright MCP). The orchestrator gates it
+        // on the harness's browser_tool capability + web policy != off.
+        browser: (p as { browser?: boolean }).browser === true,
         mode: p.mode,
         contextMode: noProjectAsk ? "off" : p.scope.kind === "project" ? p.scope.context : undefined,
         harnesses: p.harnesses,
@@ -275,11 +312,12 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         turns: threads.turnsFor(id) as unknown[],
       };
     },
-    createThreadTurn: async (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null }) =>
+    createThreadTurn: async (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null; attachments?: AttachmentInput[] }) =>
       threads.createTurn(id, prompt, {
         kind: opts.kind as any,
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
+        attachments: resolveAttachments(opts.attachments),
       }),
     updateThread: async (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) =>
       threads.updateThread(id, { title: patch.title, state: patch.state as any, primaryHarness: patch.primaryHarness, eligibleHarnesses: patch.eligibleHarnesses }),
@@ -386,9 +424,18 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       // must end with a structured "## Open Questions" section that
       // extractQuestionsFromPlan parses into single/multi/text questions with options.
       // The instruction + its parser are a co-located contract pair in spec.ts.
+      // Prior tiers' answers: carried so each round goes DEEPER (adaptive interview).
+      const priorDecisions = Array.isArray(p["priorDecisions"])
+        ? (p["priorDecisions"] as unknown[]).filter(
+            (d): d is { question: string; answer: string } =>
+              !!d && typeof d === "object"
+              && typeof (d as Record<string, unknown>).question === "string"
+              && typeof (d as Record<string, unknown>).answer === "string",
+          )
+        : [];
       const plan = await new Orchestrator({ registry: buildRegistry() }).run({
         repoRoot,
-        prompt: buildGroundingPrompt(prompt),
+        prompt: buildGroundingPrompt(prompt, priorDecisions),
         mode: "plan",
         harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
         access: "readonly",

@@ -597,10 +597,14 @@ The macOS app is a native control surface over the control API:
 - Budget and the Harness Doctor are Settings tabs (not a sidebar Operations
   section); the chat-first main window is the thread list + conversation, with run
   detail in the trailing inspector;
-- run detail (in the trailing inspector) has explicit `Outcome`, `Timeline`,
-  `Plan`, `Candidates`, `Diff`, `Review`, and `Diagnostics` tabs; completed runs
-  open on Outcome, active runs on Timeline, and failures without output on
-  Diagnostics;
+- the trailing region is a **Workbench** with a `[Run Detail | Canvas]` switch.
+  Run Detail (a run's tabs) has explicit `Outcome`, `Timeline`, `Plan`,
+  `Candidates`, `Diff`, `Review`, `Artifacts`, and `Diagnostics` tabs; completed
+  runs open on Outcome, active runs on Timeline, and failures without output on
+  Diagnostics. **Canvas** hosts the artifacts gallery (markdown/code/image/pdf,
+  rendered from the binary-aware artifact serve) and a user-driven mini-browser
+  (`WKWebView`: localhost dev-server previews, rendered run outputs, arbitrary
+  URLs) on solid surfaces;
 - review/findings and diff/apply are INLINE per turn (on the turn that produced
   them and in the inspector's Review/Diff tabs), not a separate Review-Queue
   screen; their rows use stable solid metrics and must not force the app window to
@@ -610,7 +614,30 @@ The macOS app is a native control surface over the control API:
   route proof, auth/setup actions, budget controls, and dangerous actions;
 - Settings uses flat grouped sections and avoids floating black cutout shadows;
 - onboarding is native-first auth plus optional API-key fallback and guided
-  install/login/smoke-test actions.
+  install/login/smoke-test actions;
+- the composer accepts **attachments** (images/files) via a paperclip picker and
+  a **Capture** button (system `screencapture` region select), gated by the
+  primary harness's `capability_profile.image_input` (Cursor/OpenCode gate off
+  rather than silently swallow an image the model never sees). Attachments forward
+  to the harness in its NATIVE shape (Codex `-i/--image`, Claude base64 image
+  block on the stream-json transport, raw-api `image_url` data URL) and persist in
+  a scoped dir OUTSIDE any worktree — bytes never enter `jobs.json` or `git add -A`;
+- the **Spec** interview is multi-tier (`/spec/questions` carries accumulated
+  `priorDecisions`): each round goes DEEPER on prior answers ("Ask deeper") until
+  the model surfaces no further decisions, or the user freezes ("Enough — freeze").
+  The multi-harness `plan` relay cross-shares each planner's plan into the next
+  planner's prompt so they converge on one aligned plan instead of planning blind.
+- the composer can arm an **agent-driven browser** (a per-turn `browser` toggle,
+  offered only where a pooled harness reports the `browser_tool` capability). The
+  adapter injects Microsoft's Playwright MCP — codex via stateless `-c
+  mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON — so the
+  agent gets `browser_navigate` / `browser_take_screenshot` / `browser_snapshot`
+  tools. It is LIVE EGRESS: never injected under `external_context_policy:off`,
+  and it requires **full access** (codex's workspace-write sandbox cancels the
+  navigation — live-verified), which the toggle discloses and sets. The browser
+  runs HEADED so the user watches the real window; navigation snapshots land in the
+  run artifact tree. Cursor/OpenCode/raw-api report `browser_tool:false` (honest —
+  no injector wired) and the toggle is hidden for them.
 
 The app must not invent local accept/rebut/apply state. Delivery and artifact
 actions come from server endpoints.

@@ -16,6 +16,7 @@ import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy, OrchestratePlanProgress } from "./orchestrate.js";
+import { AttachmentInput } from "./attachment.js";
 
 export const RunScopeContext = z.enum(["auto", "deep"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
@@ -36,6 +37,9 @@ export type RunExecution = z.infer<typeof RunExecution>;
 export const ControlRunStartRequest = z
   .object({
     prompt: z.string().default(""),
+    /** Inbound files/images for this turn; the daemon resolves each to a scoped
+     *  on-disk Attachment before the run spec is built. */
+    attachments: z.array(AttachmentInput).optional(),
     mode: ModeKind.default("agent"),
     scope: RunScope.default({ kind: "none" }),
     execution: RunExecution.default({ isolation: "envelope" }),
@@ -63,6 +67,9 @@ export const ControlRunStartRequest = z
     access: AccessProfile.optional(),
     web: ExternalContextPolicy.optional(),
     externalContextPolicy: ExternalContextPolicy.optional(),
+    /** Opt this run into the agent-driven browser (Playwright MCP). Honored only
+     *  for browser-capable harnesses when web policy is not `off`. */
+    browser: z.boolean().optional(),
     tests: z.array(z.string()).optional(),
     envProfile: z.string().optional(),
     specPath: z.string().optional(),
@@ -162,6 +169,9 @@ export const ControlSpecQuestionsRequest = z
     prompt: z.string(),
     scope: z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
     harnesses: z.array(z.string()).optional(),
+    /** Already-answered decisions from prior tiers; carried so each round goes
+     *  DEEPER instead of re-asking (multi-tier adaptive interview). */
+    priorDecisions: z.array(z.object({ question: z.string(), answer: z.string() })).optional(),
   })
   .strict();
 export type ControlSpecQuestionsRequest = z.infer<typeof ControlSpecQuestionsRequest>;
@@ -404,6 +414,10 @@ export const ControlArtifactInfo = z.object({
   path: z.string(),
   kind: z.enum(["file", "directory"]),
   bytes: z.number().int().nonnegative().optional(),
+  /** Clean MIME type derived from the extension (e.g. `image/png`, `text/plain`,
+   *  `application/pdf`); lets a gallery render text vs image vs pdf. Absent for
+   *  directories. */
+  mime: z.string().optional(),
 });
 export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
 

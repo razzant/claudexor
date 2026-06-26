@@ -7,3 +7,4 @@ export * from "./runloop.js";
 export * from "./conformance.js";
 export * from "./doctor.js";
 export * from "./env-scope.js";
+export * from "./browser-mcp.js";

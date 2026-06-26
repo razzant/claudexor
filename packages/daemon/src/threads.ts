@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Session, Thread, ThreadTurn, WorkspaceMode } from "@claudexor/schema";
+import type { Attachment, Session, Thread, ThreadTurn, WorkspaceMode } from "@claudexor/schema";
 import {
   SCHEMA_VERSION,
   Session as SessionSchema,
@@ -32,6 +32,8 @@ export interface CreateTurnInput {
   parentRunId?: string | null;
   /** Set when this turn implements an approved plan from an earlier run. */
   planRunId?: string | null;
+  /** Files/images attached to this turn, already resolved to scoped on-disk paths. */
+  attachments?: Attachment[];
 }
 
 export interface UpdateThreadInput {
@@ -196,6 +198,10 @@ export class ThreadStore {
     return this.state.turns.filter((t) => t.thread_id === threadId);
   }
 
+  getTurn(turnId: string): ThreadTurn | undefined {
+    return this.state.turns.find((t) => t.id === turnId);
+  }
+
   sessionsForThread(threadId: string): Session[] {
     return this.state.sessions.filter((s) => s.thread_id === threadId);
   }
@@ -235,6 +241,7 @@ export class ThreadStore {
       // The durable conversation store is read back into UIs: redact at the
       // persist boundary exactly like jobs.json / events.jsonl do.
       prompt: redactSecrets(prompt),
+      attachments: input.attachments ?? [],
       created_at: nowIso(),
     });
     this.state.turns.push(turn);

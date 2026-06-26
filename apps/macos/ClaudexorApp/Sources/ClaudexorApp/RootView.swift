@@ -7,7 +7,13 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var inspectorPresented = false
+    @State private var workbenchMode: WorkbenchMode = .runDetail
     @AppStorage("claudexor.onboardingComplete") private var onboardingComplete = false
+
+    enum WorkbenchMode: String, CaseIterable, Identifiable {
+        case runDetail = "Run Detail", canvas = "Canvas"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -42,9 +48,30 @@ struct RootView: View {
         }
     }
 
-    /// The trailing inspector: the opened run's full detail (diff/timeline/review/
-    /// diagnostics), reusing the existing TaskDetail surface beside the chat.
+    /// The trailing Workbench (Q13): ONE region with a [Run Detail | Canvas] switch.
+    /// Run Detail is the opened run's tabs; Canvas hosts the artifacts gallery and
+    /// the mini-browser.
     @ViewBuilder private var runInspector: some View {
+        VStack(spacing: 0) {
+            Picker("Workbench", selection: $workbenchMode) {
+                ForEach(WorkbenchMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding([.horizontal, .top], Theme.Spacing.sm)
+            switch workbenchMode {
+            case .runDetail: runDetailContent
+            case .canvas: CanvasView(runId: openRunId)
+            }
+        }
+    }
+
+    private var openRunId: String? {
+        if case .task(let id) = model.route { return id }
+        return nil
+    }
+
+    @ViewBuilder private var runDetailContent: some View {
         if case .task(let id) = model.route {
             TaskDetailView(taskId: id)
         } else {

@@ -9,6 +9,7 @@ import {
   SchemaVersion,
 } from "./primitives.js";
 import { Portfolio } from "./budget.js";
+import { Attachment } from "./attachment.js";
 
 /**
  * Threads / Sessions are the v0.9 chat/session-first SSOT.
@@ -113,6 +114,8 @@ export const ThreadTurn = z.object({
   plan_run_id: Id.nullable().default(null),
   kind: ThreadTurnKind.default("followup"),
   prompt: z.string().default(""),
+  /** Files/images the user attached to this turn (resolved scoped paths). */
+  attachments: z.array(Attachment).default([]),
   created_at: IsoTimestamp,
 });
 export type ThreadTurn = z.infer<typeof ThreadTurn>;

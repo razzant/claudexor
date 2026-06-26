@@ -77,6 +77,7 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       },
       auth: { supported_sources: ["none"], preferred_source: "none", probe_command: [], env_vars: [], can_scrub_env: true },
       access_control: { readonly: true, workspace_write: true, full: true, mechanism: "fake", conformance_required: false },
+      image_input: "none",
     },
     capabilities: {
       plan: true,
@@ -98,6 +99,7 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       resume: false,
       cancel: true,
       mcp: false,
+      browser_tool: false,
       plugins: false,
       worktree_native: false,
       web_policy: "none",

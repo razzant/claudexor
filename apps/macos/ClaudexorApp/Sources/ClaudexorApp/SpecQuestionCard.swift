@@ -78,7 +78,7 @@ struct SpecQuestionCard: View {
                 Text("Spec interview")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("Answer to freeze the spec")
+                Text("Answer, then deepen or freeze")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -118,18 +118,25 @@ struct SpecQuestionCard: View {
             }
 
             HStack(spacing: Theme.Spacing.md) {
+                Button { askDeeper() } label: {
+                    Label("Ask deeper", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(sending || !hasAnyAnswer)
+                .help("Answer these, then surface the next, deeper layer of decisions")
                 Button {
                     submit()
                 } label: {
                     if sending {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Freeze spec", systemImage: "snowflake")
+                        Label("Enough — freeze", systemImage: "snowflake")
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .disabled(sending || !hasAnyAnswer)
+                .help("Stop here and freeze the spec from these decisions")
                 Button("Cancel") { model.cancelSpec(threadId: threadId) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -186,6 +193,29 @@ struct SpecQuestionCard: View {
         sending = true
         Task {
             await model.submitSpecAnswers(threadId: threadId, answers: answers)
+            sending = false
+        }
+    }
+
+    /// Build human-readable decisions (question → chosen option labels / free text)
+    /// to carry into the next, deeper interview tier.
+    private func currentDecisions() -> [SpecPriorDecision] {
+        questions.compactMap { q in
+            let selected = selections[q.id, default: []]
+            let labels = q.options.filter { selected.contains($0.id) }.map(\.label)
+            let text = (freeText[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer = (labels + (text.isEmpty ? [] : [text])).joined(separator: ", ")
+            guard !answer.isEmpty else { return nil }
+            return SpecPriorDecision(question: q.prompt, answer: answer)
+        }
+    }
+
+    private func askDeeper() {
+        let decisions = currentDecisions()
+        guard !decisions.isEmpty else { return }
+        sending = true
+        Task {
+            await model.askDeeperSpec(threadId: threadId, decisions: decisions)
             sending = false
         }
     }

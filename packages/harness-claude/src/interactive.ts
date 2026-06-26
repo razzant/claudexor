@@ -31,12 +31,21 @@ export function isResultFrame(obj: Json): boolean {
   return obj?.type === "result";
 }
 
+/** A Claude stream-json image content block (base64 source). Claude carries
+ *  images ONLY on the stdin stream-json transport — a one-shot `-p` argv run
+ *  cannot, so a turn with attachments must use the interactive path. */
+export interface ClaudeImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
 /** Initial user message frame for `--input-format stream-json` sessions. */
-export function initialUserMessageFrame(prompt: string): string {
+export function initialUserMessageFrame(prompt: string, images: ClaudeImageBlock[] = []): string {
+  const content = [{ type: "text", text: prompt }, ...images];
   return (
     JSON.stringify({
       type: "user",
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      message: { role: "user", content },
     }) + "\n"
   );
 }
@@ -48,13 +57,13 @@ export function initialUserMessageFrame(prompt: string): string {
  * one block without waiting for the initialize response
  * (fixtures/protocol/control-handshake.jsonl).
  */
-export function initialSessionFrames(prompt: string): string {
+export function initialSessionFrames(prompt: string, images: ClaudeImageBlock[] = []): string {
   const initialize = JSON.stringify({
     type: "control_request",
     request_id: "req_claudexor_init",
     request: { subtype: "initialize" },
   });
-  return initialize + "\n" + initialUserMessageFrame(prompt);
+  return initialize + "\n" + initialUserMessageFrame(prompt, images);
 }
 
 /** Map the native AskUserQuestion input into the typed InteractionRequest. */

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ClaudexorKit
+import UniformTypeIdentifiers
 
 /// Chat/session-first cockpit (v0.9 variant A): LEFT — threads + needs-me;
 /// RIGHT — the conversation with a persistent composer. A thread's turns
@@ -10,6 +11,9 @@ import ClaudexorKit
 struct ThreadsScreen: View {
     @Environment(AppModel.self) private var model
     @State private var composerText = ""
+    /// Files/images attached to the next turn (base64-inline; the daemon resolves
+    /// them to scoped paths). Gated by the primary harness's image_input.
+    @State private var composerAttachments: [AttachmentInput] = []
     @State private var composerMode: RunMode = .agent
     // "⋯" per-turn options (collapsed by default).
     @State private var showOptions = false
@@ -18,6 +22,10 @@ struct ThreadsScreen: View {
     @State private var webPolicy = "auto"
     @State private var untilClean = false
     @State private var maxAttempts = 3
+    /// Arm the agent-driven browser (Playwright MCP) for this turn. Requires full
+    /// access (codex's sandbox cancels navigation otherwise); turning it on forces
+    /// access to full + is disclosed in the options panel. Not sticky across threads.
+    @State private var browser = false
     /// Per-turn model override for the primary harness. Empty = harness default
     /// (the global default stays in Settings → Harnesses). Not sticky across threads.
     @State private var composerModel = ""
@@ -66,8 +74,16 @@ struct ThreadsScreen: View {
             access: access == .workspaceWrite ? nil : access.wire,  // workspace_write is the engine default
             web: webPolicy == "auto" ? nil : webPolicy,
             untilClean: untilClean,
-            maxAttempts: maxAttempts == 3 ? nil : maxAttempts
+            maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
+            browser: browser
         )
+    }
+
+    /// Any harness in the pool can take the agent-driven browser (manifest
+    /// `browser_tool`). Gates the composer toggle so we never offer browsing where
+    /// no adapter can inject Playwright MCP.
+    private var anyHarnessAcceptsBrowser: Bool {
+        model.harnesses.contains { $0.acceptsBrowser }
     }
 
     /// The per-turn budget field is INVALID when it's non-empty but not a positive
@@ -391,7 +407,7 @@ struct ThreadsScreen: View {
                     // Per-turn knobs are not sticky — don't carry one thread's budget
                     // cap / access / web / repair flags / model into the next thread.
                     capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
-                    untilClean = false; maxAttempts = 3; showOptions = false
+                    untilClean = false; maxAttempts = 3; showOptions = false; browser = false
                     composerModel = ""
                 }
                 // The no-project gate also fires when the project changes under a draft
@@ -408,7 +424,10 @@ struct ThreadsScreen: View {
                     primaryModels = nil
                 }
 
+                if !composerAttachments.isEmpty { attachmentChips }
                 HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+                    attachButton
+                    captureButton
                     GlassField(text: $composerText,
                                placeholder: "Message…  (⌘↩ to send · the first message starts a thread)",
                                onSubmit: send)
@@ -532,6 +551,32 @@ struct ThreadsScreen: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("External-context policy for this turn")
+            }
+            // Agent-driven browser (Playwright MCP). Offered only where a pooled
+            // harness can inject it. Arming it forces Full access (codex's sandbox
+            // cancels the navigation otherwise) and is disclosed below — never a
+            // silent escalation.
+            if anyHarnessAcceptsBrowser {
+                OptionRow(label: "Browser") {
+                    Toggle("", isOn: Binding(
+                        get: { browser },
+                        set: { on in
+                            browser = on
+                            if on { access = .elevated }
+                            if on { webPolicy = webPolicy == "off" ? "auto" : webPolicy }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(Theme.accent)
+                    .help("Let the agent drive a real browser (navigate / screenshot / read). Runs headed so you watch the real window live; navigation snapshots are recorded in the run.")
+                }
+                if browser {
+                    Text("Agent browses in a real window · runs at Full access")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 2)
+                }
             }
             // Context depth for PROJECT-SCOPED turns (RunScope.project picks deep|auto
             // off `projectContextMode`). The owner removed project SELECTION from
@@ -666,7 +711,9 @@ struct ThreadsScreen: View {
         let mode = composerMode
         let options = currentOptions
         let chosenModel = composerModel
+        let atts = composerAttachments
         composerText = ""
+        composerAttachments = []
         // Spec is NOT a normal turn: it drives the server-owned interview
         // (/spec/questions → answers → /spec/freeze) client-side. The flow renders
         // its own cards above the composer once accepted. But startSpec can fail HARD
@@ -683,10 +730,130 @@ struct ThreadsScreen: View {
             return
         }
         Task {
-            let sent = await model.composerSend(prompt: text, mode: mode, model: chosenModel, options: options)
+            let sent = await model.composerSend(prompt: text, mode: mode, model: chosenModel, attachments: atts, options: options)
             // Restore ONLY if the engine rejected it AND the user hasn't started
             // typing the next message in the meantime — never clobber in-flight text.
-            if !sent && composerText.isEmpty { composerText = text }
+            if !sent && composerText.isEmpty { composerText = text; composerAttachments = atts }
+        }
+    }
+
+    // MARK: - Composer attachments (D)
+
+    /// True when the chat primary harness declares it can take images — honest
+    /// gating so we never offer attach to a harness that would silently ignore it.
+    private var primaryAcceptsImages: Bool {
+        if let primary = model.effectivePrimaryHarness,
+           let info = model.harnesses.first(where: { $0.id == primary }) {
+            return info.acceptsImages
+        }
+        // No resolved primary (auto-pool / no-project): allow if ANY harness can.
+        return model.harnesses.contains { $0.acceptsImages }
+    }
+
+    private var attachButton: some View {
+        Button { pickAttachments() } label: {
+            Image(systemName: "paperclip")
+                .imageScale(.medium)
+                .foregroundStyle(primaryAcceptsImages ? Color.secondary : Color.secondary.opacity(0.4))
+                .padding(.horizontal, Theme.Spacing.xs)
+                .padding(.vertical, Theme.Controls.chipVPadding)
+        }
+        .buttonStyle(.borderless)
+        .disabled(!primaryAcceptsImages)
+        .help(primaryAcceptsImages
+              ? "Attach images or files for the primary harness"
+              : "The primary harness can't take attachments — switch it in the composer")
+    }
+
+    private var attachmentChips: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            ForEach(composerAttachments) { att in
+                HStack(spacing: 4) {
+                    Image(systemName: att.kind == "image" ? "photo" : "doc")
+                    Text(att.name).lineLimit(1).truncationMode(.middle)
+                    Button { composerAttachments.removeAll { $0.id == att.id } } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove attachment")
+                }
+                .font(.caption)
+                .padding(.horizontal, Theme.Spacing.sm)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.08), in: Capsule())
+            }
+        }
+    }
+
+    /// Pick files via NSOpenPanel, read each into a base64 AttachmentInput. Bytes
+    /// ride inline to the loopback control API; the daemon writes them to a scoped
+    /// dir and the chosen harness gets them in its native shape.
+    private func pickAttachments() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let mime = Self.mimeType(for: url)
+            let kind = mime.hasPrefix("image/") ? "image" : "file"
+            composerAttachments.append(AttachmentInput(
+                kind: kind, mime: mime, name: url.lastPathComponent,
+                data: data.base64EncodedString()))
+        }
+    }
+
+    private static func mimeType(for url: URL) -> String {
+        if let t = UTType(filenameExtension: url.pathExtension), let m = t.preferredMIMEType { return m }
+        return "application/octet-stream"
+    }
+
+    private var captureButton: some View {
+        Button { captureScreenshot() } label: {
+            Image(systemName: "camera.viewfinder")
+                .imageScale(.medium)
+                .foregroundStyle(primaryAcceptsImages ? Color.secondary : Color.secondary.opacity(0.4))
+                .padding(.horizontal, Theme.Spacing.xs)
+                .padding(.vertical, Theme.Controls.chipVPadding)
+        }
+        .buttonStyle(.borderless)
+        .disabled(!primaryAcceptsImages)
+        .help(primaryAcceptsImages
+              ? "Capture a screen region to attach (you pick the area)"
+              : "The primary harness can't take attachments — switch it in the composer")
+    }
+
+    /// Grab a screen region via the system `screencapture` (interactive crosshair),
+    /// off the main thread so the UI doesn't freeze during selection. macOS gates
+    /// this behind Screen Recording permission; a denied/cancelled grab yields no
+    /// attachment (honest — never a blank/fake image).
+    private func captureScreenshot() {
+        Task { @MainActor in
+            if let att = await Self.runScreencapture() {
+                composerAttachments.append(att)
+            }
+        }
+    }
+
+    private static func runScreencapture() async -> AttachmentInput? {
+        await withCheckedContinuation { (cont: CheckedContinuation<AttachmentInput?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("claudexor-shot-\(UUID().uuidString).png")
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                proc.arguments = ["-i", "-x", tmp.path] // interactive region select, silent
+                do { try proc.run(); proc.waitUntilExit() }
+                catch { cont.resume(returning: nil); return }
+                guard let data = try? Data(contentsOf: tmp), !data.isEmpty else {
+                    cont.resume(returning: nil); return // cancelled or permission denied
+                }
+                try? FileManager.default.removeItem(at: tmp)
+                cont.resume(returning: AttachmentInput(
+                    kind: "image", mime: "image/png", name: "screenshot.png",
+                    data: data.base64EncodedString()))
+            }
         }
     }
 

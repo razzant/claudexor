@@ -8,6 +8,45 @@
           "type": "string",
           "default": ""
         },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "file"
+                ],
+                "default": "file"
+              },
+              "mime": {
+                "type": "string",
+                "default": "application/octet-stream"
+              },
+              "name": {
+                "type": "string",
+                "default": ""
+              },
+              "data": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "additionalProperties": false
+          }
+        },
         "mode": {
           "type": "string",
           "enum": [
@@ -207,6 +246,9 @@
         },
         "externalContextPolicy": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/web"
+        },
+        "browser": {
+          "type": "boolean"
         },
         "tests": {
           "type": "array",

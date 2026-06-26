@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessModel, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
@@ -10,6 +11,25 @@ import { parseChatCompletion, parseModelsList } from "./parse.js";
 const RAW_API_TIMEOUT_MS = 180_000;
 /** Model enumeration is interactive (a picker waits on it): keep it snappy. */
 const RAW_API_MODELS_TIMEOUT_MS = 15_000;
+
+/**
+ * Build the chat-completions user `content`. With image attachments, switch
+ * from a plain string to the OpenAI-compatible parts array (`text` +
+ * `image_url` data URLs). Non-image attachments have no inline chat shape.
+ */
+function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, unknown>> {
+  const images = (spec.attachments ?? []).filter((a) => a.kind === "image");
+  if (images.length === 0) return spec.prompt;
+  const parts: Array<Record<string, unknown>> = [{ type: "text", text: spec.prompt }];
+  for (const a of images) {
+    try {
+      parts.push({ type: "image_url", image_url: { url: `data:${a.mime};base64,${readFileSync(a.path).toString("base64")}` } });
+    } catch {
+      // Late-deleted attachment: skip; the text prompt still goes through.
+    }
+  }
+  return parts.length > 1 ? parts : spec.prompt;
+}
 
 export interface RawApiConfig {
   id?: string;
@@ -80,6 +100,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           resume: false,
           cancel: false,
           mcp: false,
+          browser_tool: false,
           plugins: false,
           worktree_native: false,
           web_policy: "none",
@@ -95,6 +116,8 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           output: { final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "unknown" },
           auth: { supported_sources: ["api_key_env"], preferred_source: "api_key_env", probe_command: [], env_vars: [keyEnv] },
           access_control: { readonly: true, workspace_write: false, full: false, mechanism: "remote chat-completions only" },
+          // OpenAI-compatible chat-completions accept images as an inline `image_url` data URL part.
+          image_input: "base64_inline",
         },
         auth_modes: ["api_key"],
         access_profiles_supported: ["readonly"],
@@ -164,7 +187,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model, messages: [{ role: "user", content: spec.prompt }] }),
+          body: JSON.stringify({ model, messages: [{ role: "user", content: rawApiUserContent(spec) }] }),
           signal,
         });
         if (!res.ok) {

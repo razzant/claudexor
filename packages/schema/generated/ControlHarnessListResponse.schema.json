@@ -303,6 +303,16 @@
                             },
                             "additionalProperties": false,
                             "default": {}
+                          },
+                          "image_input": {
+                            "type": "string",
+                            "enum": [
+                              "file_path",
+                              "base64_stream",
+                              "base64_inline",
+                              "none"
+                            ],
+                            "default": "none"
                           }
                         },
                         "additionalProperties": false,
@@ -384,6 +394,10 @@
                             "default": false
                           },
                           "mcp": {
+                            "type": "boolean",
+                            "default": false
+                          },
+                          "browser_tool": {
                             "type": "boolean",
                             "default": false
                           },

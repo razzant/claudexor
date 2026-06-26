@@ -13,7 +13,7 @@ struct TaskDetailView: View {
     @State private var revertError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
-        case answer, plan, activity, candidates, diff, review, diagnostics
+        case answer, plan, activity, candidates, diff, review, artifacts, diagnostics
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -23,6 +23,7 @@ struct TaskDetailView: View {
             case .candidates: return "Candidates"
             case .diff: return "Diff"
             case .review: return "Review"
+            case .artifacts: return "Artifacts"
             case .diagnostics: return "Diagnostics"
             }
         }
@@ -34,6 +35,7 @@ struct TaskDetailView: View {
             case .candidates: return "flag.checkered.2.crossed"
             case .diff: return "plusminus.circle"
             case .review: return "person.2.badge.gearshape"
+            case .artifacts: return "photo.on.rectangle.angled"
             case .diagnostics: return "stethoscope"
             }
         }
@@ -192,7 +194,7 @@ struct TaskDetailView: View {
         case .diff: return task.diff.isEmpty ? nil : task.diff.count
         case .review: return task.findings.isEmpty ? nil : task.findings.count
         case .diagnostics: return task.engineError == nil && task.diagnosticText == nil ? nil : 1
-        case .activity: return nil
+        case .activity, .artifacts: return nil
         }
     }
 
@@ -250,6 +252,8 @@ struct TaskDetailView: View {
             }
         case .review:
             reviewContent(task)
+        case .artifacts:
+            ArtifactGalleryView(runId: task.id)
         case .diagnostics:
             diagnosticsContent(task)
         }

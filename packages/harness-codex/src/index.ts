@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, normalizeEffort, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
+import { HarnessUnavailableError, normalizeEffort, playwrightMcpArgs, providerScrubEnv, resolveNpxBin, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
@@ -187,8 +187,39 @@ function redactCodexDoctorDetail(text: string): string {
   return redactSecrets(text).slice(0, 500);
 }
 
+/** Codex forwards images via `-i/--image <FILE>` (repeatable; file path only —
+ *  it rejects remote URLs). Non-image attachments have no native codex surface. */
+function codexImageArgs(attachments: HarnessRunSpec["attachments"] | undefined): string[] {
+  const out: string[] = [];
+  for (const a of attachments ?? []) {
+    if (a.kind === "image") out.push("-i", a.path);
+  }
+  return out;
+}
+
+/**
+ * Inject the Playwright browser MCP as stateless `-c mcp_servers.browser.*`
+ * config overrides (live-verified: codex accepts array-valued `-c` overrides and
+ * surfaces the tools as `mcp_tool_call` events the parser already maps). Stateless
+ * means NO scoped config.toml write — the user's `~/.codex/config.toml` is never
+ * touched. Empty when no browser this run.
+ */
+export function codexBrowserArgs(browser: HarnessRunSpec["browser"]): string[] {
+  if (!browser) return [];
+  return [
+    "-c",
+    `mcp_servers.browser.command=${JSON.stringify(resolveNpxBin())}`,
+    "-c",
+    `mcp_servers.browser.args=${JSON.stringify(playwrightMcpArgs(browser))}`,
+    "-c",
+    "mcp_servers.browser.startup_timeout_sec=90",
+    "-c",
+    "mcp_servers.browser.tool_timeout_sec=120",
+  ];
+}
+
 export function codexExecArgs(
-  spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt"> & {
+  spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt" | "attachments" | "browser"> & {
     resume_session_id?: string | null;
   },
 ): string[] {
@@ -205,6 +236,8 @@ export function codexExecArgs(
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
+    args.push(...codexImageArgs(spec.attachments));
+    args.push(...codexBrowserArgs(spec.browser));
     args.push(spec.prompt);
     return args;
   }
@@ -212,6 +245,8 @@ export function codexExecArgs(
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
+  args.push(...codexImageArgs(spec.attachments));
+  args.push(...codexBrowserArgs(spec.browser));
   args.push(spec.prompt);
   return args;
 }
@@ -288,6 +323,9 @@ export function createCodexAdapter(): HarnessAdapter {
           resume: true,
           cancel: true,
           mcp: true,
+          // Codex is an MCP client; we inject Playwright MCP as `-c
+          // mcp_servers.browser.*` overrides (live-verified) — gated on web policy.
+          browser_tool: true,
           plugins: true,
           worktree_native: false,
           web_policy: "native",
@@ -310,6 +348,8 @@ export function createCodexAdapter(): HarnessAdapter {
           output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
           auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
+          // Codex accepts images via `codex exec -i/--image <FILE>` (file path; remote URLs rejected).
+          image_input: "file_path",
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],

@@ -35,5 +35,10 @@
     <!-- Single-window app; no document types. -->
     <key>LSUIElement</key>
     <false/>
+    <!-- Screen capture: the composer's Capture button uses the system screencapture
+         to grab a region the user chooses to show the agent. macOS gates this behind
+         Screen Recording permission; this string explains the prompt. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Claudexor captures a screen region you choose so you can attach it to a message for the coding agent.</string>
 </dict>
 </plist>

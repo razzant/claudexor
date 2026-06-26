@@ -85,6 +85,9 @@ export function createCursorAdapter(): HarnessAdapter {
           resume: true,
           cancel: false,
           mcp: true,
+          // MCP-capable, but Claudexor has not wired a browser-MCP injector for
+          // cursor-agent yet — honest false until that path exists + is verified.
+          browser_tool: false,
           plugins: true,
           worktree_native: true,
           web_policy: "uncontrolled",
@@ -103,6 +106,8 @@ export function createCursorAdapter(): HarnessAdapter {
           // flag exists) -> honest sources: native_session + api_key_env only.
           auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null, probe_command: ["cursor-agent", "status"], env_vars: ["CURSOR_API_KEY"] },
           access_control: { readonly: true, workspace_write: true, full: false, mechanism: "cursor-agent flags (feature-probed)" },
+          // cursor-agent has no headless image attachment surface (confirmed) — attach is gated off.
+          image_input: "none",
         },
         // Source AVAILABILITY truth: each mode is listed only when its source
         // actually exists right now (a native session does not imply a key).

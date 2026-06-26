@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AccessProfile, AuthPreference, ExternalContextPolicy, Id, Intent, ProviderFamily } from "./primitives.js";
+import { Attachment, ImageInputMode } from "./attachment.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z.enum(["exact", "native", "observed", "manual", "unknown"]);
@@ -58,6 +59,13 @@ export const HarnessCapabilities = z.object({
   resume: z.boolean().default(false),
   cancel: z.boolean().default(false),
   mcp: z.boolean().default(false),
+  /**
+   * The adapter can inject a browser-automation MCP server (Playwright MCP) that
+   * this harness drives as `browser_*` tools (navigate / screenshot / snapshot).
+   * Gated on web policy: never injected under `external_context_policy:off`.
+   * Requires `mcp` to be true (injection rides the harness's MCP-client surface).
+   */
+  browser_tool: z.boolean().default(false),
   plugins: z.boolean().default(false),
   worktree_native: z.boolean().default(false),
   web_policy: WebPolicySupport.default("none"),
@@ -187,6 +195,9 @@ export const HarnessCapabilityProfile = z
     output: OutputCapabilities,
     auth: AuthCapabilities,
     access_control: AccessControlCapabilities,
+    /** How the harness accepts image input (drives honest attach gating + the
+     *  per-adapter serializer). `none` = no vision input on this route. */
+    image_input: ImageInputMode.default("none"),
   })
   .default({});
 export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
@@ -241,6 +252,29 @@ export const ConformanceReport = z.object({
 });
 export type ConformanceReport = z.infer<typeof ConformanceReport>;
 
+/**
+ * Per-run browser-tool wiring. Present (non-null) on a HarnessRunSpec ONLY when
+ * the orchestrator has decided this run gets the agent-driven browser: the run
+ * opted in, the harness has the `browser_tool` capability, AND web policy is not
+ * `off`. The adapter injects Playwright MCP accordingly.
+ */
+export const BrowserToolSpec = z.object({
+  /**
+   * `--output-dir` for the browser MCP. Captures the per-navigation accessibility
+   * SNAPSHOTS (Playwright MCP writes screenshot image files to the agent's cwd,
+   * not here) into the run artifact tree as a browsing record the Canvas gallery
+   * lists. The live view is the headed window itself. Null = MCP's own temp dir.
+   */
+  output_dir: z.string().nullable().default(null),
+  /**
+   * Run the browser headless (no visible window). Default false — a headed
+   * Chromium so the user can watch the agent browse directly (the chosen mirror:
+   * a real visible window, not an embedded screencast).
+   */
+  headless: z.boolean().default(false),
+});
+export type BrowserToolSpec = z.infer<typeof BrowserToolSpec>;
+
 /** Spec passed to a harness adapter's run(). */
 export const HarnessRunSpec = z.object({
   session_id: Id,
@@ -277,6 +311,18 @@ export const HarnessRunSpec = z.object({
    */
   env_inheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
   env: z.record(z.string(), z.string()).default({}),
+  /**
+   * User/agent attachments (images, files) forwarded to the harness in its
+   * native shape per `capability_profile.image_input`. Empty for non-vision
+   * harnesses — the orchestrator drops + discloses rather than silently ignore.
+   */
+  attachments: z.array(Attachment).default([]),
+  /**
+   * Agent-driven browser wiring. Null = no browser tool this run (the common
+   * case). Set by the orchestrator only when the run opted in, the harness has
+   * `browser_tool`, and web policy is not `off`.
+   */
+  browser: BrowserToolSpec.nullable().default(null),
   output_schema: z.unknown().optional(),
   extra: z.record(z.string(), z.unknown()).default({}),
 });

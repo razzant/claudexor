@@ -301,6 +301,7 @@ struct TurnOptions: Equatable {
     var web: String? = nil             // auto | off | cached | live
     var untilClean: Bool = false
     var maxAttempts: Int? = nil        // nil => engine default repair cap
+    var browser: Bool = false          // arm the agent-driven browser (full access)
 }
 
 // MARK: - Phase pipeline
@@ -739,6 +740,14 @@ struct HarnessInfo: Identifiable, Hashable {
     var intents: [String]
     var reasons: [String] = []
     var checks: [String] = []
+    /// True when the harness manifest declares a non-`none` `image_input` mode —
+    /// drives honest composer attach gating (never send an image to a harness
+    /// that would silently ignore it).
+    var acceptsImages: Bool = false
+    /// True when the harness manifest declares the `browser_tool` capability —
+    /// drives the composer's agent-browser toggle (honest: only offered where the
+    /// adapter can inject Playwright MCP).
+    var acceptsBrowser: Bool = false
     var id: String { family.rawValue }
 }
 

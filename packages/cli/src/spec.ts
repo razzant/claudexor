@@ -85,17 +85,36 @@ export function loadFrozenSpec(path: string): LoadedFrozenSpec {
  * producer instruction and consumer stay a co-located contract pair (the daemon
  * surface just calls this — Bible §1: surfaces stay thin).
  */
-export function buildGroundingPrompt(prompt: string): string {
-  return `${prompt}
+/** One already-answered decision, carried into a follow-up tier so the interview
+ *  goes DEEPER instead of re-asking. */
+export interface PriorDecision {
+  question: string;
+  answer: string;
+}
+
+export function buildGroundingPrompt(prompt: string, priorDecisions: PriorDecision[] = []): string {
+  const deeper = priorDecisions.length > 0;
+  const priorSection = deeper
+    ? `\n\nDECISIONS ALREADY MADE (the user answered these — do NOT re-ask them; treat them as fixed and surface the NEXT, deeper layer of decisions these answers unlock):\n${priorDecisions
+        .map((d) => `- ${d.question} => ${d.answer}`)
+        .join("\n")}`
+    : "";
+  const countLine = deeper
+    ? "List the next 3–6 DEEPER open decisions that the answers above now make relevant"
+    : "List 4–8 of the MOST important open decisions";
+  const noneLine = deeper
+    ? "If the spec is now unambiguous and there are genuinely no FURTHER open decisions, write a single bullet: - (none)"
+    : "If there are genuinely no open decisions, write a single bullet: - (none)";
+  return `${prompt}${priorSection}
 
 ---
 GROUNDING INSTRUCTION (for Claudexor's spec interview — do this in addition to your plan):
-Identify the material decisions a developer must make BEFORE implementing this, then
+Identify the material decisions a developer must make BEFORE implementing this${deeper ? ", GIVEN the decisions already made above" : ""}, then
 end your response with a section titled exactly:
 
 ## Open Questions
 
-List 2–6 of the MOST important open decisions, one per bullet, in EXACTLY this format:
+${countLine}, one per bullet, in EXACTLY this format:
 
 - [single] <question> :: <option A> :: <option B> :: <option C>
 - [multi] <question> :: <option A> :: <option B> :: <option C>
@@ -106,7 +125,8 @@ Rules:
 - For [single], make options MUTUALLY EXCLUSIVE; for [multi], make options concrete
   INDEPENDENT selections that can be combined. Ground every option in THIS repository.
 - Prefer [single]/[multi] with real options over [text] whenever sensible choices exist.
-- If there are genuinely no open decisions, write a single bullet: - (none)`;
+- Do NOT repeat any decision already made above; each question must open NEW ground.
+- ${noneLine}`;
 }
 
 /** A real markdown ATX heading: 1–6 leading `#` then a space. Used as the

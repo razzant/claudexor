@@ -296,6 +296,28 @@ public struct ThreadApplyResponse: Codable, Sendable {
 }
 
 /// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.
+/// One inbound attachment on a turn. Mirrors the control `AttachmentInput`:
+/// bytes ride base64-inline in `data` for a fresh upload (the daemon decodes
+/// them to a scoped file). `kind` is "image" or "file"; `mime` is used for the
+/// per-harness serializer. Vision gating reads the harness manifest's
+/// `capability_profile.image_input` — never send an image to a `none` harness.
+public struct AttachmentInput: Codable, Sendable, Identifiable, Equatable {
+    /// Stable-enough identity for SwiftUI chips (NOT encoded — computed).
+    public var id: String { "\(name):\(data?.count ?? path?.count ?? 0)" }
+    public var kind: String
+    public var mime: String
+    public var name: String
+    public var data: String?
+    public var path: String?
+    public init(kind: String, mime: String, name: String, data: String? = nil, path: String? = nil) {
+        self.kind = kind
+        self.mime = mime
+        self.name = name
+        self.data = data
+        self.path = path
+    }
+}
+
 public struct ThreadTurnRequest: Codable, Sendable {
     public var prompt: String
     public var mode: String?
@@ -316,17 +338,23 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var access: String?
     /// Per-turn external-context policy: auto | off | cached | live.
     public var web: String?
+    /// Arm the agent-driven browser (Playwright MCP) for this turn. Honored only
+    /// for browser-capable harnesses at full access; the engine drops it otherwise.
+    public var browser: Bool?
     /// Implement an approved plan from an earlier turn (forces agent mode).
     public var planRunId: String?
     /// Implement a FROZEN spec: the path to the SpecPack file the orchestrator
     /// reads (fails loudly if unreadable). Carried by an Implement-spec turn.
     public var specPath: String?
+    /// Files/images attached to this turn (bytes ride base64-inline in each
+    /// AttachmentInput.data; the daemon resolves them to scoped paths).
+    public var attachments: [AttachmentInput]?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
                 maxUsd: Double? = nil, primaryHarness: String? = nil, model: String? = nil,
-                access: String? = nil, web: String? = nil, planRunId: String? = nil,
-                specPath: String? = nil) {
+                access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
+                specPath: String? = nil, attachments: [AttachmentInput]? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -340,8 +368,10 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.model = model
         self.access = access
         self.web = web
+        self.browser = browser
         self.planRunId = planRunId
         self.specPath = specPath
+        self.attachments = attachments
     }
 }
 
@@ -350,15 +380,29 @@ public struct ThreadTurnRequest: Codable, Sendable {
 /// Body for POST /spec/questions — run the grounding plan synchronously and
 /// extract the open-questions interview. Mirrors ControlSpecQuestionsRequest
 /// (the server .strict()-parses it; scope must be a project root).
+/// One already-answered decision carried into a deeper interview tier so the
+/// server asks the NEXT layer instead of re-asking. Mirrors control priorDecisions.
+public struct SpecPriorDecision: Codable, Sendable, Equatable {
+    public let question: String
+    public let answer: String
+    public init(question: String, answer: String) {
+        self.question = question
+        self.answer = answer
+    }
+}
+
 public struct SpecQuestionsRequest: Codable, Sendable {
     public var prompt: String
     public var scope: RunScope
     public var harnesses: [String]?
+    /// Accumulated prior-tier decisions → the interview goes deeper each round.
+    public var priorDecisions: [SpecPriorDecision]?
 
-    public init(prompt: String, scope: RunScope, harnesses: [String]? = nil) {
+    public init(prompt: String, scope: RunScope, harnesses: [String]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
         self.prompt = prompt
         self.scope = scope
         self.harnesses = harnesses
+        self.priorDecisions = priorDecisions
     }
 }
 
@@ -691,6 +735,9 @@ public struct ArtifactInfo: Codable, Sendable, Identifiable, Equatable {
     public let path: String
     public let kind: String
     public let bytes: Int?
+    /// Clean MIME (e.g. `image/png`, `text/plain`, `application/pdf`) from the
+    /// server; lets a gallery render text vs image vs pdf. Absent for directories.
+    public let mime: String?
     public var id: String { path }
 }
 

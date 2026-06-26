@@ -6,6 +6,7 @@ import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexo
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import {
   AccessProfile,
+  AttachmentInput,
   ControlWebEvidence,
   ControlApplyCheckRequest,
   ControlApplyRequest,
@@ -122,7 +123,7 @@ export interface DaemonControlApiOptions {
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
     /** Single-writer turn creation (run_id bound later by the daemon runner). */
-    createThreadTurn?: (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null }) => Promise<unknown>;
+    createThreadTurn?: (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null; attachments?: AttachmentInput[] }) => Promise<unknown>;
     /** Rename / archive a thread or switch its sticky primary/pool. */
     updateThread?: (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) => Promise<unknown>;
     /** Deliver an isolated thread's accumulated worktree diff to the project. */
@@ -295,8 +296,13 @@ export class DaemonControlApiServer {
           const turn = (await createTurnSvc(directThreadId, String(params.prompt ?? ""), {
             parentRunId: params.parentRunId ?? null,
             planRunId: params.planRunId ?? null,
+            // Resolve inbound attachment bytes onto the turn (scoped 0600 paths),
+            // same as the /threads/:id/turns path — so the base64 `data` below is
+            // stripped from the enqueued params and never persists in jobs.json.
+            attachments: params.attachments,
           })) as { id: string };
-          enqueueParams = { ...params, turnId: turn.id };
+          const { attachments: _att, ...rest } = params;
+          enqueueParams = { ...rest, turnId: turn.id };
         }
       }
       const job = await this.opts.daemon.enqueue(enqueueParams);
@@ -579,8 +585,13 @@ export class DaemonControlApiServer {
             // FIRST turn of a thread is "initial", not "followup" (review #4).
             parentRunId: thread.head_run_id ?? null,
             planRunId,
+            attachments: params.attachments,
           })) as { id: string };
-          const job = await this.opts.daemon.enqueue({ ...params, turnId: turn.id });
+          // Strip base64 attachment bytes from the enqueued params: jobs.json must
+          // never carry the bytes (the turn holds the resolved scoped paths, and
+          // the run reads them back from the turn at start).
+          const { attachments: _att, ...enqueueParams } = params;
+          const job = await this.opts.daemon.enqueue({ ...enqueueParams, turnId: turn.id });
           const rec = await this.waitForRunStart(job.id);
           if (rec.runId && rec.runDir) {
             return this.json(res, 200, {
@@ -1974,7 +1985,7 @@ function listArtifacts(root: string): ControlArtifactInfo[] {
       const st = lstatSync(abs);
       if (st.isSymbolicLink()) continue;
       const rel = relative(safeRoot, abs).split(sep).join("/");
-      out.push({ path: rel, kind: st.isDirectory() ? "directory" : "file", bytes: st.isDirectory() ? undefined : st.size });
+      out.push({ path: rel, kind: st.isDirectory() ? "directory" : "file", bytes: st.isDirectory() ? undefined : st.size, mime: st.isDirectory() ? undefined : artifactMime(rel) });
       if (st.isDirectory()) walk(abs);
     }
   };
@@ -2132,7 +2143,7 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
 }
 
 function contentType(path: string): string {
-  switch (extname(path)) {
+  switch (extname(path).toLowerCase()) {
     case ".json": return "application/json; charset=utf-8";
     case ".md":
     case ".txt":
@@ -2142,8 +2153,22 @@ function contentType(path: string): string {
     case ".patch":
     case ".yaml":
     case ".yml": return "text/plain; charset=utf-8";
+    case ".html":
+    case ".htm": return "text/html; charset=utf-8";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".svg": return "image/svg+xml";
+    case ".pdf": return "application/pdf";
     default: return "application/octet-stream";
   }
+}
+
+/** Clean MIME (no charset) for the artifact listing DTO. */
+function artifactMime(path: string): string {
+  return contentType(path).split(";")[0] as string;
 }
 
 function isPatchArtifact(path: string): boolean {
@@ -2153,7 +2178,7 @@ function isPatchArtifact(path: string): boolean {
 
 function isTextArtifact(path: string): boolean {
   const type = contentType(path);
-  return type.startsWith("text/plain") || type.startsWith("application/json");
+  return type.startsWith("text/") || type.startsWith("application/json");
 }
 
 function validateAbsoluteRepoRoot(repoRoot: string): string | null {

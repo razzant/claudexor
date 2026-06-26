@@ -2,6 +2,7 @@ import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AccessProfile,
+  Attachment,
   AttemptTelemetryRecord,
   EffortHint,
   ExternalContextPolicy,
@@ -110,6 +111,14 @@ export interface RunInput {
    */
   executionRoot?: string;
   prompt: string;
+  /** Files/images attached to this turn, resolved to scoped on-disk paths. */
+  attachments?: Attachment[];
+  /**
+   * Opt this run into the agent-driven browser (Playwright MCP). Honored only
+   * for browser-capable harnesses when web policy is not `off`; the orchestrator
+   * resolves it to a per-harness `HarnessRunSpec.browser`.
+   */
+  browser?: boolean;
   mode?: ModeKind;
   contextMode?: "off" | "auto" | "deep";
   harnesses?: string[];
@@ -310,6 +319,7 @@ interface RoutedAdapter {
   providerFamily: ProviderFamily;
   supportsMaxTurns: boolean;
   supportsToolLists: boolean;
+  supportsBrowser: boolean;
   settings: HarnessRouteSettings | null;
 }
 
@@ -449,6 +459,35 @@ export class Orchestrator {
   /** The producing intent a candidate plays (create flag switches it; not hardcoded to implement). */
   private candidateIntent(input: RunInput): Intent {
     return input.create === true ? "create_from_scratch" : "implement";
+  }
+
+  /**
+   * Resolve the per-harness browser-tool wiring for a run spec. Returns null
+   * (no browser) unless: the run opted in (`input.browser`), the harness has the
+   * `browser_tool` capability, AND web policy is not `off` (the browser is live
+   * egress and must ride `external_context_policy`). Screenshots/PDFs are written
+   * into the run's artifact tree so they surface in the Canvas gallery. Headed by
+   * default so the user can watch; `cdp_endpoint` is filled by the headed-Chromium
+   * launcher (7B) for the shared, mirrored window.
+   */
+  private browserSpecFor(
+    input: RunInput | undefined,
+    routed: RoutedAdapter,
+    webPolicy: ExternalContextPolicy,
+    access: AccessProfile,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+  ): { output_dir: string; headless: boolean } | null {
+    if (!input?.browser || !routed.supportsBrowser || webPolicy === "off") return null;
+    // The browser MCP drives a real Chromium (subprocess + live network). Codex's
+    // workspace-write sandbox cancels the navigation (live-verified across
+    // network_access / approval_policy / external-CDP variants) — only full access
+    // lets it through. Require full access rather than silently inject a browser
+    // whose first navigation will fail. The composer discloses this when the user
+    // arms the tool; a non-full run drops the browser honestly (no broken tool).
+    // headless:false -> a real headed window is the live view (Anton's chosen
+    // mirror); output_dir captures navigation snapshots into the run tree.
+    if (access !== "full" && access !== "external_sandbox_full") return null;
+    return { output_dir: join(paths.root, "browser"), headless: false };
   }
 
   /**
@@ -649,6 +688,7 @@ export class Orchestrator {
           providerFamily: manifest.provider_family,
           supportsMaxTurns: manifest.capabilities.max_turns,
           supportsToolLists: manifest.capabilities.tool_lists,
+          supportsBrowser: manifest.capabilities.browser_tool,
           settings: cfgEntry
             ? {
                 defaultModel: cfgEntry.default_model,
@@ -1071,6 +1111,8 @@ export class Orchestrator {
       session_id: newId("ses"),
       intent,
       prompt,
+      attachments: runInput?.attachments ?? [],
+      browser: this.browserSpecFor(runInput, routed, knobs.webPolicy, access, paths),
       cwd: envelope.worktree_path,
       access,
       external_context_policy: knobs.webPolicy,
@@ -2714,6 +2756,19 @@ export class Orchestrator {
     ].join("\n");
   }
 
+  /**
+   * Relay cross-share (G/Q4): the prior planners' plans, injected into a later
+   * planner's prompt so the harnesses CONVERGE on an aligned plan instead of
+   * each planning in isolation. `runPlan` already iterates planners sequentially,
+   * so each leg after the first sees what the earlier ones proposed and is asked
+   * to reconcile/extend them (not blindly repeat).
+   */
+  private relayPriorPlansSection(plans: { id: string; text: string }[]): string {
+    if (plans.length === 0) return "";
+    const blocks = plans.map((p) => `### Plan already proposed by ${p.id}\n${p.text.slice(0, 4000)}`).join("\n\n");
+    return `\n\n---\nOTHER HARNESSES HAVE ALREADY PROPOSED PLANS FOR THIS SAME TASK (below). Read them, then produce YOUR plan: build on what is solid, RECONCILE the differences, and EXPLICITLY call out where you disagree and why. Do not blindly repeat them — converge toward one aligned plan.\n\n${blocks}\n---\n`;
+  }
+
   private async runPlan(input: RunInput): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -2788,7 +2843,7 @@ export class Orchestrator {
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: "plan",
-        prompt: this.planPrompt(input.prompt) + contextSection,
+        prompt: this.planPrompt(input.prompt) + contextSection + this.relayPriorPlansSection(plans),
         cwd: this.execRootOf(input),
         access: "readonly",
         ...this.sessionSpecFields(input, adapter.id),

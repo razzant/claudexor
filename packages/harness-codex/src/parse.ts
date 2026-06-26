@@ -171,6 +171,14 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
           },
         ];
       }
+      case "todo_list": {
+        // Codex's structured plan (re-emitted on revision; last wins). Surface it
+        // as a message so the plan is visible in the timeline and available to the
+        // relay's plan-extraction. Verified shape: item.items[].{text,completed}.
+        const items = Array.isArray(item.items) ? item.items : [];
+        const lines = items.map((t: { text?: string; completed?: boolean }) => `${t.completed ? "[x]" : "[ ]"} ${String(t.text ?? "")}`);
+        return [{ type: "message", session_id: sessionId, ts, text: lines.length ? `Plan:\n${lines.join("\n")}` : "Plan updated" }];
+      }
       default:
         return null;
     }

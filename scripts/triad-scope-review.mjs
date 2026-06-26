@@ -38,8 +38,8 @@ import { join, resolve } from "node:path";
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 
-const TRIAD_MODELS = ["openai/gpt-5.5", "google/gemini-3.5-flash", "anthropic/claude-opus-4.8"];
-const SCOPE_MODEL = "openai/gpt-5.5";
+const TRIAD_MODELS = (process.env.TRIAD_MODELS || "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8").split(",");
+const SCOPE_MODEL = process.env.SCOPE_MODEL || "openai/gpt-5.5";
 const SCOPE_ITEMS = [
   "intent_alignment",
   "forgotten_touchpoints",

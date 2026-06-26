@@ -90,6 +90,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           resume: true,
           cancel: false,
           mcp: true,
+          // MCP-capable, but no browser-MCP injector wired for opencode yet —
+          // honest false until that path exists + is verified.
+          browser_tool: false,
           plugins: true,
           worktree_native: false,
           web_policy: "uncontrolled",
@@ -112,6 +115,8 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           // workspace_write would silently grant full. full-only until a scoped
           // mechanism is conformance-proven.
           access_control: { readonly: false, workspace_write: false, full: true, mechanism: "opencode --dangerously-skip-permissions (full access only; no proven scoped workspace-write)" },
+          // No proven headless image input surface — attach is gated off until verified.
+          image_input: "none",
         },
         auth_modes: authReady ? ["api_key"] : [],
         access_profiles_supported: ["full", "inherit_native"],

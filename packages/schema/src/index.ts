@@ -6,6 +6,7 @@
  * (see scripts/gen-jsonschema.ts).
  */
 export * from "./primitives.js";
+export * from "./attachment.js";
 export * from "./task.js";
 export * from "./spec.js";
 export * from "./context.js";

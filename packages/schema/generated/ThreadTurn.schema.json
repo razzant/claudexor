@@ -57,6 +57,42 @@
           "type": "string",
           "default": ""
         },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/ThreadTurn/properties/id"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "file"
+                ],
+                "default": "file"
+              },
+              "mime": {
+                "type": "string",
+                "default": "application/octet-stream"
+              },
+              "name": {
+                "type": "string",
+                "default": ""
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
         "created_at": {
           "type": "string",
           "minLength": 1

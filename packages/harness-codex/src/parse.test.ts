@@ -144,4 +144,15 @@ describe("parseCodexEvent", () => {
     expect(benign?.type).toBe("error");
     expect(benign?.rate_limit).toBeUndefined();
   });
+
+  it("maps a codex todo_list to a plan message (the relay plan signal)", () => {
+    // Verified live (codex 0.142): item.completed carries item.type=todo_list with items[].{text,completed}.
+    const line = '{"type":"item.completed","item":{"id":"item_0","type":"todo_list","items":[{"text":"Step one","completed":true},{"text":"Step two","completed":false}]}}';
+    const events = parseCodexEvent(JSON.parse(line), "s1") ?? [];
+    for (const e of events) expect(() => HarnessEvent.parse(e)).not.toThrow();
+    const msg = events.find((e) => e.type === "message");
+    expect(msg?.text).toContain("Plan:");
+    expect(msg?.text).toContain("[x] Step one");
+    expect(msg?.text).toContain("[ ] Step two");
+  });
 });

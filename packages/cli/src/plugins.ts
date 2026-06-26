@@ -245,15 +245,18 @@ function readmeText(host: PluginHost): string {
 function manifest(kind: "claude" | "codex" | "cursor"): string {
   const description = `Claudexor control plane host integration (${MARKER})`;
   if (kind === "cursor") {
+    // Cursor requires literal path ARRAYS for `commands`/`skills`, never glob strings,
+    // and `skills` must name the skill DIRECTORY (not its SKILL.md). Glob strings register
+    // nothing, which left the plugin loading empty on install. `displayName`/`publisher`
+    // are non-schema and dropped; the root `mcp.json` is auto-detected (kept for the test
+    // and as the explicit MCP pointer).
     return jsonText({
       name: "claudexor",
-      displayName: "Claudexor",
       description,
       version: CLAUDEXOR_VERSION,
       author: { name: "Claudexor" },
-      publisher: "claudexor",
-      commands: "./commands/*.md",
-      skills: "./skills/*/SKILL.md",
+      commands: ["commands/claudexor.md"],
+      skills: ["skills/claudexor"],
       mcpServers: "./mcp.json",
     });
   }
