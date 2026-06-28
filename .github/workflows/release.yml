@@ -139,6 +139,11 @@ jobs:
           }
 
       - name: Upload workflow artifact
+        # Redundant CI-scratch copy: the canonical deliverable is the GitHub
+        # Release assets (next step, uploaded via gh release with GITHUB_TOKEN).
+        # Actions artifact storage can be quota-capped; that must NEVER block the
+        # actual Release publish (Release assets use separate storage).
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: Claudexor-${{ steps.release.outputs.version }}-unsigned-macos
