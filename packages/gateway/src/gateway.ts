@@ -30,8 +30,16 @@ export class HarnessGateway {
     return this.registry.get(id);
   }
 
-  async statusAll(spec: DoctorSpec): Promise<HarnessStatus[]> {
-    return this.statusAllForAdapters([...this.registry.values()], spec);
+  /**
+   * Discover + conformance-probe harnesses. When `only` is given, ONLY those
+   * adapters are probed (so `doctor --harness X` / `auth status X` pay one
+   * harness's discovery cost — incl. any paid smoke — instead of probing every
+   * registered adapter and post-filtering). Unknown ids in `only` are skipped.
+   */
+  async statusAll(spec: DoctorSpec, only?: string[]): Promise<HarnessStatus[]> {
+    const all = [...this.registry.values()];
+    const adapters = only && only.length > 0 ? all.filter((a) => only.includes(a.id)) : all;
+    return this.statusAllForAdapters(adapters, spec);
   }
 
   private async statusAllForAdapters(adapters: HarnessAdapter[], spec: DoctorSpec): Promise<HarnessStatus[]> {

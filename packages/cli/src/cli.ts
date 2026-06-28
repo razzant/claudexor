@@ -13,8 +13,8 @@ import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
-import { harnessRuntimeEnv, validateModel } from "@claudexor/core";
-import { SecretStore } from "@claudexor/secrets";
+import { atRiskNodeAdvisory, harnessRuntimeEnv, validateModel } from "@claudexor/core";
+import { SecretStore, type SecretBackend } from "@claudexor/secrets";
 import {
   DecisionRecord,
   EffortHint,
@@ -30,7 +30,7 @@ import {
 } from "@claudexor/schema";
 import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, parseArgs, requiredStringFlagError, type ParsedArgs } from "./args.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
-import { ensureDaemon, enqueueAndAwait, exitCodeForState } from "./daemon-run.js";
+import { connectDaemonIfRunning, daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, exitCodeForState, waitForDaemonReady } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
 import { PLUGIN_TARGETS, PLUGIN_VERBS, formatPluginResult, pluginCommandErrorResult, runPluginCommand, type PluginTarget, type PluginVerb } from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
@@ -43,7 +43,7 @@ import {
   readAnswers,
   type SpecCommandResult,
 } from "./spec.js";
-import { parseReviewerEffortMap } from "./reviewer-options.js";
+import { parseReviewerEffortMap, parseReviewerModelMap } from "./reviewer-options.js";
 import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 
@@ -116,7 +116,7 @@ Usage:
   claudexor plugin repair <host|all>      Reapply owned Claudexor host integration files/config
   claudexor plugin uninstall <host|all>   Remove owned Claudexor host integration files/config
   claudexor harness list [--all]          List real harnesses (--all includes fakes)
-  claudexor models [--harness <id>]       List a harness's enumerable models (raw-api: OpenAI GET /v1/models)
+  claudexor models [--harness <id>] [--all]   List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --all includes fakes)
   claudexor help                          Show this help
 
 Options:
@@ -148,6 +148,7 @@ Options:
   --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
   --attach <path[,path...]> Attach file(s) to ask/run/race/plan/audit
   --image <path[,path...]>  Attach image file(s) (alias for --attach with image kind)
+  --backend <store>        Secrets store: auto (default)|keychain|file (file = sandbox-safe, no Keychain)
   --json                   Machine-readable JSON output
   --dry-run                Plugin: show lifecycle actions; apply: check patch without mutating
   --force                  Reapply verified Claudexor-owned plugin drift; never overwrites unowned files
@@ -282,16 +283,9 @@ function attachmentsFromInputs(inputs: ReturnType<typeof attachmentInputs>): Att
   }));
 }
 
-/** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. */
+/** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. Fails loudly on malformed input. */
 function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
-  const v = flagStr(args, "reviewer-model");
-  if (v === undefined) return undefined;
-  const map: Record<string, string> = {};
-  for (const pair of v.split(",")) {
-    const [family, model] = pair.split("=").map((s) => s.trim());
-    if (family && model) map[family] = model;
-  }
-  return Object.keys(map).length > 0 ? map : undefined;
+  return parseReviewerModelMap(flagStr(args, "reviewer-model"));
 }
 
 /** Per-family reviewer effort map from `--reviewer-effort "openai=xhigh,anthropic=high"`. */
@@ -345,6 +339,7 @@ async function orchestrate(
     return printUsageError(json, `claudexor: unknown --portfolio '${portfolioRaw}'`);
   }
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
+  let resolvedReviewerModels: Record<string, string> | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
@@ -357,6 +352,7 @@ async function orchestrate(
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
+    resolvedReviewerModels = reviewerModels(args);
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
     resolvedEffort = effortHint(args);
@@ -401,7 +397,7 @@ async function orchestrate(
       tests,
       portfolio: portfolio?.success ? portfolio.data : undefined,
       maxUsd,
-      reviewerModels: reviewerModels(args),
+      reviewerModels: resolvedReviewerModels,
       reviewerEfforts: reviewerEffortOverrides,
       resolvedWebPolicy,
       resolvedAccess,
@@ -421,7 +417,7 @@ async function orchestrate(
     registry: buildRegistry(),
     portfolio: portfolio?.success ? portfolio.data : undefined,
     maxUsd: maxUsd ?? null,
-    reviewerModels: reviewerModels(args),
+    reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
   });
   try {
@@ -467,7 +463,11 @@ async function orchestrate(
           }),
     });
     if (json) {
-      printJson(res);
+      // One machine surface: on a non-success terminal, ADD a top-level `error`
+      // (mirroring the daemon path's `error`) so a JSON consumer reads the reason
+      // the same way regardless of which run path produced it. Add-only: the full
+      // result (runId/runDir/status/mode/winner/summary/candidates) is preserved.
+      printJson(res.status === "success" ? res : { ...res, error: res.summary });
     } else {
       print(`run ${res.runId} [${res.status}] mode=${res.mode} winner=${res.winner ?? "none"}`);
       print(`  artifacts: ${res.runDir}`);
@@ -557,7 +557,12 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
       // Pure machine surface: enqueue, wait for the terminal outcome, print
       // exactly one JSON object. No event printer, no TTY prompts.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
-      printJson({ runId: out.runId, runDir: out.runDir, status: out.status, jobId: out.jobId, ...(out.error ? { error: out.error } : {}) });
+      // Keep the documented bench-parser keys {runId,runDir,status}; ADD `mode`,
+      // `error` (only for real errors), and `summary` (a machine-readable reason
+      // for EVERY non-success terminal incl. `blocked`, which carries no error)
+      // so this path matches the in-process one (P2: one machine surface).
+      const reason = daemonOutcomeSummary(out);
+      printJson({ runId: out.runId, runDir: out.runDir, status: out.status, jobId: out.jobId, mode: p.mode, ...(out.error ? { error: out.error } : {}), ...(reason ? { summary: reason } : {}) });
       return exitCodeForState(out.status);
     }
     // Text mode: enqueue, then live-stream the run through the shared follow
@@ -663,9 +668,15 @@ async function resolveRunStore(runId: string): Promise<{ store: ArtifactStore; r
   // 2. user-level (no-project Ask) store
   const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
   if (existsSync(userStore.runPaths(runId).root)) return { store: userStore, root: userStore.runPaths(runId).root };
-  // 3. daemon-tracked run in another project: ask the daemon for its runDir
+  // 3. daemon-tracked run in another project: ask the daemon for its runDir.
+  //    Connect ONLY to an already-running daemon — never auto-spawn one for a
+  //    read-only lookup (a typo'd id must report "no such run", not silently
+  //    launch a background daemon). Acting paths (decision/enqueue) still use
+  //    ensureDaemon().
   try {
-    const { addr } = await ensureDaemon();
+    const conn = await connectDaemonIfRunning();
+    if (!conn) return null;
+    const { addr } = conn;
     const resp = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
       headers: { Authorization: `Bearer ${addr.token}` },
     });
@@ -865,8 +876,18 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
     const daemonScript = fileURLToPath(new URL("./claudexord.js", import.meta.url));
     const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore", env: harnessRuntimeEnv() });
     child.unref();
-    print(`claudexord starting (pid ${child.pid}); socket ${defaultSocketPath()}`);
-    return 0;
+    // Block until the daemon (socket + control API) is actually ready, so a
+    // follow-up `status`/run can't race the spawn. Fail loudly (exit 1) if it
+    // never comes up. (If a daemon was already running, this connects to it.)
+    const ready = await waitForDaemonReady(15_000);
+    if (json) {
+      printJson({ pid: child.pid ?? null, socket: defaultSocketPath(), ready: ready !== null });
+    } else if (ready) {
+      print(`claudexord ready (pid ${child.pid}); socket ${defaultSocketPath()}`);
+    } else {
+      print(`claudexord started (pid ${child.pid}) but did not become ready within 15s; check \`claudexor daemon logs\``);
+    }
+    return ready ? 0 : 1;
   }
   const token = readToken();
   if (!token) {
@@ -938,10 +959,13 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
           return { ...cfg, default_portfolio: p };
         }
         if (key === "primary_harness") {
+          if (value !== "none" && !isKnownHarness(value)) throw new Error(`unknown harness '${value}' (run \`claudexor harness list --all\`)`);
           return { ...cfg, routing: { ...cfg.routing, primary_harness: value === "none" ? null : value } };
         }
         if (key === "eligible_harnesses") {
           const list = value === "none" ? [] : value.split(",").map((s) => s.trim()).filter(Boolean);
+          const unknown = list.filter((h) => !isKnownHarness(h));
+          if (unknown.length) throw new Error(`unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
           return { ...cfg, routing: { ...cfg.routing, eligible_harnesses: list } };
         }
         if (key === "default_model") {
@@ -986,17 +1010,25 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
  * every non-unavailable harness and shows which can honestly enumerate.
  */
 async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  // `--all` includes fakes (they honestly report source:"none"); honoring it here
+  // mirrors doctor/auth/harness-list instead of silently ignoring the flag (P15).
+  const includeFakes = flagBool(args, "all");
   const only = flagStr(args, "harness");
   let ids: string[];
   if (only) {
     ids = only.split(",").map((s) => s.trim()).filter(Boolean);
+    // An explicit --harness typo fails loudly (consistent with doctor/auth), not a
+    // silent source:"none" exit 0.
+    const known = new Set(buildRegistry({ includeFakes: true }).keys());
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) return printUsageError(json, `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
   } else {
     // Default to harnesses that doctor considers usable (not unavailable);
     // each harnessModels() reports source "none" when it cannot enumerate.
-    const statuses = await buildGateway({ includeFakes: false }).statusAll({ cwd: process.cwd() });
+    const statuses = await buildGateway({ includeFakes }).statusAll({ cwd: process.cwd() });
     ids = statuses.filter((s) => s.status !== "unavailable").map((s) => s.id);
   }
-  const results = await Promise.all(ids.map((id) => harnessModels(id, process.cwd())));
+  const results = await Promise.all(ids.map((id) => harnessModels(id, process.cwd(), includeFakes)));
   if (json) {
     printJson({ harnesses: results });
     return 0;
@@ -1021,8 +1053,13 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const harness = args._[2];
   if (sub === "status") {
     const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
-    const statuses = await gateway.statusAll({ cwd: process.cwd() });
-    const filtered = harness ? statuses.filter((s) => s.id === harness) : statuses;
+    // Scope discovery to the requested harness (P14) instead of probe-all-then-filter.
+    const statuses = await gateway.statusAll({ cwd: process.cwd() }, harness ? [harness] : undefined);
+    // An explicit unknown harness must FAIL LOUDLY, not silently succeed over empty.
+    if (harness && !statuses.some((s) => s.id === harness)) {
+      return printUsageError(json, `claudexor: unknown harness '${harness}' (run \`claudexor harness list --all\`)`);
+    }
+    const filtered = statuses;
     if (json) {
       printJson({ harnesses: filtered });
       return 0;
@@ -1060,7 +1097,26 @@ async function stdinText(): Promise<string> {
 
 async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "list";
-  const store = new SecretStore();
+  // `--backend file` (or env CLAUDEXOR_SECRETS_BACKEND=file) keeps secret I/O in
+  // the 0600 file store — sandbox/CI safe (never touches the real login Keychain).
+  const backendFlag = flagStr(args, "backend");
+  if (backendFlag !== undefined && backendFlag !== "auto" && backendFlag !== "keychain" && backendFlag !== "file") {
+    if (json) printJson({ error: "--backend must be auto|keychain|file" });
+    else print("--backend must be auto|keychain|file");
+    return 2;
+  }
+  let store: SecretStore;
+  try {
+    store = new SecretStore((backendFlag as SecretBackend | undefined) ?? "auto");
+    // Surface an invalid CLAUDEXOR_SECRETS_BACKEND now, honoring --json, instead of
+    // letting the throw escape to the plain-text top-level catch.
+    store.resolvedBackend();
+  } catch (err) {
+    const msg = `claudexor secrets: ${err instanceof Error ? err.message : String(err)}`;
+    if (json) printJson({ error: msg });
+    else process.stderr.write(`${msg}\n`);
+    return 1;
+  }
   if (sub === "list") {
     const secrets = store.list();
     if (json) printJson({ backend: store.resolvedBackend(), secrets });
@@ -1120,12 +1176,21 @@ function isManagedSecretName(name: string): boolean {
   return MANAGED_SECRET_NAMES.has(name);
 }
 
+/**
+ * A REAL harness id (fakes excluded), for `settings set` validation. A persistent
+ * routing default is not an explicit per-run selection, so a `fake-*` fixture must
+ * never be accepted as primary/eligible (it could route ordinary runs to a fake).
+ */
+function isKnownHarness(id: string): boolean {
+  return buildRegistry({ includeFakes: false }).has(id);
+}
+
 /** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
 const KNOWN_FLAGS = new Set([
   "harness", "mode", "n", "attempts", "until-clean", "swarm", "create", "synthesis",
   "test", "max-usd", "reviewer-model", "reviewer-effort",
   "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place", "autonomy",
-  "answers", "previous", "spec", "attach", "image", "json", "all", "dry-run", "force", "from-env",
+  "answers", "previous", "spec", "attach", "image", "json", "all", "dry-run", "force", "from-env", "backend",
   // `decision` command action/option flags (subcommand-scoped).
   "accept-risk", "override", "revert", "accept-clean-patch", "apply-mode", "rerun", "feedback",
   "help", "version",
@@ -1135,7 +1200,7 @@ const VALUE_FLAGS = [
   "harness", "mode", "n", "attempts", "synthesis", "test", "max-usd",
   "reviewer-model", "reviewer-effort", "access", "web", "model", "effort",
   "primary-harness", "portfolio", "autonomy", "answers", "previous", "spec", "attach", "image",
-  "from-env", "apply-mode", "feedback",
+  "from-env", "backend", "apply-mode", "feedback",
 ];
 
 const PLUGIN_FLAGS = ["json", "dry-run", "force", "help", "version"];
@@ -1180,11 +1245,21 @@ async function main(): Promise<number> {
     }
 
     case "doctor": {
-      const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
-      const statuses = await gateway.statusAll({ cwd });
       const cfg = loadConfig(cwd);
       const only = flagStr(args, "harness");
-      const filtered = only ? statuses.filter((s) => s.id === only) : statuses;
+      const onlyList = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
+      // Scope discovery to the requested harness(es) (P14): a single-harness
+      // query no longer probes every adapter (incl. paid smokes) just to filter.
+      const statuses = await gateway.statusAll({ cwd }, onlyList);
+      // An explicit --harness typo must FAIL LOUDLY, not silently succeed over an
+      // empty list (the scoped probe returns nothing for an unknown id).
+      if (onlyList) {
+        const got = new Set(statuses.map((s) => s.id));
+        const unknown = onlyList.filter((id) => !got.has(id));
+        if (unknown.length) return printUsageError(json, `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
+      }
+      const filtered = statuses;
       // B2: a configured default model that the harness does not recognize must
       // not be silently masked by a smoke that ran a DIFFERENT model. Validate
       // each harness's configured default against its declared known_models and
@@ -1204,6 +1279,7 @@ async function main(): Promise<number> {
             const caps = s.manifest?.capabilities;
             return { ...s, configured_model: configured, configured_model_check: configured && caps ? validateModel(configured, caps.known_models, caps.models_authoritative) : null };
           }),
+          node_advisory: atRiskNodeAdvisory(),
         });
         return 0;
       }
@@ -1217,6 +1293,8 @@ async function main(): Promise<number> {
         const mn = modelNote(s);
         if (mn) print(mn);
       }
+      const advisory = atRiskNodeAdvisory();
+      if (advisory) print(`advisory: ${advisory}`);
       return 0;
     }
 
@@ -1330,7 +1408,8 @@ async function main(): Promise<number> {
       // store, or a daemon-tracked run that started in another project.
       const resolved = await resolveRunStore(runId);
       if (!resolved) {
-        print(`no such run ${runId}`);
+        if (json) printJson({ runId, error: `no such run ${runId}` });
+        else print(`no such run ${runId}`);
         return 1;
       }
       const store = resolved.store;
@@ -1421,18 +1500,21 @@ async function main(): Promise<number> {
       // run in another project) before reading the patch artifact.
       const resolved = await resolveRunStore(runId);
       if (!resolved) {
-        print(`no such run ${runId}`);
+        if (json) printJson({ runId, error: `no such run ${runId}` });
+        else print(`no such run ${runId}`);
         return 1;
       }
       const store = resolved.store;
       const paths = store.runPaths(runId);
       const patch = readTextSafe(join(paths.finalDir, "patch.diff"));
       if (!patch || patch.trim().length === 0) {
-        print(`no patch found for run ${runId}`);
+        if (json) printJson({ runId, error: `no patch found for run ${runId}` });
+        else print(`no patch found for run ${runId}`);
         return 1;
       }
       if (containsSecretLikeToken(patch)) {
-        print("patch contains secret-like token; refusing apply");
+        if (json) printJson({ runId, error: "patch contains secret-like token; refusing apply" });
+        else print("patch contains secret-like token; refusing apply");
         return 1;
       }
       // Apply policy has ONE owner (delivery.validateApplyGate) shared with the
@@ -1474,24 +1556,29 @@ async function main(): Promise<number> {
         operatorDecision,
       });
       if (gateError) {
-        print(gateError);
+        if (json) printJson({ runId, error: gateError });
+        else print(gateError);
         return 1;
       }
       if (flagBool(args, "dry-run")) {
         const r = await checkPatch(applyRoot, patch);
-        print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
+        if (json) printJson({ runId, dryRun: true, applies: r.ok, ...(r.ok ? {} : { error: r.stderr.trim() }) });
+        else print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
         return r.ok ? 0 : 1;
       }
       const rawMode = flagStr(args, "mode") ?? "apply";
       if (!DELIVER_MODES.has(rawMode as DeliverMode)) {
-        print(`unsupported apply mode: ${rawMode}`);
+        if (json) printJson({ runId, error: `unsupported apply mode: ${rawMode}` });
+        else print(`unsupported apply mode: ${rawMode}`);
         return 2;
       }
       // `apply` mutates the tree; `artifact_only` produces no mutation and the
       // patch artifact was already emitted by the run — reject it here (it stays
       // valid on the control-api for clients that want a dry materialization).
       if (rawMode === "artifact_only") {
-        print("apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly");
+        const msg = "apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly";
+        if (json) printJson({ runId, error: msg });
+        else print(msg);
         return 2;
       }
       const mode = rawMode as DeliverMode;

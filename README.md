@@ -151,9 +151,14 @@ claudexor auth status
 claudexor auth login codex   # prints the native setup command/hint; no SaaS broker
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
+claudexor secrets list --backend file   # force the 0600 file store (also: CLAUDEXOR_SECRETS_BACKEND=file)
 claudexor settings show
 claudexor settings set default_portfolio subscription-first
 ```
+
+Secrets default to the OS Keychain (or a `0600` file). `--backend file` /
+`CLAUDEXOR_SECRETS_BACKEND=file` forces the file store so a sandboxed run or test
+never touches the real login Keychain; an invalid value fails loudly.
 
 `auth status` distinguishes source availability from readiness: manifest auth
 sources say what could be used, while doctor status/checks decide whether a

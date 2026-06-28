@@ -1,6 +1,9 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runDoctor } from "@claudexor/core";
-import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { HarnessRunSpec, OrchestratePlan, type HarnessEvent } from "@claudexor/schema";
 import { createFakeHarness, FAKE_KINDS } from "./index.js";
 
 function registry() {
@@ -66,5 +69,49 @@ describe("fake harness adapters", () => {
     const degraded = reports.find((r) => r.harness_id === "fake-invalid-json");
     expect(degraded?.status).toBe("degraded");
     expect(degraded?.disabled_intents).toContain("review");
+  });
+
+  it("fake-implement writes a REAL file for producing intents WITHOUT leaking the prompt into the artifact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-impl-"));
+    try {
+      const promptCanary = "promptLeakCanary-do-the-thing";
+      const s = HarnessRunSpec.parse({ session_id: "ses-impl", intent: "implement", prompt: promptCanary, cwd: dir });
+      const events = await collect(createFakeHarness("fake-implement").run(s));
+      const file = join(dir, "FAKE_CHANGE.txt");
+      expect(existsSync(file)).toBe(true);
+      // BIBLE §6: the raw prompt must NEVER land in a worktree file / diff artifact
+      // NOR in any emitted event (events persist into the run transcript/artifacts).
+      expect(readFileSync(file, "utf8")).not.toContain(promptCanary);
+      expect(events.map((e) => e.text ?? "").join("\n")).not.toContain(promptCanary);
+      expect(events[events.length - 1]?.type).toBe("completed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fake-implement emits a fenced tool_calls plan (and writes nothing) for the orchestrate intent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-orch-"));
+    try {
+      const s = HarnessRunSpec.parse({ session_id: "ses-orch", intent: "orchestrate", prompt: "ship", cwd: dir });
+      const events = await collect(createFakeHarness("fake-implement").run(s));
+      const text = events.filter((e) => e.type === "message").map((e) => e.text ?? "").join("\n");
+      // The fenced JSON must be a SCHEMA-VALID OrchestratePlan (matches the doc claim),
+      // not just a string that happens to contain "tool_calls".
+      const m = /```json\s*\n([\s\S]*?)\n```/.exec(text);
+      expect(m).not.toBeNull();
+      const parsed = OrchestratePlan.safeParse(JSON.parse(m![1]!));
+      expect(parsed.success).toBe(true);
+      expect(existsSync(join(dir, "FAKE_CHANGE.txt"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fake-implement doctor enables create_from_scratch and orchestrate", async () => {
+    const reports = await runDoctor(registry(), { cwd: "/tmp" });
+    const impl = reports.find((r) => r.harness_id === "fake-implement");
+    expect(impl?.status).toBe("ok");
+    expect(impl?.enabled_intents).toContain("create_from_scratch");
+    expect(impl?.enabled_intents).toContain("orchestrate");
   });
 });

@@ -54,7 +54,7 @@ import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claud
 import { HarnessUnavailableError } from "@claudexor/core";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
-import { buildContextPack, preflightEvidence, writeEvidencePacket } from "@claudexor/context";
+import { assertMandatoryContext, buildContextPack, preflightEvidence, writeEvidencePacket } from "@claudexor/context";
 import { WorkspaceManager, applyPatch, ensureGitRepository, snapshotTree } from "@claudexor/workspace";
 import { deliver, validateApplyGate } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
@@ -403,6 +403,12 @@ export class Orchestrator {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);
     }
     const mode: ModeKind = parsedMode.data;
+    // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
+    // every mode, so the same repo state can't pass `run`/`ask` while failing
+    // `audit`. No-op when the list is empty (the default) or for no-project runs.
+    if (resolved.repoRoot !== NO_PROJECT_ROOT) {
+      assertMandatoryContext(resolved.repoRoot, this.projectConfig(resolved.repoRoot).context.mandatory_files);
+    }
     switch (mode) {
       case "ask":
         return this.runAsk(resolved);
@@ -642,7 +648,17 @@ export class Orchestrator {
     const dropped: string[] = [];
     for (const id of ids) {
       const adapter = this.deps.registry.get(id);
-      if (!adapter) { dropped.push(`${id} (not registered)`); continue; }
+      if (!adapter) {
+        // An EXPLICIT --harness typo (e.g. `fake` instead of `fake-success`)
+        // fails loudly and lists the registered ids, instead of being silently
+        // dropped into a generic "no harness can perform" message.
+        if (explicitPool) {
+          const known = [...this.deps.registry.keys()].sort().join(", ");
+          throw new HarnessUnavailableError(`unknown harness '${id}' (registered: ${known}); run \`claudexor harness list --all\``);
+        }
+        dropped.push(`${id} (not registered)`);
+        continue;
+      }
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }

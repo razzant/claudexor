@@ -35,3 +35,17 @@ export function normalizedHarnessPath(source: NodeJS.ProcessEnv = process.env): 
 export function harnessRuntimeEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...source, PATH: normalizedHarnessPath(source) };
 }
+
+/**
+ * Advisory when the Node binary running Claudexor is one macOS's code-signing
+ * monitor is known to SIGKILL (Homebrew's adhoc-signed node). The daemon spawns
+ * its harness children with this same execPath, so a GUI/launchd-launched daemon
+ * on at-risk node can die mid-run. Returns null when not applicable. Diagnostic
+ * only (doctor surfaces it); never gates a run.
+ */
+export function atRiskNodeAdvisory(execPath: string = process.execPath, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== "darwin") return null;
+  const atRisk = execPath.includes("/Cellar/node") || execPath.startsWith("/opt/homebrew/") || execPath.startsWith("/usr/local/Cellar/");
+  if (!atRisk) return null;
+  return `node at ${execPath} is Homebrew-signed and may be SIGKILLed by macOS; install the notarized Node under ~/.claudex/node/bin and put it first on PATH`;
+}

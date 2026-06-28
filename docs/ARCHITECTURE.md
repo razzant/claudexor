@@ -82,7 +82,10 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/gateway`: harness discovery, capability gating, default available
   harness resolution.
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
-  translate native CLI/API streams into typed `HarnessEvent`s.
+  translate native CLI/API streams into typed `HarnessEvent`s. The `fake-*` kinds
+  are deterministic offline test fixtures (incl. `fake-implement`, which writes a
+  real worktree file and emits an orchestrate plan); they are explicit-`--harness`
+  only and never enter auto/reviewer/brain pools.
 - `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs
   (for write envelopes AND read-only routes via `readOnlyHomeEnv`, so plan files,
   session rollouts, and transcripts never escape into the operator's real home),
@@ -213,6 +216,9 @@ fallback to another eligible harness and emits `route.fallback.started`,
 
 Native harness auth is preferred. API-key fallback uses `packages/secrets`:
 Keychain where available, otherwise a `0600` file under the user config dir.
+`CLAUDEXOR_SECRETS_BACKEND` (`file|keychain|auto`) overrides the platform default
+and an invalid value fails loudly, so a sandboxed run/test can force the `0600`
+file store and never touch the real login Keychain (which is not path-scoped).
 The routing/auth policy is subscription/native first; API-key refs are fallback.
 Native/subscription runs scrub provider API-key env vars unless the run
 explicitly chooses an API-key source, preventing accidental API billing.
@@ -472,7 +478,10 @@ auditable, patch-hash-bound `arbitration/operator_decision.yaml` that the
 single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
 apply`); `accept_clean_patch` delivers through the gate and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
-override. UI must not fake local accept/unblock state.
+override. UI must not fake local accept/unblock state. The CLI resolves a run from
+any cwd (project store, user Ask store, or — only when a daemon is already running —
+the daemon registry); read-only lookups (`inspect`/`apply`) never auto-start a
+daemon, while acting paths (`run`/`race`/`create`, `decision`) do.
 
 A run is applyable only at `succeeded`/decision `success` (or a `blocked` run
 unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is

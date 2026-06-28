@@ -55,7 +55,12 @@ freeze, no spec-version ladder.
 Auth is subscription-first and honest: native codex/claude sessions are seeded
 into envelopes so a Max/Pro user with NO API key is fully routable; explicit
 `subscription`/`api_key` preferences fall back with a typed
-`route.fallback.auth_switched` disclosure, never silently. A blocked
+`route.fallback.auth_switched` disclosure, never silently. Secret I/O defaults to
+the OS Keychain (or a `0600` file); `CLAUDEXOR_SECRETS_BACKEND=file` forces the
+file store so a sandboxed run or test never touches the real login Keychain, and
+an invalid value fails loudly. Read-only run lookups (`inspect`/`apply`) never
+auto-start the daemon (only acting paths do), and `claudexor doctor` emits a
+non-gating advisory when the running Node is an at-risk Homebrew build. A blocked
 NEEDS_HUMAN run is unblocked only through a typed, audited, patch-hash-bound
 operator decision held by the server; the `orchestrate` brain is an intent
 routed like reviewers that produces a typed tool-belt plan, not a privileged

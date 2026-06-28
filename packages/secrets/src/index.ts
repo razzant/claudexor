@@ -41,6 +41,19 @@ export class SecretStore {
   resolvedBackend(): "keychain" | "file" {
     if (this.backend === "keychain") return "keychain";
     if (this.backend === "file") return "file";
+    // backend === "auto": an explicit env override lets a sandboxed run/test
+    // (CLAUDEXOR_CONFIG_DIR + CLAUDEXOR_SECRETS_BACKEND=file) keep ALL secret I/O
+    // in the 0600 file store and never read/mutate the real OS login Keychain
+    // (which is not path-scoped, so CLAUDEXOR_CONFIG_DIR alone can't redirect it).
+    // Precedence: explicit constructor arg > env > platform default. A non-empty
+    // env typo FAILS LOUDLY rather than silently falling back to the Keychain
+    // (e.g. CLAUDEXOR_SECRETS_BACKEND=fil must not quietly hit the real Keychain).
+    const envBackend = process.env.CLAUDEXOR_SECRETS_BACKEND;
+    if (envBackend !== undefined && envBackend !== "" && envBackend !== "file" && envBackend !== "keychain" && envBackend !== "auto") {
+      throw new Error(`CLAUDEXOR_SECRETS_BACKEND must be file|keychain|auto (got '${envBackend}')`);
+    }
+    if (envBackend === "file") return "file";
+    if (envBackend === "keychain") return "keychain";
     return keychainAvailable() ? "keychain" : "file";
   }
 

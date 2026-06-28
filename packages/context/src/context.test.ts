@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { TaskContract } from "@claudexor/schema";
 import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
 import { buildScopeAtlas } from "./atlas.js";
-import { buildContextPack } from "./contextpack.js";
+import { assertMandatoryContext, buildContextPack } from "./contextpack.js";
 import { incrementRound, preflightEvidence, readRound, writeEvidencePacket } from "./evidence.js";
 
 function tmp(): string {
@@ -82,6 +82,30 @@ describe("ContextPack", () => {
     expect(mandatoryPaths).toEqual(expect.arrayContaining(["README.md", "docs/ARCHITECTURE.md"]));
     expect(mandatoryPaths).not.toContain("AGENTS.md");
     expect(pack.instructions.some((p) => p.endsWith("AGENTS.md"))).toBe(true);
+  });
+});
+
+describe("assertMandatoryContext (uniform preflight)", () => {
+  it("is a no-op when no mandatory files are configured (fresh repo never gated)", () => {
+    expect(() => assertMandatoryContext(tmp(), [])).not.toThrow();
+  });
+
+  it("passes when every explicitly-configured mandatory file exists", () => {
+    const repo = tmp();
+    writeFileSync(join(repo, "README.md"), "# r\n");
+    expect(() => assertMandatoryContext(repo, ["README.md"])).not.toThrow();
+  });
+
+  it("fails closed when an explicitly-configured mandatory file is missing", () => {
+    expect(() => assertMandatoryContext(tmp(), ["README.md", "docs/ARCHITECTURE.md"])).toThrow(
+      /mandatory context missing\/unreadable/,
+    );
+  });
+
+  it("rejects a mandatory path that escapes the repo (absolute or ..)", () => {
+    const repo = tmp();
+    expect(() => assertMandatoryContext(repo, ["../escape.md"])).toThrow(/escapes the repo/);
+    expect(() => assertMandatoryContext(repo, ["/etc/hosts"])).toThrow(/escapes the repo/);
   });
 });
 

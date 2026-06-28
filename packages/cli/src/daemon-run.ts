@@ -7,6 +7,7 @@ import {
   daemonDir,
   defaultSocketPath,
   ensureToken,
+  readToken,
   type DaemonClient as DaemonClientType,
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
@@ -95,6 +96,39 @@ export async function ensureDaemon(timeoutMs = 30_000): Promise<{ client: Daemon
     );
   }
   return { client, addr };
+}
+
+/**
+ * Connect to an ALREADY-RUNNING daemon + control API WITHOUT ever spawning one.
+ * Returns null when no token exists, the socket is unreachable, or the control
+ * API is down. Used by read-only-looking run lookups (inspect/apply) so a typo'd
+ * run id reports "no such run" instead of silently launching a background daemon
+ * (`ensureDaemon`, by contrast, auto-starts and is reserved for paths that act —
+ * enqueue/decision).
+ */
+export async function connectDaemonIfRunning(): Promise<{ client: DaemonClientType; addr: ControlApiAddress } | null> {
+  const token = readToken();
+  if (!token) return null;
+  const client = new DaemonClient(defaultSocketPath(), token);
+  if (!(await daemonReachable(client))) return null;
+  const addr = await controlApiReachable();
+  if (!addr) return null;
+  return { client, addr };
+}
+
+/**
+ * Poll until the daemon (socket + control API) is fully ready, or the timeout
+ * elapses. Lets `claudexor daemon start` return only once a subsequent `status`
+ * is guaranteed to succeed (no start/status race).
+ */
+export async function waitForDaemonReady(timeoutMs = 15_000): Promise<{ client: DaemonClientType; addr: ControlApiAddress } | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const conn = await connectDaemonIfRunning();
+    if (conn) return conn;
+    if (Date.now() >= deadline) return null;
+    await sleep(150);
+  }
 }
 
 const TERMINAL_STATES = new Set([
@@ -186,4 +220,19 @@ export async function enqueueAndAwait(
 /** Daemon job state -> CLI exit code (success terminals are 0; everything else 1). */
 export function exitCodeForState(state: string): number {
   return state === "succeeded" || state === "no_op" || state === "ungated" || state === "review_not_run" ? 0 : 1;
+}
+
+/**
+ * Machine-readable reason for a non-success DAEMON terminal (P2). `blocked` is a
+ * needs-human terminal that carries no `error`, so surface the actionable decision
+ * hint (mirrors text mode); other non-success terminals use the error or a state
+ * label. Success terminals return undefined (no `summary` key emitted).
+ */
+export function daemonOutcomeSummary(out: { runId: string; status: string; error?: string }): string | undefined {
+  if (out.error) return out.error;
+  if (exitCodeForState(out.status) === 0) return undefined;
+  if (out.status === "blocked") {
+    return `run blocked: needs a human decision — claudexor decision ${out.runId} --accept-risk | --rerun --feedback "..."`;
+  }
+  return `run ${out.status}`;
 }

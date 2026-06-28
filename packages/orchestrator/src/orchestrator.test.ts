@@ -208,6 +208,22 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
 
+  it("enforces an explicit project mandatory_files contract UNIFORMLY across modes (P1)", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), "version: 1\ncontext:\n  mandatory_files:\n    - MISSING.md\n");
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    // ask (skips ContextPack), audit (builds it), and agent (never built it) must
+    // now ALL fail the same way on a missing explicit mandatory file — the P1 bug
+    // was that audit failed while run/ask silently passed the same repo state.
+    for (const mode of ["ask", "audit", "agent"] as const) {
+      await expect(orch.run({ repoRoot: repo, prompt: "x", mode, harnesses: ["fake-success"] })).rejects.toThrow(
+        /mandatory context missing\/unreadable/,
+      );
+    }
+  });
+
   it("enforces the budget cap mid-flight: no candidate beyond the wave spawns and the cap abort is evidenced", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);

@@ -5,16 +5,34 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecretStore, resolveSecret } from "./index.js";
 
 let prev: string | undefined;
+let prevBackend: string | undefined;
 
 beforeEach(() => {
   prev = process.env.CLAUDEXOR_CONFIG_DIR;
+  prevBackend = process.env.CLAUDEXOR_SECRETS_BACKEND;
   process.env.CLAUDEXOR_CONFIG_DIR = mkdtempSync(join(tmpdir(), "claudexor-secrets-"));
 });
 
 afterEach(() => {
   if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+  if (prevBackend === undefined) delete process.env.CLAUDEXOR_SECRETS_BACKEND;
+  else process.env.CLAUDEXOR_SECRETS_BACKEND = prevBackend;
   delete process.env.MY_API_KEY;
+});
+
+describe("SecretStore backend resolution", () => {
+  it("CLAUDEXOR_SECRETS_BACKEND=file forces the file backend for an auto store (sandbox-safe)", () => {
+    process.env.CLAUDEXOR_SECRETS_BACKEND = "file";
+    expect(new SecretStore("auto").resolvedBackend()).toBe("file");
+    // An explicit constructor backend still wins over the env override.
+    expect(new SecretStore("keychain").resolvedBackend()).toBe("keychain");
+  });
+
+  it("fails loudly on an invalid CLAUDEXOR_SECRETS_BACKEND value (no silent Keychain fallback)", () => {
+    process.env.CLAUDEXOR_SECRETS_BACKEND = "fil";
+    expect(() => new SecretStore("auto").resolvedBackend()).toThrow(/CLAUDEXOR_SECRETS_BACKEND must be file\|keychain\|auto/);
+  });
 });
 
 describe("SecretStore (file backend)", () => {

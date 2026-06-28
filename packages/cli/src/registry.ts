@@ -54,8 +54,8 @@ export function buildGateway(opts: RegistryOptions = {}): HarnessGateway {
  * models() producer, "none" (empty) when it cannot enumerate. Fails soft —
  * adapter models() already swallows network/auth errors and returns [].
  */
-export async function harnessModels(harnessId: string, cwd: string): Promise<ControlHarnessModelsResponse> {
-  const adapter = buildRegistry({ includeFakes: false }).get(harnessId);
+export async function harnessModels(harnessId: string, cwd: string, includeFakes = false): Promise<ControlHarnessModelsResponse> {
+  const adapter = buildRegistry({ includeFakes }).get(harnessId);
   if (!adapter || typeof adapter.models !== "function") {
     return { harnessId, models: [], source: "none" };
   }

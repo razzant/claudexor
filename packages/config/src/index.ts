@@ -89,15 +89,19 @@ export function initProjectConfig(repoRoot: string): InitResult {
   if (pathExists(configPath)) {
     return { configPath, created: false };
   }
-  const config = ProjectConfig.parse({
-    context: {
-      mandatory_files: ["README.md", "docs/ARCHITECTURE.md"],
-    },
-  });
+  // Seed an EMPTY mandatory_files set: a fresh repo must never have `init` break
+  // its own read-only modes (plan/audit/explore fail-close on missing mandatory
+  // context). mandatory_files is opt-in via the commented example below.
+  const config = ProjectConfig.parse({});
   const header =
     "# Claudexor project config (versioned). Safe settings only.\n" +
     "# Sensitive settings (full access, secrets, budget-above-cap, plugin install,\n" +
-    "# MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.\n";
+    "# MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.\n" +
+    "#\n" +
+    "# Optional: require files as mandatory run context (fail-closed if missing,\n" +
+    "# enforced uniformly across every mode). Empty by default; uncomment to opt in:\n" +
+    '#   context:\n' +
+    '#     mandatory_files: ["README.md", "docs/ARCHITECTURE.md"]\n';
   writeText(configPath, header + yamlStringify(config));
   return { configPath, created: true };
 }

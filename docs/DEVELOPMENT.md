@@ -95,6 +95,30 @@ the system ones, so CI and other machines work unchanged:
 - If the Xcode Command Line Tools `swift-package` crashes with a dyld llbuild
   symbol error, use a Swiftly-managed toolchain
   (`PATH="$HOME/.swiftly/bin:$PATH" swift build`).
+- `claudexor doctor` surfaces a non-gating advisory when the running Node is an
+  at-risk Homebrew build on macOS; the harness PATH shim still prefers the
+  notarized Node under `~/.claudex/node/bin`.
+
+### Deterministic / hermetic testing
+
+Tests and local smokes must never touch real user state:
+
+- Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
+  run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
+  plugin files by pointing `HOME` at a temp dir.
+- `CLAUDEXOR_SECRETS_BACKEND=file` (or `claudexor secrets --backend file`) forces
+  the 0600 file store so secret reads/writes never hit the real macOS login
+  Keychain — which `CLAUDEXOR_CONFIG_DIR` alone cannot redirect because the
+  Keychain is not path-scoped.
+- The `fake-*` harnesses are the offline, keyless, deterministic fixtures
+  (`--harness fake-success`, etc.); they are only selectable by explicit id and
+  never enter auto/reviewer/brain pools. `fake-implement` additionally writes a
+  real worktree file and emits a schema-valid orchestration plan, so the
+  create / write→apply / orchestrate chains are exercisable with no real harness.
+- Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
+  but never auto-start one (a typo'd run id reports `no such run`); only acting
+  paths (`run`/`race`/`create`, `decision`) auto-start it. `daemon start` blocks
+  until the daemon is actually ready, so a follow-up `status`/run can't race it.
 
 ## Schema-First Workflow
 

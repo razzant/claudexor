@@ -1,8 +1,11 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   ConformanceReport,
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
+  Intent,
   ProviderFamily,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
@@ -10,6 +13,7 @@ import { CLAUDEXOR_VERSION, nowIso } from "@claudexor/util";
 
 export type FakeKind =
   | "fake-success"
+  | "fake-implement"
   | "fake-fail-tests"
   | "fake-invalid-json"
   | "fake-timeout"
@@ -19,6 +23,7 @@ export type FakeKind =
 
 export const FAKE_KINDS: FakeKind[] = [
   "fake-success",
+  "fake-implement",
   "fake-fail-tests",
   "fake-invalid-json",
   "fake-timeout",
@@ -26,6 +31,24 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-same-model-fallback",
   "fake-reviewer-without-evidence",
 ];
+
+/**
+ * A minimal, schema-valid orchestration plan the `fake-implement` kind emits for
+ * the `orchestrate` intent, so the orchestrate brain -> plan-extraction ->
+ * (with autonomy) executor path is exercisable offline/deterministically. The
+ * fenced ```json block is what `extractOrchestratePlan` parses.
+ */
+const FAKE_ORCHESTRATE_PLAN = [
+  "## Orchestration plan",
+  "1. start_run — kick off a single agent run for the goal.",
+  "",
+  "```json",
+  '{"tool_calls":[{"tool":"start_run","prompt":"deterministic fake-implement plan","mode":"agent","why":"offline orchestration fixture"}]}',
+  "```",
+].join("\n");
+
+/** Producing intents write a real file so the run->apply->deliver chain has a diff. */
+const PRODUCING_INTENTS = new Set<Intent>(["implement", "create_from_scratch", "repair"]);
 
 export interface FakeOptions {
   provider?: ProviderFamily;
@@ -132,8 +155,44 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
   yield ev(s, "started", { observed_model: observedModel });
   switch (kind) {
     case "fake-success":
-      yield ev(s, "message", { text: `Implemented: ${spec.prompt}` });
+      // Prompt-free deterministic text: the raw prompt must never be echoed into a
+      // persisted message/answer artifact (BIBLE §6 — secrets never become artifacts).
+      yield ev(s, "message", { text: "Implemented by the fake harness." });
       yield ev(s, "file_change", { payload: { path: "FAKE_CHANGE.txt", action: "create" } });
+      yield ev(s, "usage", { usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } });
+      yield ev(s, "completed", { observed_model: observedModel });
+      return;
+    case "fake-implement":
+      // Unlike fake-success (which only emits a file_change EVENT and stays a
+      // no_op fixture), fake-implement makes the engine's write/apply/orchestrate
+      // chains testable offline:
+      //  - orchestrate intent -> a schema-valid fenced plan (brain coverage);
+      //  - producing intents   -> a REAL file written into the worktree so
+      //    `git add -A && git diff` yields a patch (apply/commit/branch chain).
+      if (spec.intent === "orchestrate") {
+        yield ev(s, "message", { text: FAKE_ORCHESTRATE_PLAN });
+        yield ev(s, "completed", { observed_model: observedModel });
+        return;
+      }
+      yield ev(s, "message", { text: "Implemented by the fake harness." });
+      // Only WRITE for producing intents AND when the run is not read-only (a fake
+      // must not mutate a readonly envelope, mirroring real access enforcement).
+      if (PRODUCING_INTENTS.has(spec.intent) && spec.access !== "readonly") {
+        // Diffs come from git in the worktree, never invented by the adapter.
+        // Write DETERMINISTIC fixture content — NOT the prompt: a secret-bearing
+        // prompt must never land in a worktree file / diff / patch artifact
+        // (BIBLE §6). Best-effort: a non-writable cwd yields an empty diff (no_op).
+        let wrote = false;
+        try {
+          writeFileSync(join(spec.cwd, "FAKE_CHANGE.txt"), "fake-implement deterministic change\n");
+          wrote = true;
+        } catch {
+          /* non-writable cwd -> empty diff -> no_op */
+        }
+        // Only CLAIM a file_change once the file actually exists (no typed
+        // file_change event without on-disk evidence).
+        if (wrote) yield ev(s, "file_change", { payload: { path: "FAKE_CHANGE.txt", action: "create" } });
+      }
       yield ev(s, "usage", { usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } });
       yield ev(s, "completed", { observed_model: observedModel });
       return;
@@ -191,6 +250,14 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
     },
     async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
       const degraded = kind === "fake-invalid-json";
+      // fake-implement is the deterministic offline fixture for the create,
+      // orchestrate, and write->apply chains, so it enables those intents; the
+      // other ok fakes keep the original read-only-ish set.
+      const enabledIntents: Intent[] = degraded
+        ? ["implement"]
+        : kind === "fake-implement"
+          ? ["plan", "implement", "create_from_scratch", "repair", "review", "verify", "compare", "synthesize", "explain", "audit", "orchestrate"]
+          : ["plan", "implement", "review", "verify", "explain", "audit"];
       return {
         harness_id: kind,
         status: degraded ? "degraded" : "ok",
@@ -198,7 +265,7 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
           { id: "installed", status: "pass" },
           { id: "structured_output", status: degraded ? "fail" : "pass" },
         ],
-        enabled_intents: degraded ? ["implement"] : ["plan", "implement", "review", "verify", "explain", "audit"],
+        enabled_intents: enabledIntents,
         disabled_intents: degraded ? ["review", "arbitrate", "explain", "audit"] : [],
         reasons: degraded ? ["structured_output_parse_failed"] : [],
       };
