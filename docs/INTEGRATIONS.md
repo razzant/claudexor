@@ -156,6 +156,11 @@ Current host layouts:
 It is not harness readiness. Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
+Harness readiness is route/context-specific: doctor output distinguishes static
+auth source availability from smoke-proven routes, and manifests declare the
+credential transport plus containment strategy. A key string alone is degraded
+until the adapter proves the exact CLI/auth/isolation path it will use.
+
 ## ACP
 
 Run:

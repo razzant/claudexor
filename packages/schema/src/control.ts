@@ -367,6 +367,8 @@ export const ControlRunSummary = z.object({
   webEvidence: ControlWebEvidence.default({}),
   toolPermissionPolicy: z.record(z.string(), z.unknown()).optional(),
   outputReadyState: OutputReadyState.default("pending"),
+  /** Non-blocking tool warnings projected from final/telemetry.yaml. */
+  toolWarningsTotal: z.number().int().nonnegative().default(0),
   /** Honest terminal outcome (what the turn did): patch/answer/plan/report/none. */
   result: ControlRunResult.default({}),
   /** True while at least one interaction.requested has no answered/timeout. */

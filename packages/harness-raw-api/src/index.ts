@@ -114,8 +114,15 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "json", event_schema: "normalized" }],
           session: { resume_latest: false, resume_by_id: false },
           output: { final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "unknown" },
-          auth: { supported_sources: ["api_key_env"], preferred_source: "api_key_env", probe_command: [], env_vars: [keyEnv] },
-          access_control: { readonly: true, workspace_write: false, full: false, mechanism: "remote chat-completions only" },
+          auth: {
+            supported_sources: ["api_key_env"],
+            preferred_source: "api_key_env",
+            probe_command: [],
+            env_vars: [keyEnv],
+            credential_transports: [{ source: "api_key_env", kind: "http_header", relocatable_by: ["ENV"], requires_user_session: false, bypass_env_vars: [keyEnv] }],
+          },
+          access_control: { readonly: true, workspace_write: false, full: false, mechanism: "remote chat-completions only", readonly_mechanism: "none" },
+          isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
           // OpenAI-compatible chat-completions accept images as an inline `image_url` data URL part.
           image_input: "base64_inline",
         },

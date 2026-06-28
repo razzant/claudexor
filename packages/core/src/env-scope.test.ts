@@ -31,14 +31,16 @@ describe("composeBaseEnv (env_inheritance)", () => {
 
   it("mirror_native copies the whole parent env", () => {
     const env = composeBaseEnv("mirror_native", source);
-    expect(env.PATH).toBe("/usr/bin");
+    expect(env.PATH?.split(":").slice(0, 3)).toEqual(["/home/x/.claudex/node/bin", "/home/x/.claudexor/node/bin", "/home/x/.local/bin"]);
+    expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.SECRET_THING).toBe("leak");
     expect(env.OPENAI_API_KEY).toBe("sk-xxx");
   });
 
   it("clean keeps only the minimal allowlist (agent isolation): no arbitrary or provider vars leak", () => {
     const env = composeBaseEnv("clean", source);
-    expect(env.PATH).toBe("/usr/bin");
+    expect(env.PATH?.split(":").slice(0, 3)).toEqual(["/home/x/.claudex/node/bin", "/home/x/.claudexor/node/bin", "/home/x/.local/bin"]);
+    expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.HOME).toBe("/home/x");
     expect("SECRET_THING" in env).toBe(false);
     expect("FOO_TOKEN" in env).toBe(false);

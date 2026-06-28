@@ -385,8 +385,19 @@ export function createCodexAdapter(): HarnessAdapter {
           ],
           session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
           output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
-          auth: { supported_sources: ["native_session", "api_key_env", "provider_auth_file"], preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null, probe_command: ["codex", "login", "status"], env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
-          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox" },
+          auth: {
+            supported_sources: ["native_session", "api_key_env", "provider_auth_file"],
+            preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null,
+            probe_command: ["codex", "login", "status"],
+            env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"],
+            credential_transports: [
+              { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: [] },
+              { source: "provider_auth_file", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: [] },
+              { source: "api_key_env", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
+            ],
+          },
+          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox", readonly_mechanism: "fs_sandbox" },
+          isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
           // Codex accepts images via `codex exec -i/--image <FILE>` (file path; remote URLs rejected).
           image_input: "file_path",
         },

@@ -70,6 +70,14 @@ describe("arbitrate", () => {
     expect(arbitrate([b, a]).ranking[0]?.label).toBe("A");
   });
 
+  it("uses tool warning count as a tie-breaker after hard evidence axes", () => {
+    const clean = candidate("clean", { toolWarningsCount: 0 });
+    const noisy = candidate("noisy", { toolWarningsCount: 4 });
+    const res = arbitrate([noisy, clean]);
+    expect(res.ranking[0]?.label).toBe("clean");
+    expect(res.decision.winner).toBe("clean");
+  });
+
   it("returns not_converged when the winner still has issues", () => {
     const a = candidate("A", { gates: [gate(false)] });
     const res = arbitrate([a]);

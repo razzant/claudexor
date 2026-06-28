@@ -717,6 +717,7 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let webMode: String?
     public let webEvidence: WebEvidence?
     public let outputReadyState: String?
+    public let toolWarningsTotal: Int?
     /// Honest terminal outcome (patch/answer/plan/report/none + diffstat/adopted).
     public let result: RunResult?
     /// True while at least one harness question awaits the user's answer.

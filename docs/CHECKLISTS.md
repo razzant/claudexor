@@ -129,7 +129,9 @@ pnpm test
   artifacts, patches, PR text, docs, or logs.
 - Native/subscription routes should not inherit provider API-key env vars unless
   an API-key source is explicit.
-- Scoped harness homes/config dirs stay outside mutation worktrees.
+- Scoped harness homes/config dirs stay outside mutation worktrees; when a route
+  declares an OS-keychain credential transport, verify the bridge does not let
+  harness state leak into the real home.
 - Versioned repo config must never self-grant sensitive powers.
 - Run a targeted search for token-like values when touching auth, secrets,
   artifact writing, or logging.

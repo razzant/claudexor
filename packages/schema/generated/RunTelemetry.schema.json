@@ -213,6 +213,47 @@
                 "type": "integer",
                 "minimum": 0,
                 "default": 0
+              },
+              "outcome": {
+                "type": "object",
+                "properties": {
+                  "deliverable_present": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "gates_passed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "default": null
+                  },
+                  "harness_errored": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "web_required_unsatisfied": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "tool_warnings_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "success",
+                      "success_with_warnings",
+                      "blocked",
+                      "failed"
+                    ],
+                    "default": "success"
+                  }
+                },
+                "additionalProperties": false,
+                "default": {}
               }
             },
             "required": [
@@ -223,6 +264,11 @@
             "additionalProperties": false
           },
           "default": []
+        },
+        "tool_warnings_total": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         },
         "generated_at": {
           "type": "string",

@@ -127,15 +127,17 @@ function parseCursorEventStateful(
     const origin = callId ? pending.get(callId) : undefined;
     if (callId) pending.delete(callId);
     const result = inner?.result ?? obj.result;
+    const rejected = Boolean(result && typeof result === "object" && "rejected" in result && result.rejected);
     const failed = subtype === "failed" || (result && typeof result === "object" && "error" in result && result.error);
     const detail = resultSummary(result);
+    const status: ToolRef["status"] = rejected ? "denied" : failed ? "error" : "ok";
     const tool: ToolRef = {
       name: origin?.name ?? variant,
       kind: origin?.kind ?? toolKindFor(variant),
       use_id: callId,
       target: origin?.target ?? argsTarget(args),
-      status: failed ? "error" : "ok",
-      error_summary: failed ? detail || "tool call failed" : undefined,
+      status,
+      error_summary: status === "error" ? detail || "tool call failed" : undefined,
       content_summary: detail || undefined,
     };
     const events: HarnessEvent[] = [
@@ -143,11 +145,11 @@ function parseCursorEventStateful(
         type: "tool_result",
         session_id: sessionId,
         ts,
-        text: failed ? `tool_result: error${detail ? `: ${detail}` : ""}` : "tool_result",
+        text: status !== "ok" ? `tool_result: ${status}${detail ? `: ${detail}` : ""}` : "tool_result",
         tool,
       },
     ];
-    if (!failed && FILE_WRITE_VARIANTS.has(tool.name)) {
+    if (status === "ok" && FILE_WRITE_VARIANTS.has(tool.name)) {
       const path = args?.path ?? args?.file_path;
       events.push({ type: "file_change", session_id: sessionId, ts, tool: { name: tool.name, kind: "file", use_id: callId }, payload: { path, tool: tool.name } });
     }

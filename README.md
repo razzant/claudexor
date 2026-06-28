@@ -116,7 +116,10 @@ recovery. Read-only Ask/Audit can fall back to another eligible route and emits
 
 Run terminal state is separate from output readiness. Control API, CLI, and app
 expose `outputReadyState` (`pending | finalizing | ready | diagnostic`),
-`webEvidence`, tool errors, budget, and artifact paths. `claudexor inspect
+`webEvidence`, tool errors, non-blocking tool warnings, budget, and artifact paths. A
+finished answer/report/patch can be usable with warnings; failed required web
+evidence, terminal harness errors, failed apply/verify steps, and failed required
+gates remain blockers. `claudexor inspect
 <run_id>` is the CLI projection of the same run detail the macOS app renders.
 
 ## Routing, Auth, And Secrets
@@ -261,6 +264,11 @@ Claudexor can be driven by other tools through CLI JSON on supported commands, t
 local daemon/control API, MCP, and ACP (the external JSON-RPC adapter-protocol package was removed in v0.9 as dead code). These
 surfaces are beta and capability-gated; integrations should not assume every
 subcommand has JSON output or every harness supports live steering.
+
+The CLI accepts the same attachment contract as the control API for run modes:
+use repeatable/comma-separated `--attach <path>` for files or `--image <path>` for
+images. Vision routing remains capability-gated; a blind harness is rejected with
+an actionable pre-flight reason instead of silently dropping the attachment.
 
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.

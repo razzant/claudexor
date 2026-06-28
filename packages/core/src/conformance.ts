@@ -15,6 +15,8 @@ export interface StreamConformanceStats {
   toolResults: number;
   statuslessToolResults: number;
   errorToolResults: number;
+  deniedToolResults: number;
+  cancelledToolResults: number;
   fileChanges: number;
   usageEvents: number;
   errors: number;
@@ -31,6 +33,8 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
     toolResults: 0,
     statuslessToolResults: 0,
     errorToolResults: 0,
+    deniedToolResults: 0,
+    cancelledToolResults: 0,
     fileChanges: 0,
     usageEvents: 0,
     errors: 0,
@@ -47,6 +51,8 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
         stats.toolResults += 1;
         if (!ev.tool?.status) stats.statuslessToolResults += 1;
         if (ev.tool?.status === "error") stats.errorToolResults += 1;
+        if (ev.tool?.status === "denied") stats.deniedToolResults += 1;
+        if (ev.tool?.status === "cancelled") stats.cancelledToolResults += 1;
         break;
       case "file_change": stats.fileChanges += 1; break;
       case "usage": stats.usageEvents += 1; break;

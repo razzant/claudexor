@@ -107,8 +107,8 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
-  it("preserves Claude tool_result error summaries with web tool kind", () => {
-    const parse = createClaudeParser();
+  it("maps Claude policy-denied tool results to denied diagnostics", () => {
+    const parse = createClaudeParser({ deniedTools: ["WebSearch"] });
     parse(
       {
         type: "assistant",
@@ -128,11 +128,61 @@ describe("parseClaudeEvent", () => {
       "s1",
     ) as HarnessEvent[];
     expect(out[0]?.type).toBe("tool_result");
-    expect(out[0]?.text).toContain("tool_result: error");
-    expect(out[0]?.tool?.status).toBe("error");
+    expect(out[0]?.text).toContain("tool_result: denied");
+    expect(out[0]?.tool?.status).toBe("denied");
     expect(out[0]?.tool?.kind).toBe("web");
-    expect(out[0]?.tool?.error_summary).toContain("WebSearch denied by policy");
+    expect(out[0]?.tool?.error_summary).toBeUndefined();
+    expect(out[0]?.tool?.content_summary).toContain("WebSearch denied by policy");
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("keeps Claude sibling-cancelled prose as a normal error without structured signal", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "toolu_grep", name: "Grep", input: { pattern: "x" } }] },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_grep", is_error: true, content: [{ type: "text", text: "Cancelled: parallel tool call Bash(...) errored" }] },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.type).toBe("tool_result");
+    expect(out[0]?.tool?.status).toBe("error");
+    expect(out[0]?.tool?.kind).toBe("search");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("does not classify arbitrary error prose as denied without the typed deny set", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "toolu_web", name: "WebSearch", input: { query: "x" } }] },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_web", is_error: true, content: [{ type: "text", text: "WebSearch denied by policy" }] },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool?.status).toBe("error");
   });
 
   it("forwards model/effort/max-turns hints, clamping effort onto claude's ladder", () => {
@@ -154,8 +204,6 @@ describe("parseClaudeEvent", () => {
       "--output-format",
       "stream-json",
       "--verbose",
-      "--permission-mode",
-      "plan",
       "--model",
       "opus",
       "--effort",
@@ -163,7 +211,9 @@ describe("parseClaudeEvent", () => {
       "--max-turns",
       "12",
       "--allowedTools",
-      "WebSearch,WebFetch",
+      "Read,Glob,Grep,LS,WebSearch,WebFetch",
+      "--disallowedTools",
+      "Write,Edit,MultiEdit,NotebookEdit",
     ]);
   });
 

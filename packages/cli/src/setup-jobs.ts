@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { harnessRuntimeEnv } from "@claudexor/core";
 import { daemonDir } from "@claudexor/daemon";
 import { appendLine, noProjectRepoRoot, readJsonSafe, redactSecrets } from "@claudexor/util";
 import { ControlSetupJob as ControlSetupJobSchema, type ControlSetupJob } from "@claudexor/schema";
@@ -427,20 +428,10 @@ IFS= read -r _
 }
 
 function setupJobEnv(): NodeJS.ProcessEnv {
-  const home = process.env.HOME ?? "";
-  const path = [
-    join(home, ".local", "bin"),
-    join(home, ".claudexor", "node", "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-  ].filter(Boolean).join(":");
+  const runtime = harnessRuntimeEnv();
   const env: NodeJS.ProcessEnv = {
-    HOME: home,
-    PATH: path,
+    HOME: runtime.HOME,
+    PATH: runtime.PATH,
     SHELL: process.env.SHELL ?? "/bin/bash",
     TMPDIR: process.env.TMPDIR,
     LANG: process.env.LANG,

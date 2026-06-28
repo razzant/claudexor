@@ -47,6 +47,16 @@ async function initRepo(): Promise<string> {
 }
 
 describe("WorkspaceManager", () => {
+  it("does not bridge the macOS login keychain into generic scoped homes", async () => {
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-keychain", attemptId: "a01", baseRef: "HEAD" });
+    expect(existsSync(join(env.home_dir, "Library", "Keychains"))).toBe(false);
+    expect(env.home_dir).not.toBe(process.env.HOME);
+    expect(env.harness_config_dirs["cursor_config"]).toBe(join(env.home_dir, ".cursor"));
+    await mgr.dispose(env);
+  });
+
   it("creates an isolated worktree with scoped dirs/ports and captures a diff", async () => {
     const repo = await initRepo();
     const mgr = new WorkspaceManager(repo);

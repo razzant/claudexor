@@ -452,9 +452,9 @@ describe("Orchestrator", () => {
     expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Recovered and finished.");
   });
 
-  it("blocks on an unrecovered tool error in a readonly run", async () => {
+  it("keeps a readonly answer with an unrecovered non-web tool warning usable", async () => {
     const repo = await initRepo();
-    const adapter = askAdapter("never-recovers", function* (sessionId) {
+    const adapter = askAdapter("warns", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
       yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t1", target: "make it" } };
@@ -462,10 +462,13 @@ describe("Orchestrator", () => {
       yield { type: "message", session_id: sessionId, ts, text: "Claimed done anyway." };
       yield { type: "completed", session_id: sessionId, ts };
     });
-    const orch = new Orchestrator({ registry: new Map([["never-recovers", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["never-recovers"], n: 1 });
-    expect(res.status).toBe("failed");
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("failed without recovery");
+    const orch = new Orchestrator({ registry: new Map([["warns", adapter]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["warns"], n: 1 });
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Claimed done anyway.");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("tool_warnings_total: 1");
+    expect(telemetry).toContain("status: success_with_warnings");
   });
 
   it("falls back to another ask harness when web evidence is unsatisfied", async () => {
@@ -548,6 +551,33 @@ describe("Orchestrator", () => {
     expect(readFileSync(join(res.runDir, "final", "explore.md"), "utf8")).toContain("Explorers succeeded: 2/2");
     expect(existsSync(join(res.runDir, "final", "explore-findings.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
+  });
+
+  it("keeps warning-bearing explorers in swarm synthesis when they produced a report", async () => {
+    const repo = await initRepo();
+    const warned = askAdapter("warned", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "tool_call", session_id: sessionId, ts, text: "Grep", tool: { name: "Grep", kind: "search", use_id: "g1", target: "packages/*/package.json" } };
+      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Grep", kind: "search", use_id: "g1", status: "error", error_summary: "bad glob" } };
+      yield { type: "message", session_id: sessionId, ts, text: "Useful repository analysis." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const clean = askAdapter("clean", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "Second useful analysis." };
+      yield { type: "completed", session_id: sessionId, ts };
+    }, "anthropic");
+    const orch = new Orchestrator({ registry: new Map([["warned", warned], ["clean", clean]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "audit", swarm: true, harnesses: ["warned", "clean"], n: 2 });
+    expect(res.status).toBe("success");
+    const explore = readFileSync(join(res.runDir, "final", "explore.md"), "utf8");
+    expect(explore).toContain("Explorers succeeded: 2/2");
+    expect(explore).toContain("Useful repository analysis.");
+    expect(explore).toContain("Tool warnings");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("tool_warnings_total: 1");
   });
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {
@@ -1086,6 +1116,7 @@ describe("Orchestrator", () => {
     });
     expect(blocked.status).toBe("failed");
     expect(blocked.summary).toContain("cannot enforce web policy 'off'");
+    expect(blocked.summary).toContain("choose a web-capable/enforceable harness");
   });
 
   it("applies the configured global max_usd_per_run as the default run cap", async () => {

@@ -261,9 +261,57 @@
                           },
                           "default": []
                         },
-                        "can_scrub_env": {
-                          "type": "boolean",
-                          "default": true
+                        "credential_transports": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/auth/properties/supported_sources/items"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "config_file",
+                                  "env_var",
+                                  "oauth_token_env",
+                                  "os_keychain",
+                                  "http_header",
+                                  "none"
+                                ]
+                              },
+                              "relocatable_by": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "HOME",
+                                    "CONFIG_DIR",
+                                    "ENV",
+                                    "none"
+                                  ]
+                                },
+                                "default": []
+                              },
+                              "requires_user_session": {
+                                "type": "boolean",
+                                "default": false
+                              },
+                              "bypass_env_vars": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "default": []
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "default": []
                         }
                       },
                       "additionalProperties": false,
@@ -291,9 +339,50 @@
                           ],
                           "default": null
                         },
+                        "readonly_mechanism": {
+                          "type": "string",
+                          "enum": [
+                            "fs_sandbox",
+                            "permission_deny",
+                            "tool_allowlist",
+                            "none"
+                          ],
+                          "default": "none"
+                        },
                         "conformance_required": {
                           "type": "boolean",
                           "default": true
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    },
+                    "isolation": {
+                      "type": "object",
+                      "properties": {
+                        "path_redirect_sufficient": {
+                          "type": "boolean",
+                          "default": true
+                        },
+                        "requires_user_session": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "supported_containment": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "env_or_file_injection",
+                              "scoped_home_keychain_bridge",
+                              "host_user_context",
+                              "process_sandbox",
+                              "container"
+                            ]
+                          },
+                          "default": [
+                            "env_or_file_injection"
+                          ]
                         }
                       },
                       "additionalProperties": false,

@@ -166,16 +166,46 @@ export const AuthSourceKind = z.enum([
 ]);
 export type AuthSourceKind = z.infer<typeof AuthSourceKind>;
 
+export const CredentialTransportKind = z.enum(["config_file", "env_var", "oauth_token_env", "os_keychain", "http_header", "none"]);
+export type CredentialTransportKind = z.infer<typeof CredentialTransportKind>;
+
+export const CredentialRelocation = z.enum(["HOME", "CONFIG_DIR", "ENV", "none"]);
+export type CredentialRelocation = z.infer<typeof CredentialRelocation>;
+
+export const CredentialTransport = z.object({
+  source: AuthSourceKind,
+  kind: CredentialTransportKind,
+  relocatable_by: z.array(CredentialRelocation).default([]),
+  requires_user_session: z.boolean().default(false),
+  bypass_env_vars: z.array(z.string()).default([]),
+});
+export type CredentialTransport = z.infer<typeof CredentialTransport>;
+
 export const AuthCapabilities = z
   .object({
     supported_sources: z.array(AuthSourceKind).default([]),
     preferred_source: AuthSourceKind.nullable().default(null),
     probe_command: z.array(z.string()).default([]),
     env_vars: z.array(z.string()).default([]),
-    can_scrub_env: z.boolean().default(true),
+    credential_transports: z.array(CredentialTransport).default([]),
   })
   .default({});
 export type AuthCapabilities = z.infer<typeof AuthCapabilities>;
+
+export const ContainmentKind = z.enum(["env_or_file_injection", "scoped_home_keychain_bridge", "host_user_context", "process_sandbox", "container"]);
+export type ContainmentKind = z.infer<typeof ContainmentKind>;
+
+export const IsolationCapabilities = z
+  .object({
+    path_redirect_sufficient: z.boolean().default(true),
+    requires_user_session: z.boolean().default(false),
+    supported_containment: z.array(ContainmentKind).default(["env_or_file_injection"]),
+  })
+  .default({});
+export type IsolationCapabilities = z.infer<typeof IsolationCapabilities>;
+
+export const ReadonlyMechanism = z.enum(["fs_sandbox", "permission_deny", "tool_allowlist", "none"]);
+export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
 
 export const AccessControlCapabilities = z
   .object({
@@ -183,6 +213,7 @@ export const AccessControlCapabilities = z
     workspace_write: z.boolean().default(false),
     full: z.boolean().default(false),
     mechanism: z.string().nullable().default(null),
+    readonly_mechanism: ReadonlyMechanism.default("none"),
     conformance_required: z.boolean().default(true),
   })
   .default({});
@@ -195,6 +226,7 @@ export const HarnessCapabilityProfile = z
     output: OutputCapabilities,
     auth: AuthCapabilities,
     access_control: AccessControlCapabilities,
+    isolation: IsolationCapabilities,
     /** How the harness accepts image input (drives honest attach gating + the
      *  per-adapter serializer). `none` = no vision input on this route. */
     image_input: ImageInputMode.default("none"),
@@ -346,7 +378,7 @@ export const ToolRef = z.object({
   use_id: z.string().optional(),
   /** Redacted, bounded human-readable target (query/url/path/command). */
   target: z.string().optional(),
-  status: z.enum(["ok", "error"]).optional(),
+  status: z.enum(["ok", "error", "cancelled", "denied"]).optional(),
   /** Redacted, bounded error detail for status=error results. */
   error_summary: z.string().optional(),
   /** Redacted, bounded content detail for results (success or failure). */

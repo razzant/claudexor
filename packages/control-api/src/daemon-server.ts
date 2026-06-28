@@ -1675,6 +1675,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     webEvidence,
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(rec),
+    toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
     result: controlRunResult(rec),
     route: controlRoute(telemetry, p),
     tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,

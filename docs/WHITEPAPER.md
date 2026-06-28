@@ -100,9 +100,10 @@ reviewer artifacts, event logs, budget observations, and verified side effects.
 Model prose is useful context but not proof.
 
 Tool lifecycle is part of evidence. A `tool_result.is_error === true` is a hard
-warning and blocks claimed success unless a later successful recovery is
-observed. Claudexor preserves redacted tool error detail so Timeline,
-Diagnostics, CLI inspect, and review gates can explain what failed.
+warning and blocks a green verified claim unless a later successful recovery is
+observed, but it does not automatically discard a produced deliverable. Claudexor
+preserves redacted tool error detail so Timeline, Diagnostics, CLI inspect, and
+review gates can explain what failed or what succeeded with warnings.
 
 No regex governance: risk, permissions, web-required detection, tool success,
 winners, and tests-passed are not inferred from ad hoc string matching over final

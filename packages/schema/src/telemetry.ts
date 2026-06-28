@@ -47,6 +47,23 @@ export const ToolErrorRecord = z.object({
 });
 export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
 
+export const AttemptOutcomeStatus = z.enum(["success", "success_with_warnings", "blocked", "failed"]);
+export type AttemptOutcomeStatus = z.infer<typeof AttemptOutcomeStatus>;
+
+/**
+ * Contract/outcome truth for one attempt. Tool errors are tracked separately
+ * from whether the attempt produced the work product the intent asked for.
+ */
+export const AttemptOutcome = z.object({
+  deliverable_present: z.boolean().default(false),
+  gates_passed: z.boolean().nullable().default(null),
+  harness_errored: z.boolean().default(false),
+  web_required_unsatisfied: z.boolean().default(false),
+  tool_warnings_count: z.number().int().nonnegative().default(0),
+  status: AttemptOutcomeStatus.default("success"),
+});
+export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
+
 export const AttemptTelemetryRecord = z.object({
   attempt_id: Id,
   harness_id: Id,
@@ -65,6 +82,8 @@ export const AttemptTelemetryRecord = z.object({
   statusless_tool_results: z.number().int().nonnegative().default(0),
   /** Native lines/events the adapter could not parse or did not recognize (never silently zero). */
   dropped_events: z.number().int().nonnegative().default(0),
+  /** Contract/outcome projection for this attempt. */
+  outcome: AttemptOutcome.default({}),
 });
 export type AttemptTelemetryRecord = z.infer<typeof AttemptTelemetryRecord>;
 
@@ -83,6 +102,8 @@ export const RunTelemetry = z.object({
   /** Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence. */
   web: WebEvidenceRecord,
   attempts: z.array(AttemptTelemetryRecord).default([]),
+  /** Sum of attempt outcome warnings; surfaces render this separately from terminal state. */
+  tool_warnings_total: z.number().int().nonnegative().default(0),
   generated_at: IsoTimestamp,
 });
 export type RunTelemetry = z.infer<typeof RunTelemetry>;

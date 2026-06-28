@@ -9,6 +9,7 @@ import {
   ensureToken,
   type DaemonClient as DaemonClientType,
 } from "@claudexor/daemon";
+import { harnessRuntimeEnv } from "@claudexor/core";
 import { controlApiAddress, type ControlApiAddress } from "./live.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -56,7 +57,7 @@ export async function ensureDaemon(timeoutMs = 30_000): Promise<{ client: Daemon
     if (!existsSync(daemonScript)) {
       throw new Error(`cannot auto-start the daemon: entry not found at ${daemonScript} (run \`pnpm build\`)`);
     }
-    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore" });
+    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore", env: harnessRuntimeEnv() });
     child.unref();
     // Wait for the socket to accept connections (health round-trip).
     const deadline = Date.now() + timeoutMs;

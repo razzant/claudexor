@@ -75,8 +75,15 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
         usage_signal: "exact",
         cost_signal: "exact",
       },
-      auth: { supported_sources: ["none"], preferred_source: "none", probe_command: [], env_vars: [], can_scrub_env: true },
-      access_control: { readonly: true, workspace_write: true, full: true, mechanism: "fake", conformance_required: false },
+      auth: {
+        supported_sources: ["none"],
+        preferred_source: "none",
+        probe_command: [],
+        env_vars: [],
+        credential_transports: [{ source: "none", kind: "none", relocatable_by: ["none"], requires_user_session: false, bypass_env_vars: [] }],
+      },
+      access_control: { readonly: true, workspace_write: true, full: true, mechanism: "fake", readonly_mechanism: "none", conformance_required: false },
+      isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
       image_input: "none",
     },
     capabilities: {

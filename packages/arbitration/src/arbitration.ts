@@ -17,6 +17,8 @@ export interface CandidateEvidence {
   heldOutTotal?: number;
   finalReviewClean: boolean;
   reviewVerified?: boolean;
+  /** Non-blocking tool hygiene warnings from the engine-owned attempt outcome. */
+  toolWarningsCount?: number;
   /** Smaller = simpler (e.g. diff line count). */
   diffSize?: number;
   diffBytes?: number;
@@ -82,6 +84,7 @@ export function scoreTuple(c: CandidateEvidence): number[] {
     -openBlockerCount(c), // fewer accepted blockers
     effectiveTestFraction(c), // tests/repro (held-out authoritative)
     c.finalReviewClean ? 1 : 0, // final clean review
+    -(c.toolWarningsCount ?? 0), // cleaner tool hygiene
     -(c.diffSize ?? 0), // simplicity
     -(c.costUsd ?? 0), // cost
     -(c.latencyMs ?? 0), // latency

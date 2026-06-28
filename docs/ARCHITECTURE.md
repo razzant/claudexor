@@ -216,6 +216,15 @@ Keychain where available, otherwise a `0600` file under the user config dir.
 The routing/auth policy is subscription/native first; API-key refs are fallback.
 Native/subscription runs scrub provider API-key env vars unless the run
 explicitly chooses an API-key source, preventing accidental API billing.
+Adapters declare the physical credential transport they support (`config_file`,
+`env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
+containment strategy that keeps it honest. Codex routes seed `auth.json` into a
+scoped `CODEX_HOME`; Claude API-key routes inject `ANTHROPIC_API_KEY`; Cursor
+declares an OS-keychain native route plus `CURSOR_API_KEY` fallback. On macOS,
+only routes whose declared transport/containment requires it (Cursor today)
+bridge the user's `~/Library/Keychains` directory into the scoped HOME so native
+Security-framework probes keep working while `.cursor` state still lands in the
+disposable scoped home.
 
 Run params are validated before daemon enqueue. Inline `env`, `secrets`,
 `api_key`, `token`, `password`, or similar fields are rejected, so daemon
@@ -241,8 +250,9 @@ fails, the run still writes inspectable failure artifacts
 `run.failed`.
 
 Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
-preserves redacted detail in the event payload and blocks claimed success unless
-verified recovery exists. When web evidence is unsatisfied and another eligible
+preserves redacted detail in the event payload and blocks a green verified claim
+unless verified recovery exists, but a produced deliverable can still be terminal
+success with warnings. When web evidence is unsatisfied and another eligible
 read-only route exists, Ask falls back before terminal failure. If no fallback
 can satisfy the policy, the run is `blocked` with a partial unverified output
 artifact when one exists.
@@ -537,9 +547,9 @@ attempts/aNN/events.jsonl?    (read-only modes)
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,
-satisfied, status), unrecovered tool errors, statusless results, and dropped
-native events. Surfaces project it; they never recompute evidence from raw
-events or model prose.
+satisfied, status), unrecovered tool errors, non-blocking tool-warning counts,
+attempt outcome dimensions, statusless results, and dropped native events.
+Surfaces project it; they never recompute evidence from raw events or model prose.
 
 Review prompts are file-backed: the full candidate patch is written to the
 candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest

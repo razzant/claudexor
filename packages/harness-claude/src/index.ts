@@ -1,10 +1,10 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type { AccessProfile, ConformanceReport, EffortHint, HarnessCapabilityProfile, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
+import { ConformanceReport as ConformanceReportSchema, HarnessCapabilityProfile as HarnessCapabilityProfileSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, playwrightMcpArgs, providerScrubEnv, resolveNpxBin, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, playwrightMcpArgs, providerScrubEnv, readonlyMechanism, resolveNpxBin, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
@@ -12,6 +12,28 @@ import { handleControlRequestFrame, initialSessionFrames, isControlRequestFrame,
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
+
+const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
+  execution_surfaces: [
+    { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
+    { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true, supports_followup: true },
+  ],
+  session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
+  output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
+  auth: {
+    supported_sources: ["native_session", "api_key_env"],
+    preferred_source: null,
+    probe_command: ["claude", "auth", "status"],
+    env_vars: ["ANTHROPIC_API_KEY"],
+    credential_transports: [
+      { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: ["CLAUDE_CODE_OAUTH_TOKEN"] },
+      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"], requires_user_session: false, bypass_env_vars: ["ANTHROPIC_API_KEY"] },
+    ],
+  },
+  access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --allowedTools/--disallowedTools", readonly_mechanism: "tool_allowlist" },
+  isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
+  image_input: "base64_stream",
+});
 
 /**
  * Ordered (weakest→strongest) reasoning-effort levels `claude --effort` accepts.
@@ -24,7 +46,7 @@ const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high"];
 function permissionArgs(access: AccessProfile): string[] {
   switch (access) {
     case "readonly":
-      return ["--permission-mode", "plan"];
+      return [];
     case "workspace_write":
       return ["--permission-mode", "acceptEdits"];
     case "full":
@@ -210,20 +232,15 @@ export function createClaudeAdapter(): HarnessAdapter {
           // final authority and gains models over time, so this is non-authoritative:
           // an unknown model is warned about, never blocked). Stable aliases plus
           // current ids; data-driven like effort_levels.
-          known_models: ["sonnet", "opus", "haiku", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+          known_models: ["sonnet", "opus", "haiku", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
           models_authoritative: false,
         },
         capability_profile: {
-          execution_surfaces: [
-            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
-            { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true, supports_followup: true },
-          ],
-          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
-          output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
-          auth: { supported_sources: ["native_session", "api_key_env"], preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null, probe_command: ["claude", "auth", "status"], env_vars: ["ANTHROPIC_API_KEY"] },
-          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --permission-mode" },
-          // Claude accepts images as base64 blocks on the stdin stream-json transport.
-          image_input: "base64_stream",
+          ...CLAUDE_CAPABILITY_PROFILE,
+          auth: {
+            ...CLAUDE_CAPABILITY_PROFILE.auth,
+            preferred_source: apiKey ? "api_key_env" : authed ? "native_session" : null,
+          },
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
@@ -280,6 +297,8 @@ export function createClaudeAdapter(): HarnessAdapter {
 
 /** Claude's native names for web-permissioned tools. This knowledge lives ONLY in the adapter. */
 const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
+const CLAUDE_READONLY_ALLOWED_TOOLS = ["Read", "Glob", "Grep", "LS"];
+const CLAUDE_READONLY_DENIED_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
 export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, suppressBare = false): string[] {
   // Interactive sessions deliver the prompt as a stream-json user message on
@@ -314,9 +333,26 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
  * the orchestrator discloses that upgrade via `policy.web.upgraded`.
  */
 function toolPermissionArgs(spec: HarnessRunSpec): string[] {
+  const { allow, deny } = toolPermissionSets(spec);
+  const args: string[] = [];
+  if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
+  if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
+  return args;
+}
+
+function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: Set<string> } {
   const policy = spec.external_context_policy;
   const allow = new Set(spec.tool_permission_policy.allow);
   const deny = new Set(spec.tool_permission_policy.deny);
+  if (spec.access === "readonly" && readonlyMechanism(CLAUDE_CAPABILITY_PROFILE) === "tool_allowlist") {
+    for (const tool of CLAUDE_READONLY_ALLOWED_TOOLS) {
+      if (!deny.has(tool)) allow.add(tool);
+    }
+    for (const tool of CLAUDE_READONLY_DENIED_TOOLS) {
+      deny.add(tool);
+      allow.delete(tool);
+    }
+  }
   if (policy === "off") {
     for (const tool of CLAUDE_WEB_TOOLS) {
       deny.add(tool);
@@ -332,10 +368,7 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
   // Gated on policy: under `off` the MCP is never injected (claudeBrowserArgs is
   // empty), so this allow has no tool to match anyway.
   if (spec.browser && policy !== "off") allow.add("mcp__browser");
-  const args: string[] = [];
-  if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
-  if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
-  return args;
+  return { allow, deny };
 }
 
 /**
@@ -449,7 +482,7 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     env,
     label: "claude",
     redact: redactSecrets,
-    parseEvent: createClaudeParser(),
+    parseEvent: createClaudeParser({ deniedTools: toolPermissionSets(spec).deny }),
     ...(interactive
       ? {
           session: {

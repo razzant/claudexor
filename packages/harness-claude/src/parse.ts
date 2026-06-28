@@ -17,6 +17,10 @@ function toolKindFor(name: string): ToolKind {
 
 export type ClaudeEventParser = (obj: Json, sessionId: string) => HarnessEvent[] | null;
 
+export interface ClaudeParserOptions {
+  deniedTools?: Iterable<string>;
+}
+
 /**
  * Create a stateful per-run parser for Claude `--output-format stream-json`.
  * State is needed to resolve tool_result blocks (which only carry tool_use_id)
@@ -25,10 +29,11 @@ export type ClaudeEventParser = (obj: Json, sessionId: string) => HarnessEvent[]
  * Returns `null` for unrecognized top-level shapes (counted as dropped by the
  * run loop) and `[]` for recognized events that produce nothing.
  */
-export function createClaudeParser(): ClaudeEventParser {
+export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventParser {
   const pendingTools = new Map<string, ToolRef>();
+  const deniedTools = new Set(opts.deniedTools ?? []);
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
-    parseClaudeEventStateful(obj, sessionId, pendingTools);
+    parseClaudeEventStateful(obj, sessionId, pendingTools, deniedTools);
 }
 
 /** Stateless convenience used by tests; resolves results within a single call only. */
@@ -40,6 +45,7 @@ function parseClaudeEventStateful(
   obj: Json,
   sessionId: string,
   pendingTools: Map<string, ToolRef>,
+  deniedTools = new Set<string>(),
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
@@ -154,20 +160,22 @@ function parseClaudeEventStateful(
           });
           continue;
         }
+        const denied = isError && origin?.name !== undefined && deniedTools.has(origin.name);
+        const status: ToolRef["status"] = denied ? "denied" : isError ? "error" : "ok";
         const tool: ToolRef = {
           name: origin?.name ?? "tool",
           kind: origin?.kind ?? "other",
           use_id: useId,
           target: origin?.target,
-          status: isError ? "error" : "ok",
-          error_summary: isError ? detail || "tool result marked error" : undefined,
+          status,
+          error_summary: status === "error" ? detail || "tool result marked error" : undefined,
           content_summary: detail || undefined,
         };
         out.push({
           type: "tool_result",
           session_id: sessionId,
           ts,
-          text: isError ? `tool_result: error${detail ? `: ${detail}` : ""}` : "tool_result",
+          text: status !== "ok" ? `tool_result: ${status}${detail ? `: ${detail}` : ""}` : "tool_result",
           tool,
         });
       }

@@ -57,7 +57,9 @@
               "type": "string",
               "enum": [
                 "ok",
-                "error"
+                "error",
+                "cancelled",
+                "denied"
               ]
             },
             "error_summary": {

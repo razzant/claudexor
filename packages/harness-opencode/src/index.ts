@@ -107,14 +107,21 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
           session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true, fork: true },
           output: { ndjson_events: true, final_json: false, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
-          auth: { supported_sources: ["api_key_env"], preferred_source: authReady ? "api_key_env" : null, probe_command: [], env_vars: [...PROVIDER_KEY_ENV] },
+          auth: {
+            supported_sources: ["api_key_env"],
+            preferred_source: authReady ? "api_key_env" : null,
+            probe_command: [],
+            env_vars: [...PROVIDER_KEY_ENV],
+            credential_transports: [{ source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"], requires_user_session: false, bypass_env_vars: [...PROVIDER_KEY_ENV] }],
+          },
           // HONEST access surface: the only permission flag the adapter drives is
           // `--dangerously-skip-permissions` (full access). opencode exposes no
           // CONFIRMED scoped workspace-write confinement the adapter can map to
           // (and opencode is not installed to live-verify one), so advertising
           // workspace_write would silently grant full. full-only until a scoped
           // mechanism is conformance-proven.
-          access_control: { readonly: false, workspace_write: false, full: true, mechanism: "opencode --dangerously-skip-permissions (full access only; no proven scoped workspace-write)" },
+          access_control: { readonly: false, workspace_write: false, full: true, mechanism: "opencode --dangerously-skip-permissions (full access only; no proven scoped workspace-write)", readonly_mechanism: "none" },
+          isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
           // No proven headless image input surface — attach is gated off until verified.
           image_input: "none",
         },

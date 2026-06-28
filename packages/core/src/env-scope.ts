@@ -1,3 +1,5 @@
+import { harnessRuntimeEnv } from "./runtime-env.js";
+
 /**
  * Declarative env-scrub SSOT for harness children.
  *
@@ -125,10 +127,11 @@ export function composeBaseEnv(
   inheritance: "mirror_native" | "clean",
   source: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  if (inheritance !== "clean") return { ...source };
+  const normalizedSource = harnessRuntimeEnv(source);
+  if (inheritance !== "clean") return normalizedSource;
   const out: NodeJS.ProcessEnv = {};
   for (const key of CLEAN_ENV_ALLOWLIST) {
-    const value = source[key];
+    const value = normalizedSource[key];
     if (value !== undefined) out[key] = value;
   }
   return out;

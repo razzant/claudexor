@@ -57,9 +57,13 @@ telemetry is persisted, and the reviewer read the candidate evidence files rathe
 than a giant prompt-only diff.
 
 Tool success is evidence, not prose. A `tool_result.is_error === true` is a hard
-warning and blocks claimed success unless later verified recovery exists. Web
-answers are web-backed only when `WebSearch`/`WebFetch` or equivalent evidence
-was observed; a memory answer after a failed web tool is partial/unverified.
+warning that blocks a green verified claim unless later verified recovery exists,
+but it does not discard a produced deliverable by itself. The engine separates
+terminal state from tool hygiene: a completed answer/report/patch may succeed
+with warnings, while failed web evidence, terminal harness errors, failed apply/
+verify steps, or required gates still block. Web answers are web-backed only when
+`WebSearch`/`WebFetch` or equivalent evidence was observed; a memory answer after
+a failed web tool is partial/unverified.
 
 Interactive FLOW-CONTROL tools are not work tools. A declined or timed-out
 `AskUserQuestion`/`ExitPlanMode` result is the documented end of an interaction
@@ -67,8 +71,8 @@ Interactive FLOW-CONTROL tools are not work tools. A declined or timed-out
 into a benign timeline event — never a blocking tool error. An ANSWERED
 interaction is delivered through the typed interaction contract
 (`interaction.requested`/`answered`/`timeout` events) and the model's
-continuation is ordinary evidence. The generic is_error rule stays untouched
-for every real work tool.
+continuation is ordinary evidence. Real work-tool errors remain visible warning
+evidence and can block only when they invalidate the run's required contract.
 
 No regex governance: risk, permissions, web-required detection, tool success,
 winners, and tests-passed must be determined by typed contracts, settings,

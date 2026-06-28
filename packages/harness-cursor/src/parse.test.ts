@@ -58,6 +58,23 @@ describe("parseCursorEvent", () => {
     expect(out[0]?.tool?.error_summary).toContain("exit 1");
   });
 
+  it("maps rejected tool calls to denied diagnostics, not ok", () => {
+    const parse = createCursorParser();
+    parse(
+      { type: "tool_call", subtype: "started", call_id: "c3", tool_call: { webFetchToolCall: { args: { url: "https://example.com" } } } },
+      "s1",
+    );
+    const out = parse(
+      { type: "tool_call", subtype: "completed", call_id: "c3", tool_call: { webFetchToolCall: { args: { url: "https://example.com" }, result: { rejected: { reason: "User Rejected" } } } } },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.type).toBe("tool_result");
+    expect(out[0]?.tool?.status).toBe("denied");
+    expect(out[0]?.tool?.kind).toBe("web");
+    expect(out[0]?.tool?.error_summary).toBeUndefined();
+    expect(out[0]?.tool?.content_summary).toContain("User Rejected");
+  });
+
   it("maps error events and counts unknown shapes as null", () => {
     const out = parseCursorEvent({ type: "error", message: "boom" }, "s1") as HarnessEvent[];
     expect(out[0]?.type).toBe("error");

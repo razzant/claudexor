@@ -355,6 +355,11 @@
               ],
               "default": "pending"
             },
+            "toolWarningsTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
             "result": {
               "type": "object",
               "properties": {

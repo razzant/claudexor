@@ -276,6 +276,17 @@ interface ToolErrorRecord {
   recovered: boolean;
 }
 
+type AttemptOutcomeStatus = "success" | "success_with_warnings" | "blocked" | "failed";
+
+interface AttemptOutcomeState {
+  deliverablePresent: boolean;
+  gatesPassed: boolean | null;
+  harnessErrored: boolean;
+  webRequiredUnsatisfied: boolean;
+  toolWarningsCount: number;
+  status: AttemptOutcomeStatus;
+}
+
 interface WebEvidenceState {
   required: boolean;
   mode: ExternalContextPolicy;
@@ -297,6 +308,8 @@ interface AttemptTelemetry {
   web: WebEvidenceState;
   /** Model identity the harness stream actually reported (route evidence). */
   observedModel: string | null;
+  /** Contract/outcome truth for this attempt, produced by the orchestrator. */
+  outcome: AttemptOutcomeState | null;
 }
 
 /** User-level per-harness defaults (from the global config) applied at route time. */
@@ -681,7 +694,7 @@ export class Orchestrator {
         (routePolicy === "off" && webSupport === "uncontrolled") ||
         (routeWebRequired && (webSupport === "none" || webSupport === "uncontrolled"));
       if (webIncompatible) {
-        const why = `${id} cannot enforce web policy '${routePolicy}' (manifest web_policy=${webSupport})`;
+        const why = `${id} cannot enforce web policy '${routePolicy}' (manifest web_policy=${webSupport}); choose a web-capable/enforceable harness or change --web to a compatible policy`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;
@@ -689,7 +702,7 @@ export class Orchestrator {
       // Vision gate: an image-bearing run only routes to vision-capable harnesses.
       // Exclude blind ones from auto-pools; fail loud if the user explicitly chose one.
       if (needsVision && manifest.capability_profile.image_input === "none") {
-        const why = `${id} cannot accept image attachments (manifest image_input=none); route an image to a vision-capable harness (claude/codex/raw-api)`;
+        const why = `${id} cannot accept image attachments (manifest image_input=none); choose a vision-capable harness (claude/codex/raw-api) or remove the image attachment`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;
@@ -1237,20 +1250,16 @@ export class Orchestrator {
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
-    // Tool errors block only when unrecovered at attempt end (a later successful
-    // result of the same tool is the verified recovery, CLAUDEXOR_BIBLE §5).
     const unrecovered = unrecoveredToolErrors(telemetry);
-    for (const e of unrecovered.slice(0, 5)) {
-      errors.push(`${e.tool} error (unrecovered): ${e.summary}`);
-    }
     if (webUnsatisfied(telemetry)) {
       errors.push(
         `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`,
       );
     }
-    const errored = harnessErrored || unrecovered.length > 0 || webUnsatisfied(telemetry);
 
     const diff = await wsm.diff(envelope);
+    const answerText = messageParts.join("\n").trim() || undefined;
+    const deliverablePresent = diff.trim().length > 0 || Boolean(answerText);
     log?.emit("gate.started", { attempt_id: attemptId, gates: this.gateSpecs(contract).length });
     const gates = await runGates(this.gateSpecs(contract), {
       cwd: envelope.worktree_path,
@@ -1260,6 +1269,14 @@ export class Orchestrator {
       attempt_id: attemptId,
       gates: gates.map((g) => ({ id: g.id, status: g.status, exit_code: g.exit_code })),
       passed: gatesPassed(gates),
+    });
+    const webBlocked = webUnsatisfied(telemetry);
+    const errored = harnessErrored || webBlocked;
+    setAttemptOutcome(telemetry, {
+      deliverablePresent,
+      gatesPassed: gates.length > 0 ? gatesPassed(gates) : null,
+      harnessErrored,
+      webRequiredUnsatisfied: webBlocked,
     });
 
     const attemptDir = join(paths.attemptsDir, attemptId);
@@ -1272,6 +1289,7 @@ export class Orchestrator {
       errored,
       errors: errors.slice(0, 5),
       ...telemetrySummary(telemetry),
+      outcome: telemetry.outcome,
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
       branch: envelope.branch_name,
     });
@@ -1280,7 +1298,7 @@ export class Orchestrator {
       harnessId: adapter.id,
       label,
       diff,
-      answerText: messageParts.join("\n").trim() || undefined,
+      answerText,
       reviewCwd: envelope.worktree_path,
       gates,
       cost,
@@ -1321,6 +1339,7 @@ export class Orchestrator {
       testsTotal: gates.length,
       finalReviewClean,
       reviewVerified,
+      toolWarningsCount: run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
       diffSize: run.diff.split("\n").length,
       diffBytes: Buffer.byteLength(run.diff, "utf8"),
       costUsd: run.cost,
@@ -2068,20 +2087,7 @@ export class Orchestrator {
   ): void {
     const records = attempts.map((a) => attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry));
     const finalRecord = finalAttemptId ? records.find((r) => r.attempt_id === finalAttemptId) : undefined;
-    // Run-level web evidence: the final attempt's evidence, else the most severe.
-    const severityRank = { satisfied: 0, none: 1, attempted: 2, unverified: 3, failed: 4 } as const;
-    const worst = [...records].sort((a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0))[0];
-    const runWeb = finalRecord?.web ?? worst?.web ?? {
-      required: contract.external_context.web_required,
-      policy: contract.external_context.policy,
-      effective_mode: contract.external_context.effective_mode,
-      attempted: false,
-      satisfied: false,
-      status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
-      tool: null,
-      target: null,
-      error_summary: null,
-    };
+    const runWeb = finalRecord?.web ?? aggregateRunWebEvidence(records, contract);
     const telemetry = RunTelemetrySchema.parse({
       schema_version: SCHEMA_VERSION,
       run_id: runId,
@@ -2095,6 +2101,7 @@ export class Orchestrator {
       final_attempt_id: finalAttemptId,
       web: runWeb,
       attempts: records,
+      tool_warnings_total: records.reduce((sum, r) => sum + r.outcome.tool_warnings_count, 0),
       generated_at: nowIso(),
     });
     store.writeYaml(join(paths.finalDir, "telemetry.yaml"), telemetry);
@@ -3395,13 +3402,20 @@ export class Orchestrator {
       const report = redactSecrets(parts.join("\n").trim());
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
+      const deliverablePresent = report.length > 0;
       if (!harnessError && webBlocked) {
         harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
       }
-      if (!harnessError && unrecovered.length > 0) {
+      if (!harnessError && unrecovered.length > 0 && !deliverablePresent) {
         const first = unrecovered[0] as ToolErrorRecord;
         harnessError = `${first.tool} failed without recovery: ${first.summary}`;
       }
+      setAttemptOutcome(telemetry, {
+        deliverablePresent,
+        gatesPassed: null,
+        harnessErrored: harnessError !== null && !webBlocked,
+        webRequiredUnsatisfied: webBlocked,
+      });
       if (harnessError) {
         log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: webBlocked ? "blocked" : "failed", error: harnessError, ...telemetrySummary(telemetry) });
         attempts.push({ attemptId, harnessId: adapter.id, status: webBlocked ? "blocked" : "failed", report, error: harnessError, telemetry });
@@ -3413,7 +3427,10 @@ export class Orchestrator {
       log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "success", ...telemetrySummary(telemetry) });
       attempts.push({ attemptId, harnessId: adapter.id, status: "success", report: report || "(no output)", error: null, telemetry });
       if (opts.swarm) {
-        store.writeText(join(paths.findingsDir, `${attemptId}.md`), `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}\n`);
+        const warningNote = toolWarnings(telemetry).length
+          ? `\n\n> Tool warnings: ${toolWarnings(telemetry).map((e) => `${e.tool}: ${e.summary}`).join("; ")}\n`
+          : "";
+        store.writeText(join(paths.findingsDir, `${attemptId}.md`), `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}${warningNote}\n`);
       }
     };
 
@@ -3554,7 +3571,13 @@ export class Orchestrator {
           `Explorers succeeded: ${succeeded.length}/${attempts.length}.`,
           "",
           "## Synthesis",
-          ...succeeded.map((a) => `\n### ${a.attemptId} / ${a.harnessId}\n\n${a.report}`),
+          ...succeeded.map((a) => {
+            const warnings = toolWarnings(a.telemetry);
+            const warningText = warnings.length
+              ? `\n\n> Tool warnings: ${warnings.map((e) => `${e.tool}: ${e.summary}`).join("; ")}`
+              : "";
+            return `\n### ${a.attemptId} / ${a.harnessId}\n\n${a.report}${warningText}`;
+          }),
           "",
           "## Omissions / Uncertainty",
           ...(unsuccessful.length
@@ -3586,7 +3609,7 @@ export class Orchestrator {
         typedPlanNote = `\n- Typed plan: MISSING (${extracted.error}); the markdown plan above is the only artifact`;
       }
     }
-    this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, succeeded[0]?.attemptId ?? null);
+    this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, opts.swarm ? null : succeeded[0]?.attemptId ?? null);
     log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}` });
     if (opts.swarm) {
       store.writeYaml(join(paths.finalDir, "explore-findings.yaml"), {
@@ -4057,6 +4080,7 @@ function createAttemptTelemetry(
       errorSummary: null,
     },
     observedModel: null,
+    outcome: null,
   };
 }
 
@@ -4091,6 +4115,14 @@ function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   if (tool.status === undefined) {
     // A result without a status must never silently count as ok.
     t.statuslessResults += 1;
+    return;
+  }
+  if (tool.status === "cancelled" || tool.status === "denied") {
+    if (tool.kind === "web") {
+      t.web.attempted = true;
+      t.web.tool = tool.name;
+      t.web.target = tool.target ?? t.web.target;
+    }
     return;
   }
   if (tool.status === "error") {
@@ -4131,6 +4163,40 @@ function unrecoveredToolErrors(t: AttemptTelemetry): ToolErrorRecord[] {
   return t.toolErrors.filter((e) => !e.recovered);
 }
 
+function toolWarnings(t: AttemptTelemetry): ToolErrorRecord[] {
+  // Non-web tool errors are warnings once the attempt produced its contracted
+  // deliverable. Web evidence has separate hard-gate semantics below.
+  return unrecoveredToolErrors(t).filter((e) => e.kind !== "web");
+}
+
+function setAttemptOutcome(
+  t: AttemptTelemetry,
+  opts: {
+    deliverablePresent: boolean;
+    gatesPassed: boolean | null;
+    harnessErrored: boolean;
+    webRequiredUnsatisfied: boolean;
+  },
+): void {
+  const warnings = toolWarnings(t).length;
+  const contractFailed = !opts.deliverablePresent || opts.gatesPassed === false;
+  const status: AttemptOutcomeStatus = opts.webRequiredUnsatisfied
+    ? "blocked"
+    : opts.harnessErrored || contractFailed
+      ? "failed"
+      : warnings > 0
+        ? "success_with_warnings"
+        : "success";
+  t.outcome = {
+    deliverablePresent: opts.deliverablePresent,
+    gatesPassed: opts.gatesPassed,
+    harnessErrored: opts.harnessErrored,
+    webRequiredUnsatisfied: opts.webRequiredUnsatisfied,
+    toolWarningsCount: warnings,
+    status,
+  };
+}
+
 function webStatus(t: AttemptTelemetry): "none" | "attempted" | "satisfied" | "failed" | "unverified" {
   if (t.web.satisfied) return "satisfied";
   if (t.web.failed) return "failed";
@@ -4141,6 +4207,7 @@ function webStatus(t: AttemptTelemetry): "none" | "attempted" | "satisfied" | "f
 /** Bounded telemetry summary for events/artifacts (full detail lives in telemetry.yaml). */
 function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
   const unrecovered = unrecoveredToolErrors(t);
+  const warnings = toolWarnings(t);
   return {
     web_evidence: {
       required: t.web.required,
@@ -4156,6 +4223,9 @@ function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
     tool_errors_total: t.toolErrors.length,
     unrecovered_tool_errors: unrecovered.length,
     tool_errors: unrecovered.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })),
+    tool_warnings_count: warnings.length,
+    ...(warnings.length ? { tool_warnings: warnings.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })) } : {}),
+    ...(t.outcome ? { outcome: t.outcome } : {}),
     ...(t.droppedEvents > 0 ? { dropped_events: t.droppedEvents } : {}),
     ...(t.statuslessResults > 0 ? { statusless_tool_results: t.statuslessResults } : {}),
   };
@@ -4163,6 +4233,7 @@ function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
 
 function attemptTelemetryRecord(attemptId: string, harnessId: string, t: AttemptTelemetry): AttemptTelemetryRecord {
   const errors = t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX);
+  const warnings = toolWarnings(t);
   return {
     attempt_id: attemptId,
     harness_id: harnessId,
@@ -4190,6 +4261,32 @@ function attemptTelemetryRecord(attemptId: string, harnessId: string, t: Attempt
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
     statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
+    outcome: {
+      deliverable_present: t.outcome?.deliverablePresent ?? false,
+      gates_passed: t.outcome?.gatesPassed ?? null,
+      harness_errored: t.outcome?.harnessErrored ?? false,
+      web_required_unsatisfied: t.outcome?.webRequiredUnsatisfied ?? false,
+      tool_warnings_count: t.outcome?.toolWarningsCount ?? warnings.length,
+      status: t.outcome?.status ?? (warnings.length > 0 ? "success_with_warnings" : "success"),
+    },
+  };
+}
+
+function aggregateRunWebEvidence(records: AttemptTelemetryRecord[], contract: TaskContract): AttemptTelemetryRecord["web"] {
+  const satisfied = records.find((r) => r.web.satisfied);
+  if (satisfied) return satisfied.web;
+  const severityRank = { none: 0, attempted: 1, unverified: 2, failed: 3, satisfied: 4 } as const;
+  const worst = [...records].sort((a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0))[0];
+  return worst?.web ?? {
+    required: contract.external_context.web_required,
+    policy: contract.external_context.policy,
+    effective_mode: contract.external_context.effective_mode,
+    attempted: false,
+    satisfied: false,
+    status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
+    tool: null,
+    target: null,
+    error_summary: null,
   };
 }
 

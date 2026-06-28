@@ -2,23 +2,24 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
+import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, newId, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
-import { validateModel } from "@claudexor/core";
+import { harnessRuntimeEnv, validateModel } from "@claudexor/core";
 import { SecretStore } from "@claudexor/secrets";
 import {
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,
+  type Attachment,
   ModeKind as ModeKindSchema,
   type OrchestrateAutonomy,
   Portfolio,
@@ -145,6 +146,8 @@ Options:
   --answers <file>         Answers JSON for claudexor spec (batch mode)
   --previous <spec.json>   Previous SpecPack JSON for section-level diff
   --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
+  --attach <path[,path...]> Attach file(s) to ask/run/race/plan/audit
+  --image <path[,path...]>  Attach image file(s) (alias for --attach with image kind)
   --json                   Machine-readable JSON output
   --dry-run                Plugin: show lifecycle actions; apply: check patch without mutating
   --force                  Reapply verified Claudexor-owned plugin drift; never overwrites unowned files
@@ -229,6 +232,56 @@ function webPolicy(args: ParsedArgs): "off" | "auto" | "cached" | "live" | undef
   return parsed.data;
 }
 
+function attachmentPaths(args: ParsedArgs): { path: string; forceImage: boolean }[] {
+  const values: { path: string; forceImage: boolean }[] = [];
+  for (const [key, forceImage] of [["attach", false], ["image", true]] as const) {
+    const raw = flagStr(args, key);
+    if (!raw) continue;
+    for (const piece of raw.split(",")) {
+      const path = piece.trim();
+      if (path) values.push({ path, forceImage });
+    }
+  }
+  return values;
+}
+
+function imageMimeFor(path: string): string | null {
+  switch (extname(path).toLowerCase()) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    default: return null;
+  }
+}
+
+function attachmentInputs(args: ParsedArgs): { kind: "image" | "file"; mime: string; name: string; path: string }[] | undefined {
+  const out = attachmentPaths(args).map(({ path, forceImage }) => {
+    const resolved = resolve(path);
+    if (!existsSync(resolved)) throw new Error(`attachment not found: ${path}`);
+    const imageMime = imageMimeFor(resolved);
+    const kind = forceImage || imageMime ? "image" as const : "file" as const;
+    return {
+      kind,
+      mime: imageMime ?? "application/octet-stream",
+      name: basename(resolved),
+      path: resolved,
+    };
+  });
+  return out.length > 0 ? out : undefined;
+}
+
+function attachmentsFromInputs(inputs: ReturnType<typeof attachmentInputs>): Attachment[] | undefined {
+  return inputs?.map((a) => ({
+    id: newId("att"),
+    kind: a.kind,
+    mime: a.mime,
+    name: a.name,
+    path: a.path,
+  }));
+}
+
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. */
 function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
   const v = flagStr(args, "reviewer-model");
@@ -300,6 +353,8 @@ async function orchestrate(
   let attemptsFlag: number | undefined;
   let autonomy: OrchestrateAutonomy | undefined;
   let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
+  let attachments: Attachment[] | undefined;
+  let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedWebPolicy = webPolicy(args);
@@ -310,6 +365,8 @@ async function orchestrate(
     attemptsFlag = intFlag(args, "attempts");
     autonomy = parseAutonomy(flagStr(args, "autonomy"));
     resolvedSynthesis = synthesisMode(args);
+    attachmentRequest = attachmentInputs(args);
+    attachments = attachmentsFromInputs(attachmentRequest);
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -355,6 +412,7 @@ async function orchestrate(
       specId: spec?.id,
       specHash: loadedSpec?.specHash,
       specPath: loadedSpec?.specPath,
+      attachmentRequest,
       forced,
     });
   }
@@ -370,6 +428,7 @@ async function orchestrate(
     const res = await orch.run({
       repoRoot: process.cwd(),
       prompt: prompt || "audit this repository",
+      attachments,
       mode,
       // Only `suggest` (or unset) reaches the in-process path; auto_safe/auto_full
       // are routed to the daemon above. Forward it so an explicit --autonomy
@@ -444,6 +503,7 @@ interface DaemonRunParams {
   specId: string | undefined;
   specHash: string | undefined;
   specPath: string | undefined;
+  attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   forced: { swarm?: boolean; create?: boolean; race?: boolean };
 }
 
@@ -463,6 +523,7 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
   const inPlace = flagBool(args, "in-place");
   const body: Record<string, unknown> = {
     prompt: p.prompt,
+    ...(p.attachmentRequest ? { attachments: p.attachmentRequest } : {}),
     mode: p.mode,
     // Autonomy only governs the orchestrate executor; send it only for that mode.
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
@@ -802,7 +863,7 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
   if (sub === "start") {
     const daemonScript = fileURLToPath(new URL("./claudexord.js", import.meta.url));
-    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore" });
+    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore", env: harnessRuntimeEnv() });
     child.unref();
     print(`claudexord starting (pid ${child.pid}); socket ${defaultSocketPath()}`);
     return 0;
@@ -1064,7 +1125,7 @@ const KNOWN_FLAGS = new Set([
   "harness", "mode", "n", "attempts", "until-clean", "swarm", "create", "synthesis",
   "test", "max-usd", "reviewer-model", "reviewer-effort",
   "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place", "autonomy",
-  "answers", "previous", "spec", "json", "all", "dry-run", "force", "from-env",
+  "answers", "previous", "spec", "attach", "image", "json", "all", "dry-run", "force", "from-env",
   // `decision` command action/option flags (subcommand-scoped).
   "accept-risk", "override", "revert", "accept-clean-patch", "apply-mode", "rerun", "feedback",
   "help", "version",
@@ -1073,7 +1134,7 @@ const KNOWN_FLAGS = new Set([
 const VALUE_FLAGS = [
   "harness", "mode", "n", "attempts", "synthesis", "test", "max-usd",
   "reviewer-model", "reviewer-effort", "access", "web", "model", "effort",
-  "primary-harness", "portfolio", "autonomy", "answers", "previous", "spec",
+  "primary-harness", "portfolio", "autonomy", "answers", "previous", "spec", "attach", "image",
   "from-env", "apply-mode", "feedback",
 ];
 
@@ -1284,7 +1345,14 @@ async function main(): Promise<number> {
       const parsedTelemetry = RunTelemetry.safeParse(store.readYaml(join(paths.finalDir, "telemetry.yaml")));
       const telemetry = parsedTelemetry.success ? parsedTelemetry.data : null;
       const toolErrors = telemetry
-        ? telemetry.attempts.flatMap((a) => a.tool_errors.filter((e) => !e.recovered).map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })))
+        ? telemetry.attempts.flatMap((a) => a.tool_errors.filter((e) => !e.recovered && e.kind === "web").map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })))
+        : [];
+      const toolWarnings = telemetry
+        ? telemetry.attempts.flatMap((a) =>
+            a.tool_errors
+              .filter((e) => !e.recovered && e.kind !== "web")
+              .map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })),
+          )
         : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
       const outputReadyState = primary?.kind === "diagnostic"
@@ -1297,7 +1365,7 @@ async function main(): Promise<number> {
       const parsedDecision = DecisionRecord.safeParse(decision);
       const summary = readTextSafe(join(paths.finalDir, "summary.md"));
       if (json) {
-        printJson({ runId, runDir: paths.root, outputReadyState, contract: contract.success ? contract.data : null, telemetry, toolErrors, primaryOutput: primary, decision, work_product: workProduct, artifacts });
+        printJson({ runId, runDir: paths.root, outputReadyState, contract: contract.success ? contract.data : null, telemetry, toolErrors, toolWarnings, primaryOutput: primary, decision, work_product: workProduct, artifacts });
         // exit-code parity with the text mode: read-only runs have no decision record
         return summary || primary ? 0 : 1;
       }
@@ -1324,6 +1392,10 @@ async function main(): Promise<number> {
       if (toolErrors.length) {
         print("tool errors (unrecovered):");
         for (const err of toolErrors.slice(-8)) print(`  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`);
+      }
+      if (toolWarnings.length) {
+        print("tool warnings (non-blocking):");
+        for (const err of toolWarnings.slice(-8)) print(`  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`);
       }
       if (primary?.text.trim()) {
         print("");
