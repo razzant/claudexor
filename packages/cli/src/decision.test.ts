@@ -49,6 +49,6 @@ describe("resolveDecisionBody", () => {
 describe("exitCodeForState", () => {
   it("treats success-shaped terminals as exit 0 and everything else as 1", () => {
     for (const ok of ["succeeded", "no_op", "ungated", "review_not_run"]) expect(exitCodeForState(ok)).toBe(0);
-    for (const bad of ["blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]) expect(exitCodeForState(bad)).toBe(1);
+    for (const bad of ["blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged", "stuck_no_progress"]) expect(exitCodeForState(bad)).toBe(1);
   });
 });

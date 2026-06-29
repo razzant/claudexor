@@ -142,6 +142,7 @@ const TERMINAL_STATES = new Set([
   "interrupted",
   "exhausted",
   "not_converged",
+  "stuck_no_progress",
 ]);
 
 export interface DaemonRunOutcome {

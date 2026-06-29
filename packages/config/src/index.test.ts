@@ -7,6 +7,8 @@ import { ConfigParseError, loadConfig, repoHash, updateGlobalConfig } from "./in
 describe("loadConfig", () => {
   function withTempConfig(fn: (paths: { dir: string; repo: string; configDir: string }) => void): void {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    const prevReviewerTimeout = process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS;
+    const prevRetryMax = process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
     const dir = mkdtempSync(join(tmpdir(), "claudexor-config-test-"));
     const repo = join(dir, "repo");
     const configDir = join(dir, "home");
@@ -18,6 +20,10 @@ describe("loadConfig", () => {
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      if (prevReviewerTimeout === undefined) delete process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS;
+      else process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS = prevReviewerTimeout;
+      if (prevRetryMax === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
+      else process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX = prevRetryMax;
       rmSync(dir, { recursive: true, force: true });
     }
   }
@@ -27,6 +33,20 @@ describe("loadConfig", () => {
       const cfg = loadConfig(repo);
       expect(cfg.sources).toEqual([]);
       expect(cfg.global.default_portfolio).toBe("subscription-first");
+      expect(cfg.global.runtime.reviewer_timeout_ms).toBe(600_000);
+      expect(cfg.global.runtime.transient_retry.max_retries).toBe(2);
+    });
+  });
+
+  it("honors runtime env overrides and validates them loudly", () => {
+    withTempConfig(({ repo }) => {
+      process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS = "700000";
+      process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX = "3";
+      const cfg = loadConfig(repo);
+      expect(cfg.global.runtime.reviewer_timeout_ms).toBe(700_000);
+      expect(cfg.global.runtime.transient_retry.max_retries).toBe(3);
+      process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX = "-1";
+      expect(() => loadConfig(repo)).toThrow(ConfigParseError);
     });
   });
 

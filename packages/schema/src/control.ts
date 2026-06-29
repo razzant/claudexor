@@ -212,6 +212,7 @@ export const ControlRunState = z.enum([
   "interrupted",
   "exhausted",
   "not_converged",
+  "stuck_no_progress",
 ]);
 export type ControlRunState = z.infer<typeof ControlRunState>;
 

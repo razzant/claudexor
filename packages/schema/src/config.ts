@@ -64,6 +64,22 @@ export const GlobalConfig = z.object({
       max_usd_per_run: z.number().nonnegative().nullable().default(null),
     })
     .default({}),
+  runtime: z
+    .object({
+      /**
+       * Bounded retry policy for adapter-declared transient failures. User-global
+       * only: a versioned repo must not silently increase operator runtime costs.
+       */
+      transient_retry: z
+        .object({
+          max_retries: z.number().int().min(0).max(5).default(2),
+          initial_delay_ms: z.number().int().nonnegative().default(1_000),
+          max_delay_ms: z.number().int().nonnegative().default(10_000),
+        })
+        .default({}),
+      reviewer_timeout_ms: z.number().int().positive().default(600_000),
+    })
+    .default({}),
   harnesses: z
     .record(
       z.string(),

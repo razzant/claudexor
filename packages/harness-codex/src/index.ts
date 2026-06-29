@@ -630,7 +630,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // B9: capture the native thread id (thread.started) so we can read the model
   // codex recorded in its own rollout transcript; cache that one read.
   let codexThreadId: string | undefined;
-  let transcriptModel: string | null | undefined;
+  let transcriptModel: string | undefined;
 
   try {
     yield* runCliHarness({
@@ -654,13 +654,12 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
             ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
           }
           // B9: codex's --json stream never carries the model, but the CLI
-          // records it in its own session rollout. Read that transcript ONCE and
-          // attach it as a real `transcript`-sourced observation on the usage
-          // event, so cross-family route proof verifies honestly (§5). The
-          // transcript's turn_context is written at turn start, so it is on disk
-          // by turn.completed (the usage event); a missing read stays unobserved.
-          if (ev.type === "usage" && !ev.observed_model) {
-            if (transcriptModel === undefined) transcriptModel = codexTranscriptModel(env["CODEX_HOME"], codexThreadId);
+          // records it in its own session rollout. Try to recover it as soon as
+          // the rollout's turn_context appears, then attach the transcript-sourced
+          // observation to the next normalized event. This keeps route proof from
+          // depending on reaching the final usage event under slow reviewer runs.
+          if (!ev.observed_model) {
+            transcriptModel ??= codexTranscriptModel(env["CODEX_HOME"], codexThreadId) ?? undefined;
             if (transcriptModel) {
               ev.observed_model = transcriptModel;
               ev.payload = { ...(ev.payload ?? {}), observed_model_source: "transcript" };

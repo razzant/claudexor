@@ -934,6 +934,10 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
       print(`interaction_timeout_ms: ${cfg.global.interaction_timeout_ms}`);
+      print(`runtime.reviewer_timeout_ms: ${cfg.global.runtime.reviewer_timeout_ms}`);
+      print(`runtime.transient_retry.max_retries: ${cfg.global.runtime.transient_retry.max_retries}`);
+      print(`runtime.transient_retry.initial_delay_ms: ${cfg.global.runtime.transient_retry.initial_delay_ms}`);
+      print(`runtime.transient_retry.max_delay_ms: ${cfg.global.runtime.transient_retry.max_delay_ms}`);
       const harnessIds = Object.keys(cfg.global.harnesses);
       if (harnessIds.length) {
         print("harnesses:");

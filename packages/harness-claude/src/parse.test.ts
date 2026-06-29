@@ -20,6 +20,15 @@ describe("parseClaudeEvent", () => {
     expect(parseClaudeEvent({ type: "system", subtype: "compact" }, "s1")).toEqual([]);
   });
 
+  it("maps api_retry overloads to typed rate_limit and transient signals", () => {
+    const out = parseClaudeEvent({ type: "system", subtype: "api_retry", error: "temporarily unavailable / overloaded", retry_delay_ms: 2500 }, "s1")?.[0];
+    expect(out?.type).toBe("thinking");
+    expect(out?.rate_limit?.retry_delay_ms).toBe(2500);
+    expect(out?.transient?.kind).toBe("service_unavailable");
+    expect(out?.transient?.retry_delay_ms).toBe(2500);
+    expect(() => HarnessEvent.parse(out)).not.toThrow();
+  });
+
   it("splits an assistant message into text + typed edit/tool events", () => {
     const out = parseClaudeEvent(
       {

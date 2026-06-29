@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.13.2 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.14.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -209,6 +209,13 @@ parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
 interactions endpoint, and unanswered questions decline benignly after the
 configurable timeout.
 
+Runtime resilience is evidence-driven: adapters can emit typed transient
+network/stream/timeout signals, the orchestrator retries them only within the
+bounded user-global `runtime.transient_retry` policy, and reviewer panels use the
+configurable `runtime.reviewer_timeout_ms` (default 10 minutes). Convergence that
+keeps producing the same diff while a required gate still fails stops as
+`stuck_no_progress` instead of burning attempts indefinitely.
+
 Start it:
 
 ```bash
@@ -392,6 +399,10 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
+- **v0.14.0** — battery-driven hardening: typed transient retry evidence,
+  configurable reviewer timeouts with stronger route-proof capture,
+  `stuck_no_progress` convergence diagnostics, deterministic protected-path
+  tamper blocking, and a stricter real-harness battery with ENV quarantine.
 - **v0.13.2** — Canvas + node_repl fix: the Canvas Artifacts panel now shows the
   PROJECT's produced outputs (the repo `artifacts/` dir, served via
   `GET /runs/:id/produced`, images inline, the Browser tab auto-renders the

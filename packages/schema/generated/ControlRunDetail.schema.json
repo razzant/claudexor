@@ -30,7 +30,8 @@
                 "cancelled",
                 "interrupted",
                 "exhausted",
-                "not_converged"
+                "not_converged",
+                "stuck_no_progress"
               ]
             },
             "runDir": {
@@ -756,6 +757,7 @@
                     "review_not_run",
                     "blocked",
                     "not_converged",
+                    "stuck_no_progress",
                     "failed",
                     "exhausted",
                     "cancelled"

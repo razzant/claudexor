@@ -476,6 +476,17 @@ export const HarnessEvent = z.object({
       retry_delay_ms: z.number().int().nonnegative().nullable().default(null),
     })
     .optional(),
+  /**
+   * Typed transient-failure signal. Adapters set this from native CLI/API error
+   * shapes in their parse layer; the orchestrator consumes it for bounded retry
+   * policy without governing on free-form harness prose.
+   */
+  transient: z
+    .object({
+      kind: z.enum(["network", "stream_disconnect", "service_unavailable", "timeout", "unknown"]).default("unknown"),
+      retry_delay_ms: z.number().int().nonnegative().nullable().default(null),
+    })
+    .optional(),
   error: z.string().optional(),
   payload: z.record(z.string(), z.unknown()).optional(),
 });

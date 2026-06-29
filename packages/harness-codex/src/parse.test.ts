@@ -145,6 +145,19 @@ describe("parseCodexEvent", () => {
     expect(benign?.rate_limit).toBeUndefined();
   });
 
+  it("sets the typed transient signal on native network/stream disconnect errors", () => {
+    const stream = parseCodexEvent({ type: "error", message: "stream disconnected before completion: failed to lookup address information: nodename nor servname provided, or not known" }, "s1")?.[0];
+    expect(stream?.type).toBe("error");
+    expect(stream?.transient?.kind).toBe("stream_disconnect");
+    expect(() => HarnessEvent.parse(stream)).not.toThrow();
+
+    const failed = parseCodexEvent({ type: "turn.failed", error: { message: "request failed: ENOTFOUND chatgpt.com" } }, "s1")?.[0];
+    expect(failed?.transient?.kind).toBe("network");
+
+    const compile = parseCodexEvent({ type: "error", message: "TypeScript compile error" }, "s1")?.[0];
+    expect(compile?.transient).toBeUndefined();
+  });
+
   it("maps a codex todo_list to a plan message (the relay plan signal)", () => {
     // Verified live (codex 0.142): item.completed carries item.type=todo_list with items[].{text,completed}.
     const line = '{"type":"item.completed","item":{"id":"item_0","type":"todo_list","items":[{"text":"Step one","completed":true},{"text":"Step two","completed":false}]}}';

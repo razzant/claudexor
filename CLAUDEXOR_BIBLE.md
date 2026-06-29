@@ -65,6 +65,12 @@ verify steps, or required gates still block. Web answers are web-backed only whe
 `WebSearch`/`WebFetch` or equivalent evidence was observed; a memory answer after
 a failed web tool is partial/unverified.
 
+Transient infrastructure failures are typed adapter evidence, not guessed from
+model prose. Adapters may mark network/stream/timeout failures as transient; the
+orchestrator may spend a bounded retry budget only for typed transient failures
+with no produced deliverable. A repeated identical diff against a still-failing
+required gate is reported honestly as `stuck_no_progress`, never success.
+
 Interactive FLOW-CONTROL tools are not work tools. A declined or timed-out
 `AskUserQuestion`/`ExitPlanMode` result is the documented end of an interaction
 (recovery-by-same-tool is impossible by construction), so adapters translate it
@@ -77,6 +83,9 @@ evidence and can block only when they invalidate the run's required contract.
 No regex governance: risk, permissions, web-required detection, tool success,
 winners, and tests-passed must be determined by typed contracts, settings,
 events, gates, or reviewer evidence, not ad hoc string matching over model text.
+Protected gate/test paths are contract evidence: when a deterministic gate is
+configured, edits to the protected test/gate surface produce deterministic policy
+findings before any model can claim the run is clean.
 
 ## 6. Secrets Never Become Artifacts
 

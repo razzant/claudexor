@@ -308,8 +308,16 @@ interface AttemptTelemetry {
   web: WebEvidenceState;
   /** Model identity the harness stream actually reported (route evidence). */
   observedModel: string | null;
+  /** Adapter-declared transient failures seen during this attempt. */
+  transientFailures: { kind: NonNullable<HarnessEvent["transient"]>["kind"]; retryDelayMs: number | null }[];
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
+}
+
+interface TransientRetryPolicy {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
 }
 
 /** User-level per-harness defaults (from the global config) applied at route time. */
@@ -360,18 +368,32 @@ function assertEnvelopeSubRun(sub: RunInput): void {
 }
 
 /** Changed paths and +/- line counts parsed from a unified git diff. */
-function diffStats(diff: string): { paths: string[]; additions: number; deletions: number } {
+function diffStats(diff: string): { paths: string[]; addedPaths: string[]; modifiedPaths: string[]; additions: number; deletions: number } {
   const paths: string[] = [];
+  const addedPaths: string[] = [];
+  const modifiedPaths: string[] = [];
   let additions = 0;
   let deletions = 0;
+  let currentPath: string | null = null;
+  let currentAdded = false;
+  const flush = () => {
+    if (!currentPath) return;
+    paths.push(currentPath);
+    (currentAdded ? addedPaths : modifiedPaths).push(currentPath);
+  };
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
+      flush();
       const m = / b\/(.+)$/.exec(line);
-      if (m?.[1]) paths.push(m[1]);
+      currentPath = m?.[1] ?? null;
+      currentAdded = false;
+    } else if (line.startsWith("new file mode ") || line === "--- /dev/null") {
+      currentAdded = true;
     } else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
     else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
   }
-  return { paths, additions, deletions };
+  flush();
+  return { paths, addedPaths, modifiedPaths, additions, deletions };
 }
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
@@ -917,6 +939,19 @@ export class Orchestrator {
     return this.config(repoRoot).global.routing.env_inheritance;
   }
 
+  private transientRetryPolicy(repoRoot: string): TransientRetryPolicy {
+    const cfg = this.config(repoRoot).global.runtime.transient_retry;
+    return {
+      maxRetries: cfg.max_retries,
+      initialDelayMs: cfg.initial_delay_ms,
+      maxDelayMs: cfg.max_delay_ms,
+    };
+  }
+
+  private reviewerTimeoutMs(repoRoot: string): number {
+    return this.config(repoRoot).global.runtime.reviewer_timeout_ms;
+  }
+
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
@@ -969,6 +1004,12 @@ export class Orchestrator {
         throw new Error(`failed to resolve frozen SpecPack at ${input.specPath}: ${safeErrorMessage(err)}`);
       }
     }
+    const protectedPaths = [
+      ...new Set([
+        ...(specFields.constraints?.protected_paths ?? []),
+        ...gateProtectedPaths(commands.map((c) => c.command)),
+      ]),
+    ];
     return TaskContractSchema.parse({
       schema_version: SCHEMA_VERSION,
       task_id: taskId,
@@ -985,6 +1026,7 @@ export class Orchestrator {
           }
         : undefined,
       ...specFields,
+      constraints: { protected_paths: protectedPaths },
       tests: { commands },
       access: {
         requested_profile: requestedAccess,
@@ -1153,7 +1195,7 @@ export class Orchestrator {
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
-      prompt,
+      prompt: promptWithProtectedPathConstraint(prompt, contract.constraints.protected_paths),
       attachments: runInput?.attachments ?? [],
       browser: this.browserSpecFor(runInput, routed, knobs.webPolicy, access, paths),
       cwd: envelope.worktree_path,
@@ -1199,72 +1241,97 @@ export class Orchestrator {
     let harnessErrored = false;
     const errors: string[] = [];
     const messageParts: string[] = [];
+    const retryPolicy = this.transientRetryPolicy(contract.repo.root);
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
       contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live",
       effectiveWebMode ?? knobs.webPolicy,
     );
+    let activeSessionId = spec.session_id;
     const onAbort = () => {
-      void adapter.cancel?.(spec.session_id)?.catch(() => {});
+      void adapter.cancel?.(activeSessionId)?.catch(() => {});
     };
     if (signal) {
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
-      if (!signal?.aborted) {
-        for await (const ev of adapter.run(spec)) {
-          if (signal?.aborted) break;
-          const safeEv = redactHarnessEvent(ev);
-          safeInvoke(onHarnessEvent, safeEv);
-          // In-place turns run in the live tree under the native environment, so
-          // the session they emit IS reachable for the next turn: record it. An
-          // ISOLATED envelope-born session lives in the scoped home that dispose()
-          // deletes, so observing it would poison the thread resume map with
-          // unreachable ids — skip it there.
-          if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
-          this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-          observeAttemptTelemetry(telemetry, safeEv);
-          if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-            cost += safeEv.usage.cost_usd;
-            if (safeEv.usage.estimated) costEstimated = true;
-            log?.emit("budget.observation", {
-              harness_id: adapter.id,
-              attempt_id: attemptId,
-              kind: "spend",
-              usd: safeEv.usage.cost_usd,
-              estimated: safeEv.usage.estimated === true,
-            });
-            // Mid-flight cap enforcement: the guard raises this attempt's hold
-            // to the streamed cost; a hard tier aborts NOW instead of letting a
-            // streaming candidate overshoot max_usd until settlement.
-            if (budgetGuard?.(cost)) {
-              harnessErrored = true;
-              errors.push("budget hard cap reached mid-attempt; stream aborted");
-              log?.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "cooldown", detail: "hard cap mid-flight abort" });
-              void adapter.cancel?.(spec.session_id)?.catch(() => {});
-              break;
+      for (let nativeTry = 0; !signal?.aborted; nativeTry += 1) {
+        const runSpec = nativeTry === 0 ? spec : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), extra: { ...spec.extra } });
+        activeSessionId = runSpec.session_id;
+        const transientStart = telemetry.transientFailures.length;
+        try {
+          for await (const ev of adapter.run(runSpec)) {
+            if (signal?.aborted) break;
+            const safeEv = redactHarnessEvent(ev);
+            safeInvoke(onHarnessEvent, safeEv);
+            // In-place turns run in the live tree under the native environment, so
+            // the session they emit IS reachable for the next turn: record it. An
+            // ISOLATED envelope-born session lives in the scoped home that dispose()
+            // deletes, so observing it would poison the thread resume map with
+            // unreachable ids — skip it there.
+            if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
+            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+            observeAttemptTelemetry(telemetry, safeEv);
+            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+              cost += safeEv.usage.cost_usd;
+              if (safeEv.usage.estimated) costEstimated = true;
+              log?.emit("budget.observation", {
+                harness_id: adapter.id,
+                attempt_id: attemptId,
+                kind: "spend",
+                usd: safeEv.usage.cost_usd,
+                estimated: safeEv.usage.estimated === true,
+              });
+              // Mid-flight cap enforcement: the guard raises this attempt's hold
+              // to the streamed cost; a hard tier aborts NOW instead of letting a
+              // streaming candidate overshoot max_usd until settlement.
+              if (budgetGuard?.(cost)) {
+                harnessErrored = true;
+                errors.push("budget hard cap reached mid-attempt; stream aborted");
+                log?.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "cooldown", detail: "hard cap mid-flight abort" });
+                void adapter.cancel?.(runSpec.session_id)?.catch(() => {});
+                break;
+              }
             }
+            if (safeEv.type === "error") {
+              harnessErrored = true;
+              errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
+            }
+            // Capture assistant prose so an answer-only turn (no file changes) still
+            // has an honest output artifact instead of an empty "succeeded".
+            if (safeEv.type === "message" && safeEv.text) pushUniqueText(messageParts, safeEv.text);
+            // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
+            const obs = observationFromEvent(adapter.id, safeEv);
+            if (obs) ledger.observe(obs);
           }
-          if (safeEv.type === "error") {
-            harnessErrored = true;
-            errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
-          }
-          // Capture assistant prose so an answer-only turn (no file changes) still
-          // has an honest output artifact instead of an empty "succeeded".
-          if (safeEv.type === "message" && safeEv.text) pushUniqueText(messageParts, safeEv.text);
-          // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
-          const obs = observationFromEvent(adapter.id, safeEv);
-          if (obs) ledger.observe(obs);
+        } catch (err) {
+          // A throwing adapter must not lose the cost already streamed: record the
+          // error here and let the caller settle the REAL accumulated spend.
+          harnessErrored = true;
+          errors.push(safeErrorMessage(err));
         }
+
+        const transient = telemetry.transientFailures.at(-1) ?? null;
+        const sawTransient = telemetry.transientFailures.length > transientStart;
+        const currentDiff = await wsm.diff(envelope);
+        const currentAnswer = messageParts.join("\n").trim();
+        const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
+        if (!harnessErrored || !sawTransient || !deliverableEmpty || nativeTry >= retryPolicy.maxRetries || signal?.aborted) break;
+
+        const nextTry = nativeTry + 1;
+        const delayMs = transientRetryDelayMs(transient?.retryDelayMs ?? null, retryPolicy, nativeTry);
+        log?.emit("route.transient.detected", { harness_id: adapter.id, attempt_id: attemptId, kind: transient?.kind ?? "unknown", native_try: nativeTry + 1 });
+        log?.emit("route.transient.retry_scheduled", { harness_id: adapter.id, attempt_id: attemptId, retry: nextTry, delay_ms: delayMs });
+        errors.length = 0;
+        harnessErrored = false;
+        await sleep(delayMs);
       }
-    } catch (err) {
-      // A throwing adapter must not lose the cost already streamed: record the
-      // error here and let the caller settle the REAL accumulated spend.
-      harnessErrored = true;
-      errors.push(safeErrorMessage(err));
     } finally {
       signal?.removeEventListener("abort", onAbort);
+    }
+    if (harnessErrored && telemetry.transientFailures.length > 0) {
+      log?.emit("route.transient.exhausted", { harness_id: adapter.id, attempt_id: attemptId, retries: retryPolicy.maxRetries });
     }
     const unrecovered = unrecoveredToolErrors(telemetry);
     if (webUnsatisfied(telemetry)) {
@@ -2136,7 +2203,7 @@ export class Orchestrator {
     protectedPaths: string[] = [],
   ): { findings: ReviewFinding[]; risk: { level: string; reasons: string[]; changedFiles: number } } {
     const stats = diffStats(run.diff);
-    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions, protectedPaths });
+    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions, protectedPaths: [] });
     const findings: ReviewFinding[] = [];
     const reviewer = { harness_id: "policy", requested_model: null, requested_effort: null, observed_model: null, route_proof_status: "verified" as const };
     const evidenceFor = (reasons: string[]) => ({
@@ -2144,8 +2211,28 @@ export class Orchestrator {
     });
     // Structured matched-path evidence (never reconstructed from prose).
     const evidenceFromPaths = (paths: string[]) => ({ files: paths.map((path) => ({ path, lines: null })) });
-    // Contract protected_paths escalate the human gate alongside the built-in globs.
-    const human = requireHuman(stats.paths, [...DEFAULT_REQUIRE_HUMAN_PATHS, ...protectedPaths]);
+    const protectedOnly = requireHuman(stats.modifiedPaths, protectedPaths);
+    if (protectedOnly.required) {
+      findings.push(ReviewFindingSchema.parse({
+        id: newId("find"),
+        severity: "BLOCK",
+        category: "test_gap",
+        claim: `candidate changed protected gate/test path(s): ${protectedOnly.matchedPaths.join(", ")}`,
+        evidence: evidenceFromPaths(protectedOnly.matchedPaths),
+        reviewer,
+        status: "accepted",
+      }));
+    }
+    // Contract protected_paths escalate the human gate only for tampering with
+    // existing protected files. Creating a new test/package file for create or
+    // test-authoring flows is not tamper by itself; built-in critical paths still
+    // apply to all changed paths.
+    const builtInHuman = requireHuman(stats.paths, DEFAULT_REQUIRE_HUMAN_PATHS);
+    const human = {
+      required: builtInHuman.required || protectedOnly.required,
+      reasons: [...new Set([...builtInHuman.reasons, ...protectedOnly.reasons])],
+      matchedPaths: [...new Set([...builtInHuman.matchedPaths, ...protectedOnly.matchedPaths])],
+    };
     if (human.required) {
       findings.push(ReviewFindingSchema.parse({
         id: newId("find"),
@@ -2193,7 +2280,11 @@ export class Orchestrator {
    */
   private reviewScoped(input: Omit<Parameters<typeof reviewCandidate>[0], "env">): ReturnType<typeof reviewCandidate> {
     const reviewHome = new WorkspaceManager(input.cwd).readOnlyHomeEnv();
-    return reviewCandidate({ ...input, env: reviewHome.env }).finally(() => reviewHome.dispose());
+    return reviewCandidate({
+      ...input,
+      reviewerTimeoutMs: input.reviewerTimeoutMs ?? this.reviewerTimeoutMs(input.cwd),
+      env: reviewHome.env,
+    }).finally(() => reviewHome.dispose());
   }
 
   private async reviewRuns(
@@ -2229,6 +2320,7 @@ export class Orchestrator {
               artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
               cwd: candidateCwd,
               reviewers,
+              reviewerTimeoutMs: this.reviewerTimeoutMs(contract.repo.root),
               envInheritance: this.envInheritance(cwd),
               onReviewerEvent: (event) => log.emit(event.type, { ...event }),
             })
@@ -2396,6 +2488,10 @@ export class Orchestrator {
     let lastPostTurnSha: string | null = null;
     let triedSinceProgress = new Set<string>();
     let lastSig = "";
+    let lastFailingGateDiffHash = "";
+    let sameFailingGateDiffs = 0;
+    let stuckNoProgress = false;
+    let stuckNoProgressReason: string | null = null;
     // until_clean has NO fixed attempt cap; it stops on convergence, budget hard tier,
     // observed quota cooldown across all harnesses, or genuine no-progress (a stall on the same
     // failure signature after every available harness has tried it).
@@ -2620,6 +2716,22 @@ export class Orchestrator {
           break;
         }
 
+        const requiredGateFailing = run.gates.length > 0 && !gatesPassed(run.gates);
+        const diffHash = sha256(run.diff);
+        if (requiredGateFailing && diffHash === lastFailingGateDiffHash) {
+          sameFailingGateDiffs += 1;
+        } else {
+          sameFailingGateDiffs = requiredGateFailing ? 1 : 0;
+          lastFailingGateDiffHash = requiredGateFailing ? diffHash : "";
+        }
+        if (sameFailingGateDiffs >= 2) {
+          stuckNoProgress = true;
+          const failedGateIds = run.gates.filter((g) => g.required && g.status !== "passed").map((g) => g.id);
+          stuckNoProgressReason = `same candidate diff (${diffHash}) produced ${sameFailingGateDiffs} consecutive failing required gate round(s): ${failedGateIds.join(", ") || "unknown gate"}`;
+          log.emit("finding.revalidated", { attempt_id: attemptId, stuck_no_progress: true, diff_sha256: diffHash, failed_gates: failedGateIds });
+          break;
+        }
+
         const sig = failureSignature(conv.reasons);
         readiness.recordRound(sig, conv.reasons.join("; "));
         if (sig !== lastSig) {
@@ -2659,6 +2771,8 @@ export class Orchestrator {
       ? "cancelled"
       : converged
         ? "success"
+        : stuckNoProgress
+          ? "stuck_no_progress"
         : exhausted
           ? "exhausted"
           : "not_converged";
@@ -2714,7 +2828,7 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}\n`,
+        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}\n`,
       );
       // Lifecycle invariant (all modes): output.ready precedes the terminal
       // event so a client that applied the terminal event has the output.
@@ -2731,6 +2845,8 @@ export class Orchestrator {
         category: status === "exhausted" ? "budget" : status === "cancelled" ? "cancelled" : status === "blocked" ? "policy" : "internal",
         safeMessage: status === "blocked"
           ? `review escalated to a human decision after ${attempt} attempt(s)`
+          : status === "stuck_no_progress"
+            ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
           : `${status} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
@@ -2739,7 +2855,9 @@ export class Orchestrator {
           ? ["Retry if cancellation was accidental"]
           : status === "blocked"
             ? ["Open the review queue", "Decide the NEEDS_HUMAN findings", "Re-run after the decision"]
-            : ["Open diagnostics", "Inspect latest patch and review findings", "Retry with more attempts or a narrower prompt"],
+            : status === "stuck_no_progress"
+              ? ["Inspect the stable patch", "Inspect the failing gate output", "Fix the gate or provide a different repair instruction"]
+              : ["Open diagnostics", "Inspect latest patch and review findings", "Retry with more attempts or a narrower prompt"],
       });
       if (!lastRun) {
         store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n`);
@@ -3369,8 +3487,10 @@ export class Orchestrator {
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
       const telemetry = createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live", effectiveWeb);
+      const retryPolicy = this.transientRetryPolicy(input.repoRoot);
+      let activeSessionId = spec.session_id;
       const onAbort = () => {
-        void adapter.cancel?.(spec.session_id)?.catch(() => {});
+        void adapter.cancel?.(activeSessionId)?.catch(() => {});
       };
       if (input.signal) {
         if (input.signal.aborted) onAbort();
@@ -3379,40 +3499,61 @@ export class Orchestrator {
       let cost = 0;
       let harnessError: string | null = null;
       try {
-        log.emit("harness.started", {
-          harness_id: adapter.id,
-          attempt_id: attemptId,
-          external_context_policy: knobs.webPolicy,
-          ...(modelOverride ? { fallback_model: modelOverride } : {}),
-          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
-        });
-        if (!input.signal?.aborted) {
-          for await (const ev of adapter.run(spec)) {
-            if (input.signal?.aborted) break;
-            const safeEv = redactHarnessEvent(ev);
-            safeInvoke(input.onHarnessEvent, safeEv);
-            // NOT observed for resume: this read-only/plan attempt runs in a
-            // DISPOSABLE roHome (disposed below), so its native session id is
-            // unreachable afterwards. Recording it would poison the thread resume
-            // map with dead ids — the read-side mirror of the agent path's
-            // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
-            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
-            appendLine(attemptEventsPath, JSON.stringify(safeEv));
-            observeAttemptTelemetry(telemetry, safeEv);
-            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-              cost += safeEv.usage.cost_usd;
-              log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
+        for (let nativeTry = 0; !input.signal?.aborted; nativeTry += 1) {
+          const runSpec = nativeTry === 0 ? spec : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), resume_session_id: null, extra: { ...spec.extra } });
+          activeSessionId = runSpec.session_id;
+          const transientStart = telemetry.transientFailures.length;
+          log.emit("harness.started", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            external_context_policy: knobs.webPolicy,
+            ...(modelOverride ? { fallback_model: modelOverride } : {}),
+            ...(nativeTry > 0 ? { retry: nativeTry } : {}),
+            ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+          });
+          try {
+            for await (const ev of adapter.run(runSpec)) {
+              if (input.signal?.aborted) break;
+              const safeEv = redactHarnessEvent(ev);
+              safeInvoke(input.onHarnessEvent, safeEv);
+              // NOT observed for resume: this read-only/plan attempt runs in a
+              // DISPOSABLE roHome (disposed below), so its native session id is
+              // unreachable afterwards. Recording it would poison the thread resume
+              // map with dead ids — the read-side mirror of the agent path's
+              // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
+              this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+              appendLine(attemptEventsPath, JSON.stringify(safeEv));
+              observeAttemptTelemetry(telemetry, safeEv);
+              if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+                cost += safeEv.usage.cost_usd;
+                log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
+              }
+              if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
+              if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
             }
-            if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
-            if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+          } catch (err) {
+            harnessError = safeErrorMessage(err);
           }
+
+          const transient = telemetry.transientFailures.at(-1) ?? null;
+          const sawTransient = telemetry.transientFailures.length > transientStart;
+          const reportSoFar = parts.join("\n").trim();
+          if (!harnessError || !sawTransient || reportSoFar.length > 0 || nativeTry >= retryPolicy.maxRetries || input.signal?.aborted) break;
+
+          const nextTry = nativeTry + 1;
+          const delayMs = transientRetryDelayMs(transient?.retryDelayMs ?? null, retryPolicy, nativeTry);
+          log.emit("route.transient.detected", { harness_id: adapter.id, attempt_id: attemptId, kind: transient?.kind ?? "unknown", native_try: nativeTry + 1 });
+          log.emit("route.transient.retry_scheduled", { harness_id: adapter.id, attempt_id: attemptId, retry: nextTry, delay_ms: delayMs });
+          harnessError = null;
+          await sleep(delayMs);
         }
-      } catch (err) {
-        harnessError = safeErrorMessage(err);
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
         ledger.settle(lease.lease?.lease_id ?? "", cost);
+      }
+      if (harnessError && telemetry.transientFailures.length > 0) {
+        log.emit("route.transient.exhausted", { harness_id: adapter.id, attempt_id: attemptId, retries: retryPolicy.maxRetries });
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       const report = redactSecrets(parts.join("\n").trim());
@@ -4096,8 +4237,47 @@ function createAttemptTelemetry(
       errorSummary: null,
     },
     observedModel: null,
+    transientFailures: [],
     outcome: null,
   };
+}
+
+function transientRetryDelayMs(nativeDelayMs: number | null, policy: TransientRetryPolicy, retryIndex: number): number {
+  const fallback = policy.initialDelayMs * 2 ** retryIndex;
+  const delay = nativeDelayMs ?? fallback;
+  return Math.min(delay, policy.maxDelayMs);
+}
+
+function gateProtectedPaths(commands: string[]): string[] {
+  if (commands.length === 0) return [];
+  const paths = new Set(["package.json", "**/package.json", "test/**", "tests/**", "__tests__/**", "**/*.test.*", "**/*.spec.*"]);
+  for (const command of commands) {
+    for (const raw of command.split(/\s+/)) {
+      const token = raw.trim().replace(/^['"]|['"]$/g, "");
+      if (!token || token.startsWith("-") || token.includes("=") || token.includes("://") || token.startsWith("/")) continue;
+      if (!token.includes("/") && !token.includes(".")) continue;
+      const clean = token.replace(/^[./]+/, "").replace(/[),;]+$/g, "");
+      if (!clean || clean === "package.json") continue;
+      const testish = clean.startsWith("test/") || clean.startsWith("tests/") || clean.startsWith("__tests__/") || clean.includes(".test.") || clean.includes(".spec.");
+      if (testish) paths.add(clean.endsWith("/") ? `${clean}**` : clean);
+    }
+  }
+  return [...paths];
+}
+
+function promptWithProtectedPathConstraint(prompt: string, protectedPaths: string[]): string {
+  if (protectedPaths.length === 0) return prompt;
+  return [
+    prompt,
+    "",
+    "Engine constraint: do not edit protected gate/test paths, test commands, or package test scripts unless the user explicitly asked to change tests. Protected paths:",
+    ...protectedPaths.slice(0, 20).map((p) => `- ${p}`),
+  ].join("\n");
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -4109,6 +4289,12 @@ function createAttemptTelemetry(
 function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   // Route evidence: remember the model identity the stream itself disclosed.
   if (ev.observed_model && !t.observedModel) t.observedModel = ev.observed_model;
+  if (ev.transient) {
+    t.transientFailures.push({
+      kind: ev.transient.kind,
+      retryDelayMs: ev.transient.retry_delay_ms ?? null,
+    });
+  }
   if (ev.type === "completed") {
     const dropped =
       Number(ev.payload?.["dropped_unparsed_lines"] ?? 0) + Number(ev.payload?.["dropped_unrecognized_events"] ?? 0);
@@ -4242,6 +4428,7 @@ function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
     tool_warnings_count: warnings.length,
     ...(warnings.length ? { tool_warnings: warnings.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })) } : {}),
     ...(t.outcome ? { outcome: t.outcome } : {}),
+    ...(t.transientFailures.length > 0 ? { transient_failures: t.transientFailures.slice(-5).map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })) } : {}),
     ...(t.droppedEvents > 0 ? { dropped_events: t.droppedEvents } : {}),
     ...(t.statuslessResults > 0 ? { statusless_tool_results: t.statuslessResults } : {}),
   };
@@ -4277,6 +4464,7 @@ function attemptTelemetryRecord(attemptId: string, harnessId: string, t: Attempt
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
     statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
+    transient_failures: t.transientFailures.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
     outcome: {
       deliverable_present: t.outcome?.deliverablePresent ?? false,
       gates_passed: t.outcome?.gatesPassed ?? null,

@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 0.14.0
+
+### Minor Changes
+
+- Ship battery-driven harness hardening: typed transient retry signals, configurable reviewer timeouts with stronger route-proof capture, convergence no-progress diagnostics, deterministic protected-path tamper blocking, and a stricter real-harness battery.
+
+### Patch Changes
+
+- @claudexor/acp-server@0.14.0
+- @claudexor/artifact-store@0.14.0
+- @claudexor/config@0.14.0
+- @claudexor/control-api@0.14.0
+- @claudexor/core@0.14.0
+- @claudexor/daemon@0.14.0
+- @claudexor/delivery@0.14.0
+- @claudexor/gateway@0.14.0
+- @claudexor/harness-claude@0.14.0
+- @claudexor/harness-codex@0.14.0
+- @claudexor/harness-cursor@0.14.0
+- @claudexor/harness-fake@0.14.0
+- @claudexor/harness-opencode@0.14.0
+- @claudexor/harness-raw-api@0.14.0
+- @claudexor/interview@0.14.0
+- @claudexor/mcp-server@0.14.0
+- @claudexor/orchestrator@0.14.0
+- @claudexor/schema@0.14.0
+- @claudexor/secrets@0.14.0
+- @claudexor/util@0.14.0
+- @claudexor/workspace@0.14.0
+
 ## 0.13.3
 
 ### Patch Changes

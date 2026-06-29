@@ -47,6 +47,12 @@ export const ToolErrorRecord = z.object({
 });
 export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
 
+export const TransientFailureRecord = z.object({
+  kind: z.enum(["network", "stream_disconnect", "service_unavailable", "timeout", "unknown"]).default("unknown"),
+  retry_delay_ms: z.number().int().nonnegative().nullable().default(null),
+});
+export type TransientFailureRecord = z.infer<typeof TransientFailureRecord>;
+
 export const AttemptOutcomeStatus = z.enum(["success", "success_with_warnings", "blocked", "failed"]);
 export type AttemptOutcomeStatus = z.infer<typeof AttemptOutcomeStatus>;
 
@@ -82,6 +88,8 @@ export const AttemptTelemetryRecord = z.object({
   statusless_tool_results: z.number().int().nonnegative().default(0),
   /** Native lines/events the adapter could not parse or did not recognize (never silently zero). */
   dropped_events: z.number().int().nonnegative().default(0),
+  /** Adapter-declared transient failures that informed bounded retry policy. */
+  transient_failures: z.array(TransientFailureRecord).default([]),
   /** Contract/outcome projection for this attempt. */
   outcome: AttemptOutcome.default({}),
 });

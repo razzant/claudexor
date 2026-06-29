@@ -11,6 +11,7 @@ import { parseChatCompletion, parseModelsList } from "./parse.js";
 const RAW_API_TIMEOUT_MS = 180_000;
 /** Model enumeration is interactive (a picker waits on it): keep it snappy. */
 const RAW_API_MODELS_TIMEOUT_MS = 15_000;
+const RAW_API_TRANSIENT_STATUS = new Set([408, 502, 503, 504]);
 
 /**
  * Build the chat-completions user `content`. With image attachments, switch
@@ -210,6 +211,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             // A 429 is a TYPED rate-limit signal (cooldown/fallback governance
             // reads ev.rate_limit, never prose), with the native reset when known.
             ...(res.status === 429 ? { rate_limit: { resets_at: resetsAt, retry_delay_ms: retryDelayMs } } : {}),
+            ...(res.status === 429 || RAW_API_TRANSIENT_STATUS.has(res.status)
+              ? { transient: { kind: res.status === 408 ? "timeout" : "service_unavailable", retry_delay_ms: retryDelayMs } }
+              : {}),
             payload: res.status === 429 ? { resets_at: resetsAt } : { body: redactSecrets(body.slice(0, 500)) },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
@@ -227,7 +231,14 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso(), observed_model: parsed.model ?? undefined };
       } catch (err) {
-        yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: redactSecrets(err instanceof Error ? err.message : String(err)) };
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: message,
+          transient: { kind: err instanceof DOMException && err.name === "TimeoutError" ? "timeout" : "network", retry_delay_ms: null },
+        };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       }
     },

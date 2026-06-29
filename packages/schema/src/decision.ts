@@ -21,6 +21,7 @@ export const RunStatus = z.enum([
   "review_not_run",
   "blocked",
   "not_converged",
+  "stuck_no_progress",
   "failed",
   "exhausted",
   "cancelled",

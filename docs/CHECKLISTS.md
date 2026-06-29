@@ -146,6 +146,11 @@ pnpm test
   match docs).
 - `pnpm knip` passes (no unused exports/files; dead code is deleted, not
   allowlisted, unless a justified baseline entry explains why).
+- When runtime/harness resilience changes, the fixed real-harness battery
+  (`pnpm battery:real`) is rerun or explicitly waived with the ENV/network
+  evidence that made it inconclusive.
+- New terminal states, retry events, or telemetry fields are documented in
+  architecture/development docs and have generated schema updates.
 - Swift tests/build pass.
 - Triad + scope review gate: before a release tag, run
   `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each

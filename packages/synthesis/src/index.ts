@@ -107,7 +107,7 @@ export function buildSynthesisPlan(candidates: CandidateEvidence[]): SynthesisPl
   const borrowTestsFrom = bestTests.attemptId !== base.attemptId ? bestTests.attemptId : null;
   const instructions = [
     `Start from ${base.label}.`,
-    borrowTestsFrom ? `Adopt the stronger tests from ${bestTests.label}.` : "",
+    borrowTestsFrom ? `Use the stronger gate/test results from ${bestTests.label} as evidence, but do not edit protected tests or gate configuration unless the user explicitly asked for test changes.` : "",
     fixFindings.length > 0 ? `Fix the accepted findings (${fixFindings.length}).` : "",
     "Produce a single coherent patch; do not blindly concatenate diffs. The result will be re-reviewed.",
   ]

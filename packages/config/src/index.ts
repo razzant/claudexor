@@ -49,7 +49,7 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const globalPath = join(globalConfigDir(), "config.yaml");
   const globalRaw = readYaml(globalPath);
   if (globalRaw !== null) sources.push(globalPath);
-  const global = GlobalConfig.parse(globalRaw ?? {});
+  const global = applyEnvOverrides(GlobalConfig.parse(globalRaw ?? {}));
 
   const projectPath = join(repoRoot, ".claudexor", "config.yaml");
   const projectRaw = readYaml(projectPath);
@@ -62,6 +62,47 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const trust = TrustConfig.parse(trustRaw ?? {});
 
   return ResolvedConfigSchema.parse({ project, trust, global, sources });
+}
+
+function positiveIntEnv(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new ConfigParseError(`env:${name}`, `expected a positive integer, got ${raw}`);
+  }
+  return parsed;
+}
+
+function nonnegativeIntEnv(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new ConfigParseError(`env:${name}`, `expected a nonnegative integer, got ${raw}`);
+  }
+  return parsed;
+}
+
+function applyEnvOverrides(global: GlobalConfig): GlobalConfig {
+  const reviewerTimeout = positiveIntEnv("CLAUDEXOR_REVIEWER_TIMEOUT_MS");
+  const maxRetries = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_MAX");
+  const initialDelay = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS");
+  const maxDelay = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS");
+  if (reviewerTimeout === null && maxRetries === null && initialDelay === null && maxDelay === null) return global;
+  return GlobalConfig.parse({
+    ...global,
+    runtime: {
+      ...global.runtime,
+      ...(reviewerTimeout !== null ? { reviewer_timeout_ms: reviewerTimeout } : {}),
+      transient_retry: {
+        ...global.runtime.transient_retry,
+        ...(maxRetries !== null ? { max_retries: maxRetries } : {}),
+        ...(initialDelay !== null ? { initial_delay_ms: initialDelay } : {}),
+        ...(maxDelay !== null ? { max_delay_ms: maxDelay } : {}),
+      },
+    },
+  });
 }
 
 export function globalConfigPath(): string {

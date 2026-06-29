@@ -5,6 +5,7 @@ import { nowIso, redactSecrets } from "@claudexor/util";
 type Json = any;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+const CLAUDE_TRANSIENT_RE = /overloaded|temporar(?:y|ily) unavailable|network|econnreset|etimedout|enotfound|eai_again|stream/i;
 
 function toolKindFor(name: string): ToolKind {
   if (name === "WebSearch" || name === "WebFetch") return "web";
@@ -82,6 +83,12 @@ function parseClaudeEventStateful(
     if (/rate.?limit|overloaded|too many requests|quota/i.test(errText)) {
       ev.rate_limit = {
         resets_at: null,
+        retry_delay_ms: typeof obj.retry_delay_ms === "number" ? obj.retry_delay_ms : null,
+      };
+    }
+    if (CLAUDE_TRANSIENT_RE.test(errText)) {
+      ev.transient = {
+        kind: /overloaded|temporar(?:y|ily) unavailable/i.test(errText) ? "service_unavailable" : "network",
         retry_delay_ms: typeof obj.retry_delay_ms === "number" ? obj.retry_delay_ms : null,
       };
     }

@@ -94,6 +94,11 @@ quota or spend remains unknown; do not render missing values as `$0`. Large
 artifacts are size-capped (HTTP 413 names the on-disk path) and timelines are
 capped with an explicit truncation marker.
 
+Terminal state may include diagnostic non-success states such as
+`stuck_no_progress` (the same diff repeated while a required gate still failed).
+Telemetry attempts can include adapter-declared transient failures; integrations
+should render those as infrastructure/retry evidence, not as model findings.
+
 `POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
 Interactive runs use the typed interaction surface instead of raw input
 forwarding: `interaction.requested` events carry the questions, the macOS app

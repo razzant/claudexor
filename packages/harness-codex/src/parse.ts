@@ -9,6 +9,8 @@ type Json = any;
 // in the budget/governance layer.
 const CODEX_RATE_LIMIT_RE =
   /rate.?limit|usage.?limit|usagelimitexceeded|too many requests|quota[ _-]?(?:exceeded|exhausted|reached)|(?:http|status|code)[ :/]?429|429 too many/i;
+const CODEX_TRANSIENT_RE =
+  /stream disconnected|failed to lookup address information|nodename nor servname|eai_again|enotfound|econnreset|etimedout|temporar(?:y|ily) unavailable|network/i;
 
 /**
  * Map a single Codex `exec --json` JSONL object to normalized HarnessEvents.
@@ -45,6 +47,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     const message = obj.error?.message ?? "turn failed";
     const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
     applyCodexRateLimit(ev, message, obj.error?.resets_at ?? obj.resets_at);
+    applyCodexTransient(ev, message);
     return [ev];
   }
   if (type === "turn.started") {
@@ -54,6 +57,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     const message = typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error");
     const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
     applyCodexRateLimit(ev, message, obj.resets_at ?? obj.error?.resets_at);
+    applyCodexTransient(ev, message);
     return [ev];
   }
   if (type === "item.started" || type === "item.updated") {
@@ -197,6 +201,14 @@ function applyCodexRateLimit(ev: HarnessEvent, message: string, resetsAt: unknow
   if (!CODEX_RATE_LIMIT_RE.test(message)) return;
   ev.rate_limit = {
     resets_at: typeof resetsAt === "string" ? resetsAt : null,
+    retry_delay_ms: null,
+  };
+}
+
+function applyCodexTransient(ev: HarnessEvent, message: string): void {
+  if (!CODEX_TRANSIENT_RE.test(message)) return;
+  ev.transient = {
+    kind: /stream disconnected/i.test(message) ? "stream_disconnect" : "network",
     retry_delay_ms: null,
   };
 }

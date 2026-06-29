@@ -103,6 +103,42 @@
           "additionalProperties": false,
           "default": {}
         },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "transient_retry": {
+              "type": "object",
+              "properties": {
+                "max_retries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5,
+                  "default": 2
+                },
+                "initial_delay_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 1000
+                },
+                "max_delay_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 10000
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "reviewer_timeout_ms": {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0,
+              "default": 600000
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {

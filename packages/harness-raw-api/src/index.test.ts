@@ -7,6 +7,12 @@ vi.mock("@claudexor/secrets", () => ({ resolveSecret: () => null }));
 
 import { createRawApiAdapter } from "./index.js";
 
+async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const item of iter) out.push(item);
+  return out;
+}
+
 /**
  * The raw-api models() is the REAL ADP4 enumeration producer: GET <baseURL>/models
  * with the resolved auth header, OpenAI `{data:[{id}]}` parsing, and a SOFT fail
@@ -74,5 +80,22 @@ describe("raw-api models() — enumeration producer", () => {
     }));
     const adapter = createRawApiAdapter();
     await expect(adapter.models!()).resolves.toEqual([]);
+  });
+
+  it("emits typed transient metadata for retryable raw-api HTTP failures", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("try later", { status: 503 })));
+    const adapter = createRawApiAdapter();
+    const events = await collect(adapter.run({
+      session_id: "s1",
+      intent: "review",
+      prompt: "x",
+      cwd: process.cwd(),
+      access: "readonly",
+      external_context_policy: "auto",
+      tool_permission_policy: { web: "auto", allow: [], deny: [] },
+    }));
+    const error = events.find((e) => e.type === "error");
+    expect(error?.transient?.kind).toBe("service_unavailable");
   });
 });

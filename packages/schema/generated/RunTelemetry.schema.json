@@ -214,6 +214,39 @@
                 "minimum": 0,
                 "default": 0
               },
+              "transient_failures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "network",
+                        "stream_disconnect",
+                        "service_unavailable",
+                        "timeout",
+                        "unknown"
+                      ],
+                      "default": "unknown"
+                    },
+                    "retry_delay_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "default": []
+              },
               "outcome": {
                 "type": "object",
                 "properties": {

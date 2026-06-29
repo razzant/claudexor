@@ -52,7 +52,7 @@ export interface ReviewCandidateResult {
   reviewSpendEstimated: boolean;
 }
 
-const DEFAULT_REVIEWER_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60_000;
 
 export interface ReviewerProgressEvent {
   type: "reviewer.started" | "reviewer.first_event" | "reviewer.completed" | "reviewer.timed_out" | "reviewer.failed";
@@ -213,10 +213,15 @@ ${runtimePrompt}
       // Budget truth: a reviewer that streamed paid tokens then timed out/failed
       // still spent money. Fold the partial cost into the ledger (the success
       // path adds out.costUsd above; these paths are mutually exclusive).
-      const partial = err as { partialCostUsd?: number; partialCostEstimated?: boolean };
+      const partial = err as { partialCostUsd?: number; partialCostEstimated?: boolean; partialObservedModel?: string; partialObservedSource?: RouteProof["observed"]["evidence_source"] };
       if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
         reviewSpendUsd += partial.partialCostUsd;
         if (partial.partialCostEstimated) reviewSpendEstimated = true;
+      }
+      if (partial?.partialObservedModel) {
+        streamObservedModel = partial.partialObservedModel;
+        routeModel = partial.partialObservedModel;
+        routeSource = partial.partialObservedSource ?? "stream_event";
       }
       writeParseError(artifact, { error: reviewerError });
     }
@@ -345,6 +350,8 @@ async function collectReviewerOutput(
   let settled = false;
   let timedOut = false;
   let firstEventTime: string | null = null;
+  let observedModel: string | undefined;
+  let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
   // Reviewer spend tracked at function scope so a timed-out/failed reviewer still
   // contributes its PARTIAL cost to the ledger (budget truth). It is attached to
   // the thrown error so the caller can fold it in.
@@ -353,8 +360,6 @@ async function collectReviewerOutput(
 
   const consume = (async (): Promise<ReviewerOutput> => {
     let text = "";
-    let observedModel: string | undefined;
-    let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     for await (const ev of iter) {
       const eventTime = nowIso();
       appendLine(artifact.eventsPath, JSON.stringify(redactValue(ev)));
@@ -421,6 +426,8 @@ async function collectReviewerOutput(
         status: "timed_out",
         timeout_time: timedOutAt,
         duration_ms: durationMs,
+        observed_model: observedModel ?? null,
+        observed_source: observedSource,
         raw_normalized_stream_path: artifact.eventsPath,
         transcript_path: artifact.transcriptPath,
       });
@@ -428,12 +435,16 @@ async function collectReviewerOutput(
         type: "reviewer.timed_out",
         at: timedOutAt,
         duration_ms: durationMs,
+        observed_model: observedModel ?? null,
+        observed_source: observedSource,
         message: `Reviewer timed out after ${timeoutMs}ms`,
       });
       reject(
         Object.assign(new Error(`Reviewer timed out after ${timeoutMs}ms`), {
           partialCostUsd: costUsd,
           partialCostEstimated: costEstimated,
+          partialObservedModel: observedModel,
+          partialObservedSource: observedSource,
         }),
       );
     }, Math.max(1, timeoutMs));
@@ -465,6 +476,8 @@ async function collectReviewerOutput(
       Object.assign(err as Record<string, unknown>, {
         partialCostUsd: costUsd,
         partialCostEstimated: costEstimated,
+        partialObservedModel: observedModel,
+        partialObservedSource: observedSource,
       });
     }
     throw err;

@@ -119,6 +119,16 @@ Tests and local smokes must never touch real user state:
   but never auto-start one (a typo'd run id reports `no such run`); only acting
   paths (`run`/`race`/`create`, `decision`) auto-start it. `daemon start` blocks
   until the daemon is actually ready, so a follow-up `status`/run can't race it.
+- Real-harness dogfood lives in `scripts/real-harness-battery.mjs` and runs only
+  against disposable repos under `~/.claudexor/dogfood`. It asserts engine-owned
+  artifacts, quarantines repeated host/network transient failures as ENV, and
+  must not target the Claudexor repo for harness writes.
+- Runtime retry/review knobs are user-global config (`runtime.transient_retry`
+  and `runtime.reviewer_timeout_ms`) with env overrides
+  `CLAUDEXOR_TRANSIENT_RETRY_MAX`,
+  `CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS`,
+  `CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS`, and
+  `CLAUDEXOR_REVIEWER_TIMEOUT_MS`.
 
 ## Schema-First Workflow
 

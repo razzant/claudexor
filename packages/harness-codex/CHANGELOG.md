@@ -1,5 +1,14 @@
 # @claudexor/harness-codex
 
+## 0.14.0
+
+### Patch Changes
+
+- @claudexor/core@0.14.0
+- @claudexor/schema@0.14.0
+- @claudexor/secrets@0.14.0
+- @claudexor/util@0.14.0
+
 ## 0.13.3
 
 ### Patch Changes

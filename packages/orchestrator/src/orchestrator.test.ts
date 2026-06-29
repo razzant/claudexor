@@ -98,6 +98,42 @@ function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessA
   };
 }
 
+function transientThenDiffImplementer(id: string): { adapter: HarnessAdapter; calls: () => number } {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    adapter: {
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true, structured_events: true },
+          access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+      },
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        if (calls === 1) {
+          yield { type: "error", session_id: spec.session_id, ts, error: "network dropped", transient: { kind: "network", retry_delay_ms: 0 } };
+          yield { type: "completed", session_id: spec.session_id, ts };
+          return;
+        }
+        writeFileSync(join(spec.cwd, "RECOVERED.txt"), "ok\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: "Recovered." };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    },
+  };
+}
+
 /** A reviewer/planner-only adapter (like raw-api): cannot implement/edit. */
 function noImplementAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
@@ -199,6 +235,33 @@ describe("Orchestrator", () => {
     expect(events).toContain("loop_detected");
   }, 20000);
 
+  it("until-clean stops as stuck_no_progress on repeated identical diff plus failing gate", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-implement", createFakeHarness("fake-implement")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({ repoRoot: repo, prompt: "write deterministic file", mode: "agent", untilClean: true, harnesses: ["fake-implement"], tests: ["false"] });
+    expect(res.status).toBe("stuck_no_progress");
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("No-progress reason");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain("stuck_no_progress");
+  }, 20000);
+
+  it("retries a typed transient candidate failure when no deliverable was produced", async () => {
+    const repo = await initRepo();
+    const transient = transientThenDiffImplementer("transient-impl");
+    const registry = new Map<string, HarnessAdapter>([[transient.adapter.id, transient.adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "write file", mode: "agent", harnesses: [transient.adapter.id], n: 1 });
+    expect(transient.calls()).toBe(2);
+    expect(res.status).not.toBe("failed");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain("route.transient.retry_scheduled");
+    const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
+    expect(attempt).toContain("transient_failures");
+    expect(attempt).toContain("network");
+  });
+
   it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
@@ -284,6 +347,64 @@ describe("Orchestrator", () => {
     expect(res.candidates[0]?.harnessId).toBe("claude");
     expect(seen[0]?.model).toBe("model-x");
     expect(taskYaml).toContain("portfolio: balanced");
+  });
+
+  it("auto-protects test and package surfaces when deterministic gates are configured", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], tests: ["node --test test/*.test.js"] });
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_paths");
+    expect(taskYaml).toContain("package.json");
+    expect(taskYaml).toContain("test/**");
+    expect(taskYaml).toContain("test/*.test.js");
+  });
+
+  it("emits a deterministic BLOCK when a candidate edits a protected gate path", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
+    await runCapture("git", ["-C", repo, "add", "package.json"]);
+    await runCapture("git", ["-C", repo, "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "add package"]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("tamper-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "tamper-model" };
+        writeFileSync(join(spec.cwd, "package.json"), JSON.stringify({ scripts: { test: "true" } }, null, 2));
+        yield { type: "message", session_id: spec.session_id, ts, text: "changed package script" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "fix implementation only", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("candidate changed protected gate/test path");
+    expect(review).toContain("severity: BLOCK");
+  });
+
+  it("does not treat newly-created package/test files as protected-path tamper", async () => {
+    const repo = await initRepo();
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("create-test-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "create-test-model" };
+        mkdirSync(join(spec.cwd, "test"), { recursive: true });
+        writeFileSync(join(spec.cwd, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2));
+        writeFileSync(join(spec.cwd, "test", "hello.test.js"), "import test from 'node:test';\ntest('ok', () => {});\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: "created test scaffold" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "create test scaffold", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    expect(res.status).not.toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).not.toContain("candidate changed protected gate/test path");
   });
 
   it("resolves a frozen SpecPack: provenance AND content (criteria/non-goals/task graph) reach the contract", async () => {

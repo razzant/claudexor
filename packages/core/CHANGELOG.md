@@ -1,5 +1,11 @@
 # @claudexor/core
 
+## 0.14.0
+
+### Patch Changes
+
+- @claudexor/schema@0.14.0
+
 ## 0.13.3
 
 ### Patch Changes

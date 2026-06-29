@@ -115,6 +115,12 @@ winners, and tests-passed are not inferred from ad hoc string matching over fina
 answers. They come from typed contracts, settings, normalized events, gates,
 artifacts, and reviewer evidence.
 
+Runtime resilience is typed evidence too. Adapters translate native
+network/stream/service/timeout failures into a transient signal; the orchestrator
+can retry only within a bounded user-global policy and only when no deliverable
+was produced. Repeated identical diffs against a still-failing required gate stop
+as `stuck_no_progress`, an honest diagnostic state rather than a green claim.
+
 Verification is honest about WHAT it observed. A run is applyable on a clean
 cross-family review even without a deterministic test gate, but the decision
 records a typed `verification_basis` (cross-family review, or both that review

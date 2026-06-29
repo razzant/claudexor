@@ -38,7 +38,8 @@ export type JobState =
   | "cancelled"
   | "interrupted"
   | "exhausted"
-  | "not_converged";
+  | "not_converged"
+  | "stuck_no_progress";
 
 export interface JobRecord {
   id: string;
@@ -339,7 +340,7 @@ export class DaemonServer {
       // Only failure-shaped terminals carry an error string. no_op / ungated /
       // review_not_run / blocked are HONEST terminals: fabricating an error here
       // would make the control facade render a failure that never happened.
-      if (rec.state === "failed" || rec.state === "exhausted" || rec.state === "not_converged") {
+      if (rec.state === "failed" || rec.state === "exhausted" || rec.state === "not_converged" || rec.state === "stuck_no_progress") {
         rec.error = resultSummary(rec.result) ?? `run ended with status ${rec.state}`;
       }
     } catch (err) {
@@ -376,6 +377,8 @@ function jobStateFromResult(result: unknown, aborted: boolean): JobState {
       return "exhausted";
     case "not_converged":
       return "not_converged";
+    case "stuck_no_progress":
+      return "stuck_no_progress";
     case "failed":
       return "failed";
     default:

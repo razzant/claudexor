@@ -203,6 +203,35 @@
           },
           "additionalProperties": false
         },
+        "transient": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "network",
+                "stream_disconnect",
+                "service_unavailable",
+                "timeout",
+                "unknown"
+              ],
+              "default": "unknown"
+            },
+            "retry_delay_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false
+        },
         "error": {
           "type": "string"
         },

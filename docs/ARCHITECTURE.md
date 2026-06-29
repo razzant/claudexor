@@ -78,7 +78,7 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/orchestrator`: the five canonical mode pipelines (ask, plan, audit,
   agent, orchestrate) with strategy flags (race width, attempt caps,
   until-clean, swarm, create); owns run telemetry and policy gates (trust,
-  risk, protected paths).
+  risk, protected paths), typed transient retry policy, and no-progress outcomes.
 - `packages/gateway`: harness discovery, capability gating, default available
   harness resolution.
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
@@ -503,6 +503,14 @@ surface defaults, then the global `budget.max_usd_per_run`). There is no daily
 is per-run. Subscription/quota pressure is respected through the harness-reported
 quota/rate-limit signals, not a `$`/day ledger.
 
+Runtime resilience is typed. Adapters translate native transient failures
+(network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)
+into `HarnessEvent.transient`; the orchestrator may retry only within the bounded
+global `runtime.transient_retry` policy and only when the failed attempt produced
+no deliverable. Reviewer panels use `runtime.reviewer_timeout_ms` (default 10
+minutes). A timed-out reviewer still records any observed model/route proof that
+streamed before timeout.
+
 Run detail includes terminal state and output-ready state. `summary.state` is the
 daemon terminal/lifecycle state. `summary.outputReadyState` is
 `pending | finalizing | ready | diagnostic` and is derived from primary output
@@ -557,8 +565,14 @@ attempts/aNN/events.jsonl?    (read-only modes)
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,
 satisfied, status), unrecovered tool errors, non-blocking tool-warning counts,
-attempt outcome dimensions, statusless results, and dropped native events.
+attempt outcome dimensions, statusless results, adapter-declared transient
+failures, and dropped native events.
 Surfaces project it; they never recompute evidence from raw events or model prose.
+
+Convergence can also finish as `stuck_no_progress`: the same candidate diff was
+produced repeatedly while a required deterministic gate still failed. That state
+is terminal, non-applyable, and diagnostic; it tells the operator to inspect the
+stable patch and gate output rather than burning more identical repair attempts.
 
 Review prompts are file-backed: the full candidate patch is written to the
 candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest

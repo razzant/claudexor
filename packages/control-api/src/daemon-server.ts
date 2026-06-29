@@ -132,7 +132,7 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged"]);
+const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged", "stuck_no_progress"]);
 /** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 /** Larger cap for binary artifacts (images, etc.): they are naturally bounded and

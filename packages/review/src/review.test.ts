@@ -323,8 +323,12 @@ describe("reviewEngine", () => {
     expect(aborted).toBe(true);
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.claim).toContain("timed out");
+    expect(res.routeProofs[0]?.status).toBe("verified");
+    expect(res.routeProofs[0]?.observed.model_id).toBe("stalled-model");
     expect(existsSync(join(artifactsDir, "reviewer-progress.jsonl"))).toBe(true);
-    expect(readFileSync(join(artifactsDir, "01-stalled-reviewer", "metadata.json"), "utf8")).toContain("timed_out");
+    const metadata = readFileSync(join(artifactsDir, "01-stalled-reviewer", "metadata.json"), "utf8");
+    expect(metadata).toContain("timed_out");
+    expect(metadata).toContain("stalled-model");
   });
 
   it("uses file-backed patch evidence instead of embedding the full diff prompt", async () => {

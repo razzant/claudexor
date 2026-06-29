@@ -1,6 +1,6 @@
 {
   "name": "claudexor-monorepo",
-  "version": "0.13.3",
+  "version": "0.14.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -15,6 +15,7 @@
     "schema:gen": "tsx packages/schema/scripts/gen-jsonschema.ts",
     "gen:version": "node scripts/gen-version.mjs",
     "bench:bundle": "node benchmarks/terminal_bench/scripts/bundle-cli.mjs",
+    "battery:real": "node scripts/real-harness-battery.mjs",
     "docs:check": "node scripts/docs-truth-check.mjs",
     "staged:check": "node scripts/staged-field-check.mjs",
     "knip": "knip",

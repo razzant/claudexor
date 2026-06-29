@@ -27,7 +27,8 @@
             "cancelled",
             "interrupted",
             "exhausted",
-            "not_converged"
+            "not_converged",
+            "stuck_no_progress"
           ]
         },
         "runDir": {
