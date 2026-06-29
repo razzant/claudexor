@@ -14,7 +14,6 @@
  * - never prints secret values.
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -27,6 +26,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
+import { redactSecrets } from "../packages/util/dist/index.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(root, "packages", "cli", "dist", "cli.js");
@@ -94,10 +94,10 @@ function logPath(name) {
 }
 
 function record(status, phase, name, detail = {}, extras = {}) {
-  const item = { status, phase, name, detail, ...extras };
+  const item = { status, phase, name, detail: redactDetail(detail), ...redactDetail(extras) };
   results.push(item);
   const tag = status === "pass" ? "PASS" : status === "skip" ? "SKIP" : status === "env" ? "ENV" : "FAIL";
-  const summary = typeof detail === "string" ? detail : JSON.stringify(detail);
+  const summary = typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail);
   process.stdout.write(`${tag.padEnd(5)} ${phase.padEnd(10)} ${name.padEnd(44)} ${summary.slice(0, 180)}\n`);
   return item;
 }
@@ -116,6 +116,15 @@ function isTransientEnvOutput(out) {
     || text.includes("eai_again")
     || text.includes("econnreset")
     || text.includes("etimedout");
+}
+
+function redactDetail(value) {
+  if (typeof value === "string") return redactSecrets(value);
+  try {
+    return JSON.parse(redactSecrets(JSON.stringify(value)));
+  } catch {
+    return redactSecrets(String(value));
+  }
 }
 
 function run(cmd, args, opts = {}) {
@@ -151,7 +160,7 @@ function runCli(args, opts = {}) {
     out = run(nodeBin, [cli, ...args], { cwd, timeoutMs: opts.timeoutMs ?? timeoutMs });
   }
   const lp = logPath(name);
-  writeFileSync(lp, [`$ claudexor ${args.join(" ")}`, `cwd=${cwd}`, `exit=${out.code}`, "", out.stdout, out.stderr, out.error].join("\n"));
+  writeFileSync(lp, [`$ claudexor ${args.join(" ")}`, `cwd=${cwd}`, `exit=${out.code}`, "", redactSecrets(out.stdout), redactSecrets(out.stderr), redactSecrets(out.error)].join("\n"));
   let json = null;
   if (opts.json !== false && out.stdout.trim().startsWith("{")) {
     try { json = JSON.parse(out.stdout); } catch { /* recorded by caller if needed */ }
@@ -170,10 +179,6 @@ function runCliText(args, opts = {}) {
 function inspectRun(runId, cwd) {
   const out = runCliJson(["inspect", runId], { cwd, name: `inspect ${runId}` });
   return out.json;
-}
-
-function readText(path) {
-  return existsSync(path) ? readFileSync(path, "utf8") : "";
 }
 
 function artifactExists(runDir, relPath) {

@@ -407,6 +407,32 @@ describe("Orchestrator", () => {
     expect(review).not.toContain("candidate changed protected gate/test path");
   });
 
+  it("blocks renaming an existing protected gate path out of the protected glob", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, "test"), { recursive: true });
+    writeFileSync(join(repo, "test", "math.test.js"), "import test from 'node:test';\ntest('ok', () => {});\n");
+    await runCapture("git", ["-C", repo, "add", "test/math.test.js"]);
+    await runCapture("git", ["-C", repo, "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "add test"]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("rename-test-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "rename-test-model" };
+        mkdirSync(join(spec.cwd, "src"), { recursive: true });
+        await runCapture("git", ["-C", spec.cwd, "mv", "test/math.test.js", "src/math-check.js"]);
+        yield { type: "message", session_id: spec.session_id, ts, text: "renamed test" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "do not edit tests", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("test/math.test.js");
+    expect(review).toContain("severity: BLOCK");
+  });
+
   it("resolves a frozen SpecPack: provenance AND content (criteria/non-goals/task graph) reach the contract", async () => {
     const repo = await initRepo();
     const specPath = join(repo, "spec.json");

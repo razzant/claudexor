@@ -9,12 +9,18 @@ describe("loadConfig", () => {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     const prevReviewerTimeout = process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS;
     const prevRetryMax = process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
+    const prevRetryInitialDelay = process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS;
+    const prevRetryMaxDelay = process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS;
     const dir = mkdtempSync(join(tmpdir(), "claudexor-config-test-"));
     const repo = join(dir, "repo");
     const configDir = join(dir, "home");
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
     mkdirSync(configDir, { recursive: true });
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    delete process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS;
+    delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
+    delete process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS;
+    delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS;
     try {
       fn({ dir, repo, configDir });
     } finally {
@@ -24,6 +30,10 @@ describe("loadConfig", () => {
       else process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS = prevReviewerTimeout;
       if (prevRetryMax === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
       else process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX = prevRetryMax;
+      if (prevRetryInitialDelay === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS;
+      else process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS = prevRetryInitialDelay;
+      if (prevRetryMaxDelay === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS;
+      else process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS = prevRetryMaxDelay;
       rmSync(dir, { recursive: true, force: true });
     }
   }

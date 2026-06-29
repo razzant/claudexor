@@ -368,32 +368,45 @@ function assertEnvelopeSubRun(sub: RunInput): void {
 }
 
 /** Changed paths and +/- line counts parsed from a unified git diff. */
-function diffStats(diff: string): { paths: string[]; addedPaths: string[]; modifiedPaths: string[]; additions: number; deletions: number } {
+function diffStats(diff: string): { paths: string[]; addedPaths: string[]; modifiedPaths: string[]; existingPaths: string[]; additions: number; deletions: number } {
   const paths: string[] = [];
   const addedPaths: string[] = [];
   const modifiedPaths: string[] = [];
+  const existingPaths: string[] = [];
   let additions = 0;
   let deletions = 0;
   let currentPath: string | null = null;
+  let currentOldPath: string | null = null;
   let currentAdded = false;
   const flush = () => {
     if (!currentPath) return;
     paths.push(currentPath);
-    (currentAdded ? addedPaths : modifiedPaths).push(currentPath);
+    if (currentAdded) {
+      addedPaths.push(currentPath);
+    } else {
+      modifiedPaths.push(currentPath);
+      if (currentOldPath) existingPaths.push(currentOldPath);
+      existingPaths.push(currentPath);
+    }
   };
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
       flush();
-      const m = / b\/(.+)$/.exec(line);
-      currentPath = m?.[1] ?? null;
+      const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      currentOldPath = m?.[1] ?? null;
+      currentPath = m?.[2] ?? null;
       currentAdded = false;
+    } else if (line.startsWith("rename from ")) {
+      currentOldPath = line.slice("rename from ".length).trim() || currentOldPath;
+    } else if (line.startsWith("rename to ")) {
+      currentPath = line.slice("rename to ".length).trim() || currentPath;
     } else if (line.startsWith("new file mode ") || line === "--- /dev/null") {
       currentAdded = true;
     } else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
     else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
   }
   flush();
-  return { paths, addedPaths, modifiedPaths, additions, deletions };
+  return { paths, addedPaths, modifiedPaths, existingPaths: [...new Set(existingPaths)], additions, deletions };
 }
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
@@ -2211,7 +2224,7 @@ export class Orchestrator {
     });
     // Structured matched-path evidence (never reconstructed from prose).
     const evidenceFromPaths = (paths: string[]) => ({ files: paths.map((path) => ({ path, lines: null })) });
-    const protectedOnly = requireHuman(stats.modifiedPaths, protectedPaths);
+    const protectedOnly = requireHuman(stats.existingPaths, protectedPaths);
     if (protectedOnly.required) {
       findings.push(ReviewFindingSchema.parse({
         id: newId("find"),
