@@ -383,6 +383,8 @@ async function collectReviewerOutput(
     currentIter = iter;
     let text = "";
     let sawTransient = false;
+    let attemptObservedModel: string | undefined;
+    let attemptObservedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     for await (const ev of iter) {
       const eventTime = nowIso();
       appendLine(artifact.eventsPath, JSON.stringify(redactValue(ev)));
@@ -409,6 +411,8 @@ async function collectReviewerOutput(
         observedModel = ev.observed_model;
         const source = ev.payload?.["observed_model_source"];
         observedSource = source === "metadata" || source === "model_catalog" || source === "transcript" ? source : "stream_event";
+        attemptObservedModel = observedModel;
+        attemptObservedSource = observedSource;
         updateReviewerMetadata(artifact, {
           observed_model: observedModel,
           observed_source: observedSource,
@@ -423,8 +427,8 @@ async function collectReviewerOutput(
         type: "reviewer.failed",
         at: retryAt,
         duration_ms: Date.now() - startMs,
-        observed_model: observedModel ?? null,
-        observed_source: observedSource,
+        observed_model: attemptObservedModel ?? null,
+        observed_source: attemptObservedSource,
         message: `Reviewer transient failure produced no output; retrying (${nativeTry + 1}/${transientRetryPolicy.maxRetries})`,
       });
       await sleep(Math.min(delayMs, Math.max(1, timeoutMs)));
@@ -438,8 +442,8 @@ async function collectReviewerOutput(
         status: "completed",
         completion_time: completedTime,
         duration_ms: durationMs,
-        observed_model: observedModel ?? null,
-        observed_source: observedSource,
+        observed_model: attemptObservedModel ?? null,
+        observed_source: attemptObservedSource,
         raw_normalized_stream_path: artifact.eventsPath,
         transcript_path: artifact.transcriptPath,
       });
@@ -447,11 +451,11 @@ async function collectReviewerOutput(
         type: "reviewer.completed",
         at: completedTime,
         duration_ms: durationMs,
-        observed_model: observedModel ?? null,
-        observed_source: observedSource,
+        observed_model: attemptObservedModel ?? null,
+        observed_source: attemptObservedSource,
       });
     }
-    return { text, observedModel, observedSource, artifactDir: artifact.dir, costUsd, costEstimated };
+    return { text, observedModel: attemptObservedModel, observedSource: attemptObservedSource, artifactDir: artifact.dir, costUsd, costEstimated };
   };
   const consume = consumeOnce(0);
 

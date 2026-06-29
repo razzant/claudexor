@@ -376,6 +376,42 @@ describe("reviewEngine", () => {
     expect(readFileSync(join(artifactsDir, "01-transient-reviewer", "metadata.json"), "utf8")).toContain("transient_retry");
   });
 
+  it("does not carry route proof from a failed transient reviewer try into the successful retry", async () => {
+    let calls = 0;
+    const adapter: HarnessAdapter = {
+      id: "transient-unobserved-retry",
+      async discover() {
+        return HarnessManifest.parse({ id: "transient-unobserved-retry", display_name: "transient", kind: "local_cli", provider_family: "openai", capabilities: { review: true, structured_output: true } });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "transient-unobserved-retry", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        if (calls === 1) {
+          yield { type: "started", session_id: spec.session_id, ts, observed_model: "failed-try-model" };
+          yield { type: "error", session_id: spec.session_id, ts, error: "stream disconnected", transient: { kind: "stream_disconnect", retry_delay_ms: 0 } };
+          yield { type: "completed", session_id: spec.session_id, ts };
+          return;
+        }
+        yield { type: "message", session_id: spec.session_id, ts, text: "```json\n[]\n```" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+      transientRetryPolicy: { maxRetries: 2, initialDelayMs: 0, maxDelayMs: 0 },
+    });
+    expect(calls).toBe(2);
+    expect(res.routeProofs[0]?.status).toBe("unverified");
+    expect(res.routeProofs[0]?.observed.model_id).toBeNull();
+  });
+
   it("uses file-backed patch evidence instead of embedding the full diff prompt", async () => {
     let prompt = "";
     const secretDiffLine = "+UNIQUE_REVIEW_BODY_SHOULD_NOT_BE_IN_PROMPT";
