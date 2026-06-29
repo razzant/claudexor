@@ -2296,6 +2296,7 @@ export class Orchestrator {
     return reviewCandidate({
       ...input,
       reviewerTimeoutMs: input.reviewerTimeoutMs ?? this.reviewerTimeoutMs(input.cwd),
+      transientRetryPolicy: input.transientRetryPolicy ?? this.transientRetryPolicy(input.cwd),
       env: reviewHome.env,
     }).finally(() => reviewHome.dispose());
   }

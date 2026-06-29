@@ -265,6 +265,7 @@ describe("reviewEngine", () => {
       cwd: "/tmp",
       reviewers: [{ adapter, providerFamily: "openai" }],
       artifactsDir,
+      transientRetryPolicy: { maxRetries: 2, initialDelayMs: 0, maxDelayMs: 0 },
     });
     expect(res.findings[0]?.claim).not.toContain(token);
     expect(res.findings[0]?.claim).toContain("[redacted]");

@@ -23,6 +23,7 @@ export interface ReviewCandidateInput {
   cwd: string;
   reviewers: ReviewerSpec[];
   reviewerTimeoutMs?: number;
+  transientRetryPolicy?: TransientRetryPolicy;
   /** Child-env composition for the reviewer harnesses (defaults to mirror_native).
    * Reviewer runs are paid harness children too, so they must honor the configured
    * env isolation (clean) the same way candidate runs do. */
@@ -53,7 +54,16 @@ export interface ReviewCandidateResult {
 }
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60_000;
-const DEFAULT_REVIEWER_TRANSIENT_RETRIES = 2;
+export interface TransientRetryPolicy {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+}
+const DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY: TransientRetryPolicy = {
+  maxRetries: 2,
+  initialDelayMs: 1_000,
+  maxDelayMs: 10_000,
+};
 
 export interface ReviewerProgressEvent {
   type: "reviewer.started" | "reviewer.first_event" | "reviewer.completed" | "reviewer.timed_out" | "reviewer.failed";
@@ -192,7 +202,14 @@ ${runtimePrompt}
     let routeSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     let reviewerError: string | null = null;
     try {
-      const out = await collectReviewerOutput(reviewer, spec, reviewerTimeoutMs, artifact, input.onReviewerEvent);
+      const out = await collectReviewerOutput(
+        reviewer,
+        spec,
+        reviewerTimeoutMs,
+        input.transientRetryPolicy ?? DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY,
+        artifact,
+        input.onReviewerEvent,
+      );
       text = out.text;
       streamObservedModel = out.observedModel;
       routeModel = out.observedModel;
@@ -326,6 +343,7 @@ async function collectReviewerOutput(
   reviewer: ReviewerSpec,
   spec: ReturnType<typeof HarnessRunSpec.parse>,
   timeoutMs: number,
+  transientRetryPolicy: TransientRetryPolicy,
   artifact: ReviewerArtifactContext,
   onReviewerEvent: ReviewCandidateInput["onReviewerEvent"],
 ): Promise<ReviewerOutput> {
@@ -397,8 +415,9 @@ async function collectReviewerOutput(
         });
       }
     }
-    if (sawTransient && text.trim() === "" && nativeTry < DEFAULT_REVIEWER_TRANSIENT_RETRIES && !timedOut) {
+    if (sawTransient && text.trim() === "" && nativeTry < transientRetryPolicy.maxRetries && !timedOut) {
       const retryAt = nowIso();
+      const delayMs = transientRetryDelayMs(transientRetryPolicy, nativeTry);
       updateReviewerMetadata(artifact, { transient_retry: nativeTry + 1 });
       emitReviewerProgress(artifact, reviewer, onReviewerEvent, {
         type: "reviewer.failed",
@@ -406,8 +425,9 @@ async function collectReviewerOutput(
         duration_ms: Date.now() - startMs,
         observed_model: observedModel ?? null,
         observed_source: observedSource,
-        message: `Reviewer transient failure produced no output; retrying (${nativeTry + 1}/${DEFAULT_REVIEWER_TRANSIENT_RETRIES})`,
+        message: `Reviewer transient failure produced no output; retrying (${nativeTry + 1}/${transientRetryPolicy.maxRetries})`,
       });
+      await sleep(Math.min(delayMs, Math.max(1, timeoutMs)));
       runSpec = HarnessRunSpec.parse({ ...runSpec, session_id: newId("ses"), extra: { ...runSpec.extra, abortSignal: controller.signal } });
       return consumeOnce(nativeTry + 1);
     }
@@ -608,6 +628,15 @@ function emitReviewerProgress(
   } catch {
     /* progress observers must never affect review state */
   }
+}
+
+function transientRetryDelayMs(policy: TransientRetryPolicy, retryIndex: number): number {
+  return Math.min(policy.initialDelayMs * 2 ** retryIndex, policy.maxDelayMs);
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function updateReviewerMetadata(artifact: ReviewerArtifactContext, patch: Record<string, unknown>): void {
