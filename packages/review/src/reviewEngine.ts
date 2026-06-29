@@ -53,6 +53,7 @@ export interface ReviewCandidateResult {
 }
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_REVIEWER_TRANSIENT_RETRIES = 2;
 
 export interface ReviewerProgressEvent {
   type: "reviewer.started" | "reviewer.first_event" | "reviewer.completed" | "reviewer.timed_out" | "reviewer.failed";
@@ -345,7 +346,8 @@ async function collectReviewerOutput(
     type: "reviewer.started",
     at: startTime,
   });
-  const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, spec);
+  let runSpec = spec;
+  let currentIter: AsyncIterable<HarnessEvent> | null = null;
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let settled = false;
   let timedOut = false;
@@ -358,11 +360,15 @@ async function collectReviewerOutput(
   let costUsd = 0;
   let costEstimated = false;
 
-  const consume = (async (): Promise<ReviewerOutput> => {
+  const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
+    const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, runSpec);
+    currentIter = iter;
     let text = "";
+    let sawTransient = false;
     for await (const ev of iter) {
       const eventTime = nowIso();
       appendLine(artifact.eventsPath, JSON.stringify(redactValue(ev)));
+      if (ev.transient) sawTransient = true;
       if (!firstEventTime) {
         firstEventTime = eventTime;
         updateReviewerMetadata(artifact, { first_event_time: firstEventTime });
@@ -391,6 +397,20 @@ async function collectReviewerOutput(
         });
       }
     }
+    if (sawTransient && text.trim() === "" && nativeTry < DEFAULT_REVIEWER_TRANSIENT_RETRIES && !timedOut) {
+      const retryAt = nowIso();
+      updateReviewerMetadata(artifact, { transient_retry: nativeTry + 1 });
+      emitReviewerProgress(artifact, reviewer, onReviewerEvent, {
+        type: "reviewer.failed",
+        at: retryAt,
+        duration_ms: Date.now() - startMs,
+        observed_model: observedModel ?? null,
+        observed_source: observedSource,
+        message: `Reviewer transient failure produced no output; retrying (${nativeTry + 1}/${DEFAULT_REVIEWER_TRANSIENT_RETRIES})`,
+      });
+      runSpec = HarnessRunSpec.parse({ ...runSpec, session_id: newId("ses"), extra: { ...runSpec.extra, abortSignal: controller.signal } });
+      return consumeOnce(nativeTry + 1);
+    }
     if (!timedOut) {
       const completedTime = nowIso();
       const durationMs = Date.now() - startMs;
@@ -412,7 +432,8 @@ async function collectReviewerOutput(
       });
     }
     return { text, observedModel, observedSource, artifactDir: artifact.dir, costUsd, costEstimated };
-  })();
+  };
+  const consume = consumeOnce(0);
 
   const timed = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
@@ -421,7 +442,7 @@ async function collectReviewerOutput(
       const timedOutAt = nowIso();
       const durationMs = Date.now() - startMs;
       controller.abort();
-      void (iter as unknown as AsyncIterator<unknown>).return?.();
+      void (currentIter as unknown as AsyncIterator<unknown> | null)?.return?.();
       updateReviewerMetadata(artifact, {
         status: "timed_out",
         timeout_time: timedOutAt,

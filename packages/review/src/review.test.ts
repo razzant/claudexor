@@ -331,6 +331,50 @@ describe("reviewEngine", () => {
     expect(metadata).toContain("stalled-model");
   });
 
+  it("retries a reviewer once it emits typed transient failure with no output", async () => {
+    let calls = 0;
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const adapter: HarnessAdapter = {
+      id: "transient-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "transient-reviewer",
+          display_name: "transient",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: "transient-reviewer", status: "ok", enabled_intents: ["review"] });
+      },
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "transient-reviewer-model" };
+        if (calls === 1) {
+          yield { type: "error", session_id: spec.session_id, ts, error: "stream disconnected", transient: { kind: "stream_disconnect", retry_delay_ms: 0 } };
+          yield { type: "completed", session_id: spec.session_id, ts };
+          return;
+        }
+        yield { type: "message", session_id: spec.session_id, ts, text: "```json\n[]\n```" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      evidenceDir: "/tmp/x",
+      cwd: "/tmp",
+      reviewers: [{ adapter, providerFamily: "openai" }],
+      artifactsDir,
+    });
+    expect(calls).toBe(2);
+    expect(res.findings).toEqual([]);
+    expect(res.routeProofs[0]?.status).toBe("verified");
+    expect(readFileSync(join(artifactsDir, "01-transient-reviewer", "metadata.json"), "utf8")).toContain("transient_retry");
+  });
+
   it("uses file-backed patch evidence instead of embedding the full diff prompt", async () => {
     let prompt = "";
     const secretDiffLine = "+UNIQUE_REVIEW_BODY_SHOULD_NOT_BE_IN_PROMPT";
