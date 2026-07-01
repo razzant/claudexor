@@ -169,7 +169,9 @@ describe("cursor API-key smoke parsing", () => {
       expect(result.ok).toBe(true);
       expect(smokeEnv?.["HOME"]).toBe(join(base, "home"));
       expect(smokeEnv?.["CURSOR_API_KEY"]).toBe("cursor-key");
-      expect(existsSync(join(base, "home", "Library", "Keychains"))).toBe(true);
+      expect(existsSync(join(base, "home", "Library", "Keychains"))).toBe(
+        process.platform === "darwin",
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
