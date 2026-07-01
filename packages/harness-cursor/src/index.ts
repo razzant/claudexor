@@ -505,11 +505,7 @@ async function listCursorModelsFromReadyRoute(
       const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key });
       if (models.length > 0) return models;
     }
-    if (authPreference === "subscription") return [];
-    // Model inventory is catalog evidence, not readiness evidence. Doctor/run
-    // remain the readiness gates; do not hide a model catalog just because the
-    // selected auth route is currently unavailable or returns an empty list.
-    return catalogOnly();
+    return [];
   }
   const nativeEnv = cursorNativeEnv();
   if (await deps.nativeAuthOk(nativeEnv)) {

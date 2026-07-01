@@ -1214,6 +1214,59 @@ describe("reviewEngine", () => {
     expect(existsSync(join(artifactsDir, "evidence", "DIFF.patch"))).toBe(false);
   });
 
+  it("redacts secret-like prose evidence before persistent artifacts and reviewer workspaces", async () => {
+    let reviewerEvidence = "";
+    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    writeMandatoryReviewEvidence(evidenceDir);
+    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
+    writeFileSync(join(evidenceDir, "USER_INTENT.md"), `review prose ${fakeKey}\n`);
+    const adapter: HarnessAdapter = {
+      id: "prose-redaction-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "prose-redaction-reviewer",
+          display_name: "prose redaction reviewer",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "prose-redaction-reviewer",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async *run(spec) {
+        reviewerEvidence = readFileSync(
+          join(spec.cwd, ".claudexor-review-evidence", "USER_INTENT.md"),
+          "utf8",
+        );
+        const ts = new Date().toISOString();
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+      },
+    };
+
+    await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      evidenceDir,
+      artifactsDir,
+      cwd: candidateRoot,
+      reviewers: [{ adapter, providerFamily: "openai" }],
+    });
+
+    const persistentEvidence = readFileSync(join(artifactsDir, "evidence", "USER_INTENT.md"), "utf8");
+    expect(readFileSync(join(evidenceDir, "USER_INTENT.md"), "utf8")).toContain(fakeKey);
+    expect(persistentEvidence).toContain("[redacted]");
+    expect(persistentEvidence).not.toContain(fakeKey);
+    expect(reviewerEvidence).toContain("[redacted]");
+    expect(reviewerEvidence).not.toContain(fakeKey);
+  });
+
   it("fails closed on incomplete mandatory evidence before starting reviewers", async () => {
     let reviewerStarted = false;
     const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));

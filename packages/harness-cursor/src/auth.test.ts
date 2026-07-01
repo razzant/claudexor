@@ -881,7 +881,7 @@ describe("cursor adapter auth route wiring", () => {
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBe("stale-key");
   });
 
-  it("falls back to clean catalog inventory when a scoped ready route returns no models", async () => {
+  it("does not use clean catalog fallback for scoped route model validation", async () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
@@ -905,12 +905,10 @@ describe("cursor adapter auth route wiring", () => {
 
     await expect(
       adapter.models?.({ cwd: "/repo", env: { HOME: "/tmp/scoped-home" }, authPreference: "auto" }),
-    ).resolves.toEqual([{ id: "catalog-model", label: "Catalog Model", context_window: null }]);
-    expect(modelEnvs).toHaveLength(2);
+    ).resolves.toEqual([]);
+    expect(modelEnvs).toHaveLength(1);
     expect(modelEnvs[0]?.["HOME"]).toBe("/tmp/scoped-home");
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
-    expect(modelEnvs[1]?.["HOME"]).toBeUndefined();
-    expect(modelEnvs[1]?.["CURSOR_API_KEY"]).toBe("cursor-key");
   });
 
   it("does not use API-key catalog fallback for explicit subscription model inventory", async () => {

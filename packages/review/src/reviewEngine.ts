@@ -23,6 +23,7 @@ import {
   ensureDir,
   newId,
   nowIso,
+  readTextSafe,
   redactSecrets,
   sha256,
   writeJson,
@@ -243,7 +244,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       try {
         reviewerWorkspace = await prepareReviewerWorkspace({
           sourceRoot: input.cwd,
-          sourceEvidenceDir: input.evidenceDir,
+          sourceEvidenceDir: persistentEvidenceDir,
           workspaceBaseDir: reviewerWorkspaceBaseDir,
           reviewerDirName: `${String(index + 1).padStart(2, "0")}-${safeFilePart(reviewer.adapter.id)}`,
           excludeRoots: [artifactsBaseDir],
@@ -902,6 +903,7 @@ async function prepareReviewerWorkspace(input: {
     const evidenceDir = join(root, ".claudexor-review-evidence");
     if (existsSync(sourceEvidenceDir)) {
       const resolvedSourceEvidenceDir = realpathSync(sourceEvidenceDir);
+      const evidenceExcludeRoots = excludeRoots.filter((root) => !isSameOrInside(root, sourceEvidenceDir));
       await rm(evidenceDir, { recursive: true, force: true });
       await cp(sourceEvidenceDir, evidenceDir, {
         recursive: true,
@@ -911,7 +913,7 @@ async function prepareReviewerWorkspace(input: {
             sourceEvidenceDir,
             resolvedSourceEvidenceDir,
             sourcePath,
-            excludeRoots,
+            evidenceExcludeRoots,
           ),
       });
     }
@@ -942,13 +944,63 @@ async function copyReviewEvidencePacket(
     if (!shouldCopyEvidencePacketPath(source, resolvedSource, sourcePath, target)) {
       continue;
     }
-    await cp(sourcePath, join(target, entry.name), {
-      recursive: true,
-      dereference: false,
-      filter: (nestedSourcePath) =>
-        shouldCopyEvidencePacketPath(source, resolvedSource, nestedSourcePath, target),
-    });
+    await copyReviewEvidenceEntry(source, resolvedSource, sourcePath, join(target, entry.name), target);
   }
+}
+
+async function copyReviewEvidenceEntry(
+  sourceEvidenceDir: string,
+  resolvedSourceEvidenceDir: string,
+  sourcePath: string,
+  targetPath: string,
+  targetEvidenceDir: string,
+): Promise<void> {
+  const stat = lstatSync(sourcePath);
+  if (stat.isDirectory()) {
+    await mkdir(targetPath, { recursive: true, mode: 0o700 });
+    for (const entry of await readdir(sourcePath, { withFileTypes: true })) {
+      const childSource = join(sourcePath, entry.name);
+      if (!shouldCopyEvidencePacketPath(sourceEvidenceDir, resolvedSourceEvidenceDir, childSource, targetEvidenceDir)) {
+        continue;
+      }
+      await copyReviewEvidenceEntry(
+        sourceEvidenceDir,
+        resolvedSourceEvidenceDir,
+        childSource,
+        join(targetPath, entry.name),
+        targetEvidenceDir,
+      );
+    }
+    return;
+  }
+  if (stat.isFile() && shouldTextSanitizeEvidenceFile(sourcePath)) {
+    const raw = readTextSafe(sourcePath);
+    if (raw === null) throw new Error(`could not read review evidence file: ${sourcePath}`);
+    const text = shouldFailClosedEvidenceFile(sourcePath) ? raw : redactSecrets(raw);
+    if (containsSecretLikeToken(text)) {
+      throw new Error(`review evidence file contains a secret-like token: ${relative(sourceEvidenceDir, sourcePath)}`);
+    }
+    writeText(targetPath, text);
+    return;
+  }
+  await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+  await cp(sourcePath, targetPath, { recursive: false, dereference: false });
+}
+
+function shouldTextSanitizeEvidenceFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.endsWith(".md") ||
+    lower.endsWith(".txt") ||
+    lower.endsWith(".json") ||
+    lower.endsWith(".yaml") ||
+    lower.endsWith(".yml") ||
+    lower.endsWith(".patch")
+  );
+}
+
+function shouldFailClosedEvidenceFile(path: string): boolean {
+  return path.toLowerCase().endsWith(".patch");
 }
 
 function shouldCopyEvidencePacketPath(
