@@ -32,21 +32,31 @@
           ]
         },
         "primaryHarness": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "defaultModel": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "eligibleHarnesses": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
           }
         },
         "envInheritance": {
@@ -80,9 +90,13 @@
                 "type": "boolean"
               },
               "defaultModel": {
-                "type": [
-                  "string",
-                  "null"
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "effort": {
@@ -140,19 +154,23 @@
               "toolsAllow": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
                 }
               },
               "toolsDeny": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
                 }
               },
               "fallbackModel": {
-                "type": [
-                  "string",
-                  "null"
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "web": {
@@ -169,6 +187,10 @@
               }
             },
             "additionalProperties": false
+          },
+          "propertyNames": {
+            "minLength": 1,
+            "pattern": "\\S"
           }
         }
       },

@@ -138,7 +138,9 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
 - Report ALL problems you find. If there are 5 bugs, list all 5 — each as a separate entry.
 - Do NOT summarize multiple distinct problems into one finding.
 - For PASS: brief reason is fine. For FAIL: cite the specific file, line/symbol, what is wrong,
-  and provide a CONCRETE fix suggestion so the developer knows exactly what to change.`;
+  and provide a CONCRETE fix suggestion so the developer knows exactly what to change.
+- Do NOT call tools, search, browse, or request external context. Use only the
+  prompt's file pack, diff, repository atlas, and documentation context.`;
 
 // ---------------------------------------------------------------------------
 // Context builders
@@ -382,6 +384,8 @@ async function callOpenRouter(model, prompt) {
       body: JSON.stringify({
         model,
         max_tokens: MAX_OUTPUT_TOKENS,
+        tools: [],
+        tool_choice: "none",
         messages: [{ role: "user", content: prompt }],
       }),
     });

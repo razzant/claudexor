@@ -34,7 +34,7 @@ public struct RunExecution: Codable, Sendable, Equatable {
     }
 }
 
-public struct ReviewerPanelEntry: Codable, Sendable, Equatable {
+public struct ReviewerPanelEntry: Codable, Sendable, Equatable, Hashable {
     public var harness: String
     public var model: String?
     public var effort: String?
@@ -46,7 +46,7 @@ public struct ReviewerPanelEntry: Codable, Sendable, Equatable {
     }
 }
 
-public struct ProtectedPathApproval: Codable, Sendable, Equatable {
+public struct ProtectedPathApproval: Codable, Sendable, Equatable, Hashable {
     public var path: String
     public var reason: String?
 
@@ -753,6 +753,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let primaryHarness: String?
     public let portfolio: String?
     public let model: String?
+    public let reviewerPanel: [ReviewerPanelEntry]?
+    public let protectedPathApprovals: [ProtectedPathApproval]?
     public let n: Int?
     public let maxUsd: Double?
     public let spendUsd: Double?

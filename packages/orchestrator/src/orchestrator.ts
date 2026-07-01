@@ -566,6 +566,9 @@ export class Orchestrator {
           continue;
         }
         if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
+        // Per-harness settings gate reviewers before doctor/model probes: a disabled
+        // harness must not spend auth/API-key readiness checks.
+        if (harnessSettings[adapter.id]?.enabled === false) continue;
         const authPreference = this.authPreferenceForHarness(cwd, adapter.id, runAuthPreference);
         let report: ConformanceReport | null = null;
         try {
@@ -576,8 +579,6 @@ export class Orchestrator {
         if (report.status !== "ok") continue; // reviewer eligibility needs scoped doctor-OK.
         if (!report.enabled_intents.includes("review")) continue;
         if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
-        // Per-harness settings gate reviewers too (a disabled harness never reviews).
-        if (harnessSettings[adapter.id]?.enabled === false) continue;
         seen.add(m.provider_family);
         specs.push({
           adapter,
@@ -640,6 +641,11 @@ export class Orchestrator {
             `unknown reviewer harness '${entry.harness}' (registered: ${known}); run \`claudexor harness list --all\``,
           );
         }
+        if (harnessSettings[entry.harness]?.enabled === false) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' is disabled in settings (harnesses.${entry.harness}.enabled=false)`,
+          );
+        }
         const authPreference = this.authPreferenceForHarness(cwd, entry.harness, runAuthPreference);
         const routeKey = `${entry.harness}\0${authPreference}`;
         if (!statusByRoute.has(routeKey)) {
@@ -680,11 +686,6 @@ export class Orchestrator {
           const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
           throw new HarnessUnavailableError(
             `reviewer harness '${entry.harness}' is not doctor-ok${reason}`,
-          );
-        }
-        if (harnessSettings[entry.harness]?.enabled === false) {
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' is disabled in settings (harnesses.${entry.harness}.enabled=false)`,
           );
         }
         if (
@@ -998,9 +999,19 @@ export class Orchestrator {
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
-    const statuses = await this.gateway.statusAll({ cwd: input.repoRoot });
-    const statusById = new Map(statuses.map((s) => [s.id, s]));
     const harnessSettings = this.config(input.repoRoot)?.global.harnesses ?? {};
+    const disabledHarnessIds = new Set(
+      Object.entries(harnessSettings)
+        .filter(([, settings]) => settings.enabled === false)
+        .map(([id]) => id),
+    );
+    const probeIds =
+      ids && ids.length > 0
+        ? ids.filter((id) => !disabledHarnessIds.has(id))
+        : [...this.deps.registry.keys()].filter((id) => !disabledHarnessIds.has(id));
+    const statuses =
+      probeIds.length > 0 ? await this.gateway.statusAll({ cwd: input.repoRoot }, probeIds) : [];
+    const statusById = new Map(statuses.map((s) => [s.id, s]));
     if (!ids || ids.length === 0) {
       // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
       // readiness; a key string or degraded route is visible but not routable).
@@ -1040,6 +1051,16 @@ export class Orchestrator {
         dropped.push(`${id} (not registered)`);
         continue;
       }
+      // Per-harness settings: a user-disabled harness never routes. Explicit
+      // selection of a disabled harness fails loudly before any doctor/model
+      // probe instead of silently running or spending readiness checks.
+      const cfgEntry = harnessSettings[id];
+      if (cfgEntry && cfgEntry.enabled === false) {
+        const why = `${id} is disabled in settings (harnesses.${id}.enabled=false)`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) {
@@ -1062,15 +1083,6 @@ export class Orchestrator {
         dropped.push(
           `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`,
         );
-        continue;
-      }
-      // Per-harness settings: a user-disabled harness never routes. Explicit
-      // selection of a disabled harness fails loudly instead of silently running.
-      const cfgEntry = harnessSettings[id];
-      if (cfgEntry && cfgEntry.enabled === false) {
-        const why = `${id} is disabled in settings (harnesses.${id}.enabled=false)`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
         continue;
       }
       const readOnlyIntent =
@@ -4588,9 +4600,12 @@ export class Orchestrator {
     let reviewFindings: ReviewFinding[] = [];
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
+      const planEvidence = plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n");
+      const planReviewDiff = "(plan review — no code diff)\n";
       writeEvidencePacket(reviewDir, {
         userIntent: redactSecrets(input.prompt),
-        diff: "(plan review — no code diff)\n",
+        planAccepted: planEvidence,
+        diff: planReviewDiff,
         tests: this.testsEvidence(contract),
       });
       // Reserve BEFORE spending: a hard budget tier must stop the paid plan
@@ -4604,7 +4619,7 @@ export class Orchestrator {
       if (lease.granted) {
         const res = await this.reviewScoped({
           candidateLabel: "Plan",
-          diff: plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n"),
+          diff: planReviewDiff,
           evidenceDir: reviewDir,
           artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
           cwd: this.execRootOf(input),

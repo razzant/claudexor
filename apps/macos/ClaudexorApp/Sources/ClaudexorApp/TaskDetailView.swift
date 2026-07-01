@@ -51,7 +51,7 @@ struct TaskDetailView: View {
         if task.status == .blocked {
             return task.findings.isEmpty ? .diagnostics : .review
         }
-        if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .exhausted {
+        if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .stuckNoProgress || task.status == .exhausted {
             return task.answerText == nil ? .diagnostics : .answer
         }
         return .answer
@@ -419,6 +419,9 @@ struct TaskDetailView: View {
                             capUsd: task.capKnown ? task.capUsd : model.defaultMaxUsdPerRun,
                             access: task.requestedAccess ?? (task.mode.isReadOnly ? "readonly" : "workspace_write"),
                             web: task.externalContextPolicy ?? "auto",
+                            tests: task.tests,
+                            reviewerPanel: task.reviewerPanel,
+                            protectedPathApprovals: task.protectedPathApprovals,
                             repoRootOverride: task.repoRoot
                         )
                     }
@@ -427,7 +430,7 @@ struct TaskDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .help("Start a new run with the same prompt, mode, harness pool, budget, access, and web policy.")
+                .help("Start a new run with the same prompt, mode, harness pool, budget, tests, reviewer panel, protected-path approvals, access, and web policy.")
             }
             if let error = task.engineError, !error.isEmpty {
                 Panel(padding: Theme.Spacing.md) {
@@ -473,4 +476,3 @@ struct TaskDetailView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 }
-

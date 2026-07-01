@@ -19,6 +19,22 @@ describe("reviewer option parsing", () => {
     );
   });
 
+  it("fails loudly on malformed reviewer-effort pairs", () => {
+    expect(() => parseReviewerEffortMap("openai=")).toThrow(/invalid --reviewer-effort entry/);
+    expect(() => parseReviewerEffortMap("gpt-5.5")).toThrow(/invalid --reviewer-effort entry/);
+    expect(() => parseReviewerEffortMap("openai=max=ignored")).toThrow(
+      /invalid --reviewer-effort entry/,
+    );
+  });
+
+  it("fails loudly on empty reviewer-effort comma entries", () => {
+    expect(() => parseReviewerEffortMap(",openai=max")).toThrow(/empty comma-separated entry/);
+    expect(() => parseReviewerEffortMap("openai=max,,anthropic=high")).toThrow(
+      /empty comma-separated entry/,
+    );
+    expect(() => parseReviewerEffortMap("openai=max,")).toThrow(/empty comma-separated entry/);
+  });
+
   it("parses per-provider reviewer model overrides", () => {
     expect(parseReviewerModelMap("openai=gpt-4o-mini,anthropic=claude-haiku")).toEqual({
       openai: "gpt-4o-mini",
@@ -31,6 +47,18 @@ describe("reviewer option parsing", () => {
     expect(() => parseReviewerModelMap("gpt-4o-mini")).toThrow(/invalid --reviewer-model entry/);
     expect(() => parseReviewerModelMap("banana=some-model")).toThrow(
       /invalid reviewer provider 'banana'/,
+    );
+  });
+
+  it("fails loudly on empty reviewer-model comma entries", () => {
+    expect(() => parseReviewerModelMap(",openai=gpt-5.5")).toThrow(
+      /empty comma-separated entry/,
+    );
+    expect(() => parseReviewerModelMap("openai=gpt-5.5,,anthropic=claude")).toThrow(
+      /empty comma-separated entry/,
+    );
+    expect(() => parseReviewerModelMap("openai=gpt-5.5,")).toThrow(
+      /empty comma-separated entry/,
     );
   });
 

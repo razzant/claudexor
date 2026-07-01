@@ -9,6 +9,10 @@ export const SchemaVersion = z.literal(SCHEMA_VERSION);
 export const Id = z.string().min(1);
 export type Id = z.infer<typeof Id>;
 
+/** A user-supplied scalar that must contain visible content, not just spaces. */
+export const NonBlankString = z.string().min(1).regex(/\S/, "must contain non-whitespace");
+export type NonBlankString = z.infer<typeof NonBlankString>;
+
 /** ISO-8601 timestamp string. */
 export const IsoTimestamp = z.string().min(1);
 export type IsoTimestamp = z.infer<typeof IsoTimestamp>;

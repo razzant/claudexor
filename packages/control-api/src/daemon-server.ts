@@ -25,6 +25,7 @@ import {
   ControlQueuedRunInfo,
   ControlRunControlRequest,
   ControlRunControlResponse,
+  ControlReviewerPanelEntry,
   type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunSummary,
@@ -60,6 +61,7 @@ import {
   RunFailure,
   RunTelemetry,
   TaskContract,
+  ProtectedPathApproval,
   WorkProduct,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
@@ -308,6 +310,12 @@ export class DaemonControlApiServer {
           const { attachments: _att, ...rest } = params;
           enqueueParams = { ...rest, turnId: turn.id };
         }
+      }
+      try {
+        enqueueParams = validateDirectRunAttachments(enqueueParams);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
       const job = await this.opts.daemon.enqueue(enqueueParams);
       const rec = await this.waitForRunStart(job.id);
@@ -1410,6 +1418,33 @@ function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
   return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
 }
 
+function validateDirectRunAttachments<T extends ControlRunStartRequest & { turnId?: string }>(params: T): T {
+  if (!params.attachments || params.attachments.length === 0) return params;
+  const attachments = params.attachments.map((att, index) => {
+    const hasData = typeof att.data === "string" && att.data.length > 0;
+    const path = typeof att.path === "string" ? att.path.trim() : "";
+    const hasPath = path.length > 0;
+    if (hasData) {
+      throw Object.assign(
+        new Error("inline attachment data is only accepted through thread turns; direct /runs enqueue requires path-only attachments"),
+        { status: 400 },
+      );
+    }
+    if (!hasPath) {
+      throw Object.assign(new Error(`attachments[${index}].path must be a non-empty absolute file path`), { status: 400 });
+    }
+    if (!isAbsolute(path)) {
+      throw Object.assign(new Error(`attachments[${index}].path must be absolute: ${path}`), { status: 400 });
+    }
+    if (!existsSync(path) || !lstatSync(path).isFile()) {
+      throw Object.assign(new Error(`attachments[${index}].path does not exist or is not a file: ${path}`), { status: 400 });
+    }
+    const { data: _data, ...rest } = att;
+    return { ...rest, path };
+  });
+  return { ...params, attachments };
+}
+
 function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const mode = parsed.mode ?? "agent";
   // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
@@ -1528,6 +1563,7 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
   };
   return [
     rec.state,
+    paramsFingerprint(rec),
     rec.finishedAt ?? "",
     rec.error ?? "",
     mtime("events.jsonl"),
@@ -1554,6 +1590,14 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     // before a revert flipped apply_state) must invalidate.
     mtime("final/work_product.yaml"),
   ].join("|");
+}
+
+function paramsFingerprint(rec: DaemonRunRecord): string {
+  try {
+    return sha256(JSON.stringify(rec.params ?? null));
+  } catch {
+    return "unserializable-params";
+  }
 }
 
 /** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
@@ -1645,6 +1689,18 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const webEvidence = controlWebEvidence(telemetry, task);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const budget = budgetSnapshot(rec, decision);
+  const parsedReviewerPanel = Array.isArray(p["reviewerPanel"])
+    ? ControlReviewerPanelEntry.array().safeParse(p["reviewerPanel"])
+    : null;
+  const parsedProtectedPathApprovals = Array.isArray(p["protectedPathApprovals"])
+    ? ProtectedPathApproval.array().safeParse(p["protectedPathApprovals"])
+    : null;
+  const requestTests = Array.isArray(p["tests"])
+    ? p["tests"].filter((x): x is string => typeof x === "string")
+    : undefined;
+  const contractTests = task?.tests.commands
+    .map((command) => command.command)
+    .filter((command) => command.trim().length > 0);
   return ControlRunSummary.parse({
     jobId: rec.id,
     runId: rec.runId ?? rec.id,
@@ -1661,6 +1717,10 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
     portfolio: parsedPortfolio.success ? parsedPortfolio.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
+    reviewerPanel: parsedReviewerPanel?.success ? parsedReviewerPanel.data : undefined,
+    protectedPathApprovals: parsedProtectedPathApprovals?.success
+      ? parsedProtectedPathApprovals.data
+      : undefined,
     n: typeof p["n"] === "number" ? p["n"] : undefined,
     // Engine-effective cap: the contract carries config-defaulted caps that
     // request params never knew about.
@@ -1679,7 +1739,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
     result: controlRunResult(rec),
     route: controlRoute(telemetry, p),
-    tests: Array.isArray(p["tests"]) ? p["tests"].filter((x): x is string => typeof x === "string") : undefined,
+    tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
     specHash: typeof p["specHash"] === "string" ? p["specHash"] : undefined,
     createdAt: rec.createdAt,

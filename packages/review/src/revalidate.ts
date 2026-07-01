@@ -37,12 +37,10 @@ function hasTraversalSegment(pathValue: string): boolean {
 
 function isSafeRelativeEvidencePath(pathValue: string, options: RevalidateOptions): boolean {
   if (!pathValue || hasTraversalSegment(pathValue)) return false;
+  if (isAbsolute(pathValue)) return false;
   const roots = [options.candidateRoot, options.evidenceDir].filter(
     (value): value is string => typeof value === "string" && value.length > 0,
   );
-  if (isAbsolute(pathValue)) {
-    return roots.some((root) => isSameOrInside(root, pathValue));
-  }
   if (roots.length === 0) return true;
   return roots.some((root) => isSameOrInside(root, resolve(root, pathValue)));
 }

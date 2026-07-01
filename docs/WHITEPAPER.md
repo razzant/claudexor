@@ -138,6 +138,14 @@ unobserved reviewer does not count toward verification. Read-only and reviewer
 harness runs execute in a scoped, throwaway home so their native state (plan
 files, session rollouts) never escapes into the operator's real home.
 
+Release and dogfood reviews can name an explicit `reviewerPanel`, preserving
+ordered reviewers and repeated harness entries for same-provider multi-model
+passes. Each reviewer still needs its own route proof and observed model before
+it can count as cross-family evidence. Per-run `protectedPathApprovals` are
+equally narrow: they can authorize auto-protected gate/test paths for a requested
+change, but they do not bypass frozen SpecPack constraints, project config
+protected paths, built-in critical/security paths, or missing reviewer evidence.
+
 ## Web And External Context
 
 External web context is a typed policy: `off | auto | cached | live`. It is

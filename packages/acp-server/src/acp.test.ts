@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
@@ -5,6 +8,14 @@ import { AcpServer } from "./index.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function tempProjectDir(): string {
+  return mkdtempSync(join(tmpdir(), "claudexor-acp-project-"));
+}
+
+function sessionNewParams(): { cwd: string } {
+  return { cwd: tempProjectDir() };
 }
 
 describe("AcpServer", () => {
@@ -21,7 +32,7 @@ describe("AcpServer", () => {
     });
 
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(30);
     const sid = messages.find((m) => m.id === 2)?.result?.sessionId;
     c2s.write(
@@ -55,7 +66,8 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: "/tmp/project" } }) + "\n");
+    const projectDir = tempProjectDir();
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: projectDir } }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(
@@ -86,7 +98,7 @@ describe("AcpServer", () => {
     expect(received).toMatchObject({
       prompt: "go",
       mode: "agent",
-      repoPath: "/tmp/project",
+      repoPath: projectDir,
       harness: "codex",
       primaryHarness: "codex",
       tests: ["pnpm test"],
@@ -98,6 +110,97 @@ describe("AcpServer", () => {
       protectedPathApprovals: [{ path: "docs/**", reason: "explicit ACP request" }],
     });
     expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
+  });
+
+  it("rejects relative session cwd before anchoring run paths", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let calls = 0;
+    const server = new AcpServer({
+      runner: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: "relative/project" } }) + "\n");
+    await sleep(30);
+    c2s.end();
+    await serving;
+
+    expect(messages.find((m) => m.id === 1)?.error?.code).toBe(-32600);
+    expect(messages.find((m) => m.id === 1)?.error?.message).toContain("absolute path");
+    expect(calls).toBe(0);
+  });
+
+  it("rejects missing, non-string, blank, and missing-directory session cwd before creating a session", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let calls = 0;
+    const server = new AcpServer({
+      runner: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+    const missingDir = join(tmpdir(), `claudexor-acp-missing-${Date.now()}-${Math.random()}`);
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: 42 } }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "   " } }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/new", params: { cwd: missingDir } }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "session/new", params: {} }) + "\n");
+    await sleep(30);
+    c2s.end();
+    await serving;
+
+    expect(messages.find((m) => m.id === 1)?.error?.message).toContain("non-empty absolute path string");
+    expect(messages.find((m) => m.id === 2)?.error?.message).toContain("non-empty absolute path");
+    expect(messages.find((m) => m.id === 3)?.error?.message).toContain("existing directory");
+    expect(messages.find((m) => m.id === 4)?.error?.message).toContain("cwd is required");
+    expect(calls).toBe(0);
+  });
+
+  it("rejects session prompts without a known cwd-anchored session", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let calls = 0;
+    const server = new AcpServer({
+      runner: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/prompt", params: { prompt: "go" } }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: "missing", prompt: "go" } }) + "\n");
+    await sleep(30);
+    c2s.end();
+    await serving;
+
+    expect(messages.find((m) => m.id === 1)?.error?.message).toContain("known session");
+    expect(messages.find((m) => m.id === 2)?.error?.message).toContain("known session");
+    expect(calls).toBe(0);
   });
 
   it("rejects malformed advanced run controls before invoking the runner", async () => {
@@ -117,13 +220,17 @@ describe("AcpServer", () => {
     rl.on("line", (l) => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 100, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 100)?.result?.sessionId;
+    const withSession = (params: Record<string, unknown>) => ({ sessionId: sid, ...params });
 
     c2s.write(
       JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "session/prompt",
-        params: { prompt: "go", tests: "pnpm test", reviewerPanel: [{ harness: "claude" }] },
+        params: withSession({ prompt: "go", tests: "pnpm test", reviewerPanel: [{ harness: "claude" }] }),
       }) + "\n",
     );
     c2s.write(
@@ -131,7 +238,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 2,
         method: "session/prompt",
-        params: { prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] },
+        params: withSession({ prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] }),
       }) + "\n",
     );
     c2s.write(
@@ -139,7 +246,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "session/prompt",
-        params: { prompt: "go", effort: "turbo" },
+        params: withSession({ prompt: "go", effort: "turbo" }),
       }) + "\n",
     );
     c2s.write(
@@ -147,7 +254,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 4,
         method: "session/prompt",
-        params: { prompt: "go", reviewerModels: { opneai: "gpt-5.5" } },
+        params: withSession({ prompt: "go", reviewerModels: { opneai: "gpt-5.5" } }),
       }) + "\n",
     );
     c2s.write(
@@ -155,7 +262,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 5,
         method: "session/prompt",
-        params: { prompt: "go", reviewerEfforts: { openai: "turbo" } },
+        params: withSession({ prompt: "go", reviewerEfforts: { openai: "turbo" } }),
       }) + "\n",
     );
     c2s.write(
@@ -163,7 +270,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 6,
         method: "session/prompt",
-        params: { prompt: "go", race: "true" },
+        params: withSession({ prompt: "go", race: "true" }),
       }) + "\n",
     );
     c2s.write(
@@ -171,7 +278,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 7,
         method: "session/prompt",
-        params: { prompt: "" },
+        params: withSession({ prompt: "" }),
       }) + "\n",
     );
     c2s.write(
@@ -179,7 +286,7 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 8,
         method: "session/prompt",
-        params: { prompt: "   " },
+        params: withSession({ prompt: "   " }),
       }) + "\n",
     );
     c2s.write(
@@ -187,7 +294,39 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 9,
         method: "session/prompt",
-        params: {},
+        params: withSession({}),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 10,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", harness: "" }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 11,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", primaryHarness: " " }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 12,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", model: "" }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 13,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", reviewerPannel: [{ harness: "claude" }] }),
       }) + "\n",
     );
     await sleep(40);
@@ -204,6 +343,10 @@ describe("AcpServer", () => {
     expect(messages.find((m) => m.id === 7)?.error?.message).toContain("prompt must be a non-empty string");
     expect(messages.find((m) => m.id === 8)?.error?.message).toContain("prompt must be a non-empty string");
     expect(messages.find((m) => m.id === 9)?.error?.message).toContain("prompt must be a non-empty string");
+    expect(messages.find((m) => m.id === 10)?.error?.message).toContain("harness must be a non-empty string");
+    expect(messages.find((m) => m.id === 11)?.error?.message).toContain("primaryHarness must be a non-empty string");
+    expect(messages.find((m) => m.id === 12)?.error?.message).toContain("model must be a non-empty string");
+    expect(messages.find((m) => m.id === 13)?.error?.message).toContain("unknown session/prompt field: reviewerPannel");
   });
 
   it("answers session/request_permission WHILE the prompt is still running (read loop never blocks)", async () => {
@@ -235,7 +378,7 @@ describe("AcpServer", () => {
       }
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "ask me" } }) + "\n");
@@ -265,7 +408,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "long" } }) + "\n");
@@ -301,7 +444,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "first" } }) + "\n");
@@ -356,7 +499,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
@@ -394,7 +537,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "ask" } }) + "\n");
@@ -438,7 +581,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
@@ -480,7 +623,7 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: {} }) + "\n");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");

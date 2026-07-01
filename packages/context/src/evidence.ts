@@ -35,24 +35,33 @@ export interface DiffEvidence {
 }
 
 export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
-  writeText(join(dir, "USER_INTENT.md"), packet.userIntent.trim() + "\n");
+  writeText(join(dir, "USER_INTENT.md"), evidenceProse("USER_INTENT.md", packet.userIntent));
   writeText(
     join(dir, "FORBIDDEN_FINDINGS.md"),
-    (packet.forbiddenFindings ?? "(none — no approaches explicitly rejected)").trim() + "\n",
+    evidenceProse("FORBIDDEN_FINDINGS.md", packet.forbiddenFindings, "(none — no approaches explicitly rejected)"),
   );
   writeText(
     join(dir, "PLAN_ACCEPTED.md"),
-    (packet.planAccepted ?? "(no formal plan — see USER_INTENT.md for requirements)").trim() + "\n",
+    evidenceProse("PLAN_ACCEPTED.md", packet.planAccepted, "(no formal plan — see USER_INTENT.md for requirements)"),
   );
   writeDiffEvidence(dir, packet.diff);
   writeText(
     join(dir, "FILES_TO_READ_WHOLE.txt"),
-    (packet.filesToReadWhole ?? []).join("\n") + "\n",
+    redactSecrets((packet.filesToReadWhole ?? []).join("\n")) + "\n",
   );
-  writeText(join(dir, "TESTS.txt"), (packet.tests ?? "(tests not run)").trim() + "\n");
-  writeText(join(dir, "DECIDED_TRADEOFFS.md"), (packet.decidedTradeoffs ?? "(none)").trim() + "\n");
+  writeText(join(dir, "TESTS.txt"), evidenceProse("TESTS.txt", packet.tests, "(tests not run)"));
+  writeText(join(dir, "DECIDED_TRADEOFFS.md"), evidenceProse("DECIDED_TRADEOFFS.md", packet.decidedTradeoffs, "(none)"));
   if (packet.runtime !== undefined)
-    writeText(join(dir, "RUNTIME.md"), packet.runtime.trim() + "\n");
+    writeText(join(dir, "RUNTIME.md"), evidenceProse("RUNTIME.md", packet.runtime));
+}
+
+function evidenceProse(fileName: string, value: string | undefined, fallback = ""): string {
+  const raw = (value ?? fallback).trim();
+  const redacted = redactSecrets(raw);
+  if (containsSecretLikeToken(redacted)) {
+    throw new Error(`${fileName} evidence contains a secret-like token after redaction; refusing to persist evidence packet`);
+  }
+  return `${redacted}\n`;
 }
 
 export function writeDiffEvidence(dir: string, diff: string): DiffEvidence {

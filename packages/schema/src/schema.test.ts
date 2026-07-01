@@ -215,7 +215,56 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
+        primaryHarness: "",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        primaryHarness: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        model: "",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        model: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
         reviewerModels: { openai: "" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerModels: { openai: "   " },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        harnesses: ["codex", "   "],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        tests: ["pnpm test", "   "],
       }),
     ).toThrow();
     expect(() =>
@@ -229,7 +278,35 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
+        reviewerPanel: [{ harness: "   ", model: "gpt" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerPanel: [{ harness: "cursor", model: "   " }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
         reviewerPanel: [{ harness: "cursor", effort: "turbo" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        protectedPathApprovals: [{ path: "   " }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "   " }],
       }),
     ).toThrow();
   });

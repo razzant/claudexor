@@ -272,6 +272,36 @@ describe("Orchestrator", () => {
     ).toThrow(/review evidence copy into candidate tree failed/);
   });
 
+  it("terminates agent runs when review evidence setup fails", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["impl", diffImplementer("impl")]]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    (
+      orch as unknown as {
+        prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string;
+      }
+    ).prepareReviewEvidenceDir = () => {
+      throw new Error("forced review evidence failure");
+    };
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+    });
+
+    expect(res.status).toBe("failed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("phase: review");
+    expect(failure).toContain("forced review evidence failure");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain('"type":"run.failed"');
+    expect(events).not.toContain('"type":"arbitration.completed"');
+    expect(events).not.toContain('"type":"run.completed"');
+  });
+
   it("runs a best-of-n race end to end and emits a DecisionRecord", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
@@ -1118,6 +1148,56 @@ describe("Orchestrator", () => {
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain(
       "Status: failed",
     );
+  });
+
+  it("forwards attachments into read-only ask harness specs", async () => {
+    const repo = await initRepo();
+    const note = join(repo, "note.txt");
+    writeFileSync(note, "hello\n");
+    const attachment = {
+      id: "att-1",
+      kind: "file" as const,
+      mime: "text/plain",
+      name: "note.txt",
+      path: note,
+    };
+    let observedAttachments: unknown;
+    const adapter: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { read_files: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["explain"],
+        });
+      },
+      async *run(spec) {
+        observedAttachments = spec.attachments;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: "saw the note" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({ registry: new Map([["asker", adapter]]), reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "Read this attachment",
+      mode: "ask",
+      harnesses: ["asker"],
+      attachments: [attachment],
+    });
+    expect(res.status).toBe("success");
+    expect(observedAttachments).toEqual([attachment]);
   });
 
   it("blocks ask success when an attempted WebSearch tool_result errors without recovery", async () => {
@@ -2064,6 +2144,59 @@ describe("Orchestrator", () => {
     expect(runSpecs).toEqual([{ auth: "subscription", home: expect.any(String) }]);
   });
 
+  it("skips disabled automatic reviewers before doctor probes", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-disabled-reviewer-config-"));
+    writeFileSync(join(configDir, "config.yaml"), "harnesses:\n  rev:\n    enabled: false\n");
+    let doctorCalls = 0;
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        doctorCalls += 1;
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async *run() {
+        throw new Error("disabled reviewer should not run");
+      },
+    };
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({
+        registry: new Map([
+          ["fake-impl", diffImplementer("fake-impl")],
+          ["rev", reviewer],
+        ]),
+      });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        n: 1,
+      });
+      expect(["success", "ungated", "review_not_run"]).toContain(res.status);
+      expect(doctorCalls).toBe(0);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("retries transient explicit reviewer model inventory failures before failing the panel", async () => {
     const repo = await initRepo();
     let modelCalls = 0;
@@ -2290,14 +2423,25 @@ describe("Orchestrator", () => {
       ]),
       /not doctor-ok: doctor said no/,
     );
+    let disabledDoctorCalls = 0;
+    const disabledReviewer = reviewer("rev");
+    disabledReviewer.doctor = async () => {
+      disabledDoctorCalls += 1;
+      return ConformanceReport.parse({
+        harness_id: "rev",
+        status: "ok",
+        enabled_intents: ["review"],
+      });
+    };
     await expectRejected(
       new Map([
         ["fake-impl", diffImplementer("fake-impl")],
-        ["rev", reviewer("rev")],
+        ["rev", disabledReviewer],
       ]),
       /disabled in settings/,
       "harnesses:\n  rev:\n    enabled: false\n",
     );
+    expect(disabledDoctorCalls).toBe(0);
     await expectRejected(
       new Map([
         ["fake-impl", diffImplementer("fake-impl")],
@@ -2568,6 +2712,12 @@ describe("Orchestrator", () => {
     expect(summary).toContain("- Review blockers: 1");
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "plan-review.yaml"), "utf8");
     expect(reviewYaml).toContain("status: accepted");
+    const reviewPlanEvidence = readFileSync(join(res.runDir, "review-evidence", "PLAN_ACCEPTED.md"), "utf8");
+    expect(reviewPlanEvidence).toContain("## Plan from fake-success");
+    expect(reviewPlanEvidence).toContain("Implemented by the fake harness.");
+    const reviewDiffEvidence = readFileSync(join(res.runDir, "review-evidence", "DIFF.patch"), "utf8");
+    expect(reviewDiffEvidence).toBe("(plan review — no code diff)\n");
+    expect(reviewDiffEvidence).not.toContain("Implemented by the fake harness.");
   });
 
   it("validates explicit reviewer panel before starting plan harness work", async () => {

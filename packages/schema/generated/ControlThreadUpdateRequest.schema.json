@@ -15,15 +15,21 @@
           ]
         },
         "primaryHarness": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "eligibleHarnesses": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ControlThreadUpdateRequest/properties/primaryHarness/anyOf/0"
           }
         }
       },

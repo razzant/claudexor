@@ -14,7 +14,6 @@ import {
   validateApplyGate,
 } from "@claudexor/delivery";
 import {
-  assertNoInlineSecretValues,
   CLAUDEXOR_VERSION,
   containsSecretLikeToken,
   ensureDir,
@@ -61,6 +60,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
+import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
@@ -70,6 +70,7 @@ import {
   waitForDaemonReady,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
+import { primaryOutputForCli } from "./primary-output.js";
 import {
   PLUGIN_TARGETS,
   PLUGIN_VERBS,
@@ -95,6 +96,7 @@ import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 import {
   parseProtectedPathApprovalFlags,
+  parseTestCommandFlags,
   parseReviewerEffortFlags,
   parseReviewerModelFlags,
   parseReviewerPanelFlags,
@@ -280,12 +282,7 @@ function floatFlag(args: ParsedArgs, key: string): number | undefined {
 
 /** Deterministic gate commands from `--test "<cmd>"`; repeat flag or separate with `;;`. */
 function testCommands(args: ParsedArgs): string[] | undefined {
-  const values = flagValues(args, "test").filter((v): v is string => typeof v === "string");
-  if (values.length === 0) return undefined;
-  return values
-    .flatMap((v) => v.split(";;"))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return parseTestCommandFlags(flagValues(args, "test"));
 }
 
 /** Typed approval for protected gate/test path changes; never inferred from prompt text. */
@@ -379,7 +376,8 @@ function attachmentInputs(
 ): { kind: "image" | "file"; mime: string; name: string; path: string }[] | undefined {
   const out = attachmentPaths(args).map(({ path, forceImage }) => {
     const resolved = resolve(path);
-    if (!existsSync(resolved)) throw new Error(`attachment not found: ${path}`);
+    if (!existsSync(resolved) || !lstatSync(resolved).isFile())
+      throw new Error(`attachment must be an existing file: ${path}`);
     const imageMime = imageMimeFor(resolved);
     const kind = forceImage || imageMime ? ("image" as const) : ("file" as const);
     return {
@@ -472,8 +470,8 @@ async function orchestrate(
   if (portfolioRaw !== undefined && !portfolio?.success) {
     return printUsageError(json, `claudexor: unknown --portfolio '${portfolioRaw}'`);
   }
-  let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
-  let resolvedReviewerModels: Record<string, string> | undefined;
+  let reviewerEffortOverrides: Partial<Record<ProviderFamily, EffortHint>> | undefined;
+  let resolvedReviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   let resolvedReviewerPanel: ControlReviewerPanelEntry[] | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
@@ -483,6 +481,9 @@ async function orchestrate(
   let attemptsFlag: number | undefined;
   let autonomy: OrchestrateAutonomy | undefined;
   let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
+  let resolvedHarnesses: string[] | undefined;
+  let resolvedPrimaryHarness: string | undefined;
+  let resolvedModel: string | undefined;
   let attachments: Attachment[] | undefined;
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
@@ -493,6 +494,9 @@ async function orchestrate(
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
     resolvedEffort = effortHint(args);
+    resolvedHarnesses = harnessList(args);
+    resolvedPrimaryHarness = flagStr(args, "primary-harness");
+    resolvedModel = flagStr(args, "model");
     maxUsd = floatFlag(args, "max-usd");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
@@ -508,7 +512,29 @@ async function orchestrate(
   try {
     const cliTests = testCommands(args) ?? [];
     tests = resolveRunTestCommands(cliTests, spec);
-    assertNoInlineSecretValues({ tests }, "$", "CLI run params");
+    assertCliRunParamsHaveNoInlineSecrets({
+      prompt,
+      attachments: attachmentRequest,
+      mode,
+      harnesses: resolvedHarnesses,
+      primaryHarness: resolvedPrimaryHarness,
+      model: resolvedModel,
+      effort: resolvedEffort,
+      reviewerPanel: resolvedReviewerPanel,
+      reviewerModels: resolvedReviewerModels,
+      reviewerEfforts: reviewerEffortOverrides,
+      tests,
+      protectedPathApprovals: resolvedProtectedPathApprovals,
+      maxUsd,
+      access: resolvedAccess,
+      web: resolvedWebPolicy,
+      externalContextPolicy: resolvedWebPolicy,
+      synthesis: resolvedSynthesis,
+      autonomy,
+      specId: spec?.id,
+      specHash: loadedSpec?.specHash,
+      specPath: loadedSpec?.specPath,
+    });
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -576,8 +602,8 @@ async function orchestrate(
       // are routed to the daemon above. Forward it so an explicit --autonomy
       // suggest is honoured rather than silently dropped.
       ...(autonomy ? { autonomy } : {}),
-      harnesses: harnessList(args),
-      primaryHarness: flagStr(args, "primary-harness"),
+      harnesses: resolvedHarnesses,
+      primaryHarness: resolvedPrimaryHarness,
       portfolio: portfolio?.success ? portfolio.data : undefined,
       n: forced.race === true ? (nFlag ?? 2) : nFlag,
       attempts: attemptsFlag ?? null,
@@ -590,7 +616,7 @@ async function orchestrate(
       access: resolvedAccess,
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
-      model: flagStr(args, "model"),
+      model: resolvedModel,
       effort: resolvedEffort,
       synthesis: resolvedSynthesis,
       specId: spec?.id,
@@ -1019,38 +1045,6 @@ function printPreflightError(args: ParsedArgs, json: boolean, error: string): nu
     return 2;
   }
   return printUsageError(json, error);
-}
-
-function primaryOutputForCli(
-  root: string,
-  mode?: ModeKind,
-): { kind: string; path: string; text: string } | null {
-  const candidates =
-    mode === "ask"
-      ? [{ kind: "answer", path: "final/answer.md" }]
-      : mode === "plan"
-        ? [{ kind: "plan", path: "final/plan.md" }]
-        : mode === "audit"
-          ? [
-              { kind: "report", path: "final/report.md" },
-              { kind: "report", path: "final/explore.md" },
-              { kind: "summary", path: "final/summary.md" },
-            ]
-          : mode === "orchestrate"
-            ? [
-                { kind: "report", path: "final/orchestration.md" },
-                { kind: "summary", path: "final/summary.md" },
-              ]
-            : [
-                { kind: "summary", path: "final/summary.md" },
-                { kind: "patch", path: "final/patch.diff" },
-              ];
-  for (const candidate of candidates) {
-    const text = readTextSafe(join(root, candidate.path));
-    if (text?.trim()) return { ...candidate, text };
-  }
-  const failure = readTextSafe(join(root, "final/failure.yaml"));
-  return failure?.trim() ? { kind: "diagnostic", path: "final/failure.yaml", text: failure } : null;
 }
 
 function listCliArtifacts(root: string): string[] {

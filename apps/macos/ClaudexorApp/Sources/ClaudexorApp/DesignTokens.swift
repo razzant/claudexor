@@ -73,7 +73,7 @@ enum Theme {
         case .cancelled: return Color.secondary
         case .interrupted: return Color(dark: (0.80, 0.66, 0.42), light: (0.60, 0.46, 0.20))
         case .exhausted: return Color(dark: (0.97, 0.60, 0.30), light: (0.82, 0.38, 0.12))
-        case .notConverged: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
+        case .notConverged, .stuckNoProgress: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
         case .unknown: return Color.secondary
         case .queued: return Color.secondary.opacity(0.85)
         }

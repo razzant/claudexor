@@ -4,6 +4,7 @@ import {
   parseReviewerEffortFlags,
   parseReviewerModelFlags,
   parseReviewerPanelFlags,
+  parseTestCommandFlags,
 } from "./run-options.js";
 
 describe("run option parsing", () => {
@@ -20,6 +21,31 @@ describe("run option parsing", () => {
   it("fails loudly when protected-path approval is provided without a value", () => {
     expect(() => parseProtectedPathApprovalFlags([true])).toThrow(
       /invalid --allow-protected-path value/,
+    );
+  });
+
+  it("fails loudly on empty comma-separated protected-path approval entries", () => {
+    expect(() => parseProtectedPathApprovalFlags(["packages/**,"])).toThrow(
+      /empty comma-separated entry/,
+    );
+    expect(() => parseProtectedPathApprovalFlags(["packages/**,,docs/**"])).toThrow(
+      /empty comma-separated entry/,
+    );
+  });
+
+  it("parses repeated and ;;-separated deterministic test commands", () => {
+    expect(parseTestCommandFlags(["pnpm build;; pnpm test", "pnpm docs:check"])).toEqual([
+      "pnpm build",
+      "pnpm test",
+      "pnpm docs:check",
+    ]);
+  });
+
+  it("fails loudly on empty ;;-separated deterministic test command entries", () => {
+    expect(() => parseTestCommandFlags([";;pnpm test"])).toThrow(/empty ;;-separated entry/);
+    expect(() => parseTestCommandFlags(["pnpm test;;"])).toThrow(/empty ;;-separated entry/);
+    expect(() => parseTestCommandFlags(["pnpm test;;;;pnpm build"])).toThrow(
+      /empty ;;-separated entry/,
     );
   });
 

@@ -68,6 +68,34 @@ import Testing
         #expect(decoded["n"]?.doubleValue == 2)
     }
 
+    @Test func composerOptionParserRejectsEmptyReviewerPanelEntries() throws {
+        let middleEmpty = ComposerOptionParser.splitOptionTokens("claude,,cursor=gpt-5.5")
+        #expect(middleEmpty == ["claude", "", "cursor=gpt-5.5"])
+        let middleEntries = middleEmpty.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
+        #expect(middleEntries.count == 2)
+        #expect(middleEntries.count != middleEmpty.count)
+
+        let trailingEmpty = ComposerOptionParser.splitOptionTokens("claude,")
+        #expect(trailingEmpty == ["claude", ""])
+        let trailingEntries = trailingEmpty.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
+        #expect(trailingEntries.count == 1)
+        #expect(trailingEntries.count != trailingEmpty.count)
+    }
+
+    @Test func composerOptionParserPreservesModelColonsAndEffortSuffixes() throws {
+        let entry = try #require(
+            ComposerOptionParser.parseReviewerPanelEntry("cursor=openai/gpt-5.5:extra-high:max")
+        )
+        #expect(entry.harness == "cursor")
+        #expect(entry.model == "openai/gpt-5.5:extra-high")
+        #expect(entry.effort == "max")
+
+        let harnessEffort = try #require(ComposerOptionParser.parseReviewerPanelEntry("claude:max"))
+        #expect(harnessEffort.harness == "claude")
+        #expect(harnessEffort.model == nil)
+        #expect(harnessEffort.effort == "max")
+    }
+
     @Test func settingsUpdateCanClearBudgetCaps() throws {
         let req = SettingsUpdateRequest(defaultPortfolio: "subscription-first", clearMaxUsdPerRun: true)
         let data = try JSONEncoder().encode(req)
@@ -222,7 +250,7 @@ import Testing
     @Test func runDetailDecodesNewProjectionFieldsAndOldPayloadDefaults() throws {
         let rich = """
         {
-          "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true},
+          "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true,"tests":["pnpm test"]},
           "primaryOutput": {"kind":"answer","path":"final/answer.md","text":"4","bytes":1},
           "timeline": [{"type":"harness.event","title":"Codex answered","detail":"done","rawRef":"events.jsonl"}],
           "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events"},
@@ -232,6 +260,7 @@ import Testing
         let detail = try JSONDecoder().decode(RunDetail.self, from: Data(rich.utf8))
         #expect(detail.summary.runId == "run-1")
         #expect(detail.summary.spendUsd == 0.12)
+        #expect(detail.summary.tests == ["pnpm test"])
         #expect(detail.primaryOutput?.text == "4")
         #expect(detail.timeline.first?.type == "harness.event")
         #expect(detail.budget?.source == "events")

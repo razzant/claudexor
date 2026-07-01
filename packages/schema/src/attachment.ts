@@ -21,11 +21,12 @@ export const Attachment = z.object({
 export type Attachment = z.infer<typeof Attachment>;
 
 /**
- * Inbound attachment on a control request. Bytes arrive base64-inline (`data`)
- * for a fresh upload, or reference an already-stored `path`. The daemon decodes
- * `data` into a scoped file and resolves it to a durable {@link Attachment}.
- * Exactly one of `data` / `path` is expected; both null is rejected by the
- * resolver (fail loud, never a silent empty attachment).
+ * Inbound attachment on a control request. Thread/composer uploads may arrive
+ * base64-inline (`data`) for a fresh upload; direct non-thread run enqueue
+ * accepts only non-empty absolute existing file paths so bytes cannot persist in
+ * the daemon job registry. The daemon/turn store resolves inbound bytes to a
+ * durable {@link Attachment}. Exactly one of `data` / `path` is expected; both
+ * null is rejected by the resolver (fail loud, never a silent empty attachment).
  */
 export const AttachmentInput = z.object({
   kind: AttachmentKind.default("file"),
@@ -41,8 +42,8 @@ export type AttachmentInput = z.infer<typeof AttachmentInput>;
  * for honest UI gating + per-adapter serialization (never a normalized wire
  * format): `file_path` (codex `-i`), `base64_stream` (claude stream-json image
  * block), `base64_inline` (raw-api `image_url` data URL), or `none` (cursor /
- * opencode — attach is disabled and the user is routed to a vision-capable
- * harness rather than silently dropping the image).
+ * opencode — image attachments are disabled/routed to a vision-capable harness
+ * rather than silently dropped; generic file attachments still use Attachment).
  */
 export const ImageInputMode = z.enum(["file_path", "base64_stream", "base64_inline", "none"]);
 export type ImageInputMode = z.infer<typeof ImageInputMode>;

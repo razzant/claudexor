@@ -183,8 +183,12 @@ claudexor acp serve
 ```
 
 ACP support is intended for editor and agent hosts that can speak the protocol.
-Treat it as beta and verify the exact behavior against the current package before
-building a hard dependency.
+`session/new` must provide `params.cwd` as a non-empty absolute path to an
+existing directory; missing, relative, blank, non-string, or non-directory values
+are rejected before a session is created. `session/prompt` must use the returned
+session id, which anchors the run scope to that cwd rather than the ACP server
+process cwd. Treat ACP as beta and verify the exact behavior against the current
+package before building a hard dependency.
 
 ## External Harness Adapters
 

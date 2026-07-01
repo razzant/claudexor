@@ -401,7 +401,7 @@ describe("revalidate", () => {
       id: "absolute-file",
       severity: "FIX_FIRST",
       category: "correctness",
-      claim: "absolute candidate file evidence is valid",
+      claim: "absolute candidate file evidence is invalid",
       evidence: { files: [{ path: join(candidateRoot, "src.ts"), lines: "1" }] },
       reviewer: { harness_id: "r" },
     });
@@ -409,7 +409,7 @@ describe("revalidate", () => {
       id: "absolute-packet",
       severity: "FIX_FIRST",
       category: "deploy",
-      claim: "absolute evidence packet file is valid",
+      claim: "absolute evidence packet file is invalid",
       evidence: { logs: [{ path: join(evidenceDir, "TESTS.txt") }] },
       reviewer: { harness_id: "r" },
     });
@@ -433,8 +433,10 @@ describe("revalidate", () => {
     expect(traversal?.evidence.logs).toHaveLength(0);
     expect(file?.status).toBe("accepted");
     expect(packet?.status).toBe("accepted");
-    expect(absoluteFile?.status).toBe("accepted");
-    expect(absolutePacket?.status).toBe("accepted");
+    expect(absoluteFile?.status).toBe("insufficient_evidence");
+    expect(absoluteFile?.evidence.files).toHaveLength(0);
+    expect(absolutePacket?.status).toBe("insufficient_evidence");
+    expect(absolutePacket?.evidence.logs).toHaveLength(0);
   });
 
   it("keeps non-path evidence when invalid reviewer paths are stripped", async () => {
@@ -937,9 +939,11 @@ describe("reviewEngine", () => {
     expect(secondStarted).toBe(false);
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.claim).toContain("Reviewer failed: Reviewer cancelled");
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const progress = readFileSync(join(artifactsDir, "reviewer-progress.jsonl"), "utf8");
     expect(progress).toContain("reviewer.failed");
     expect(progress).toContain("Reviewer cancelled");
+    expect(progress).not.toContain("reviewer.completed");
     const metadata = readFileSync(
       join(artifactsDir, "01-cancelled-reviewer", "metadata.json"),
       "utf8",
@@ -1122,6 +1126,7 @@ describe("reviewEngine", () => {
     expect(prompt).toContain(
       "Do not inspect or cite sibling/base repository paths outside Candidate root",
     );
+    expect(prompt).toContain("Do not cite absolute Candidate root");
     expect(prompt).toContain("Treat TESTS.txt as the gate evidence");
     expect(prompt).not.toContain(secretDiffLine);
     expect(readFileSync(join(evidenceDir, "DIFF.patch"), "utf8")).toContain(secretDiffLine);
@@ -1715,6 +1720,103 @@ describe("reviewEngine", () => {
     expect(sawRuntimeGitignore).toBe(false);
   });
 
+  it("copies diff-touched evidence under normally ignored project output paths", async () => {
+    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    for (const dir of ["dist", "coverage", ".next", ".cache", ".claudexor/specs", ".claudexor/runs/run-x"]) {
+      mkdirSync(join(candidateRoot, dir), { recursive: true });
+    }
+    writeFileSync(join(candidateRoot, "dist", "bundle.js"), "candidate bundle\n");
+    writeFileSync(join(candidateRoot, "dist", "local-only.js"), "local build sibling\n");
+    writeFileSync(join(candidateRoot, "coverage", "lcov.info"), "TN:\n");
+    writeFileSync(join(candidateRoot, ".next", "trace.json"), "{}\n");
+    writeFileSync(join(candidateRoot, ".cache", "artifact.json"), "{}\n");
+    writeFileSync(join(candidateRoot, ".claudexor", "specs", "story.md"), "# Story\n");
+    writeFileSync(join(candidateRoot, ".claudexor", "runs", "run-x", "events.jsonl"), "{}\n");
+    writeFileSync(join(candidateRoot, "README.md"), "candidate docs\n");
+    writeMandatoryReviewEvidence(evidenceDir);
+
+    let sawDistBundle = false;
+    let sawDistSibling = true;
+    let sawCoverage = false;
+    let sawNext = false;
+    let sawCache = false;
+    let sawSpec = false;
+    let sawRunArtifact = true;
+    const adapter: HarnessAdapter = {
+      id: "preserved-output-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "preserved-output-reviewer",
+          display_name: "preserved output reviewer",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "preserved-output-reviewer",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async *run(spec) {
+        sawDistBundle = existsSync(join(spec.cwd, "dist", "bundle.js"));
+        sawDistSibling = existsSync(join(spec.cwd, "dist", "local-only.js"));
+        sawCoverage = existsSync(join(spec.cwd, "coverage", "lcov.info"));
+        sawNext = existsSync(join(spec.cwd, ".next", "trace.json"));
+        sawCache = existsSync(join(spec.cwd, ".cache", "artifact.json"));
+        sawSpec = existsSync(join(spec.cwd, ".claudexor", "specs", "story.md"));
+        sawRunArtifact = existsSync(join(spec.cwd, ".claudexor", "runs", "run-x", "events.jsonl"));
+        const ts = new Date().toISOString();
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+      },
+    };
+
+    const diff = [
+      "diff --git a/dist/bundle.js b/dist/bundle.js",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "diff --git a/coverage/lcov.info b/coverage/lcov.info",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "diff --git a/.next/trace.json b/.next/trace.json",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "diff --git a/.cache/artifact.json b/.cache/artifact.json",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "diff --git a/.claudexor/specs/story.md b/.claudexor/specs/story.md",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ].join("\n");
+
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff,
+      evidenceDir,
+      artifactsDir,
+      cwd: candidateRoot,
+      reviewers: [{ adapter, providerFamily: "openai" }],
+    });
+
+    expect(res.findings).toEqual([]);
+    expect(sawDistBundle).toBe(true);
+    expect(sawDistSibling).toBe(false);
+    expect(sawCoverage).toBe(true);
+    expect(sawNext).toBe(true);
+    expect(sawCache).toBe(true);
+    expect(sawSpec).toBe(true);
+    expect(sawRunArtifact).toBe(false);
+  });
+
   it("tracks copied candidate files even when candidate gitignore ignores them", async () => {
     const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
@@ -1774,6 +1876,7 @@ describe("reviewEngine", () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
     writeFileSync(join(candidateRoot, ".env"), "TOKEN=secret\n");
+    writeFileSync(join(candidateRoot, ".envrc"), "export TOKEN=secret\n");
     writeFileSync(join(candidateRoot, ".env.local"), "TOKEN=local-secret\n");
     writeFileSync(join(candidateRoot, ".env.example"), "TOKEN=\n");
     writeFileSync(join(candidateRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
@@ -1790,6 +1893,7 @@ describe("reviewEngine", () => {
     writeMandatoryReviewEvidence(evidenceDir);
 
     let sawDotEnv = true;
+    let sawEnvrc = true;
     let sawLocalEnv = true;
     let sawEnvExample = false;
     let sawNpmrc = true;
@@ -1818,6 +1922,7 @@ describe("reviewEngine", () => {
       },
       async *run(spec) {
         sawDotEnv = existsSync(join(spec.cwd, ".env"));
+        sawEnvrc = existsSync(join(spec.cwd, ".envrc"));
         sawLocalEnv = existsSync(join(spec.cwd, ".env.local"));
         sawEnvExample = existsSync(join(spec.cwd, ".env.example"));
         sawNpmrc = existsSync(join(spec.cwd, ".npmrc"));
@@ -1842,6 +1947,7 @@ describe("reviewEngine", () => {
 
     expect(res.findings).toEqual([]);
     expect(sawDotEnv).toBe(false);
+    expect(sawEnvrc).toBe(false);
     expect(sawLocalEnv).toBe(false);
     expect(sawEnvExample).toBe(true);
     expect(sawNpmrc).toBe(false);

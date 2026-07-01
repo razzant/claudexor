@@ -64,6 +64,18 @@ describe("cli args", () => {
     expect(flagStringList(args, "image")).toEqual(["shot.png", "diagram.jpg", "icon.png"]);
   });
 
+  it("rejects empty comma-separated entries in string-list flags", () => {
+    expect(() => flagStringList(parseArgs(["run", "fix", "--harness", "codex,,claude"]), "harness")).toThrow(
+      /invalid --harness value/,
+    );
+    expect(() => flagStringList(parseArgs(["run", "fix", "--attach", "a.txt,"]), "attach")).toThrow(
+      /invalid --attach value/,
+    );
+    expect(() => flagStringList(parseArgs(["run", "fix", "--image", ",shot.png"]), "image")).toThrow(
+      /invalid --image value/,
+    );
+  });
+
   it("stores flags in a prototype-free map", () => {
     const args = parseArgs(["run", "--toString", "literal", "--__proto__", "not-a-prototype"]);
     expect(Object.getPrototypeOf(args.flags)).toBeNull();

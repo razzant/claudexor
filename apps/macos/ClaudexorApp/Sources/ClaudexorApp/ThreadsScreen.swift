@@ -12,7 +12,8 @@ struct ThreadsScreen: View {
     @Environment(AppModel.self) private var model
     @State private var composerText = ""
     /// Files/images attached to the next turn (base64-inline; the daemon resolves
-    /// them to scoped paths). Gated by the primary harness's image_input.
+    /// them to scoped paths). Images are gated by the primary harness's image_input;
+    /// generic files can ride the shared attachment DTO.
     @State private var composerAttachments: [AttachmentInput] = []
     @State private var composerMode: RunMode = .agent
     // "⋯" per-turn options (collapsed by default).
@@ -77,7 +78,7 @@ struct ThreadsScreen: View {
             web: webPolicy == "auto" ? nil : webPolicy,
             untilClean: untilClean,
             maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
-            browser: browser,
+            browser: browser && browserAvailableForCurrentTurn,
             reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
             protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals
         )
@@ -86,8 +87,16 @@ struct ThreadsScreen: View {
     /// Any harness in the pool can take the agent-driven browser (manifest
     /// `browser_tool`). Gates the composer toggle so we never offer browsing where
     /// no adapter can inject Playwright MCP.
-    private var anyHarnessAcceptsBrowser: Bool {
-        model.harnesses.contains { $0.acceptsBrowser }
+    private var browserAvailableForCurrentTurn: Bool {
+        guard !composerMode.isReadOnly else { return false }
+        let eligible = Set(model.effectiveEligiblePool)
+        let candidates = eligible.isEmpty
+            ? Self.poolFamilies
+            : Self.poolFamilies.filter { eligible.contains($0.rawValue) }
+        return candidates.contains { family in
+            model.availability(for: family, mode: composerMode).available &&
+                model.harnessInfo(for: family)?.acceptsBrowser == true
+        }
     }
 
     /// The per-turn budget field is INVALID when it's non-empty but not a positive
@@ -101,11 +110,11 @@ struct ThreadsScreen: View {
     }
 
     private var reviewerPanelTokens: [String] {
-        splitOptionTokens(reviewerPanelText)
+        ComposerOptionParser.splitOptionTokens(reviewerPanelText)
     }
 
     private var reviewerPanelEntries: [ReviewerPanelEntry] {
-        reviewerPanelTokens.compactMap(parseReviewerPanelEntry)
+        reviewerPanelTokens.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
     }
 
     private var reviewerPanelInvalid: Bool {
@@ -114,11 +123,11 @@ struct ThreadsScreen: View {
     }
 
     private var protectedApprovalTokens: [String] {
-        splitOptionTokens(protectedApprovalsText)
+        ComposerOptionParser.splitOptionTokens(protectedApprovalsText)
     }
 
     private var protectedPathApprovals: [ProtectedPathApproval] {
-        protectedApprovalTokens.compactMap(parseProtectedPathApproval)
+        protectedApprovalTokens.compactMap(ComposerOptionParser.parseProtectedPathApproval)
     }
 
     private var protectedApprovalsInvalid: Bool {
@@ -130,64 +139,20 @@ struct ThreadsScreen: View {
         capUsdInvalid || reviewerPanelInvalid || protectedApprovalsInvalid
     }
 
+    private var composerImageAttachmentsInvalid: Bool {
+        composerAttachments.contains { $0.kind == "image" } && !imageAttachmentsAllowed
+    }
+
+    private var composerSendInvalid: Bool {
+        composerOptionsInvalid || composerImageAttachmentsInvalid
+    }
+
     private var composerBlockHelp: String {
         if capUsdInvalid { return "Fix the budget cap in ⋯ options to send" }
         if reviewerPanelInvalid { return "Fix the reviewer panel in ⋯ options to send" }
         if protectedApprovalsInvalid { return "Fix protected path approvals in ⋯ options to send" }
+        if composerImageAttachmentsInvalid { return "Images need an available vision-capable route" }
         return "Send (⌘↩)"
-    }
-
-    private func splitOptionTokens(_ text: String) -> [String] {
-        text
-            .split { $0 == "," || $0 == "\n" }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private func parseReviewerPanelEntry(_ raw: String) -> ReviewerPanelEntry? {
-        let efforts = ["low", "medium", "high", "xhigh", "max"]
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let eq = trimmed.firstIndex(of: "=")
-        var effort: String?
-        var harness = (eq == nil ? trimmed : String(trimmed[..<eq!]))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        var rest = ""
-        if let eq {
-            rest = String(trimmed[trimmed.index(after: eq)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !rest.isEmpty else { return nil }
-        } else if let colon = harness.lastIndex(of: ":") {
-            let suffix = String(harness[harness.index(after: colon)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard efforts.contains(suffix) else { return nil }
-            effort = suffix
-            harness = String(harness[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard !harness.isEmpty else { return nil }
-
-        var model = rest.isEmpty ? nil : rest
-        if let currentModel = model, let colon = currentModel.lastIndex(of: ":") {
-            let suffix = String(currentModel[currentModel.index(after: colon)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if efforts.contains(suffix) {
-                effort = suffix
-                let stripped = String(currentModel[..<colon])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !stripped.isEmpty else { return nil }
-                model = stripped
-            }
-        }
-        return ReviewerPanelEntry(harness: harness, model: model, effort: effort)
-    }
-
-    private func parseProtectedPathApproval(_ raw: String) -> ProtectedPathApproval? {
-        let parts = raw
-            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard let path = parts.first, !path.isEmpty else { return nil }
-        let reason = parts.count == 2 && !parts[1].isEmpty ? parts[1] : nil
-        return ProtectedPathApproval(path: path, reason: reason)
     }
 
     var body: some View {
@@ -551,7 +516,7 @@ struct ThreadsScreen: View {
                             .keyboardShortcut(.return, modifiers: .command)
                             // Blocked on empty text OR invalid option fields — never send a
                             // turn whose typed controls would be silently dropped.
-                            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || composerOptionsInvalid)
+                            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || composerSendInvalid)
                             .help(composerBlockHelp)
                     }
                 }
@@ -679,7 +644,7 @@ struct ThreadsScreen: View {
             // harness can inject it. Arming it forces Full access (codex's sandbox
             // cancels the navigation otherwise) and is disclosed below — never a
             // silent escalation.
-            if anyHarnessAcceptsBrowser {
+            if browserAvailableForCurrentTurn {
                 OptionRow(label: "Browser") {
                     Toggle("", isOn: Binding(
                         get: { browser },
@@ -830,7 +795,12 @@ struct ThreadsScreen: View {
         // Guard options HERE too, not only on the Send button: ⌘↩ / Return submit
         // through GlassField.onSubmit calls send() directly, bypassing the disabled
         // button. Never send a turn whose typed controls would be silently dropped.
-        guard !composerOptionsInvalid else { return }
+        guard !composerSendInvalid else {
+            if composerImageAttachmentsInvalid {
+                model.threadStatus = "Images need an available vision-capable route."
+            }
+            return
+        }
         let mode = composerMode
         let options = currentOptions
         let chosenModel = composerModel
@@ -872,46 +842,54 @@ struct ThreadsScreen: View {
 
     // MARK: - Composer attachments (D)
 
-    /// True when the chat primary harness declares it can take images — honest
-    /// gating so we never offer attach to a harness that would silently ignore it.
+    /// True when the current route is both available for this intent and declares
+    /// image input. Race is pool-wide: every available raced harness must accept
+    /// images because each candidate receives the same attachment set.
     private var primaryAcceptsImages: Bool {
-        if let primary = model.effectivePrimaryHarness,
-           let info = model.harnesses.first(where: { $0.id == primary }) {
-            return info.acceptsImages
+        let configuredPool = poolFamilies.isEmpty ? Self.poolFamilies : poolFamilies
+        let availablePool = configuredPool.filter { family in
+            model.availability(for: family, mode: composerMode).available
+        }
+        if composerMode == .bestOfN {
+            guard !availablePool.isEmpty else { return false }
+            return availablePool.allSatisfy { model.harnessInfo(for: $0)?.acceptsImages == true }
+        }
+        if let primary = primaryFamily {
+            return model.availability(for: primary, mode: composerMode).available &&
+                model.harnessInfo(for: primary)?.acceptsImages == true
         }
         // No resolved primary: the engine auto-pools and may route to ANY harness
         // in the effective eligible pool, so only offer attach when EVERY routable
         // harness can take images — otherwise the image would be silently dropped
         // on whichever non-vision harness the pool picks.
-        let pool = model.effectiveEligiblePool
-        let routable = pool.isEmpty ? model.harnesses : model.harnesses.filter { pool.contains($0.id) }
-        guard !routable.isEmpty else { return false }
-        return routable.allSatisfy { $0.acceptsImages }
+        guard !availablePool.isEmpty else { return false }
+        return availablePool.allSatisfy { model.harnessInfo(for: $0)?.acceptsImages == true }
     }
 
-    /// Spec mode runs the server-owned interview, which has no turn to carry bytes —
-    /// gate attach/capture off in Spec so we never let the user stage an attachment
-    /// the send path would silently drop.
-    private var attachmentsAllowed: Bool { primaryAcceptsImages && composerMode != .spec }
+    /// Spec mode runs the server-owned interview, which has no turn to carry bytes.
+    /// File attachments can ride the shared DTO for normal turns; image attachments
+    /// still require a vision-capable route so the engine will not silently drop them.
+    private var fileAttachmentsAllowed: Bool { composerMode != .spec }
+    private var imageAttachmentsAllowed: Bool { primaryAcceptsImages && composerMode != .spec }
 
     private var attachButton: some View {
         Button { pickAttachments() } label: {
             Image(systemName: "paperclip")
                 .imageScale(.medium)
-                .foregroundStyle(attachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
+                .foregroundStyle(fileAttachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
                 .padding(.horizontal, Theme.Spacing.xs)
                 .padding(.vertical, Theme.Controls.chipVPadding)
         }
         .buttonStyle(.borderless)
-        .disabled(!attachmentsAllowed)
+        .disabled(!fileAttachmentsAllowed)
         .help(attachButtonHelp)
     }
 
     private var attachButtonHelp: String {
         if composerMode == .spec { return "Spec interview can't take attachments" }
         return primaryAcceptsImages
-            ? "Attach images for the primary harness"
-            : "The primary harness can't take attachments — switch it in the composer"
+            ? "Attach files or images"
+            : "Attach files; images need an available vision-capable route"
     }
 
     private var attachmentChips: some View {
@@ -942,18 +920,25 @@ struct ThreadsScreen: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        // Only images can ride the harness path today — restrict the picker so the
-        // UI never promises file support it can't honor, and defensively skip any
-        // non-image that slips through.
-        panel.allowedContentTypes = [.image]
         guard panel.runModal() == .OK else { return }
+        var skippedImages = 0
         for url in panel.urls {
             guard let data = try? Data(contentsOf: url) else { continue }
             let mime = Self.mimeType(for: url)
-            guard mime.hasPrefix("image/") else { continue }
+            let isImage = mime.hasPrefix("image/")
+            if isImage && !primaryAcceptsImages {
+                skippedImages += 1
+                continue
+            }
+            let kind = isImage ? "image" : "file"
             composerAttachments.append(AttachmentInput(
-                kind: "image", mime: mime, name: url.lastPathComponent,
+                kind: kind, mime: mime, name: url.lastPathComponent,
                 data: data.base64EncodedString()))
+        }
+        if skippedImages > 0 {
+            model.threadStatus = skippedImages == 1
+                ? "Image skipped — switch to a vision-capable primary harness to attach it."
+                : "\(skippedImages) images skipped — switch to a vision-capable primary harness to attach them."
         }
     }
 
@@ -966,12 +951,12 @@ struct ThreadsScreen: View {
         Button { captureScreenshot() } label: {
             Image(systemName: "camera.viewfinder")
                 .imageScale(.medium)
-                .foregroundStyle(attachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
+                .foregroundStyle(imageAttachmentsAllowed ? Color.secondary : Color.secondary.opacity(0.4))
                 .padding(.horizontal, Theme.Spacing.xs)
                 .padding(.vertical, Theme.Controls.chipVPadding)
         }
         .buttonStyle(.borderless)
-        .disabled(!attachmentsAllowed)
+        .disabled(!imageAttachmentsAllowed)
         .help(captureButtonHelp)
     }
 
@@ -979,7 +964,7 @@ struct ThreadsScreen: View {
         if composerMode == .spec { return "Spec interview can't take attachments" }
         return primaryAcceptsImages
             ? "Capture a screen region to attach (you pick the area)"
-            : "The primary harness can't take attachments — switch it in the composer"
+            : "Screen captures need an available vision-capable route"
     }
 
     /// Grab a screen region via the system `screencapture` (interactive crosshair),
@@ -1172,7 +1157,7 @@ private struct TurnCard: View {
     /// (carry their own decision/apply affordances). Rendering any of those as a
     /// red "failed" card would be dishonest.
     private func isSilentFailure(_ run: TaskRun) -> Bool {
-        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .exhausted, .notConverged]
+        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .exhausted, .notConverged, .stuckNoProgress]
         guard failureShaped.contains(run.status) else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasTranscript = !(turn.runId.flatMap { model.transcripts[$0]?.blocks } ?? []).isEmpty

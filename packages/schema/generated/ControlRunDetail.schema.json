@@ -223,6 +223,54 @@
             "model": {
               "type": "string"
             },
+            "reviewerPanel": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "model": {
+                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                  },
+                  "effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  }
+                },
+                "required": [
+                  "harness"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "protectedPathApprovals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                  },
+                  "reason": {
+                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
             "n": {
               "type": "integer"
             },

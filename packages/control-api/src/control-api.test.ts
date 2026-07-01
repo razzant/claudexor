@@ -639,11 +639,11 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("threads: a turn forwards the per-turn model and a frozen specPath to the daemon enqueue", async () => {
-    // HTTP-boundary proof for the macOS per-turn model picker + spec Implement:
-    // the Swift client posts { model, specPath } on /threads/:id/turns and the
-    // thin gateway must accept (strict schema) AND forward them to enqueue — not
-    // silently drop them. (Kit tests cover Swift encoding; this locks the wire.)
+  it("threads: a turn forwards per-turn model/spec/review controls to daemon enqueue", async () => {
+    // HTTP-boundary proof for the macOS per-turn model picker, spec Implement,
+    // explicit reviewer panel, test gates, and protected-path approvals: the
+    // thin gateway must accept and forward them to enqueue, not silently drop
+    // them. (Kit tests cover Swift encoding; this locks the wire.)
     const { daemon, record } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-modelspec-"));
     const now = new Date().toISOString();
@@ -708,12 +708,24 @@ describe("DaemonControlApiServer", () => {
             prompt: "",
             model: "gpt-5-codex",
             specPath: "/repo/.claudexor/specs/s1/spec.json",
+            authPreference: "subscription",
+            reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
+            reviewerModels: { openai: "gpt-5.5" },
+            reviewerEfforts: { openai: "xhigh" },
+            tests: ["pnpm test"],
+            protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "requested" }],
           }),
         });
         expect(r.status).toBe(200);
         expect(enqueued).toMatchObject({
           model: "gpt-5-codex",
           specPath: "/repo/.claudexor/specs/s1/spec.json",
+          authPreference: "subscription",
+          reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
+          reviewerModels: { openai: "gpt-5.5" },
+          reviewerEfforts: { openai: "xhigh" },
+          tests: ["pnpm test"],
+          protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "requested" }],
           threadId: "th-11",
         });
       },
@@ -744,6 +756,134 @@ describe("DaemonControlApiServer", () => {
         scope: { kind: "none" },
         execution: { isolation: "envelope" },
       });
+    });
+  });
+
+  it("rejects direct inline attachment bytes before daemon enqueue", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-inline-attachment-"));
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job-inline", state: "queued" };
+      },
+      async status() {
+        return { id: "job-inline", state: "queued" };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "use attached note",
+          mode: "agent",
+          scope: { kind: "project", root: repo },
+          attachments: [
+            {
+              kind: "file",
+              mime: "text/plain",
+              name: "note.txt",
+              data: Buffer.from("hello").toString("base64"),
+            },
+          ],
+        }),
+      });
+      const body = (await start.json()) as { error?: string };
+      expect(start.status).toBe(400);
+      expect(body.error).toMatch(/inline attachment data/);
+      expect(enqueued).toBe(0);
+    });
+  });
+
+  it("allows direct path-only attachments through daemon enqueue", async () => {
+    const { daemon } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-path-attachment-"));
+    const file = join(repo, "note.txt");
+    writeFileSync(file, "hello\n");
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "use attached note",
+          mode: "agent",
+          scope: { kind: "project", root: repo },
+          attachments: [
+            {
+              kind: "file",
+              mime: "text/plain",
+              name: "note.txt",
+              path: file,
+            },
+          ],
+        }),
+      });
+      expect(start.status).toBe(200);
+      expect(enqueued?.["attachments"]).toEqual([
+        expect.objectContaining({ kind: "file", mime: "text/plain", name: "note.txt", path: file }),
+      ]);
+      expect((enqueued?.["attachments"] as Array<Record<string, unknown>> | undefined)?.[0]?.["data"]).toBeUndefined();
+    });
+  });
+
+  it("rejects malformed direct path-only attachments before daemon enqueue", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-bad-attachment-"));
+    const nestedDir = join(repo, "dir");
+    mkdirSync(nestedDir);
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job-bad-attachment", state: "queued" };
+      },
+      async status() {
+        return { id: "job-bad-attachment", state: "queued" };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      for (const attachment of [
+        { kind: "file", mime: "text/plain", name: "none.txt" },
+        { kind: "file", mime: "text/plain", name: "blank.txt", path: "   " },
+        { kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" },
+        { kind: "file", mime: "text/plain", name: "missing.txt", path: join(repo, "missing.txt") },
+        { kind: "file", mime: "text/plain", name: "dir", path: nestedDir },
+      ]) {
+        const start = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            prompt: "use attached note",
+            mode: "agent",
+            scope: { kind: "project", root: repo },
+            attachments: [attachment],
+          }),
+        });
+        const body = (await start.json()) as { error?: string };
+        expect(start.status).toBe(400);
+        expect(body.error).toMatch(/attachment/);
+      }
+      expect(enqueued).toBe(0);
     });
   });
 
@@ -787,6 +927,78 @@ describe("DaemonControlApiServer", () => {
         projectName: null,
         context: "off",
       });
+    });
+  });
+
+  it("echoes reviewer panel and protected path approvals in run summaries for honest retry", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      prompt: "review it",
+      mode: "agent",
+      scope: { kind: "project", root: record.runDir, context: "auto" },
+      reviewerPanel: [
+        { harness: "claude", model: "claude-opus-4.8", effort: "max" },
+        { harness: "cursor", model: "gemini-3.5-flash" },
+      ],
+      protectedPathApprovals: [
+        { path: "packages/**/*.test.ts", reason: "test authoring requested" },
+      ],
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const detail = (await (
+        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as {
+        summary: {
+          reviewerPanel?: { harness: string; model?: string; effort?: string }[];
+          protectedPathApprovals?: { path: string; reason?: string }[];
+        };
+      };
+      expect(detail.summary.reviewerPanel).toEqual([
+        { harness: "claude", model: "claude-opus-4.8", effort: "max" },
+        { harness: "cursor", model: "gemini-3.5-flash" },
+      ]);
+      expect(detail.summary.protectedPathApprovals).toEqual([
+        { path: "packages/**/*.test.ts", reason: "test authoring requested" },
+      ]);
+    });
+  });
+
+  it("falls back to TaskContract tests in run summaries for honest retry", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      prompt: "review it",
+      mode: "agent",
+      scope: { kind: "project", root: record.runDir, context: "auto" },
+    };
+    writeFileSync(
+      join(record.runDir ?? "", "context", "task.yaml"),
+      [
+        "schema_version: 2",
+        "task_id: task-d1",
+        "created_at: 2026-07-01T00:00:00.000Z",
+        "repo:",
+        `  root: ${JSON.stringify(record.runDir)}`,
+        "  base_ref: HEAD",
+        "mode:",
+        "  kind: agent",
+        "user_intent:",
+        "  raw: review it",
+        "tests:",
+        "  commands:",
+        "    - id: gate-1",
+        "      command: pnpm test",
+        "      required: true",
+        "    - id: gate-2",
+        "      command: pnpm build",
+        "      required: true",
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const detail = (await (
+        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as { summary: { tests?: string[] } };
+      expect(detail.summary.tests).toEqual(["pnpm test", "pnpm build"]);
     });
   });
 
@@ -849,6 +1061,45 @@ describe("DaemonControlApiServer", () => {
       });
       expect(check.status).toBe(400);
       expect(await check.text()).toContain("project root must be an absolute path");
+    });
+  });
+
+  it("rejects blank top-level scalar run controls at the HTTP boundary", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueued = false;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = true;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          model: "",
+        }),
+      });
+      expect(start.status).toBe(400);
+      expect(enqueued).toBe(false);
+
+      const blankPrimary = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "2+2?",
+          mode: "ask",
+          harnesses: ["codex"],
+          primaryHarness: "   ",
+        }),
+      });
+      expect(blankPrimary.status).toBe(400);
+      expect(enqueued).toBe(false);
     });
   });
 
@@ -943,6 +1194,38 @@ describe("DaemonControlApiServer", () => {
       });
       expect(invalidModelProvider.status).toBe(400);
       expect(enqueued).toBeUndefined();
+    });
+  });
+
+  it("rejects whitespace-only nested run controls at the HTTP boundary", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueued = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued += 1;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const bodies = [
+        { reviewerPanel: [{ harness: " " }] },
+        { reviewerPanel: [{ harness: "claude", model: " " }] },
+        { reviewerModels: { openai: " " } },
+        { harnesses: ["codex", " "] },
+        { tests: [" "] },
+        { protectedPathApprovals: [{ path: " " }] },
+        { protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: " " }] },
+      ];
+      for (const body of bodies) {
+        const res = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "2+2?", mode: "ask", ...body }),
+        });
+        expect(res.status).toBe(400);
+      }
+      expect(enqueued).toBe(0);
     });
   });
 
@@ -1568,6 +1851,74 @@ describe("DaemonControlApiServer", () => {
           }),
         });
         expect(res.status).toBe(404);
+        expect(enqueued).toBe(0);
+      },
+      5,
+      services,
+    );
+  });
+
+  it("direct POST /runs with a bare threadId returns attachment precreate errors as 400", async () => {
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job", state: "queued" };
+      },
+      async status() {
+        return { id: "job", state: "queued" };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-attachment-"));
+    const now = new Date().toISOString();
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({
+        thread: {
+          schema_version: 2,
+          id: "th-attachment",
+          created_at: now,
+          updated_at: now,
+          repo: { root: repo, base_ref: "HEAD" },
+          title: "attachment thread",
+          mode: "agent",
+          workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+          auth_preference: "auto",
+          primary_harness: null,
+          eligible_harnesses: [],
+          portfolio: "subscription-first",
+          run_ids: [],
+          head_run_id: null,
+          state: "active",
+        },
+        sessions: [],
+        turns: [],
+      }),
+      createThreadTurn: async () => {
+        throw Object.assign(new Error("attachment 0 path must be absolute: relative.txt"), { status: 400 });
+      },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            prompt: "hi",
+            mode: "agent",
+            scope: { kind: "project", root: repo },
+            threadId: "th-attachment",
+            attachments: [{ kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" }],
+          }),
+        });
+        expect(res.status).toBe(400);
+        expect(await res.text()).toContain("attachment 0 path must be absolute");
         expect(enqueued).toBe(0);
       },
       5,

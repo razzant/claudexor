@@ -16,7 +16,8 @@ release gates, and integration notes live in
 Claudexor is a local-first control plane over external coding harnesses:
 Codex CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters.
 A harness is not a role. Roles are intents (`explain`, `plan`, `implement`,
-`repair`, `review`, `compare`, `synthesize`, `audit`).
+`repair`, `review`, `verify`, `compare`, `synthesize`, `arbitrate`, `audit`,
+`orchestrate`).
 
 ```text
 surface -> schema/control DTO -> orchestrator/core -> gateway -> harness adapter -> native tool/API
@@ -691,13 +692,19 @@ The macOS app is a native control surface over the control API:
 - Settings uses flat grouped sections and avoids floating black cutout shadows;
 - onboarding is native-first auth plus optional API-key fallback and guided
   install/login/smoke-test actions;
-- the composer accepts **attachments** (images/files) via a paperclip picker and
-  a **Capture** button (system `screencapture` region select), gated by the
-  primary harness's `capability_profile.image_input` (Cursor/OpenCode gate off
-  rather than silently swallow an image the model never sees). Attachments forward
-  to the harness in its NATIVE shape (Codex `-i/--image`, Claude base64 image
-  block on the stream-json transport, raw-api `image_url` data URL) and persist in
-  a scoped dir OUTSIDE any worktree — bytes never enter `jobs.json` or `git add -A`;
+- the composer accepts **attachments** via a paperclip picker: generic files are
+  available on non-Spec turns, while image files and the **Capture** button
+  (system `screencapture` region select) are gated by an available route whose
+  primary/pool harness declares `capability_profile.image_input` (Cursor/OpenCode
+  gate/skip images rather than silently swallow an image the model never sees).
+  Attachments forward to the
+  harness in its NATIVE shape (Codex `-i/--image`, Claude base64 image block on
+  the stream-json transport, raw-api `image_url` data URL) and persist in a scoped
+  dir OUTSIDE any worktree — bytes never enter `jobs.json` or `git add -A`;
+- direct non-thread `POST /runs` accepts only non-empty absolute existing file
+  paths for attachments. Inline base64 upload bytes are accepted only through
+  thread/composer turn creation, where the turn store resolves them to scoped
+  files before the daemon job is queued;
 - the **Spec** interview is multi-tier (`/spec/questions` carries accumulated
   `priorDecisions`): each round goes DEEPER on prior answers ("Ask deeper") until
   the model surfaces no further decisions, or the user freezes ("Enough — freeze").

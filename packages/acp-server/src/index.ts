@@ -1,4 +1,6 @@
+import { existsSync, lstatSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
   AccessProfile,
@@ -130,10 +132,31 @@ export class AcpServer {
         return;
       case "session/new": {
         const sessionId = `acp-${Math.random().toString(36).slice(2, 10)}`;
-        this.sessions.add(sessionId);
         // The editor's cwd anchors all of this session's runs to the project the
         // user is actually in (previously ignored -> runs hit the server's cwd).
-        const cwd = typeof params?.cwd === "string" && params.cwd.trim() ? params.cwd : undefined;
+        const cwdProvided = params && Object.prototype.hasOwnProperty.call(params, "cwd");
+        const cwd = cwdProvided && typeof params?.cwd === "string" ? params.cwd.trim() : undefined;
+        if (!cwdProvided) {
+          this.error(id, -32600, "session/new cwd is required");
+          return;
+        }
+        if (cwdProvided && typeof params?.cwd !== "string") {
+          this.error(id, -32600, "session/new cwd must be a non-empty absolute path string");
+          return;
+        }
+        if (cwdProvided && !cwd) {
+          this.error(id, -32600, "session/new cwd must be a non-empty absolute path");
+          return;
+        }
+        if (cwd && !isAbsolute(cwd)) {
+          this.error(id, -32600, "session/new cwd must be an absolute path");
+          return;
+        }
+        if (cwd && (!existsSync(cwd) || !lstatSync(cwd).isDirectory())) {
+          this.error(id, -32600, "session/new cwd must be an existing directory");
+          return;
+        }
+        this.sessions.add(sessionId);
         if (cwd) this.sessionCwds.set(sessionId, cwd);
         this.reply(id, { sessionId });
         return;
@@ -143,6 +166,10 @@ export class AcpServer {
         const text = extractPromptText(params?.prompt);
         if (!text.trim()) {
           this.error(id, -32600, "prompt must be a non-empty string");
+          return;
+        }
+        if (!sessionId || !this.sessions.has(sessionId) || !this.sessionCwds.has(sessionId)) {
+          this.error(id, -32600, "session/prompt requires a known session created with session/new cwd");
           return;
         }
         const runControlError = validateRunControls(params);
@@ -463,13 +490,39 @@ function validateEffortMap(value: unknown, name: string): string | null {
 
 function validateRunControls(params: unknown): string | null {
   if (!isPlainRecord(params)) return null;
+  const allowedKeys = new Set([
+    "sessionId",
+    "prompt",
+    "mode",
+    "harness",
+    "primaryHarness",
+    "web",
+    "externalContextPolicy",
+    "model",
+    "effort",
+    "n",
+    "race",
+    "untilClean",
+    "swarm",
+    "create",
+    "tests",
+    "maxUsd",
+    "access",
+    "protectedPathApprovals",
+    "reviewerPanel",
+    "reviewerModels",
+    "reviewerEfforts",
+  ]);
+  for (const key of Object.keys(params)) {
+    if (!allowedKeys.has(key)) return `unknown session/prompt field: ${key}`;
+  }
   if (params.mode !== undefined && (typeof params.mode !== "string" || !ModeKind.safeParse(params.mode).success)) {
     return "mode must be a valid mode";
   }
-  if (params.harness !== undefined && typeof params.harness !== "string") return "harness must be a string";
-  if (params.primaryHarness !== undefined && typeof params.primaryHarness !== "string") {
-    return "primaryHarness must be a string";
-  }
+  const harnessError = validateOptionalNonEmptyString(params.harness, "harness");
+  if (harnessError) return harnessError;
+  const primaryHarnessError = validateOptionalNonEmptyString(params.primaryHarness, "primaryHarness");
+  if (primaryHarnessError) return primaryHarnessError;
   if (params.web !== undefined && (typeof params.web !== "string" || !ExternalContextPolicy.safeParse(params.web).success)) {
     return "web must be a valid external context policy";
   }
@@ -486,7 +539,8 @@ function validateRunControls(params: unknown): string | null {
   ) {
     return "web and externalContextPolicy must be equal when both are provided";
   }
-  if (params.model !== undefined && typeof params.model !== "string") return "model must be a string";
+  const modelError = validateOptionalNonEmptyString(params.model, "model");
+  if (modelError) return modelError;
   if (params.effort !== undefined && (typeof params.effort !== "string" || !EffortHint.safeParse(params.effort).success)) {
     return "effort must be a valid effort value";
   }
@@ -535,5 +589,11 @@ function validateRunControls(params: unknown): string | null {
       if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) return "protectedPathApprovals[].reason must be a non-empty string";
     }
   }
+  return null;
+}
+
+function validateOptionalNonEmptyString(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.trim() === "") return `${name} must be a non-empty string`;
   return null;
 }

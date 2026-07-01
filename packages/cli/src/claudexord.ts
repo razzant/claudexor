@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   DaemonClient,
@@ -26,7 +26,6 @@ import {
   redactSecrets,
 } from "@claudexor/util";
 import {
-  type Attachment,
   type AttachmentInput,
   type ControlRunStartRequest as ControlRunStartRequestDto,
   ControlSettingsUpdateRequest,
@@ -34,6 +33,7 @@ import {
   InterviewAnswer,
 } from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
+import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import {
@@ -46,37 +46,6 @@ import {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
-
-/** Filename allowlist (no regex governance): keep only safe chars for the stored name. */
-function safeAttachmentName(name: string): string {
-  const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
-  let s = "";
-  for (const ch of name) s += allowed.includes(ch) ? ch : "_";
-  return (s || "attachment").slice(0, 120);
-}
-
-/**
- * Resolve inbound attachments (base64 `data`, or an existing `path`) to durable
- * Attachments under a scoped dir OUTSIDE any worktree, so they never enter a git
- * diff. base64 is decoded ONCE here and `jobs.json` never carries the bytes.
- */
-function resolveAttachments(inputs: AttachmentInput[] | undefined): Attachment[] {
-  if (!inputs || inputs.length === 0) return [];
-  const dir = join(daemonDir(), "attachments", newId("attb"));
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const out: Attachment[] = [];
-  for (const a of inputs) {
-    if (a.data) {
-      const path = join(dir, `${newId("f")}-${safeAttachmentName(a.name)}`);
-      writeFileSync(path, Buffer.from(a.data, "base64"), { mode: 0o600 });
-      out.push({ id: newId("att"), kind: a.kind, mime: a.mime, name: a.name, path });
-    } else if (a.path && existsSync(a.path)) {
-      out.push({ id: newId("att"), kind: a.kind, mime: a.mime, name: a.name, path: a.path });
-    }
-    // Neither data nor a readable path => skip (fail soft; the turn still runs).
-  }
-  return out;
-}
 
 async function main(): Promise<void> {
   // The daemon dir holds the auth token, jobs registry, and setup logs: it must

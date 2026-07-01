@@ -109,6 +109,9 @@ describe("McpServer", () => {
       { id: 14, name: "claudexor_run", arguments: { prompt: "go", reviewerEfforts: { opneai: "xhigh" } } },
       { id: 15, name: "claudexor_run", arguments: { prompt: "go", effort: "turbo" } },
       { id: 16, name: "claudexor_run", arguments: { prompt: "go", web: "internet" } },
+      { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
+      { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
+      { id: 19, name: "claudexor_run", arguments: { prompt: "go", model: "" } },
     ];
     for (const call of invalidCalls) {
       c2s.write(JSON.stringify({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } }) + "\n");
@@ -132,8 +135,12 @@ describe("McpServer", () => {
     const schema = runTool?.inputSchema as any;
     expect(schema?.additionalProperties).toBe(false);
     expect(schema?.properties?.reviewerPanel?.type).toBe("array");
+    expect(schema?.properties?.reviewerPanel?.minItems).toBe(1);
     expect(schema?.properties?.reviewerPanel?.items?.properties?.authPreference).toBeUndefined();
     expect(schema?.properties?.model?.type).toBe("string");
+    expect(schema?.properties?.model?.minLength).toBe(1);
+    expect(schema?.properties?.harness?.minLength).toBe(1);
+    expect(schema?.properties?.primaryHarness?.minLength).toBe(1);
     expect(schema?.properties?.effort?.enum).toContain("xhigh");
     expect(schema?.properties?.web?.enum).toContain("live");
     expect(schema?.properties?.externalContextPolicy?.enum).toContain("cached");

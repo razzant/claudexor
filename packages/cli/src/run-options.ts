@@ -22,13 +22,29 @@ export function parseProtectedPathApprovalFlags(
 ): ProtectedPathApproval[] | undefined {
   const strings = stringFlagValues(values, "allow-protected-path");
   if (strings.length === 0) return undefined;
-  const paths = strings
-    .flatMap((value) => value.split(","))
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (paths.length === 0)
-    throw new Error("invalid --allow-protected-path value (expected at least one glob)");
+  const paths: string[] = [];
+  for (const value of strings) {
+    for (const part of value.split(",")) {
+      const path = part.trim();
+      if (!path) throw new Error("invalid --allow-protected-path value (empty comma-separated entry)");
+      paths.push(path);
+    }
+  }
   return paths.map((path) => ({ path, reason: "explicit CLI --allow-protected-path" }));
+}
+
+export function parseTestCommandFlags(values: Array<string | boolean>): string[] | undefined {
+  const strings = stringFlagValues(values, "test");
+  if (strings.length === 0) return undefined;
+  const commands: string[] = [];
+  for (const value of strings) {
+    for (const part of value.split(";;")) {
+      const command = part.trim();
+      if (!command) throw new Error("invalid --test value (empty ;;-separated entry)");
+      commands.push(command);
+    }
+  }
+  return commands;
 }
 
 export function parseReviewerPanelFlags(

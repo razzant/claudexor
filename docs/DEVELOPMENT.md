@@ -82,6 +82,10 @@ pnpm release:verify
 ```
 
 It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
+The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs`; when the
+release diff is too large for an exact OpenRouter reviewer, set
+`TRIAD_MAX_PACK_BYTES` to reduce supplemental context only. Do not use that as a
+reason to downgrade or substitute the required review models.
 
 ### Local toolchain notes
 

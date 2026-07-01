@@ -12,9 +12,14 @@ export function parseReviewerEffortMap(
   if (value === undefined) return undefined;
   const map: Partial<Record<ProviderFamily, EffortHintValue>> = {};
   for (const pair of value.split(",")) {
-    const [family, effort] = pair.split("=").map((s) => s.trim());
+    const raw = pair.trim();
+    if (!raw) throw new Error("invalid --reviewer-effort value (empty comma-separated entry)");
+    const eq = raw.indexOf("=");
+    const family = (eq === -1 ? raw : raw.slice(0, eq)).trim();
+    const effort = (eq === -1 ? "" : raw.slice(eq + 1)).trim();
     if (!family && !effort) continue;
-    if (!family || !effort) throw new Error(`invalid --reviewer-effort entry '${pair}'`);
+    if (!family || !effort || effort.includes("="))
+      throw new Error(`invalid --reviewer-effort entry '${pair}' (expected family=effort)`);
     const parsedFamily = ProviderFamily.safeParse(family);
     if (!parsedFamily.success)
       throw new Error(
@@ -40,10 +45,12 @@ export function parseReviewerModelMap(
   if (value === undefined) return undefined;
   const map: Partial<Record<ProviderFamily, string>> = {};
   for (const pair of value.split(",")) {
+    const raw = pair.trim();
+    if (!raw) throw new Error("invalid --reviewer-model value (empty comma-separated entry)");
     // Split on the FIRST '=' only, so a model id that itself contains '=' is preserved.
-    const eq = pair.indexOf("=");
-    const family = (eq === -1 ? pair : pair.slice(0, eq)).trim();
-    const model = (eq === -1 ? "" : pair.slice(eq + 1)).trim();
+    const eq = raw.indexOf("=");
+    const family = (eq === -1 ? raw : raw.slice(0, eq)).trim();
+    const model = (eq === -1 ? "" : raw.slice(eq + 1)).trim();
     if (!family && !model) continue;
     if (!family || !model)
       throw new Error(`invalid --reviewer-model entry '${pair}' (expected family=model)`);

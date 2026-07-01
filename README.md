@@ -5,9 +5,9 @@ CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
 behind one typed interface.
 
 The core rule is simple: a harness is not a role. Roles are intents such as
-`explain`, `plan`, `implement`, `repair`, `review`, `compare`, `synthesize`,
-and `audit`. Any harness that declares the capability can be assigned the
-intent.
+`explain`, `plan`, `implement`, `repair`, `review`, `verify`, `compare`,
+`synthesize`, `arbitrate`, `audit`, and `orchestrate`. Any harness that
+declares the capability can be assigned the intent.
 
 Current status: **v0.14.1 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
@@ -315,6 +315,10 @@ The CLI accepts the same attachment contract as the control API for run modes:
 use repeatable/comma-separated `--attach <path>` for files or `--image <path>` for
 images. Vision routing remains capability-gated; a blind harness is rejected with
 an actionable pre-flight reason instead of silently dropping the attachment.
+Direct non-thread `POST /runs` requests accept only non-empty absolute existing
+file paths for attachments; inline base64 upload bytes are accepted through
+thread/composer turns so they are sunk to scoped files before a daemon job is
+queued.
 
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.

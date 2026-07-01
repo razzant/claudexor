@@ -8,9 +8,15 @@
           "type": "boolean"
         },
         "defaultModel": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "effort": {
@@ -68,19 +74,23 @@
         "toolsAllow": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
           }
         },
         "toolsDeny": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
           }
         },
         "fallbackModel": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "web": {

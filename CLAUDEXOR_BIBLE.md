@@ -17,7 +17,8 @@ app-only business logic, fake delivery state, or private run semantics.
 
 Codex, Claude Code, Cursor, OpenCode, raw APIs, and future adapters are
 harnesses. Roles are intents: `explain`, `plan`, `implement`, `repair`,
-`review`, `verify`, `compare`, `synthesize`, `arbitrate`, and `audit`. A
+`review`, `verify`, `compare`, `synthesize`, `arbitrate`, `audit`, and
+`orchestrate`. A
 harness can play an intent only when discovery + doctor + capability gating say
 it can. Missing, unauthenticated, degraded, or intent-incompatible harnesses are
 visible but not silently selectable.

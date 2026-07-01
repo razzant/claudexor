@@ -167,7 +167,7 @@ function reviewPrompt(
     `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
     "All code/file evidence must come from Candidate root or the evidence packet. Do not inspect or cite sibling/base repository paths outside Candidate root; if required evidence is unavailable there, return INSUFFICIENT_EVIDENCE.",
     "Treat TESTS.txt as the gate evidence. Do not rerun full build/test gates from the review; run only small targeted commands when needed to verify a concrete finding.",
-    "Use file paths relative to Candidate root in findings whenever possible.",
+    "In finding evidence, cite candidate files with paths relative to Candidate root. Cite evidence packet files by their evidence filename (for example DIFF.patch or TESTS.txt). Do not cite absolute Candidate root, reviewer workspace, or evidenceDir paths; those are disposable transport paths and will be rejected as evidence.",
     "Output ONLY a JSON array of findings.",
     `Each finding: {"severity":"BLOCK|FIX_FIRST|WARN|NIT|OUT_OF_SCOPE|INSUFFICIENT_EVIDENCE|NEEDS_HUMAN","category":"correctness|regression|security|performance|maintainability|test_gap|spec_gap|deploy|architecture|ux","claim":"...","evidence":{"files":[{"path":"...","lines":"..."}]},"proposed_fix":"..."}.`,
     "Rules: no evidence => do NOT use BLOCK. Do not relitigate FORBIDDEN_FINDINGS or DECIDED_TRADEOFFS.",
@@ -220,6 +220,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   });
   const artifacts: ReviewerArtifactContext[] = [];
   const reviewerFamilies = input.reviewers.map((r) => r.providerFamily);
+  const preservePaths = extractDiffTouchedPaths(input.diff);
   const reviewerWorkspaceBaseDir = selectReviewerWorkspaceBaseDir(
     input.cwd,
     artifactsBaseDir,
@@ -246,6 +247,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
           workspaceBaseDir: reviewerWorkspaceBaseDir,
           reviewerDirName: `${String(index + 1).padStart(2, "0")}-${safeFilePart(reviewer.adapter.id)}`,
           excludeRoots: [artifactsBaseDir],
+          preservePaths,
         });
         const reviewerPatch = writeDiffEvidence(reviewerWorkspace.evidenceDir, input.diff);
         updateReviewerMetadata(artifact, {
@@ -584,6 +586,7 @@ async function collectReviewerOutput(
   let costUsd = 0;
   let costEstimated = false;
   let partialText = "";
+  const isCancelled = () => cancelledBySignal || signal?.aborted === true || controller.signal.aborted;
 
   const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
     const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, runSpec);
@@ -645,11 +648,15 @@ async function collectReviewerOutput(
         });
       }
     }
+    if (isCancelled()) {
+      throw new Error("Reviewer cancelled");
+    }
     if (
       sawTransient &&
       text.trim() === "" &&
       nativeTry < transientRetryPolicy.maxRetries &&
-      !timedOut
+      !timedOut &&
+      !isCancelled()
     ) {
       const retryAt = nowIso();
       const delayMs = transientRetryDelayMs(transientRetryPolicy, nativeTry);
@@ -667,6 +674,9 @@ async function collectReviewerOutput(
       if (timedOut) {
         throw new Error(`Reviewer timed out after ${timeoutMs}ms`);
       }
+      if (isCancelled()) {
+        throw new Error("Reviewer cancelled");
+      }
       runSpec = HarnessRunSpec.parse({
         ...runSpec,
         session_id: newId("ses"),
@@ -677,7 +687,7 @@ async function collectReviewerOutput(
     if (sawError && !timedOut) {
       throw new Error(`Reviewer emitted error event: ${lastError ?? "unknown error"}`);
     }
-    if (!timedOut) {
+    if (!timedOut && !isCancelled()) {
       const completedTime = nowIso();
       const durationMs = Date.now() - startMs;
       updateReviewerMetadata(artifact, {
@@ -858,6 +868,7 @@ async function prepareReviewerWorkspace(input: {
   workspaceBaseDir: string;
   reviewerDirName: string;
   excludeRoots: string[];
+  preservePaths?: Set<string>;
 }): Promise<ReviewerWorkspace> {
   const sourceRoot = resolve(input.sourceRoot);
   const workspaceBaseDir = resolve(input.workspaceBaseDir);
@@ -878,7 +889,13 @@ async function prepareReviewerWorkspace(input: {
       recursive: true,
       dereference: false,
       filter: (sourcePath) =>
-        shouldCopyReviewerPath(sourceRoot, resolvedSourceRoot, sourcePath, excludeRoots),
+        shouldCopyReviewerPath(
+          sourceRoot,
+          resolvedSourceRoot,
+          sourcePath,
+          excludeRoots,
+          input.preservePaths,
+        ),
     });
 
     const sourceEvidenceDir = resolve(input.sourceEvidenceDir);
@@ -990,6 +1007,7 @@ function shouldCopyReviewerPath(
   resolvedSourceRoot: string,
   sourcePath: string,
   excludeRoots: string[],
+  preservePaths = new Set<string>(),
 ): boolean {
   const resolvedSourcePath = resolve(sourcePath);
   if (
@@ -1001,26 +1019,27 @@ function shouldCopyReviewerPath(
   const rel = relative(sourceRoot, resolvedSourcePath);
   if (!rel) return true;
   const parts = rel.split(/[\\/]+/);
-  if (parts[0] === ".claudexor") {
-    return parts.length === 1 || (parts.length === 2 && parts[1] === "config.yaml");
-  }
   if (parts.some(isReviewerSecretLikePathPart)) {
     return false;
+  }
+  if (parts[0] === ".claudexor") {
+    return isCopyableReviewerClaudexorPath(rel, parts, preservePaths);
   }
   if (
     parts.some((part) =>
       [
         ".git",
-        ".claudexor",
         ".adversarial-review",
         ".turbo",
-        ".next",
-        ".cache",
-        "coverage",
-        "dist",
         "node_modules",
       ].includes(part),
     )
+  ) {
+    return false;
+  }
+  if (
+    parts.some((part) => [".next", ".cache", "coverage", "dist"].includes(part)) &&
+    !isPreservedReviewerPath(rel, preservePaths)
   ) {
     return false;
   }
@@ -1029,8 +1048,7 @@ function shouldCopyReviewerPath(
 
 function isReviewerSecretLikePathPart(part: string): boolean {
   const lower = part.toLowerCase();
-  if (lower === ".env") return true;
-  if (lower.startsWith(".env.") && !isSafeEnvTemplateName(lower)) return true;
+  if (lower.startsWith(".env") && !isSafeEnvTemplateName(lower)) return true;
   if (
     [
       ".npmrc",
@@ -1057,6 +1075,114 @@ function isReviewerSecretLikePathPart(part: string): boolean {
 
 function isSafeEnvTemplateName(lower: string): boolean {
   return [".env.example", ".env.sample", ".env.template"].includes(lower);
+}
+
+function isCopyableReviewerClaudexorPath(
+  rel: string,
+  parts: string[],
+  preservePaths: Set<string>,
+): boolean {
+  if (parts.length === 1) {
+    return true;
+  }
+  if (parts.length === 2 && parts[1] === "config.yaml") {
+    return true;
+  }
+  const runtimeRoot = parts[1]?.toLowerCase();
+  if (
+    runtimeRoot &&
+    [
+      "auth",
+      "cache",
+      "daemon",
+      "home",
+      "homes",
+      "logs",
+      "runs",
+      "secrets",
+      "state",
+      "tmp",
+      "workspaces",
+    ].includes(runtimeRoot)
+  ) {
+    return false;
+  }
+  return isPreservedReviewerPath(rel, preservePaths);
+}
+
+function isPreservedReviewerPath(rel: string, preservePaths: Set<string>): boolean {
+  const normalized = normalizeReviewerRelativePath(rel);
+  if (!normalized) return false;
+  if (preservePaths.has(normalized)) return true;
+  const prefix = `${normalized}/`;
+  for (const preserved of preservePaths) {
+    if (preserved.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function extractDiffTouchedPaths(diff: string): Set<string> {
+  const paths = new Set<string>();
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      for (const path of parseDiffGitHeaderPaths(line)) {
+        addReviewerPreservePath(paths, path);
+      }
+    } else if (line.startsWith("rename from ")) {
+      addReviewerPreservePath(paths, line.slice("rename from ".length).trim());
+    } else if (line.startsWith("rename to ")) {
+      addReviewerPreservePath(paths, line.slice("rename to ".length).trim());
+    }
+  }
+  return paths;
+}
+
+function parseDiffGitHeaderPaths(line: string): string[] {
+  const rest = line.slice("diff --git ".length);
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < rest.length && tokens.length < 2) {
+    while (rest[i] === " ") i += 1;
+    if (i >= rest.length) break;
+    if (rest[i] === '"') {
+      i += 1;
+      let token = "";
+      while (i < rest.length) {
+        const ch = rest[i] ?? "";
+        if (ch === '"') {
+          i += 1;
+          break;
+        }
+        if (ch === "\\" && i + 1 < rest.length) {
+          token += rest[i + 1] ?? "";
+          i += 2;
+          continue;
+        }
+        token += ch;
+        i += 1;
+      }
+      tokens.push(token);
+    } else {
+      const start = i;
+      while (i < rest.length && rest[i] !== " ") i += 1;
+      tokens.push(rest.slice(start, i));
+    }
+  }
+  return tokens.map((token) => token.replace(/^[ab]\//, ""));
+}
+
+function addReviewerPreservePath(paths: Set<string>, value: string): void {
+  const normalized = normalizeReviewerRelativePath(value);
+  if (normalized) paths.add(normalized);
+}
+
+function normalizeReviewerRelativePath(value: string): string | null {
+  if (!value || value === "/dev/null" || isAbsolute(value)) return null;
+  const normalized = normalize(value).replace(/\\/g, "/");
+  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    return null;
+  }
+  return normalized;
 }
 
 function isCopyableReviewerSymlink(

@@ -6,6 +6,7 @@ import {
   ExternalContextPolicy,
   Id,
   ModeKind,
+  NonBlankString,
   OutputReadyState,
   ProviderFamily,
 } from "./primitives.js";
@@ -52,9 +53,9 @@ export const ControlReviewerPanelEntry = z
   .object({
     /** Explicit reviewer harness id. Repeated harness ids are allowed so one
      * native provider can review through multiple requested models. */
-    harness: Id,
+    harness: NonBlankString,
     /** Optional per-reviewer model hint, passed to that harness only. */
-    model: z.string().min(1).optional(),
+    model: NonBlankString.optional(),
     /** Optional per-reviewer effort hint, passed to that harness only. */
     effort: EffortHint.optional(),
   })
@@ -70,12 +71,12 @@ export const ControlRunStartRequest = z
     mode: ModeKind.default("agent"),
     scope: RunScope.default({ kind: "none" }),
     execution: RunExecution.default({ isolation: "envelope" }),
-    harnesses: z.array(z.string()).optional(),
-    primaryHarness: z.string().optional(),
+    harnesses: z.array(NonBlankString).optional(),
+    primaryHarness: NonBlankString.optional(),
     portfolio: Portfolio.optional(),
-    model: z.string().optional(),
+    model: NonBlankString.optional(),
     effort: EffortHint.optional(),
-    reviewerModels: z.record(ProviderFamily, z.string().min(1)).optional(),
+    reviewerModels: z.record(ProviderFamily, NonBlankString).optional(),
     reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),
     n: z.number().int().positive().optional(),
     attempts: z.number().int().positive().nullable().optional(),
@@ -97,7 +98,7 @@ export const ControlRunStartRequest = z
     /** Opt this run into the agent-driven browser (Playwright MCP). Honored only
      *  for browser-capable harnesses when web policy is not `off`. */
     browser: z.boolean().optional(),
-    tests: z.array(z.string()).optional(),
+    tests: z.array(NonBlankString).optional(),
     /** Typed per-run approval for changing auto-protected gate/test paths. This
      * does not bypass built-in critical/security path human gates. */
     protectedPathApprovals: z.array(ProtectedPathApproval).optional(),
@@ -210,7 +211,7 @@ export const ControlSpecQuestionsRequest = z
         context: RunScopeContext.default("auto"),
       })
       .strict(),
-    harnesses: z.array(z.string()).optional(),
+    harnesses: z.array(NonBlankString).optional(),
     /** Already-answered decisions from prior tiers; carried so each round goes
      *  DEEPER instead of re-asking (multi-tier adaptive interview). */
     priorDecisions: z.array(z.object({ question: z.string(), answer: z.string() })).optional(),
@@ -403,6 +404,8 @@ export const ControlRunSummary = z.object({
   primaryHarness: z.string().optional(),
   portfolio: Portfolio.optional(),
   model: z.string().optional(),
+  reviewerPanel: z.array(ControlReviewerPanelEntry).optional(),
+  protectedPathApprovals: z.array(ProtectedPathApproval).optional(),
   n: z.number().int().optional(),
   maxUsd: z.number().nullable().optional(),
   spendUsd: z.number().nullable().optional(),
@@ -709,9 +712,9 @@ export const ControlThreadCreateRequest = z
     mode: ModeKind.optional(),
     workspace: WorkspaceMode.optional(),
     authPreference: AuthPreference.optional(),
-    primaryHarness: z.string().optional(),
+    primaryHarness: NonBlankString.optional(),
     /** Sticky eligible pool for the thread; turns inherit it when unset. */
-    eligibleHarnesses: z.array(z.string()).optional(),
+    eligibleHarnesses: z.array(NonBlankString).optional(),
   })
   .strict();
 export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateRequest>;
@@ -722,8 +725,8 @@ export const ControlThreadUpdateRequest = z
   .object({
     title: z.string().optional(),
     state: ThreadState.optional(),
-    primaryHarness: z.string().nullable().optional(),
-    eligibleHarnesses: z.array(z.string()).optional(),
+    primaryHarness: NonBlankString.nullable().optional(),
+    eligibleHarnesses: z.array(NonBlankString).optional(),
   })
   .strict();
 export type ControlThreadUpdateRequest = z.infer<typeof ControlThreadUpdateRequest>;
@@ -857,14 +860,14 @@ export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 export const ControlHarnessSettingsPatch = z
   .object({
     enabled: z.boolean().optional(),
-    defaultModel: z.string().nullable().optional(),
+    defaultModel: NonBlankString.nullable().optional(),
     effort: EffortHint.nullable().optional(),
     maxTurns: z.number().int().positive().nullable().optional(),
     maxRounds: z.number().int().positive().nullable().optional(),
     maxUsd: z.number().nonnegative().nullable().optional(),
-    toolsAllow: z.array(z.string()).optional(),
-    toolsDeny: z.array(z.string()).optional(),
-    fallbackModel: z.string().nullable().optional(),
+    toolsAllow: z.array(NonBlankString).optional(),
+    toolsDeny: z.array(NonBlankString).optional(),
+    fallbackModel: NonBlankString.nullable().optional(),
     web: ExternalContextPolicy.optional(),
     authPreference: AuthPreference.optional(),
   })
@@ -876,14 +879,14 @@ export const ControlSettingsUpdateRequest = z
     defaultPortfolio: Portfolio.optional(),
     interactionTimeoutMs: z.number().int().positive().optional(),
     routingPolicy: z.enum(["auto", "primary", "portfolio"]).optional(),
-    primaryHarness: z.string().nullable().optional(),
-    defaultModel: z.string().nullable().optional(),
-    eligibleHarnesses: z.array(z.string()).optional(),
+    primaryHarness: NonBlankString.nullable().optional(),
+    defaultModel: NonBlankString.nullable().optional(),
+    eligibleHarnesses: z.array(NonBlankString).optional(),
     envInheritance: z.enum(["mirror_native", "clean"]).optional(),
     maxUsdPerRun: z.number().nonnegative().optional(),
     clearMaxUsdPerRun: z.boolean().optional(),
     authPreference: AuthPreference.optional(),
-    harnesses: z.record(z.string(), ControlHarnessSettingsPatch).optional(),
+    harnesses: z.record(NonBlankString, ControlHarnessSettingsPatch).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

@@ -61,7 +61,7 @@ enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
 // MARK: - Run status
 
 enum RunStatus: String, CaseIterable, Identifiable, Hashable {
-    case queued, running, needsReview, blocked, succeeded, noOp, ungated, reviewNotRun, failed, cancelled, interrupted, exhausted, notConverged, unknown
+    case queued, running, needsReview, blocked, succeeded, noOp, ungated, reviewNotRun, failed, cancelled, interrupted, exhausted, notConverged, stuckNoProgress, unknown
     var id: String { rawValue }
 
     /// Map the control-api / daemon state strings onto a UI status.
@@ -78,6 +78,7 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case "failed", "error": self = .failed
         case "exhausted": self = .exhausted
         case "not_converged", "not-converged": self = .notConverged
+        case "stuck_no_progress", "stuck-no-progress": self = .stuckNoProgress
         case "cancelled", "canceled": self = .cancelled
         case "interrupted": self = .interrupted
         default: self = .unknown
@@ -99,6 +100,7 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .interrupted: return "Interrupted"
         case .exhausted: return "Exhausted"
         case .notConverged: return "Not converged"
+        case .stuckNoProgress: return "Stuck/no progress"
         case .unknown: return "Unknown"
         }
     }
@@ -117,13 +119,14 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .interrupted: return "pause.circle"
         case .exhausted: return "gauge.with.dots.needle.100percent"
         case .notConverged: return "arrow.triangle.2.circlepath.circle"
+        case .stuckNoProgress: return "arrow.triangle.2.circlepath.circle"
         case .unknown: return "questionmark.diamond"
         }
     }
     var color: Color { Theme.status(self) }
     var isActive: Bool { self == .running || self == .queued }
     var isTerminal: Bool { !isActive && self != .unknown }
-    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .exhausted || self == .notConverged || self == .unknown }
+    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .exhausted || self == .notConverged || self == .stuckNoProgress || self == .unknown }
 }
 
 // MARK: - Run modes
@@ -647,6 +650,10 @@ struct TaskRun: Identifiable, Hashable {
     var effectiveAccess: String?
     /** Run-level external web policy (off|auto|cached|live), for honest Retry. */
     var externalContextPolicy: String?
+    /** Deterministic gate commands attached to this run, for honest Retry parity. */
+    var tests: [String] = []
+    var reviewerPanel: [ReviewerPanelEntry]?
+    var protectedPathApprovals: [ProtectedPathApproval]?
     /// Model identity the harness stream actually reported (route evidence).
     var observedModel: String?
     /// Live harness questions awaiting the user (waiting_on_user).

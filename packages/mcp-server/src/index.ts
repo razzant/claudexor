@@ -121,7 +121,8 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   if (tool.name !== "claudexor_status") {
     if (typeof obj.prompt !== "string" || obj.prompt.trim().length === 0) return "prompt must be a non-empty string";
   }
-  if (obj.harness !== undefined && typeof obj.harness !== "string") return "harness must be a string";
+  const harnessError = validateOptionalNonEmptyString(obj.harness, "harness");
+  if (harnessError) return harnessError;
   if (obj.repoPath !== undefined && (typeof obj.repoPath !== "string" || !isAbsolute(obj.repoPath))) return "repoPath must be an absolute path";
   const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
   const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
@@ -174,9 +175,8 @@ function validateEffortMap(value: unknown, name: string): string | null {
 }
 
 function validateRunControls(obj: Record<string, unknown>): string | null {
-  if (obj.primaryHarness !== undefined && typeof obj.primaryHarness !== "string") {
-    return "primaryHarness must be a string";
-  }
+  const primaryHarnessError = validateOptionalNonEmptyString(obj.primaryHarness, "primaryHarness");
+  if (primaryHarnessError) return primaryHarnessError;
   if (obj.web !== undefined && (typeof obj.web !== "string" || !ExternalContextPolicy.safeParse(obj.web).success)) {
     return "web must be a valid external context policy";
   }
@@ -193,7 +193,8 @@ function validateRunControls(obj: Record<string, unknown>): string | null {
   ) {
     return "web and externalContextPolicy must be equal when both are provided";
   }
-  if (obj.model !== undefined && typeof obj.model !== "string") return "model must be a string";
+  const modelError = validateOptionalNonEmptyString(obj.model, "model");
+  if (modelError) return modelError;
   if (obj.effort !== undefined && (typeof obj.effort !== "string" || !EffortHint.safeParse(obj.effort).success)) {
     return "effort must be a valid effort value";
   }
@@ -249,6 +250,12 @@ function validateRunControls(obj: Record<string, unknown>): string | null {
   return null;
 }
 
+function validateOptionalNonEmptyString(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.trim() === "") return `${name} must be a non-empty string`;
+  return null;
+}
+
 export type RunnerFn = (params: any) => Promise<unknown>;
 
 /**
@@ -287,9 +294,9 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     additionalProperties: false,
     properties: {
       prompt: { type: "string", minLength: 1, pattern: "\\S", description: "The user task or question to run through Claudexor." },
-      harness: { type: "string", description: "Optional harness id to force for this one-shot run." },
-      primaryHarness: { type: "string", description: "Optional primary harness id for this run." },
-      model: { type: "string", description: "Optional model override for the primary harness." },
+      harness: { type: "string", minLength: 1, description: "Optional harness id to force for this one-shot run." },
+      primaryHarness: { type: "string", minLength: 1, description: "Optional primary harness id for this run." },
+      model: { type: "string", minLength: 1, description: "Optional model override for the primary harness." },
       effort: { type: "string", enum: EffortHint.options, description: "Optional effort override for the primary harness." },
       web: { type: "string", enum: ExternalContextPolicy.options, description: "External context policy for this run." },
       externalContextPolicy: { type: "string", enum: ExternalContextPolicy.options, description: "Alias of web for control-api parity." },
@@ -304,6 +311,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       },
       reviewerPanel: {
         type: "array",
+        minItems: 1,
         description: "Explicit reviewer panel entries, preserving order and duplicates.",
         items: {
           type: "object",

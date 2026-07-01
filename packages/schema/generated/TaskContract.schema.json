@@ -215,11 +215,11 @@
                 "properties": {
                   "path": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "pattern": "\\S"
                   },
                   "reason": {
-                    "type": "string",
-                    "minLength": 1
+                    "$ref": "#/definitions/TaskContract/properties/constraints/properties/protected_path_approvals/items/properties/path"
                   }
                 },
                 "required": [

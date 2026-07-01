@@ -149,6 +149,35 @@ describe("evidence packet", () => {
     expect(existsSync(join(dir, "DIFF_SUMMARY.md"))).toBe(false);
   });
 
+  it("redacts secret-like tokens from prose evidence packet files", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
+    writeEvidencePacket(dir, {
+      userIntent: `Use ${fakeKey} in the repro`,
+      forbiddenFindings: `Do not ignore ${fakeKey}`,
+      planAccepted: `## Plan\nCheck ${fakeKey}`,
+      diff: "diff --git a/x b/x\n",
+      filesToReadWhole: [`docs/${fakeKey}.md`],
+      tests: `TOKEN=${fakeKey} pnpm test`,
+      decidedTradeoffs: `Accepted ${fakeKey}`,
+      runtime: `stdout ${fakeKey}`,
+    });
+
+    for (const file of [
+      "USER_INTENT.md",
+      "FORBIDDEN_FINDINGS.md",
+      "PLAN_ACCEPTED.md",
+      "FILES_TO_READ_WHOLE.txt",
+      "TESTS.txt",
+      "DECIDED_TRADEOFFS.md",
+      "RUNTIME.md",
+    ]) {
+      const text = readFileSync(join(dir, file), "utf8");
+      expect(text).not.toContain(fakeKey);
+      expect(text).toContain("[redacted]");
+    }
+  });
+
   it("reports raw patch stats in the redacted diff summary", () => {
     const dir = join(tmp(), ".adversarial-review");
     const diff = `diff --git a/config.example b/config.example\n@@ -1 +1 @@\n-OLD=1\n+TOKEN=example-value\n`;

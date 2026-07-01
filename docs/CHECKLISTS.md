@@ -156,6 +156,9 @@ pnpm test
   `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each
   finding against the code, and record the decision table. Unresolved accepted
   findings block the release.
+- If the cumulative diff is too large for an exact OpenRouter reviewer, lower
+  only `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
+  downgrade or substitute the required review models.
 - Local app package artifacts are labeled honestly as signed/notarized or
   unsigned; they are smoke artifacts only.
 - Final DMG/ZIP release assets are produced by GitHub Actions from the committed

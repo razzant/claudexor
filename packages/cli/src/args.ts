@@ -56,11 +56,16 @@ export function flagStr(args: ParsedArgs, key: string): string | undefined {
 }
 
 export function flagStringList(args: ParsedArgs, key: string): string[] {
-  return flagValues(args, key)
-    .filter((v): v is string => typeof v === "string")
-    .flatMap((v) => v.split(","))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const out: string[] = [];
+  for (const value of flagValues(args, key)) {
+    if (typeof value !== "string") continue;
+    for (const part of value.split(",")) {
+      const token = part.trim();
+      if (!token) throw new Error(`invalid --${key} value (empty comma-separated entry)`);
+      out.push(token);
+    }
+  }
+  return out;
 }
 
 export function flagBool(args: ParsedArgs, key: string): boolean {

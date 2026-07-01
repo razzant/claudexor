@@ -123,11 +123,13 @@
         "harnesses": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
           }
         },
         "primaryHarness": {
-          "type": "string"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
         },
         "portfolio": {
           "type": "string",
@@ -144,7 +146,7 @@
           ]
         },
         "model": {
-          "type": "string"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
         },
         "effort": {
           "type": "string",
@@ -159,8 +161,7 @@
         "reviewerModels": {
           "type": "object",
           "additionalProperties": {
-            "type": "string",
-            "minLength": 1
+            "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
           },
           "propertyNames": {
             "enum": [
@@ -266,7 +267,7 @@
         "tests": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
           }
         },
         "protectedPathApprovals": {
@@ -275,12 +276,10 @@
             "type": "object",
             "properties": {
               "path": {
-                "type": "string",
-                "minLength": 1
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
               },
               "reason": {
-                "type": "string",
-                "minLength": 1
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
               }
             },
             "required": [
@@ -321,11 +320,10 @@
             "type": "object",
             "properties": {
               "harness": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
               },
               "model": {
-                "type": "string",
-                "minLength": 1
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
               },
               "effort": {
                 "$ref": "#/definitions/ControlRunStartRequest/properties/effort"

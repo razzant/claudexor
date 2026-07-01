@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { AccessProfile, DirtyPolicy, ExternalContextPolicy, Id, IsoTimestamp, ModeKind, SchemaVersion } from "./primitives.js";
+import {
+  AccessProfile,
+  DirtyPolicy,
+  ExternalContextPolicy,
+  Id,
+  IsoTimestamp,
+  ModeKind,
+  NonBlankString,
+  SchemaVersion,
+} from "./primitives.js";
 import { Portfolio } from "./budget.js";
 
 export const SuccessCriterion = z.object({
@@ -20,8 +29,8 @@ export const ProtectedPathApproval = z
   .object({
     /** Glob approved by the operator/user for this run; consumed only by the
      * auto-protected gate/test path policy, not by built-in critical-path gates. */
-    path: z.string().min(1),
-    reason: z.string().min(1).optional(),
+    path: NonBlankString,
+    reason: NonBlankString.optional(),
   })
   .strict();
 export type ProtectedPathApproval = z.infer<typeof ProtectedPathApproval>;

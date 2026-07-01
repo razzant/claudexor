@@ -653,6 +653,9 @@ final class AppModel {
         task.requestedAccess = s.requestedAccess
         task.effectiveAccess = s.effectiveAccess
         task.externalContextPolicy = s.externalContextPolicy
+        task.tests = s.tests ?? []
+        task.reviewerPanel = s.reviewerPanel
+        task.protectedPathApprovals = s.protectedPathApprovals
         // Surfaces project engine telemetry only: when the artifact is absent
         // (legacy / mid-run) the UI says "telemetry unavailable", never a guess.
         if s.webEvidence?.available == false {
@@ -690,7 +693,9 @@ final class AppModel {
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
                   portfolio: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", web: String = "auto",
-                  tests: [String] = [], repoRootOverride: String? = nil) async {
+                  tests: [String] = [], reviewerPanel: [ReviewerPanelEntry]? = nil,
+                  protectedPathApprovals: [ProtectedPathApproval]? = nil,
+                  repoRootOverride: String? = nil) async {
         guard mode != .unknown else {
             settingsStatus = "This run used a legacy mode id the engine no longer accepts; relaunch it with a current intent."
             return
@@ -724,6 +729,9 @@ final class AppModel {
             isLive: true
         )
         optimistic.repoRoot = launchRepoRoot.isEmpty ? nil : launchRepoRoot
+        optimistic.tests = tests
+        optimistic.reviewerPanel = reviewerPanel
+        optimistic.protectedPathApprovals = protectedPathApprovals
         liveTasks.insert(optimistic, at: 0)
         route = .task(optimistic.id)
 
@@ -749,10 +757,12 @@ final class AppModel {
                                       primaryHarness: primary?.rawValue,
                                       portfolio: portfolio,
                                       model: model?.isEmpty == false ? model : nil,
+                                      reviewerPanel: reviewerPanel,
                                       n: mode == .bestOfN ? max(n, flags.defaultN ?? 2) : nil,
                                       maxUsd: capUsd, access: access,
                                       web: web,
                                       tests: tests.isEmpty ? nil : tests,
+                                      protectedPathApprovals: protectedPathApprovals,
                                       attempts: mode == .maxAttempts ? 3 : nil,
                                       untilClean: flags.untilClean ? true : nil,
                                       swarm: flags.swarm ? true : nil,
@@ -774,6 +784,9 @@ final class AppModel {
                         isLive: true)
                     started.runDir = info.runDir
                     started.repoRoot = prev.repoRoot
+                    started.tests = prev.tests
+                    started.reviewerPanel = prev.reviewerPanel
+                    started.protectedPathApprovals = prev.protectedPathApprovals
                     liveTasks[idx] = started
                     route = .task(info.runId)
                     stream(runId: info.runId)
@@ -796,6 +809,9 @@ final class AppModel {
                         row.diagnosticText = error
                     }
                     row.repoRoot = prev.repoRoot
+                    row.tests = prev.tests
+                    row.reviewerPanel = prev.reviewerPanel
+                    row.protectedPathApprovals = prev.protectedPathApprovals
                     liveTasks[idx] = row
                     route = .task(info.jobId)
                 }
@@ -896,6 +912,19 @@ final class AppModel {
     func threadRepoRoot(_ tid: String) -> String? {
         if tid == selectedThreadId, let d = selectedThreadDetail { return d.thread.repoRoot }
         return threads.first { $0.id == tid }?.repoRoot
+    }
+
+    /// The eligible pool bound to a SPECIFIC thread, not live selection. Used by
+    /// card actions that carry their owning thread id and may run after selection
+    /// changes.
+    func threadEligiblePool(_ tid: String) -> [String] {
+        if tid == selectedThreadId, let d = selectedThreadDetail {
+            let sticky = d.thread.eligibleHarnesses ?? []
+            if !sticky.isEmpty { return sticky }
+        }
+        let sticky = threads.first { $0.id == tid }?.eligibleHarnesses ?? []
+        if !sticky.isEmpty { return sticky }
+        return settingsSnapshot?.routing.eligibleHarnesses ?? []
     }
 
     /// The selected thread's HEAD turn runId — the CANCEL target. Present as soon
@@ -1357,10 +1386,9 @@ final class AppModel {
         // Bound to the OWNING thread (passed by the card), not live selection — a
         // thread switch during the freeze can't mis-apply or drop the answers.
         guard case .askingQuestions(let prompt, let questions, let planDir, let planRunId, _, _) = specFlowByThread[tid] else { return }
-        let repoRoot = threadRepoRoot(tid)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? normalizedProjectRoot
-        guard !repoRoot.isEmpty else {
-            setSpecFlow(.error("Spec needs a project — the thread has no repo."), for: tid)
+        guard let repoRoot = threadRepoRoot(tid)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !repoRoot.isEmpty else {
+            setSpecFlow(.error("Spec needs a project — the owning thread has no repo."), for: tid)
             return
         }
         // A fresh generation supersedes any in-flight freeze for this thread.
@@ -1387,12 +1415,15 @@ final class AppModel {
     func askDeeperSpec(threadId tid: String, decisions: [SpecPriorDecision]) async {
         guard let client else { setSpecFlow(.error("Engine offline — reconnect before continuing."), for: tid); return }
         guard case .askingQuestions(let prompt, _, _, _, _, _) = specFlowByThread[tid] else { return }
-        let repoRoot = currentThread?.repoRoot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedProjectRoot
-        guard !repoRoot.isEmpty else { setSpecFlow(.error("Spec needs a project."), for: tid); return }
+        guard let repoRoot = threadRepoRoot(tid)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !repoRoot.isEmpty else {
+            setSpecFlow(.error("Spec needs a project — the owning thread has no repo."), for: tid)
+            return
+        }
         specPrior[tid] = (specPrior[tid] ?? []) + decisions
         let gen = nextSpecGen(tid)
         setSpecFlow(.grounding, for: tid)  // re-grounding the repo for the deeper tier (minutes)
-        let pool = effectiveEligiblePool
+        let pool = threadEligiblePool(tid)
         do {
             let res = try await client.specQuestions(
                 SpecQuestionsRequest(prompt: prompt, scope: .project(root: repoRoot),
@@ -1645,6 +1676,9 @@ final class AppModel {
             task.requestedAccess = detail.summary.requestedAccess
             task.effectiveAccess = detail.summary.effectiveAccess
             task.externalContextPolicy = detail.summary.externalContextPolicy
+            task.tests = detail.summary.tests ?? task.tests
+            task.reviewerPanel = detail.summary.reviewerPanel
+            task.protectedPathApprovals = detail.summary.protectedPathApprovals
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
                 task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
@@ -2047,6 +2081,7 @@ final class AppModel {
         case .reviewNotRun: Notifier.post(title: "Review not run", body: title)
         case .exhausted: Notifier.post(title: "Run exhausted", body: title)
         case .notConverged: Notifier.post(title: "Run did not converge", body: title)
+        case .stuckNoProgress: Notifier.post(title: "Run stuck with no progress", body: title)
         case .unknown: Notifier.post(title: "Run status unknown", body: title)
         default: break
         }
