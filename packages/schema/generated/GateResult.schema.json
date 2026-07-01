@@ -38,6 +38,24 @@
         "required": {
           "type": "boolean",
           "default": true
+        },
+        "stdout_tail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "stderr_tail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "output_truncated": {
+          "type": "boolean",
+          "default": false
         }
       },
       "required": [

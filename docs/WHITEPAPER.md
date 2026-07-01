@@ -49,13 +49,19 @@ then an ordinary agent turn carrying that frozen spec, so the agent works agains
 the contract — including the user's recorded choices — not a re-derived prompt. The app is a thin driver over the existing
 server-owned `/spec/questions` → `/spec/freeze` endpoints — it never composes the
 spec or its path itself — and Spec stays a UI intent that maps onto the engine's
-read-only plan/spec surface, not a new wire mode. Spec is single-tier in v1: one
-freeze, no spec-version ladder.
+read-only plan/spec surface, not a new wire mode. The interview is multi-tier:
+each `/spec/questions` round carries prior answers so the next plan can go
+deeper on unresolved choices. Freeze remains a single contract commit for v1:
+after `/spec/freeze` there is no spec-version ladder.
 
-Auth is subscription-first and honest: native codex/claude sessions are seeded
-into envelopes so a Max/Pro user with NO API key is fully routable; explicit
-`subscription`/`api_key` preferences fall back with a typed
-`route.fallback.auth_switched` disclosure, never silently. Secret I/O defaults to
+Auth is subscription-first where that route is readiness-proven: native
+codex/claude sessions are seeded into envelopes so a Max/Pro user with NO API
+key is fully routable. Cursor keeps normal `auto` runs native-first, may prefer
+its smoke-proven API-key route only for scoped/envelope `auto` runs, and
+discloses that paid-route choice when native Cursor auth also exists. Explicit
+`subscription` fails closed when native Cursor auth is not ready; explicit
+`api_key` may fall back to native only with a typed `route.fallback.auth_switched`
+disclosure, never silently. Secret I/O defaults to
 the OS Keychain (or a `0600` file); `CLAUDEXOR_SECRETS_BACKEND=file` forces the
 file store so a sandboxed run or test never touches the real login Keychain, and
 an invalid value fails loudly. Read-only run lookups (`inspect`/`apply`) never

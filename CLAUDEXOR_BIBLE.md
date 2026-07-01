@@ -85,12 +85,19 @@ winners, and tests-passed must be determined by typed contracts, settings,
 events, gates, or reviewer evidence, not ad hoc string matching over model text.
 Protected gate/test paths are contract evidence: when a deterministic gate is
 configured, edits to the protected test/gate surface produce deterministic policy
-findings before any model can claim the run is clean.
+findings before any model can claim the run is clean. Explicit test-authoring
+work can approve the relevant protected globs through a typed run field (CLI:
+`--allow-protected-path`); this narrows the gate/test-path policy only and never
+bypasses built-in critical/security human gates.
 
 ## 6. Secrets Never Become Artifacts
 
-Native harness auth is preferred. API keys are fallback secret refs stored in
-Keychain or a `0600` store. Raw secrets must not appear in run params,
+Native harness auth is preferred only when doctor proves that route for the
+active context; API keys are fallback secret refs stored in Keychain or a `0600`
+store. Cursor keeps normal `auto` runs native-first and may prefer the
+smoke-proven API-key route only for scoped/envelope `auto` runs, while still
+honoring explicit `subscription`; that paid-route choice is typed-disclosed when
+a native route also exists. Raw secrets must not appear in run params,
 `jobs.json`, task contracts, events, summaries, patches, PR text, logs, or docs.
 Scoped harness homes/config dirs stay outside the mutation worktree.
 

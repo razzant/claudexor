@@ -33,9 +33,10 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 // MARK: - SPEC-FLOW state
 
 /// The client-side state of the SPEC-FLOW for the CURRENT thread (questions →
-/// answers → freeze → implement). v1 is single-tier: the server runs the
-/// grounding plan, returns one interview, and freezes on the answers. The flow
-/// is keyed to a thread id so switching threads never shows a stale spec card.
+/// answers → deeper questions → freeze → implement). The interview is multi-tier
+/// via `priorDecisions`; the frozen SpecPack remains one immutable contract
+/// commit. The flow is keyed to a thread id so switching threads never shows a
+/// stale spec card.
 enum SpecFlowState: Equatable {
     /// The grounding plan is running (pre-questions): /spec/questions is in flight,
     /// reading the repo to derive the interview. NOTHING is frozen yet — this is a
@@ -1218,12 +1219,14 @@ final class AppModel {
                 maxUsd: options.maxUsd,
                 // Per-turn model override (empty = harness default → don't send the key).
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
+                reviewerPanel: options.reviewerPanel,
                 access: writeMode ? options.access : nil,
                 web: options.web,
                 browser: options.browser ? true : nil,
                 planRunId: planRunId,
                 specPath: specPath,
-                attachments: attachments.isEmpty ? nil : attachments
+                attachments: attachments.isEmpty ? nil : attachments,
+                protectedPathApprovals: options.protectedPathApprovals
             ))
         } catch {
             threadStatus = userMessage(for: error)

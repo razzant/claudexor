@@ -164,7 +164,15 @@ OpenCode harness availability and smoke status.
 Harness readiness is route/context-specific: doctor output distinguishes static
 auth source availability from smoke-proven routes, and manifests declare the
 credential transport plus containment strategy. A key string alone is degraded
-until the adapter proves the exact CLI/auth/isolation path it will use.
+until the adapter proves the exact CLI/auth/isolation path it will use. Cursor
+keeps normal non-scoped `auto` runs on the native session when available, while
+scoped/envelope `auto` may prefer the API-key route only after that key is
+smoke-proven. Explicit `subscription` keeps native-session routing and fails
+closed when native Cursor auth is unavailable rather than falling back to an API
+key. When both
+Cursor sources exist and scoped `auto` selects the API-key route, the adapter
+also emits a typed `readiness_preferred` disclosure so clients can show the
+billing/readiness tradeoff.
 
 ## ACP
 
@@ -222,5 +230,9 @@ Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
 - No regex governance for risk, permissions, tool success, web-required
   detection, winners, or tests-passed. Use typed contracts, settings, events,
   gates, artifacts, and reviewer evidence.
+- When a client intentionally starts test-authoring work that edits existing
+  protected gate/test files, it should pass `protectedPathApprovals` on the run
+  request instead of inferring approval from prompt prose or from frozen
+  SpecPack/config state.
 - Integrations should display beta limitations instead of silently falling back
   to another harness or another mode.

@@ -302,6 +302,8 @@ struct TurnOptions: Equatable {
     var untilClean: Bool = false
     var maxAttempts: Int? = nil        // nil => engine default repair cap
     var browser: Bool = false          // arm the agent-driven browser (full access)
+    var reviewerPanel: [ReviewerPanelEntry]? = nil
+    var protectedPathApprovals: [ProtectedPathApproval]? = nil
 }
 
 // MARK: - Phase pipeline
@@ -758,4 +760,3 @@ struct HarnessAvailability: Hashable {
     var intent: String
     var info: HarnessInfo?
 }
-

@@ -100,6 +100,41 @@
           "additionalProperties": false,
           "default": {}
         },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "reviewerTimeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": true,
+              "minimum": 0,
+              "default": 600000
+            },
+            "transientRetry": {
+              "type": "object",
+              "properties": {
+                "maxRetries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 2
+                },
+                "initialDelayMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 1000
+                },
+                "maxDelayMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 10000
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {

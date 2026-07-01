@@ -6,8 +6,25 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
-import { DELIVER_MODES, type DeliverMode, checkPatch, deliver, validateApplyGate } from "@claudexor/delivery";
-import { assertNoInlineSecretValues, CLAUDEXOR_VERSION, containsSecretLikeToken, ensureDir, newId, noProjectRepoRoot, readTextSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
+import {
+  DELIVER_MODES,
+  type DeliverMode,
+  checkPatch,
+  deliver,
+  validateApplyGate,
+} from "@claudexor/delivery";
+import {
+  assertNoInlineSecretValues,
+  CLAUDEXOR_VERSION,
+  containsSecretLikeToken,
+  ensureDir,
+  newId,
+  noProjectRepoRoot,
+  readTextSafe,
+  sha256,
+  userConfigDir,
+  writeJson,
+} from "@claudexor/util";
 import { checkName } from "./release.js";
 import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
@@ -19,21 +36,51 @@ import {
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,
+  type ProtectedPathApproval,
+  type ControlReviewerPanelEntry,
   type Attachment,
+  ControlSettingsSnapshot,
   ModeKind as ModeKindSchema,
   type OrchestrateAutonomy,
   Portfolio,
   type ModeKind,
+  type ProviderFamily,
   RunTelemetry,
   TaskContract,
   WorkProduct,
 } from "@claudexor/schema";
-import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, parseArgs, requiredStringFlagError, type ParsedArgs } from "./args.js";
+import {
+  commandAllowedFlagError,
+  commandScopedFlagError,
+  flagBool,
+  flagStr,
+  flagStringList,
+  flagValues,
+  parseArgs,
+  requiredStringFlagError,
+  type ParsedArgs,
+} from "./args.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
-import { connectDaemonIfRunning, daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, exitCodeForState, waitForDaemonReady } from "./daemon-run.js";
+import {
+  connectDaemonIfRunning,
+  daemonOutcomeSummary,
+  ensureDaemon,
+  enqueueAndAwait,
+  exitCodeForState,
+  waitForDaemonReady,
+} from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
-import { PLUGIN_TARGETS, PLUGIN_VERBS, formatPluginResult, pluginCommandErrorResult, runPluginCommand, type PluginTarget, type PluginVerb } from "./plugins.js";
+import {
+  PLUGIN_TARGETS,
+  PLUGIN_VERBS,
+  formatPluginResult,
+  pluginCommandErrorResult,
+  runPluginCommand,
+  type PluginTarget,
+  type PluginVerb,
+} from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { daemonRuntimeDiffLines } from "./settings-display.js";
 import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
@@ -41,39 +88,77 @@ import {
   loadPreviousSpec,
   persistSpec,
   readAnswers,
+  resolveRunTestCommands,
   type SpecCommandResult,
 } from "./spec.js";
-import { parseReviewerEffortMap, parseReviewerModelMap } from "./reviewer-options.js";
 import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
+import {
+  parseProtectedPathApprovalFlags,
+  parseReviewerEffortFlags,
+  parseReviewerModelFlags,
+  parseReviewerPanelFlags,
+} from "./run-options.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function orchestratorRunner() {
-  const orch = new Orchestrator({ registry: buildRegistry() });
-  return async (p: any, hooks?: { onEvent?: (event: any) => void; onInteraction?: (ctx: any) => Promise<any | null>; signal?: AbortSignal }) => {
+  const registry = buildRegistry();
+  const orch = new Orchestrator({ registry });
+  return async (
+    p: any,
+    hooks?: {
+      onEvent?: (event: any) => void;
+      onInteraction?: (ctx: any) => Promise<any | null>;
+      signal?: AbortSignal;
+    },
+  ) => {
     if (p?.mode === "__status") {
       // Doctor-backed truth (probe-cheap): fakes and unavailable harnesses are
       // never presented as available tools to an MCP host.
-      const statuses = await buildGateway({ includeFakes: false }).statusAll({ cwd: process.cwd() });
+      const statuses = await buildGateway({ includeFakes: false }).statusAll({
+        cwd: process.cwd(),
+      });
       return {
         harnesses: statuses.map((s) => ({ id: s.id, status: s.status, intents: s.enabledIntents })),
         available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
       };
     }
-    return orch.run({
+    const reviewerPanel = Array.isArray(p?.reviewerPanel) ? p.reviewerPanel : undefined;
+    const reviewerModels =
+      p?.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined;
+    const reviewerEfforts =
+      p?.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined;
+    const runner =
+      reviewerPanel || reviewerModels || reviewerEfforts
+        ? new Orchestrator({
+            registry,
+            reviewerPanel,
+            reviewerModels,
+            reviewerEfforts,
+          })
+        : orch;
+    return runner.run({
       repoRoot: typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd(),
       prompt: String(p?.prompt ?? ""),
       mode: p?.mode ?? "agent",
       harnesses: p?.harness ? [String(p.harness)] : undefined,
       primaryHarness: p?.primaryHarness ? String(p.primaryHarness) : undefined,
       web: p?.web ? ExternalContextPolicy.parse(String(p.web)) : undefined,
-      externalContextPolicy: p?.externalContextPolicy ? ExternalContextPolicy.parse(String(p.externalContextPolicy)) : undefined,
+      externalContextPolicy: p?.externalContextPolicy
+        ? ExternalContextPolicy.parse(String(p.externalContextPolicy))
+        : undefined,
       model: p?.model ? String(p.model) : undefined,
       effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
       n: typeof p?.n === "number" ? p.n : p?.race === true ? 2 : undefined,
       untilClean: p?.untilClean === true,
       swarm: p?.swarm === true,
       create: p?.create === true,
+      tests: Array.isArray(p?.tests) ? p.tests.map(String) : undefined,
+      maxUsd: typeof p?.maxUsd === "number" ? p.maxUsd : undefined,
+      access: p?.access ? accessProfile(parseArgs(["run", "--access", String(p.access)])) : undefined,
+      protectedPathApprovals: Array.isArray(p?.protectedPathApprovals)
+        ? p.protectedPathApprovals
+        : undefined,
       onEvent: hooks?.onEvent,
       onInteraction: hooks?.onInteraction,
       signal: hooks?.signal,
@@ -130,8 +215,10 @@ Options:
   --create                 Create-from-scratch intent (agent)
   --autonomy <level>       Orchestrate: how much the brain may act without confirmation:
                            suggest (default, read-only plan) | auto_safe | auto_full
-  --test "<cmd>"           Deterministic gate command(s); multiple via ';;' separator
+  --test "<cmd>"           Deterministic gate command(s); repeat flag or separate with ';;'
+  --allow-protected-path <glob[,glob...]>  Explicitly approve protected gate/test path changes for this run
   --max-usd <amount>       Hard per-run spend cap (USD)
+  --reviewer-panel <list>  Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
   --access <profile>       Access profile: readonly|workspace_write|full|external_sandbox_full|inherit_native
@@ -167,8 +254,8 @@ function normalizeMode(s: string): ModeKind {
 }
 
 function harnessList(args: ParsedArgs): string[] | undefined {
-  const h = flagStr(args, "harness");
-  return h ? h.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const values = flagStringList(args, "harness");
+  return values.length > 0 ? values : undefined;
 }
 
 /** Invalid numeric flag values FAIL LOUDLY: `--n abc` must never silently run with the default. */
@@ -176,7 +263,8 @@ function intFlag(args: ParsedArgs, key: string): number | undefined {
   const v = flagStr(args, key);
   if (v === undefined) return undefined;
   const n = Number.parseInt(v, 10);
-  if (!Number.isFinite(n) || String(n) !== v.trim()) throw new Error(`invalid --${key} '${v}' (expected an integer)`);
+  if (!Number.isFinite(n) || String(n) !== v.trim())
+    throw new Error(`invalid --${key} '${v}' (expected an integer)`);
   return n;
 }
 
@@ -185,25 +273,50 @@ function floatFlag(args: ParsedArgs, key: string): number | undefined {
   if (v === undefined) return undefined;
   // Number() parses the WHOLE string ('1abc' -> NaN), unlike parseFloat.
   const n = Number(v.trim());
-  if (!Number.isFinite(n) || n < 0 || v.trim() === "") throw new Error(`invalid --${key} '${v}' (expected a non-negative number)`);
+  if (!Number.isFinite(n) || n < 0 || v.trim() === "")
+    throw new Error(`invalid --${key} '${v}' (expected a non-negative number)`);
   return n;
 }
 
-/** Deterministic gate commands from `--test "<cmd>"`; multiple via `;;` separator. */
+/** Deterministic gate commands from `--test "<cmd>"`; repeat flag or separate with `;;`. */
 function testCommands(args: ParsedArgs): string[] | undefined {
-  const v = flagStr(args, "test");
-  if (v === undefined) return undefined;
-  return v.split(";;").map((s) => s.trim()).filter(Boolean);
+  const values = flagValues(args, "test").filter((v): v is string => typeof v === "string");
+  if (values.length === 0) return undefined;
+  return values
+    .flatMap((v) => v.split(";;"))
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-const ACCESS_PROFILES = new Set(["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"]);
+/** Typed approval for protected gate/test path changes; never inferred from prompt text. */
+function protectedPathApprovals(args: ParsedArgs): ProtectedPathApproval[] | undefined {
+  return parseProtectedPathApprovalFlags(flagValues(args, "allow-protected-path"));
+}
+
+const ACCESS_PROFILES = new Set([
+  "readonly",
+  "workspace_write",
+  "full",
+  "external_sandbox_full",
+  "inherit_native",
+]);
 
 /** Access profile from `--access`. Invalid profiles FAIL LOUDLY (a typo must never silently run with the default write profile). */
-function accessProfile(args: ParsedArgs): "readonly" | "workspace_write" | "full" | "external_sandbox_full" | "inherit_native" | undefined {
+function accessProfile(
+  args: ParsedArgs,
+):
+  | "readonly"
+  | "workspace_write"
+  | "full"
+  | "external_sandbox_full"
+  | "inherit_native"
+  | undefined {
   const v = flagStr(args, "access");
   if (v === undefined) return undefined;
   if (!ACCESS_PROFILES.has(v)) {
-    throw new Error(`invalid --access '${v}' (expected readonly|workspace_write|full|external_sandbox_full|inherit_native)`);
+    throw new Error(
+      `invalid --access '${v}' (expected readonly|workspace_write|full|external_sandbox_full|inherit_native)`,
+    );
   }
   return v as never;
 }
@@ -212,7 +325,8 @@ function effortHint(args: ParsedArgs): EffortHint | undefined {
   const v = flagStr(args, "effort");
   if (v === undefined) return undefined;
   const parsed = EffortHint.safeParse(v);
-  if (!parsed.success) throw new Error(`invalid --effort '${v}' (expected low|medium|high|xhigh|max)`);
+  if (!parsed.success)
+    throw new Error(`invalid --effort '${v}' (expected low|medium|high|xhigh|max)`);
   return parsed.data;
 }
 
@@ -235,34 +349,39 @@ function webPolicy(args: ParsedArgs): "off" | "auto" | "cached" | "live" | undef
 
 function attachmentPaths(args: ParsedArgs): { path: string; forceImage: boolean }[] {
   const values: { path: string; forceImage: boolean }[] = [];
-  for (const [key, forceImage] of [["attach", false], ["image", true]] as const) {
-    const raw = flagStr(args, key);
-    if (!raw) continue;
-    for (const piece of raw.split(",")) {
-      const path = piece.trim();
-      if (path) values.push({ path, forceImage });
-    }
+  for (const [key, forceImage] of [
+    ["attach", false],
+    ["image", true],
+  ] as const) {
+    for (const path of flagStringList(args, key)) values.push({ path, forceImage });
   }
   return values;
 }
 
 function imageMimeFor(path: string): string | null {
   switch (extname(path).toLowerCase()) {
-    case ".png": return "image/png";
+    case ".png":
+      return "image/png";
     case ".jpg":
-    case ".jpeg": return "image/jpeg";
-    case ".gif": return "image/gif";
-    case ".webp": return "image/webp";
-    default: return null;
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
   }
 }
 
-function attachmentInputs(args: ParsedArgs): { kind: "image" | "file"; mime: string; name: string; path: string }[] | undefined {
+function attachmentInputs(
+  args: ParsedArgs,
+): { kind: "image" | "file"; mime: string; name: string; path: string }[] | undefined {
   const out = attachmentPaths(args).map(({ path, forceImage }) => {
     const resolved = resolve(path);
     if (!existsSync(resolved)) throw new Error(`attachment not found: ${path}`);
     const imageMime = imageMimeFor(resolved);
-    const kind = forceImage || imageMime ? "image" as const : "file" as const;
+    const kind = forceImage || imageMime ? ("image" as const) : ("file" as const);
     return {
       kind,
       mime: imageMime ?? "application/octet-stream",
@@ -273,7 +392,9 @@ function attachmentInputs(args: ParsedArgs): { kind: "image" | "file"; mime: str
   return out.length > 0 ? out : undefined;
 }
 
-function attachmentsFromInputs(inputs: ReturnType<typeof attachmentInputs>): Attachment[] | undefined {
+function attachmentsFromInputs(
+  inputs: ReturnType<typeof attachmentInputs>,
+): Attachment[] | undefined {
   return inputs?.map((a) => ({
     id: newId("att"),
     kind: a.kind,
@@ -284,13 +405,20 @@ function attachmentsFromInputs(inputs: ReturnType<typeof attachmentInputs>): Att
 }
 
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. Fails loudly on malformed input. */
-function reviewerModels(args: ParsedArgs): Record<string, string> | undefined {
-  return parseReviewerModelMap(flagStr(args, "reviewer-model"));
+function reviewerModels(args: ParsedArgs): Partial<Record<ProviderFamily, string>> | undefined {
+  return parseReviewerModelFlags(flagValues(args, "reviewer-model"));
 }
 
 /** Per-family reviewer effort map from `--reviewer-effort "openai=xhigh,anthropic=high"`. */
-function reviewerEfforts(args: ParsedArgs): Record<string, EffortHint> | undefined {
-  return parseReviewerEffortMap(flagStr(args, "reviewer-effort"));
+function reviewerEfforts(
+  args: ParsedArgs,
+): Partial<Record<ProviderFamily, EffortHint>> | undefined {
+  return parseReviewerEffortFlags(flagValues(args, "reviewer-effort"));
+}
+
+/** Ordered explicit reviewer panel from `--reviewer-panel "claude=claude-opus-4-8:max,cursor=gpt-5.5-extra-high"`. */
+function reviewerPanel(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
+  return parseReviewerPanelFlags(flagValues(args, "reviewer-panel"));
 }
 
 async function orchestrate(
@@ -320,13 +448,19 @@ async function orchestrate(
         loadedSpec.spec.summary || "(none)",
         "",
         "## Acceptance Criteria",
-        ...(loadedSpec.spec.success_criteria.length ? loadedSpec.spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`) : ["- (none)"]),
+        ...(loadedSpec.spec.success_criteria.length
+          ? loadedSpec.spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`)
+          : ["- (none)"]),
         "",
         "## Non-goals",
-        ...(loadedSpec.spec.non_goals.length ? loadedSpec.spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),
+        ...(loadedSpec.spec.non_goals.length
+          ? loadedSpec.spec.non_goals.map((x) => `- ${x}`)
+          : ["- (none)"]),
         "",
         "## Forbidden approaches",
-        ...(loadedSpec.spec.forbidden_approaches.length ? loadedSpec.spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
+        ...(loadedSpec.spec.forbidden_approaches.length
+          ? loadedSpec.spec.forbidden_approaches.map((x) => `- ${x}`)
+          : ["- (none)"]),
       ].join("\n")
     : rawPrompt;
   const spec = loadedSpec?.spec ?? null;
@@ -340,6 +474,7 @@ async function orchestrate(
   }
   let reviewerEffortOverrides: Partial<Record<"anthropic", EffortHint>> | undefined;
   let resolvedReviewerModels: Record<string, string> | undefined;
+  let resolvedReviewerPanel: ControlReviewerPanelEntry[] | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
@@ -350,9 +485,11 @@ async function orchestrate(
   let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
   let attachments: Attachment[] | undefined;
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
+  let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedReviewerModels = reviewerModels(args);
+    resolvedReviewerPanel = reviewerPanel(args);
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
     resolvedEffort = effortHint(args);
@@ -363,12 +500,14 @@ async function orchestrate(
     resolvedSynthesis = synthesisMode(args);
     attachmentRequest = attachmentInputs(args);
     attachments = attachmentsFromInputs(attachmentRequest);
+    resolvedProtectedPathApprovals = protectedPathApprovals(args);
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
   let tests: string[] | undefined;
   try {
-    tests = testCommands(args) ?? spec?.tests.map((t) => t.command);
+    const cliTests = testCommands(args) ?? [];
+    tests = resolveRunTestCommands(cliTests, spec);
     assertNoInlineSecretValues({ tests }, "$", "CLI run params");
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
@@ -378,7 +517,10 @@ async function orchestrate(
   // mode it would silently do nothing, so reject it loudly (a misplaced flag is
   // an error, not a no-op).
   if (autonomy !== undefined && mode !== "orchestrate") {
-    return printUsageError(json, `claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')`);
+    return printUsageError(
+      json,
+      `claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')`,
+    );
   }
 
   // The mutating run paths are DAEMON-TRACKED: they enqueue via the daemon
@@ -388,7 +530,8 @@ async function orchestrate(
   // plan against the tree). Read-only routes (ask/plan/audit and orchestrate in
   // the default `suggest` autonomy, where the plan IS the work product) have
   // nothing to apply or unblock, so they stay in-process.
-  const orchestrateExecutes = mode === "orchestrate" && autonomy !== undefined && autonomy !== "suggest";
+  const orchestrateExecutes =
+    mode === "orchestrate" && autonomy !== undefined && autonomy !== "suggest";
   if (mode === "agent" || orchestrateExecutes) {
     return daemonAgentRun(args, json, {
       mode,
@@ -397,8 +540,10 @@ async function orchestrate(
       tests,
       portfolio: portfolio?.success ? portfolio.data : undefined,
       maxUsd,
+      reviewerPanel: resolvedReviewerPanel,
       reviewerModels: resolvedReviewerModels,
       reviewerEfforts: reviewerEffortOverrides,
+      protectedPathApprovals: resolvedProtectedPathApprovals,
       resolvedWebPolicy,
       resolvedAccess,
       resolvedEffort,
@@ -417,6 +562,7 @@ async function orchestrate(
     registry: buildRegistry(),
     portfolio: portfolio?.success ? portfolio.data : undefined,
     maxUsd: maxUsd ?? null,
+    reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
   });
@@ -439,6 +585,7 @@ async function orchestrate(
       swarm: forced.swarm === true || flagBool(args, "swarm"),
       create: forced.create === true || flagBool(args, "create"),
       tests,
+      protectedPathApprovals: resolvedProtectedPathApprovals,
       maxUsd: maxUsd ?? null,
       access: resolvedAccess,
       web: resolvedWebPolicy,
@@ -459,7 +606,12 @@ async function orchestrate(
               const line = formatRunEventLine(ev as unknown as Record<string, unknown>);
               if (line) print(line);
             },
-            onInteraction: (ctx) => promptQuestionsOnTty(ctx.request.interaction_id, ctx.request.questions, ctx.timeoutAt),
+            onInteraction: (ctx) =>
+              promptQuestionsOnTty(
+                ctx.request.interaction_id,
+                ctx.request.questions,
+                ctx.timeoutAt,
+              ),
           }),
     });
     if (json) {
@@ -477,7 +629,12 @@ async function orchestrate(
     }
     return res.status === "success" ? 0 : 1;
   } catch (err) {
-    if (json) printJson({ ok: false, exitCode: 1, error: `claudexor: ${err instanceof Error ? err.message : String(err)}` });
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 1,
+        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
+      });
     else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -492,8 +649,10 @@ interface DaemonRunParams {
   tests: string[] | undefined;
   portfolio: ReturnType<typeof Portfolio.parse> | undefined;
   maxUsd: number | undefined;
-  reviewerModels: Record<string, string> | undefined;
-  reviewerEfforts: Partial<Record<"anthropic", EffortHint>> | undefined;
+  reviewerPanel: ControlReviewerPanelEntry[] | undefined;
+  reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
+  reviewerEfforts: Partial<Record<ProviderFamily, EffortHint>> | undefined;
+  protectedPathApprovals: ProtectedPathApproval[] | undefined;
   resolvedWebPolicy: ReturnType<typeof webPolicy>;
   resolvedAccess: ReturnType<typeof accessProfile>;
   resolvedEffort: EffortHint | undefined;
@@ -517,7 +676,11 @@ interface DaemonRunParams {
  * exactly one object `{ runId, runDir, status }` — the SWE/TB benchmark runner
  * parses this to read <runDir>/final/patch.diff.
  */
-async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): Promise<number> {
+async function daemonAgentRun(
+  args: ParsedArgs,
+  json: boolean,
+  p: DaemonRunParams,
+): Promise<number> {
   // The run is always project-scoped (the cwd is its repo); execution is
   // live in-place only under the explicit --in-place convergence path.
   const inPlace = flagBool(args, "in-place");
@@ -530,7 +693,9 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
     ...(harnessList(args) ? { harnesses: harnessList(args) } : {}),
-    ...(flagStr(args, "primary-harness") ? { primaryHarness: flagStr(args, "primary-harness") } : {}),
+    ...(flagStr(args, "primary-harness")
+      ? { primaryHarness: flagStr(args, "primary-harness") }
+      : {}),
     ...(p.portfolio ? { portfolio: p.portfolio } : {}),
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
@@ -539,11 +704,13 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
     ...(p.forced.create === true || flagBool(args, "create") ? { create: true } : {}),
     ...(p.resolvedSynthesis ? { synthesis: p.resolvedSynthesis } : {}),
     ...(p.tests ? { tests: p.tests } : {}),
+    ...(p.protectedPathApprovals ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
     ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
     ...(flagStr(args, "model") ? { model: flagStr(args, "model") } : {}),
     ...(p.resolvedEffort ? { effort: p.resolvedEffort } : {}),
+    ...(p.reviewerPanel ? { reviewerPanel: p.reviewerPanel } : {}),
     ...(p.reviewerModels ? { reviewerModels: p.reviewerModels } : {}),
     ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),
     ...(p.specId ? { specId: p.specId } : {}),
@@ -562,7 +729,15 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
       // for EVERY non-success terminal incl. `blocked`, which carries no error)
       // so this path matches the in-process one (P2: one machine surface).
       const reason = daemonOutcomeSummary(out);
-      printJson({ runId: out.runId, runDir: out.runDir, status: out.status, jobId: out.jobId, mode: p.mode, ...(out.error ? { error: out.error } : {}), ...(reason ? { summary: reason } : {}) });
+      printJson({
+        runId: out.runId,
+        runDir: out.runDir,
+        status: out.status,
+        jobId: out.jobId,
+        mode: p.mode,
+        ...(out.error ? { error: out.error } : {}),
+        ...(reason ? { summary: reason } : {}),
+      });
       return exitCodeForState(out.status);
     }
     // Text mode: enqueue, then live-stream the run through the shared follow
@@ -580,13 +755,20 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
     print(`run ${started.runId} [${status}]`);
     print(`  artifacts: ${final?.runDir ?? started.runDir}`);
     if (status === "blocked") {
-      print(`  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``);
+      print(
+        `  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
+      );
     } else if (exitCodeForState(status) === 0) {
       print(`  apply with: claudexor apply ${started.runId}`);
     }
     return exitCodeForState(status);
   } catch (err) {
-    if (json) printJson({ ok: false, exitCode: 1, error: `claudexor: ${err instanceof Error ? err.message : String(err)}` });
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 1,
+        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
+      });
     else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -601,7 +783,9 @@ async function daemonAgentRun(args: ParsedArgs, json: boolean, p: DaemonRunParam
 async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const runId = args._[1];
   if (!runId) {
-    print("usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun [--feedback \"<text>\"]");
+    print(
+      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun [--feedback "<text>"]',
+    );
     return 2;
   }
   const resolved = resolveDecisionBody(args);
@@ -638,13 +822,17 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
       printJson(data);
     } else {
       const accepted = data["accepted"] === true;
-      print(`decision ${action} on ${runId}: ${accepted ? "accepted" : "rejected"} [${String(data["status"] ?? "?")}]`);
+      print(
+        `decision ${action} on ${runId}: ${accepted ? "accepted" : "rejected"} [${String(data["status"] ?? "?")}]`,
+      );
       if (typeof data["newRunId"] === "string") print(`  new run: ${data["newRunId"]}`);
       if (typeof data["message"] === "string") print(`  ${data["message"]}`);
     }
     return data["accepted"] === true ? 0 : 1;
   } catch (err) {
-    process.stderr.write(`claudexor decision: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `claudexor decision: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return 1;
   }
 }
@@ -661,13 +849,17 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
  * Returns null when no store can be located (the run does not exist anywhere
  * reachable). Never throws on daemon unavailability — it falls through.
  */
-async function resolveRunStore(runId: string): Promise<{ store: ArtifactStore; root: string } | null> {
+async function resolveRunStore(
+  runId: string,
+): Promise<{ store: ArtifactStore; root: string } | null> {
   // 1. project cwd store
   const cwdStore = new ArtifactStore(process.cwd());
-  if (existsSync(cwdStore.runPaths(runId).root)) return { store: cwdStore, root: cwdStore.runPaths(runId).root };
+  if (existsSync(cwdStore.runPaths(runId).root))
+    return { store: cwdStore, root: cwdStore.runPaths(runId).root };
   // 2. user-level (no-project Ask) store
   const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
-  if (existsSync(userStore.runPaths(runId).root)) return { store: userStore, root: userStore.runPaths(runId).root };
+  if (existsSync(userStore.runPaths(runId).root))
+    return { store: userStore, root: userStore.runPaths(runId).root };
   // 3. daemon-tracked run in another project: ask the daemon for its runDir.
   //    Connect ONLY to an already-running daemon — never auto-spawn one for a
   //    read-only lookup (a typo'd id must report "no such run", not silently
@@ -688,7 +880,8 @@ async function resolveRunStore(runId: string): Promise<{ store: ArtifactStore; r
         // runPaths(runId).root === runDir: runId -> runs -> .claudexor.
         const claudexorDir = resolve(runDir, "..", "..");
         const ds = new ArtifactStore(dirname(claudexorDir), { claudexorDir });
-        if (existsSync(ds.runPaths(runId).root)) return { store: ds, root: ds.runPaths(runId).root };
+        if (existsSync(ds.runPaths(runId).root))
+          return { store: ds, root: ds.runPaths(runId).root };
       }
     }
   } catch {
@@ -704,7 +897,9 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
     return 2;
   }
   if (containsSecretLikeToken(prompt)) {
-    process.stderr.write("claudexor spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt\n");
+    process.stderr.write(
+      "claudexor spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt\n",
+    );
     return 2;
   }
   const answersPath = flagStr(args, "answers");
@@ -716,10 +911,13 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
 
     if (!planText) {
       if (answersPath) {
-        throw new Error("answers file does not contain a usable planDir/final/plan.md; re-run without --answers to generate a fresh questions file");
+        throw new Error(
+          "answers file does not contain a usable planDir/final/plan.md; re-run without --answers to generate a fresh questions file",
+        );
       }
       const orch = new Orchestrator({
         registry: buildRegistry(),
+        reviewerPanel: reviewerPanel(args),
         reviewerModels: reviewerModels(args),
         reviewerEfforts: reviewerEfforts(args),
       });
@@ -755,13 +953,24 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       else {
         print(`plan grounding run: ${planRunId}`);
         print(`questions: ${questionsPath}`);
-        print(`answer with: claudexor spec ${JSON.stringify(prompt)} --answers ${questionsPath}${harnessList(args) ? ` --harness ${(harnessList(args) ?? []).join(",")}` : ""}`);
+        print(
+          `answer with: claudexor spec ${JSON.stringify(prompt)} --answers ${questionsPath}${harnessList(args) ? ` --harness ${(harnessList(args) ?? []).join(",")}` : ""}`,
+        );
       }
       return 0;
     }
 
-    const spec = await freezeSpecFromGrounding(prompt, planText, answers ?? readAnswers(answersPath));
-    const persisted = persistSpec(process.cwd(), spec, planText, loadPreviousSpec(flagStr(args, "previous")));
+    const spec = await freezeSpecFromGrounding(
+      prompt,
+      planText,
+      answers ?? readAnswers(answersPath),
+    );
+    const persisted = persistSpec(
+      process.cwd(),
+      spec,
+      planText,
+      loadPreviousSpec(flagStr(args, "previous")),
+    );
     const specJsonPath = join(persisted.specDir, "spec.json");
     const runHint = `claudexor race --spec ${JSON.stringify(specJsonPath)}`;
     const result: SpecCommandResult = {
@@ -812,17 +1021,30 @@ function printPreflightError(args: ParsedArgs, json: boolean, error: string): nu
   return printUsageError(json, error);
 }
 
-function primaryOutputForCli(root: string, mode?: ModeKind): { kind: string; path: string; text: string } | null {
+function primaryOutputForCli(
+  root: string,
+  mode?: ModeKind,
+): { kind: string; path: string; text: string } | null {
   const candidates =
     mode === "ask"
       ? [{ kind: "answer", path: "final/answer.md" }]
       : mode === "plan"
         ? [{ kind: "plan", path: "final/plan.md" }]
         : mode === "audit"
-          ? [{ kind: "report", path: "final/report.md" }, { kind: "report", path: "final/explore.md" }, { kind: "summary", path: "final/summary.md" }]
+          ? [
+              { kind: "report", path: "final/report.md" },
+              { kind: "report", path: "final/explore.md" },
+              { kind: "summary", path: "final/summary.md" },
+            ]
           : mode === "orchestrate"
-            ? [{ kind: "report", path: "final/orchestration.md" }, { kind: "summary", path: "final/summary.md" }]
-            : [{ kind: "summary", path: "final/summary.md" }, { kind: "patch", path: "final/patch.diff" }];
+            ? [
+                { kind: "report", path: "final/orchestration.md" },
+                { kind: "summary", path: "final/summary.md" },
+              ]
+            : [
+                { kind: "summary", path: "final/summary.md" },
+                { kind: "patch", path: "final/patch.diff" },
+              ];
   for (const candidate of candidates) {
     const text = readTextSafe(join(root, candidate.path));
     if (text?.trim()) return { ...candidate, text };
@@ -854,17 +1076,23 @@ function statusGlyph(status: string): string {
 function authSourceAvailability(status: {
   manifest?: {
     auth_modes?: string[];
-    capability_profile?: { auth?: { supported_sources?: string[]; preferred_source?: string | null } };
+    capability_profile?: {
+      auth?: { supported_sources?: string[]; preferred_source?: string | null };
+    };
   } | null;
 }): string {
   const auth = status.manifest?.capability_profile?.auth;
-  const present = status.manifest?.auth_modes?.length ? status.manifest.auth_modes.join(",") : "unknown";
+  const present = status.manifest?.auth_modes?.length
+    ? status.manifest.auth_modes.join(",")
+    : "unknown";
   const supported = auth?.supported_sources?.length ? auth.supported_sources.join(",") : "unknown";
   const preferred = auth?.preferred_source ? ` preferred=${auth.preferred_source}` : "";
   return `present=${present} supported=${supported}${preferred}`;
 }
 
-function checksSummary(status: { checks?: { id: string; status: string; detail?: string }[] }): string {
+function checksSummary(status: {
+  checks?: { id: string; status: string; detail?: string }[];
+}): string {
   const checks = status.checks ?? [];
   if (checks.length === 0) return "none";
   return checks.map((c) => `${c.id}:${c.status}`).join(", ");
@@ -874,7 +1102,11 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
   if (sub === "start") {
     const daemonScript = fileURLToPath(new URL("./claudexord.js", import.meta.url));
-    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore", env: harnessRuntimeEnv() });
+    const child = spawn(process.execPath, [daemonScript], {
+      detached: true,
+      stdio: "ignore",
+      env: harnessRuntimeEnv(),
+    });
     child.unref();
     // Block until the daemon (socket + control API) is actually ready, so a
     // follow-up `status`/run can't race the spawn. Fail loudly (exit 1) if it
@@ -885,7 +1117,9 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
     } else if (ready) {
       print(`claudexord ready (pid ${child.pid}); socket ${defaultSocketPath()}`);
     } else {
-      print(`claudexord started (pid ${child.pid}) but did not become ready within 15s; check \`claudexor daemon logs\``);
+      print(
+        `claudexord started (pid ${child.pid}) but did not become ready within 15s; check \`claudexor daemon logs\``,
+      );
     }
     return ready ? 0 : 1;
   }
@@ -929,22 +1163,37 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(`default_portfolio: ${cfg.global.default_portfolio}`);
       print(`routing.default_policy: ${cfg.global.routing.default_policy}`);
       print(`routing.primary_harness: ${cfg.global.routing.primary_harness ?? "(none)"}`);
-      print(`routing.eligible_harnesses: ${cfg.global.routing.eligible_harnesses.length ? cfg.global.routing.eligible_harnesses.join(", ") : "(auto)"}`);
+      print(
+        `routing.eligible_harnesses: ${cfg.global.routing.eligible_harnesses.length ? cfg.global.routing.eligible_harnesses.join(", ") : "(auto)"}`,
+      );
       print(`routing.default_model: ${cfg.global.routing.default_model ?? "(none)"}`);
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
       print(`interaction_timeout_ms: ${cfg.global.interaction_timeout_ms}`);
       print(`runtime.reviewer_timeout_ms: ${cfg.global.runtime.reviewer_timeout_ms}`);
-      print(`runtime.transient_retry.max_retries: ${cfg.global.runtime.transient_retry.max_retries}`);
-      print(`runtime.transient_retry.initial_delay_ms: ${cfg.global.runtime.transient_retry.initial_delay_ms}`);
-      print(`runtime.transient_retry.max_delay_ms: ${cfg.global.runtime.transient_retry.max_delay_ms}`);
+      print(
+        `runtime.transient_retry.max_retries: ${cfg.global.runtime.transient_retry.max_retries}`,
+      );
+      print(
+        `runtime.transient_retry.initial_delay_ms: ${cfg.global.runtime.transient_retry.initial_delay_ms}`,
+      );
+      print(
+        `runtime.transient_retry.max_delay_ms: ${cfg.global.runtime.transient_retry.max_delay_ms}`,
+      );
       const harnessIds = Object.keys(cfg.global.harnesses);
       if (harnessIds.length) {
         print("harnesses:");
         for (const id of harnessIds) {
           const h = cfg.global.harnesses[id]!;
-          print(`  ${id}: enabled=${h.enabled} model=${h.default_model ?? "(native)"} effort=${h.effort ?? "(native)"} web=${h.web} max_turns=${h.max_turns ?? "(none)"} max_usd=${h.max_usd ?? "(none)"}`);
+          print(
+            `  ${id}: enabled=${h.enabled} model=${h.default_model ?? "(native)"} effort=${h.effort ?? "(native)"} web=${h.web} max_turns=${h.max_turns ?? "(none)"} max_usd=${h.max_usd ?? "(none)"}`,
+          );
         }
+      }
+      const daemonSettings = await daemonSettingsSnapshotIfRunning();
+      if (daemonSettings) {
+        const diffLines = daemonRuntimeDiffLines(cfg, daemonSettings);
+        for (const line of diffLines) print(line);
       }
     }
     return 0;
@@ -953,7 +1202,9 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
     const key = args._[2];
     const value = args._[3];
     if (!key || value === undefined) {
-      print("usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>");
+      print(
+        "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
+      );
       return 2;
     }
     try {
@@ -963,35 +1214,55 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
           return { ...cfg, default_portfolio: p };
         }
         if (key === "primary_harness") {
-          if (value !== "none" && !isKnownHarness(value)) throw new Error(`unknown harness '${value}' (run \`claudexor harness list --all\`)`);
-          return { ...cfg, routing: { ...cfg.routing, primary_harness: value === "none" ? null : value } };
+          if (value !== "none" && !isKnownHarness(value))
+            throw new Error(`unknown harness '${value}' (run \`claudexor harness list --all\`)`);
+          return {
+            ...cfg,
+            routing: { ...cfg.routing, primary_harness: value === "none" ? null : value },
+          };
         }
         if (key === "eligible_harnesses") {
-          const list = value === "none" ? [] : value.split(",").map((s) => s.trim()).filter(Boolean);
+          const list =
+            value === "none"
+              ? []
+              : value
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
           const unknown = list.filter((h) => !isKnownHarness(h));
-          if (unknown.length) throw new Error(`unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
+          if (unknown.length)
+            throw new Error(
+              `unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
+            );
           return { ...cfg, routing: { ...cfg.routing, eligible_harnesses: list } };
         }
         if (key === "default_model") {
-          return { ...cfg, routing: { ...cfg.routing, default_model: value === "none" ? null : value } };
+          return {
+            ...cfg,
+            routing: { ...cfg.routing, default_model: value === "none" ? null : value },
+          };
         }
         if (key === "env_inheritance") {
-          if (!["mirror_native", "clean"].includes(value)) throw new Error("env_inheritance must be mirror_native|clean");
+          if (!["mirror_native", "clean"].includes(value))
+            throw new Error("env_inheritance must be mirror_native|clean");
           return { ...cfg, routing: { ...cfg.routing, env_inheritance: value as never } };
         }
         if (key === "routing_policy") {
-          if (!["auto", "primary", "portfolio"].includes(value)) throw new Error("routing_policy must be auto|primary|portfolio");
+          if (!["auto", "primary", "portfolio"].includes(value))
+            throw new Error("routing_policy must be auto|primary|portfolio");
           return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
         }
         if (key === "budget_max_usd_per_run") {
           // Number() parses the WHOLE string ('1abc' -> NaN), unlike parseFloat.
           const parsed = value === "none" ? null : Number(value.trim());
-          if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0 || value.trim() === "")) throw new Error(`${key} must be a non-negative number or none`);
+          if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0 || value.trim() === ""))
+            throw new Error(`${key} must be a non-negative number or none`);
           return { ...cfg, budget: { ...cfg.budget, max_usd_per_run: parsed } };
         }
         if (key === "interaction_timeout_ms") {
           const parsed = Number(value.trim());
-          if (!Number.isInteger(parsed) || parsed <= 0) throw new Error("interaction_timeout_ms must be a positive integer (milliseconds)");
+          if (!Number.isInteger(parsed) || parsed <= 0)
+            throw new Error("interaction_timeout_ms must be a positive integer (milliseconds)");
           return { ...cfg, interaction_timeout_ms: parsed };
         }
         throw new Error(`unknown setting: ${key}`);
@@ -1000,12 +1271,29 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       else print(`updated ${key} in ${res.path}`);
       return 0;
     } catch (err) {
-      process.stderr.write(`claudexor settings: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(
+        `claudexor settings: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
       return 1;
     }
   }
   print("usage: claudexor settings show|set");
   return 2;
+}
+
+async function daemonSettingsSnapshotIfRunning() {
+  const conn = await connectDaemonIfRunning();
+  if (!conn) return null;
+  try {
+    const res = await fetch(`${conn.addr.baseUrl}/settings`, {
+      headers: { Authorization: `Bearer ${conn.addr.token}` },
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return null;
+    return ControlSettingsSnapshot.parse(await res.json());
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1020,19 +1308,28 @@ async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const only = flagStr(args, "harness");
   let ids: string[];
   if (only) {
-    ids = only.split(",").map((s) => s.trim()).filter(Boolean);
+    ids = only
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     // An explicit --harness typo fails loudly (consistent with doctor/auth), not a
     // silent source:"none" exit 0.
     const known = new Set(buildRegistry({ includeFakes: true }).keys());
     const unknown = ids.filter((id) => !known.has(id));
-    if (unknown.length) return printUsageError(json, `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
+    if (unknown.length)
+      return printUsageError(
+        json,
+        `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
+      );
   } else {
     // Default to harnesses that doctor considers usable (not unavailable);
     // each harnessModels() reports source "none" when it cannot enumerate.
     const statuses = await buildGateway({ includeFakes }).statusAll({ cwd: process.cwd() });
     ids = statuses.filter((s) => s.status !== "unavailable").map((s) => s.id);
   }
-  const results = await Promise.all(ids.map((id) => harnessModels(id, process.cwd(), includeFakes)));
+  const results = await Promise.all(
+    ids.map((id) => harnessModels(id, process.cwd(), includeFakes)),
+  );
   if (json) {
     printJson({ harnesses: results });
     return 0;
@@ -1058,10 +1355,16 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
   if (sub === "status") {
     const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
     // Scope discovery to the requested harness (P14) instead of probe-all-then-filter.
-    const statuses = await gateway.statusAll({ cwd: process.cwd() }, harness ? [harness] : undefined);
+    const statuses = await gateway.statusAll(
+      { cwd: process.cwd() },
+      harness ? [harness] : undefined,
+    );
     // An explicit unknown harness must FAIL LOUDLY, not silently succeed over empty.
     if (harness && !statuses.some((s) => s.id === harness)) {
-      return printUsageError(json, `claudexor: unknown harness '${harness}' (run \`claudexor harness list --all\`)`);
+      return printUsageError(
+        json,
+        `claudexor: unknown harness '${harness}' (run \`claudexor harness list --all\`)`,
+      );
     }
     const filtered = statuses;
     if (json) {
@@ -1069,7 +1372,9 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
       return 0;
     }
     for (const s of filtered) {
-      print(`${statusGlyph(s.status)} ${s.id} ready=${s.status} sources=${authSourceAvailability(s)}`);
+      print(
+        `${statusGlyph(s.status)} ${s.id} ready=${s.status} sources=${authSourceAvailability(s)}`,
+      );
       print(`    checks: ${checksSummary(s)}`);
       if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
     }
@@ -1081,12 +1386,17 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
       return 2;
     }
     const hints: Record<string, string> = {
-      codex: "Run the native Codex login flow, or store an API key ref with: claudexor secrets set openai --from-env OPENAI_API_KEY",
-      claude: "Run the native Claude Code login flow, or store an API key ref with: claudexor secrets set anthropic --from-env ANTHROPIC_API_KEY",
+      codex:
+        "Run the native Codex login flow, or store an API key ref with: claudexor secrets set openai --from-env OPENAI_API_KEY",
+      claude:
+        "Run the native Claude Code login flow, or store an API key ref with: claudexor secrets set anthropic --from-env ANTHROPIC_API_KEY",
       cursor: "Sign in through Cursor, then let Claudexor mirror the native session.",
       opencode: "Run the native OpenCode auth flow, or store the provider key as a secret ref.",
     };
-    print(hints[harness] ?? `Run the native ${harness} auth flow, then retry: claudexor auth status ${harness}`);
+    print(
+      hints[harness] ??
+        `Run the native ${harness} auth flow, then retry: claudexor auth status ${harness}`,
+    );
     return 0;
   }
   print("usage: claudexor auth status|login");
@@ -1104,7 +1414,12 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   // `--backend file` (or env CLAUDEXOR_SECRETS_BACKEND=file) keeps secret I/O in
   // the 0600 file store — sandbox/CI safe (never touches the real login Keychain).
   const backendFlag = flagStr(args, "backend");
-  if (backendFlag !== undefined && backendFlag !== "auto" && backendFlag !== "keychain" && backendFlag !== "file") {
+  if (
+    backendFlag !== undefined &&
+    backendFlag !== "auto" &&
+    backendFlag !== "keychain" &&
+    backendFlag !== "file"
+  ) {
     if (json) printJson({ error: "--backend must be auto|keychain|file" });
     else print("--backend must be auto|keychain|file");
     return 2;
@@ -1143,7 +1458,9 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
     const envVar = flagStr(args, "from-env");
     const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
     if (!value) {
-      print("secret value required via --from-env or stdin; values are not accepted as positional args");
+      print(
+        "secret value required via --from-env or stdin; values are not accepted as positional args",
+      );
       return 2;
     }
     const backend = store.set(name, value);
@@ -1174,7 +1491,14 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   return 2;
 }
 
-const MANAGED_SECRET_NAMES = new Set(["openai", "anthropic", "openrouter", "cursor", "opencode", "raw"]);
+const MANAGED_SECRET_NAMES = new Set([
+  "openai",
+  "anthropic",
+  "openrouter",
+  "cursor",
+  "opencode",
+  "raw",
+]);
 
 function isManagedSecretName(name: string): boolean {
   return MANAGED_SECRET_NAMES.has(name);
@@ -1191,20 +1515,79 @@ function isKnownHarness(id: string): boolean {
 
 /** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
 const KNOWN_FLAGS = new Set([
-  "harness", "mode", "n", "attempts", "until-clean", "swarm", "create", "synthesis",
-  "test", "max-usd", "reviewer-model", "reviewer-effort",
-  "access", "web", "model", "effort", "primary-harness", "portfolio", "in-place", "autonomy",
-  "answers", "previous", "spec", "attach", "image", "json", "all", "dry-run", "force", "from-env", "backend",
+  "harness",
+  "mode",
+  "n",
+  "attempts",
+  "until-clean",
+  "swarm",
+  "create",
+  "synthesis",
+  "test",
+  "allow-protected-path",
+  "max-usd",
+  "reviewer-panel",
+  "reviewer-model",
+  "reviewer-effort",
+  "access",
+  "web",
+  "model",
+  "effort",
+  "primary-harness",
+  "portfolio",
+  "in-place",
+  "autonomy",
+  "answers",
+  "previous",
+  "spec",
+  "attach",
+  "image",
+  "json",
+  "all",
+  "dry-run",
+  "force",
+  "from-env",
+  "backend",
   // `decision` command action/option flags (subcommand-scoped).
-  "accept-risk", "override", "revert", "accept-clean-patch", "apply-mode", "rerun", "feedback",
-  "help", "version",
+  "accept-risk",
+  "override",
+  "revert",
+  "accept-clean-patch",
+  "apply-mode",
+  "rerun",
+  "feedback",
+  "help",
+  "version",
 ]);
 
 const VALUE_FLAGS = [
-  "harness", "mode", "n", "attempts", "synthesis", "test", "max-usd",
-  "reviewer-model", "reviewer-effort", "access", "web", "model", "effort",
-  "primary-harness", "portfolio", "autonomy", "answers", "previous", "spec", "attach", "image",
-  "from-env", "backend", "apply-mode", "feedback",
+  "harness",
+  "mode",
+  "n",
+  "attempts",
+  "synthesis",
+  "test",
+  "allow-protected-path",
+  "max-usd",
+  "reviewer-panel",
+  "reviewer-model",
+  "reviewer-effort",
+  "access",
+  "web",
+  "model",
+  "effort",
+  "primary-harness",
+  "portfolio",
+  "autonomy",
+  "answers",
+  "previous",
+  "spec",
+  "attach",
+  "image",
+  "from-env",
+  "backend",
+  "apply-mode",
+  "feedback",
 ];
 
 const PLUGIN_FLAGS = ["json", "dry-run", "force", "help", "version"];
@@ -1244,14 +1627,22 @@ async function main(): Promise<number> {
     case "init": {
       const res = initProjectConfig(cwd);
       if (json) printJson(res);
-      else print(res.created ? `Created ${res.configPath}` : `Config already exists: ${res.configPath}`);
+      else
+        print(
+          res.created ? `Created ${res.configPath}` : `Config already exists: ${res.configPath}`,
+        );
       return 0;
     }
 
     case "doctor": {
       const cfg = loadConfig(cwd);
       const only = flagStr(args, "harness");
-      const onlyList = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const onlyList = only
+        ? only
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
       const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
       // Scope discovery to the requested harness(es) (P14): a single-harness
       // query no longer probes every adapter (incl. paid smokes) just to filter.
@@ -1261,7 +1652,11 @@ async function main(): Promise<number> {
       if (onlyList) {
         const got = new Set(statuses.map((s) => s.id));
         const unknown = onlyList.filter((id) => !got.has(id));
-        if (unknown.length) return printUsageError(json, `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`);
+        if (unknown.length)
+          return printUsageError(
+            json,
+            `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
+          );
       }
       const filtered = statuses;
       // B2: a configured default model that the harness does not recognize must
@@ -1269,7 +1664,8 @@ async function main(): Promise<number> {
       // each harness's configured default against its declared known_models and
       // surface it honestly (warn for non-authoritative, INVALID for authoritative).
       const modelNote = (s: (typeof statuses)[number]): string | null => {
-        const configured = cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
+        const configured =
+          cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
         const caps = s.manifest?.capabilities;
         if (!configured || !caps) return null;
         const check = validateModel(configured, caps.known_models, caps.models_authoritative);
@@ -1279,9 +1675,17 @@ async function main(): Promise<number> {
       if (json) {
         printJson({
           harnesses: filtered.map((s) => {
-            const configured = cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
+            const configured =
+              cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
             const caps = s.manifest?.capabilities;
-            return { ...s, configured_model: configured, configured_model_check: configured && caps ? validateModel(configured, caps.known_models, caps.models_authoritative) : null };
+            return {
+              ...s,
+              configured_model: configured,
+              configured_model_check:
+                configured && caps
+                  ? validateModel(configured, caps.known_models, caps.models_authoritative)
+                  : null,
+            };
           }),
           node_advisory: atRiskNodeAdvisory(),
         });
@@ -1303,12 +1707,16 @@ async function main(): Promise<number> {
     }
 
     case "run": {
-      const specStrategyError = "claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'";
+      const specStrategyError =
+        "claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'";
       const modeStr = flagStr(args, "mode");
       if (modeStr !== undefined) {
         const mode = normalizeMode(modeStr);
         if (!MODES.has(mode)) {
-          return printUsageError(json, `claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}`);
+          return printUsageError(
+            json,
+            `claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}`,
+          );
         }
         if ((mode === "ask" || mode === "audit") && flagStr(args, "spec")) {
           return printUsageError(json, specStrategyError);
@@ -1318,9 +1726,13 @@ async function main(): Promise<number> {
       if (flagStr(args, "spec") && !flagBool(args, "until-clean")) {
         let hasGatedStrategy = false;
         try {
-          hasGatedStrategy = intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
+          hasGatedStrategy =
+            intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
         } catch (err) {
-          return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+          return printUsageError(
+            json,
+            `claudexor: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
         if (!hasGatedStrategy) return printUsageError(json, specStrategyError);
       }
@@ -1421,64 +1833,114 @@ async function main(): Promise<number> {
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
       const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
-      const primary = primaryOutputForCli(paths.root, contract.success ? contract.data.mode.kind : undefined);
+      const primary = primaryOutputForCli(
+        paths.root,
+        contract.success ? contract.data.mode.kind : undefined,
+      );
       // The CLI projects the orchestrator-owned telemetry artifact and NEVER
       // recomputes evidence from raw events (single-owner rule); a missing
       // artifact (legacy run) renders "telemetry unavailable".
-      const parsedTelemetry = RunTelemetry.safeParse(store.readYaml(join(paths.finalDir, "telemetry.yaml")));
+      const parsedTelemetry = RunTelemetry.safeParse(
+        store.readYaml(join(paths.finalDir, "telemetry.yaml")),
+      );
       const telemetry = parsedTelemetry.success ? parsedTelemetry.data : null;
       const toolErrors = telemetry
-        ? telemetry.attempts.flatMap((a) => a.tool_errors.filter((e) => !e.recovered && e.kind === "web").map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })))
+        ? telemetry.attempts.flatMap((a) =>
+            a.tool_errors
+              .filter((e) => !e.recovered && e.kind === "web")
+              .map((e) => ({
+                attemptId: a.attempt_id,
+                tool: e.tool,
+                target: e.target ?? undefined,
+                summary: e.summary,
+              })),
+          )
         : [];
       const toolWarnings = telemetry
         ? telemetry.attempts.flatMap((a) =>
             a.tool_errors
               .filter((e) => !e.recovered && e.kind !== "web")
-              .map((e) => ({ attemptId: a.attempt_id, tool: e.tool, target: e.target ?? undefined, summary: e.summary })),
+              .map((e) => ({
+                attemptId: a.attempt_id,
+                tool: e.tool,
+                target: e.target ?? undefined,
+                summary: e.summary,
+              })),
           )
         : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
-      const outputReadyState = primary?.kind === "diagnostic"
-        ? "diagnostic"
-        : primary?.text.trim()
-          ? "ready"
-          : readTextSafe(join(paths.finalDir, "failure.yaml"))
-            ? "diagnostic"
-            : "finalizing";
+      const outputReadyState =
+        primary?.kind === "diagnostic"
+          ? "diagnostic"
+          : primary?.text.trim()
+            ? "ready"
+            : readTextSafe(join(paths.finalDir, "failure.yaml"))
+              ? "diagnostic"
+              : "finalizing";
       const parsedDecision = DecisionRecord.safeParse(decision);
       const summary = readTextSafe(join(paths.finalDir, "summary.md"));
       if (json) {
-        printJson({ runId, runDir: paths.root, outputReadyState, contract: contract.success ? contract.data : null, telemetry, toolErrors, toolWarnings, primaryOutput: primary, decision, work_product: workProduct, artifacts });
+        printJson({
+          runId,
+          runDir: paths.root,
+          outputReadyState,
+          contract: contract.success ? contract.data : null,
+          telemetry,
+          toolErrors,
+          toolWarnings,
+          primaryOutput: primary,
+          decision,
+          work_product: workProduct,
+          artifacts,
+        });
         // exit-code parity with the text mode: read-only runs have no decision record
         return summary || primary ? 0 : 1;
       }
       print(`run ${runId} @ ${paths.root}`);
       if (contract.success) {
         print(`mode: ${contract.data.mode.kind}`);
-        print(`access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`);
+        print(
+          `access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`,
+        );
       }
       if (telemetry) {
-        print(`web: policy=${telemetry.external_context_policy} effective=${telemetry.effective_web_mode} required=${telemetry.web_required} evidence=${telemetry.web.status}`);
+        print(
+          `web: policy=${telemetry.external_context_policy} effective=${telemetry.effective_web_mode} required=${telemetry.web_required} evidence=${telemetry.web.status}`,
+        );
       } else if (contract.success) {
-        print(`web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`);
+        print(
+          `web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`,
+        );
       }
       print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
       if (parsedDecision.success) {
         const vb = parsedDecision.data.verification_basis;
-        print(`decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}${vb !== "none" ? ` verified_by=${vb}` : ""}`);
+        print(
+          `decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}${vb !== "none" ? ` verified_by=${vb}` : ""}`,
+        );
         const budget = parsedDecision.data.budget_summary;
-        print(`budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`);
+        print(
+          `budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`,
+        );
       }
       if (telemetry && (telemetry.web.attempted || telemetry.web.required)) {
-        print(`web evidence: status=${telemetry.web.status} tool=${telemetry.web.tool ?? "none"} target=${telemetry.web.target ?? "none"}${telemetry.web.error_summary ? ` error=${telemetry.web.error_summary}` : ""}`);
+        print(
+          `web evidence: status=${telemetry.web.status} tool=${telemetry.web.tool ?? "none"} target=${telemetry.web.target ?? "none"}${telemetry.web.error_summary ? ` error=${telemetry.web.error_summary}` : ""}`,
+        );
       }
       if (toolErrors.length) {
         print("tool errors (unrecovered):");
-        for (const err of toolErrors.slice(-8)) print(`  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`);
+        for (const err of toolErrors.slice(-8))
+          print(
+            `  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`,
+          );
       }
       if (toolWarnings.length) {
         print("tool warnings (non-blocking):");
-        for (const err of toolWarnings.slice(-8)) print(`  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`);
+        for (const err of toolWarnings.slice(-8))
+          print(
+            `  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`,
+          );
       }
       if (primary?.text.trim()) {
         print("");
@@ -1526,15 +1988,24 @@ async function main(): Promise<number> {
       // pre-checks here: a NEEDS_HUMAN run unblocked through the typed decision
       // endpoint (arbitration/operator_decision.yaml, hash-bound) must apply
       // identically from BOTH surfaces.
-      const applyDecision = DecisionRecord.safeParse(store.readYaml(join(paths.arbitrationDir, "decision.yaml")));
-      const workProduct = WorkProduct.safeParse(store.readYaml(join(paths.finalDir, "work_product.yaml")));
+      const applyDecision = DecisionRecord.safeParse(
+        store.readYaml(join(paths.arbitrationDir, "decision.yaml")),
+      );
+      const workProduct = WorkProduct.safeParse(
+        store.readYaml(join(paths.finalDir, "work_product.yaml")),
+      );
       const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
-      const operatorDecisionRaw = store.readYaml(join(paths.arbitrationDir, "operator_decision.yaml")) as Record<string, unknown> | null;
+      const operatorDecisionRaw = store.readYaml(
+        join(paths.arbitrationDir, "operator_decision.yaml"),
+      ) as Record<string, unknown> | null;
       const operatorDecision =
         operatorDecisionRaw && typeof operatorDecisionRaw["action"] === "string"
           ? {
               action: operatorDecisionRaw["action"] as string,
-              patch_sha256: typeof operatorDecisionRaw["patch_sha256"] === "string" ? (operatorDecisionRaw["patch_sha256"] as string) : undefined,
+              patch_sha256:
+                typeof operatorDecisionRaw["patch_sha256"] === "string"
+                  ? (operatorDecisionRaw["patch_sha256"] as string)
+                  : undefined,
             }
           : null;
       // The default apply target is the run's ORIGINAL project (from its contract),
@@ -1548,8 +2019,14 @@ async function main(): Promise<number> {
       // enforces the SAME terminal-state bar the Control API does — e.g. a
       // convergence run that persists decision.status=success but terminal
       // not_converged (stale diff after a D2 review) is refused identically.
-      const recordedStatus = workProduct.success ? (workProduct.data.meta?.["status"] as string | undefined) : undefined;
-      const recordedState = recordedStatus ? (recordedStatus === "success" ? "succeeded" : recordedStatus) : null;
+      const recordedStatus = workProduct.success
+        ? (workProduct.data.meta?.["status"] as string | undefined)
+        : undefined;
+      const recordedState = recordedStatus
+        ? recordedStatus === "success"
+          ? "succeeded"
+          : recordedStatus
+        : null;
       const gateError = validateApplyGate({
         state: recordedState,
         decision: applyDecision.success ? applyDecision.data : null,
@@ -1566,7 +2043,13 @@ async function main(): Promise<number> {
       }
       if (flagBool(args, "dry-run")) {
         const r = await checkPatch(applyRoot, patch);
-        if (json) printJson({ runId, dryRun: true, applies: r.ok, ...(r.ok ? {} : { error: r.stderr.trim() }) });
+        if (json)
+          printJson({
+            runId,
+            dryRun: true,
+            applies: r.ok,
+            ...(r.ok ? {} : { error: r.stderr.trim() }),
+          });
         else print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
         return r.ok ? 0 : 1;
       }
@@ -1580,7 +2063,8 @@ async function main(): Promise<number> {
       // patch artifact was already emitted by the run — reject it here (it stays
       // valid on the control-api for clients that want a dry materialization).
       if (rawMode === "artifact_only") {
-        const msg = "apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly";
+        const msg =
+          "apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly";
         if (json) printJson({ runId, error: msg });
         else print(msg);
         return 2;
@@ -1609,7 +2093,12 @@ async function main(): Promise<number> {
         else {
           print(`naming gate for "${name}":`);
           for (const c of checks) {
-            const tag = c.availability === "free" ? "[free]   " : c.availability === "taken" ? "[taken]  " : "[unknown]";
+            const tag =
+              c.availability === "free"
+                ? "[free]   "
+                : c.availability === "taken"
+                  ? "[taken]  "
+                  : "[unknown]";
             print(`  ${tag} ${c.registry}: ${c.detail}`);
           }
         }
@@ -1624,7 +2113,8 @@ async function main(): Promise<number> {
       const target = args._[2];
       const dryRun = flagBool(args, "dry-run");
       if (!sub || !PLUGIN_VERBS.includes(sub as PluginVerb)) {
-        const error = "usage: claudexor plugin <install|status|doctor|repair|uninstall> <cursor|claude|codex|opencode|all> [--dry-run] [--force] [--json]";
+        const error =
+          "usage: claudexor plugin <install|status|doctor|repair|uninstall> <cursor|claude|codex|opencode|all> [--dry-run] [--force] [--json]";
         if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
         else print(error);
         return 2;
@@ -1652,7 +2142,15 @@ async function main(): Promise<number> {
         return r.exitCode;
       } catch (err) {
         if (json) {
-          printJson(pluginCommandErrorResult(sub, target, dryRun, 1, err instanceof Error ? err.message : String(err)));
+          printJson(
+            pluginCommandErrorResult(
+              sub,
+              target,
+              dryRun,
+              1,
+              err instanceof Error ? err.message : String(err),
+            ),
+          );
           return 1;
         }
         throw err;

@@ -203,7 +203,11 @@ tools_allow/tools_deny/fallback_model` in the global config) gate pool
 membership and seed per-route run specs; knobs a manifest does not support are
 disclosed as `ignored_settings` on `harness.started`, never silently dropped.
 Candidate diffs additionally pass a typed policy gate: protected-path changes
-and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run.
+and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run;
+explicit per-run `protected_path_approvals` can narrow only the auto-protected
+gate/test path portion of that policy. Frozen SpecPacks and repo config cannot
+carry approvals; they may declare protected paths, but operator approval is
+always supplied on the current run.
 
 `auto` is evidence-driven: it permits web tools where the harness supports them
 and records whether the harness actually attempted web. If a web tool is
@@ -219,9 +223,15 @@ Keychain where available, otherwise a `0600` file under the user config dir.
 `CLAUDEXOR_SECRETS_BACKEND` (`file|keychain|auto`) overrides the platform default
 and an invalid value fails loudly, so a sandboxed run/test can force the `0600`
 file store and never touch the real login Keychain (which is not path-scoped).
-The routing/auth policy is subscription/native first; API-key refs are fallback.
-Native/subscription runs scrub provider API-key env vars unless the run
-explicitly chooses an API-key source, preventing accidental API billing.
+The routing/auth policy is subscription/native first where that route is
+readiness-proven; API-key refs are fallback secret refs. Cursor keeps normal
+non-scoped `auto` runs on the native session when it is available, and only lets
+scoped/envelope `auto` prefer the API-key route after the adapter smoke-proves
+that key. When a scoped `auto` run selects API-key while native Cursor auth is
+also available, the adapter emits a typed `route.fallback.auth_switched`
+disclosure with reason `readiness_preferred`, preventing a silent paid-route
+switch. Native/subscription runs scrub provider API-key env vars unless the run
+chooses an API-key source, preventing accidental API billing.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
 containment strategy that keeps it honest. Codex routes seed `auth.json` into a
@@ -416,8 +426,10 @@ choices and collects answers (selected `option_ids` and/or free `text`), then
 SpecPack and persists it, returning `specId`, `specDir`, `specPath` (the frozen
 SpecPack file), `specHash`, and `changes`. An Implement run is then a normal
 agent thread turn: `POST /threads/:id/turns` carrying that `specPath`, so the
-agent runs against the frozen SpecPack contract rather than a bare prompt. Spec
-is single-tier in v1 — one freeze, no spec-version ladder.
+agent runs against the frozen SpecPack contract rather than a bare prompt. The
+interview is multi-tier (`priorDecisions` carries earlier answers into the next
+question round), while the frozen SpecPack remains single-commit in v1 — one
+freeze, no post-freeze spec-version ladder.
 
 ### Event streaming contract (snapshot-then-subscribe)
 
@@ -496,6 +508,34 @@ recovers the model it actually ran from its own session rollout transcript
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
 `review_not_run` outcomes the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
+`TaskContract.constraints.protected_paths` contains spec/config-owned protected
+globs, while `TaskContract.constraints.auto_protected_paths` is derived from
+configured deterministic gates. Existing auto-protected gate/test path edits
+block unless the run carries a typed `protected_path_approvals` entry for the
+matching glob (CLI: `--allow-protected-path`). Those approvals are scoped only to
+`auto_protected_paths`; they do not suppress spec/config-owned protected paths or
+built-in critical/security path gates such as `.github/workflows`. They are
+accepted only from the run request surface, not from frozen SpecPack constraints.
+
+Reviewer selection is schema-owned. The automatic selector uses provider-family
+diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.
+For release and dogfood gates, `ControlRunStartRequest.reviewerPanel` carries an
+ordered list of explicit `{ harness, model?, effort? }` entries. That panel is
+used verbatim: repeated harness ids are allowed for multi-model Cursor passes,
+no provider-family dedupe is applied, and unknown/unavailable/disabled/fake-only
+or review-incompatible harnesses fail the run before review starts. If an
+adapter can enumerate models, an explicit reviewer model must be present in that
+inventory, and an empty/unavailable inventory is treated as unverifiable for
+that explicit model. If an adapter cannot enumerate models, the explicit model
+must match the harness manifest's non-authoritative known-good hints; otherwise
+the run fails loudly with a `claudexor models --harness` hint instead of letting
+the native CLI fail later as unparseable review output.
+Same-family panels are allowed for diagnostics and repeated-model comparison,
+but they do not make a clean verified review gate by themselves: the gate still
+requires at least two distinct observed provider families. CLI
+`--reviewer-panel` is the primary operator surface for this field; UI clients may
+send the same DTO but must not invent reviewer readiness outside doctor/status
+and declared intent.
 
 Budget caps: the engine enforces `max_usd` per run (explicit run input, then
 surface defaults, then the global `budget.max_usd_per_run`). There is no daily
@@ -605,9 +645,10 @@ The macOS app is a native control surface over the control API:
   harness, a **per-turn model picker** for the primary harness (enumerated ids
   when the harness can enumerate, else honest free-text; empty = harness/global
   default), a per-turn budget cap, access profile, web policy, project-context
-  depth, isolated-workspace toggle, and agent repair strategies (until-clean /
-  max-attempts). Portfolio and deterministic gates are engine/Settings concerns,
-  not per-turn composer controls;
+  depth, isolated-workspace toggle, explicit reviewer panels, typed
+  protected-path approvals for auto-protected gate/test paths, and agent repair
+  strategies (until-clean / max-attempts). Portfolio and deterministic gate
+  commands are engine/Settings concerns, not per-turn composer controls;
 - **Spec** is a macOS UI intent, not a wire run mode: it drives the server-owned
   spec flow client-side (`POST /spec/questions` → answers → `POST /spec/freeze`)
   and then sends a normal agent turn carrying the returned `specPath` to

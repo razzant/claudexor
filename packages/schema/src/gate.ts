@@ -12,5 +12,8 @@ export const GateResult = z.object({
   status: GateStatus,
   duration_ms: z.number().int().nonnegative().default(0),
   required: z.boolean().default(true),
+  stdout_tail: z.string().nullable().default(null),
+  stderr_tail: z.string().nullable().default(null),
+  output_truncated: z.boolean().default(false),
 });
 export type GateResult = z.infer<typeof GateResult>;

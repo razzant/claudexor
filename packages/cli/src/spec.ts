@@ -78,6 +78,15 @@ export function loadFrozenSpec(path: string): LoadedFrozenSpec {
   return { spec: result.data, specPath: resolved, specHash: hashJson(result.data) };
 }
 
+export function resolveRunTestCommands(
+  cliTests: string[] | undefined,
+  spec: SpecPack | null,
+): string[] | undefined {
+  if (cliTests && cliTests.length > 0) return cliTests;
+  const specTests = spec?.tests.map((test) => test.command) ?? [];
+  return specTests.length > 0 ? specTests : undefined;
+}
+
 /**
  * The grounding-plan instruction that DRIVES extractQuestionsFromPlan: it tells the
  * harness to end its read-only plan with a structured `## Open Questions` block in
@@ -360,7 +369,8 @@ export function draftFromPlanAndAnswers(prompt: string, plan: string, questions:
       };
     }),
     // The plan grounding hash lives in decided_tradeoffs (above); native exports
-    // carry the full plan text. protected_paths is the only wired constraint.
+    // carry the full plan text. Protected-path approvals are explicit run input,
+    // never inferred from interview prose, so frozen specs cannot contain them.
     constraints: {
       protected_paths: [],
     },

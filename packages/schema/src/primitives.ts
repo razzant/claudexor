@@ -118,6 +118,10 @@ export const FallbackReason = z.enum([
   "not_portable",
   /** No usable auth source for the route (native session + api key both absent). */
   "auth_unavailable",
+  /** Auto routing selected a doctor/smoke-proven route over another available
+   * auth source; used to disclose cost/readiness tradeoffs without implying the
+   * other source was missing. */
+  "readiness_preferred",
   "manual",
 ]);
 export type FallbackReason = z.infer<typeof FallbackReason>;

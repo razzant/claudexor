@@ -33,6 +33,7 @@ export const RunEventType = z.enum([
   "review.started",
   "reviewer.started",
   "reviewer.first_event",
+  "reviewer.auth_switched",
   "reviewer.completed",
   "reviewer.timed_out",
   "reviewer.failed",

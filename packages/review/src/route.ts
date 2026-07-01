@@ -39,21 +39,35 @@ export function buildRouteProof(
 }
 
 /**
- * Mark same-model-fallback when two supposedly-distinct routes share a
+ * Mark same-model-fallback when supposedly-distinct routes collapse onto one
  * STREAM-OBSERVED model. Only `verified` proofs count as real observations —
  * an `accepted_model_arg` (argv echo) or `unverified` proof is not evidence the
  * CLI ran that model, so it must not trigger a false same-model-fallback claim.
+ *
+ * Intentional same-family repeats of the same requested model stay verified,
+ * but distinct requested model hints within one family must still be flagged if
+ * the native CLI reports the same observed model for all of them.
  */
 export function classifyDiversity(proofs: RouteProof[]): RouteProof[] {
-  const counts = new Map<string, number>();
+  const familiesByObservedModel = new Map<string, Set<ProviderFamily>>();
+  const requestedHintsByObservedModel = new Map<string, Set<string>>();
   for (const p of proofs) {
     if (p.status === "verified" && p.observed.model_id) {
-      counts.set(p.observed.model_id, (counts.get(p.observed.model_id) ?? 0) + 1);
+      const families = familiesByObservedModel.get(p.observed.model_id) ?? new Set<ProviderFamily>();
+      families.add(p.requested.provider_family);
+      familiesByObservedModel.set(p.observed.model_id, families);
+      const requestedHints = requestedHintsByObservedModel.get(p.observed.model_id) ?? new Set<string>();
+      requestedHints.add(p.requested.model_hint ?? "");
+      requestedHintsByObservedModel.set(p.observed.model_id, requestedHints);
     }
   }
-  return proofs.map((p) =>
-    p.status === "verified" && p.observed.model_id && (counts.get(p.observed.model_id) ?? 0) > 1
-      ? { ...p, status: "same_model_fallback" as const }
-      : p,
-  );
+  return proofs.map((p) => {
+    const observedModel = p.observed.model_id;
+    const collapsed =
+      p.status === "verified" &&
+      observedModel &&
+      ((familiesByObservedModel.get(observedModel)?.size ?? 0) > 1 ||
+        (requestedHintsByObservedModel.get(observedModel)?.size ?? 0) > 1);
+    return collapsed ? { ...p, status: "same_model_fallback" as const } : p;
+  });
 }

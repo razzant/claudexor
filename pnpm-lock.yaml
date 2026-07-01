@@ -45,7 +45,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/util
 
-  packages/acp-server: {}
+  packages/acp-server:
+    dependencies:
+      '@claudexor/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/arbitration:
     dependencies:
@@ -326,7 +330,11 @@ importers:
         specifier: workspace:*
         version: link:../util
 
-  packages/mcp-server: {}
+  packages/mcp-server:
+    dependencies:
+      '@claudexor/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/orchestrator:
     dependencies:
@@ -394,6 +402,9 @@ importers:
 
   packages/review:
     dependencies:
+      '@claudexor/context':
+        specifier: workspace:*
+        version: link:../context
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core

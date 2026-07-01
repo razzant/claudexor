@@ -27,9 +27,16 @@ import Testing
             mode: "agent",
             scope: .project(root: "/tmp/repo"),
             harnesses: ["codex", "claude"],
+            reviewerPanel: [
+                ReviewerPanelEntry(harness: "claude", model: "claude-opus-4-8", effort: "max"),
+                ReviewerPanelEntry(harness: "cursor", model: "gemini-3.1-pro"),
+                ReviewerPanelEntry(harness: "cursor", model: "gpt-5.5-xhigh-1M")
+            ],
             reviewerModels: ["openai": "gpt-5.5"],
             reviewerEfforts: ["openai": "xhigh", "anthropic": "high"],
-            n: 2
+            n: 2,
+            tests: ["pnpm test"],
+            protectedPathApprovals: [ProtectedPathApproval(path: "packages/**/*.test.ts", reason: "test authoring requested")]
         )
         let data = try JSONEncoder().encode(req)
         let decoded = try JSONDecoder().decode(JSONValue.self, from: data)
@@ -38,9 +45,26 @@ import Testing
         #expect(decoded["scope"]?["kind"]?.stringValue == "project")
         #expect(decoded["scope"]?["root"]?.stringValue == "/tmp/repo")
         #expect(decoded["execution"]?["isolation"]?.stringValue == "envelope")
+        let raw = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let panel = try #require(raw["reviewerPanel"] as? [[String: Any]])
+        #expect(panel.count == 3)
+        #expect(panel[0]["harness"] as? String == "claude")
+        #expect(panel[0]["model"] as? String == "claude-opus-4-8")
+        #expect(panel[0]["effort"] as? String == "max")
+        #expect(panel[1]["harness"] as? String == "cursor")
+        #expect(panel[1]["model"] as? String == "gemini-3.1-pro")
+        #expect(panel[2]["harness"] as? String == "cursor")
+        #expect(panel[2]["model"] as? String == "gpt-5.5-xhigh-1M")
         #expect(decoded["reviewerModels"]?["openai"]?.stringValue == "gpt-5.5")
         #expect(decoded["reviewerEfforts"]?["openai"]?.stringValue == "xhigh")
         #expect(decoded["reviewerEfforts"]?["anthropic"]?.stringValue == "high")
+        if case .array(let tests)? = decoded["tests"] {
+            #expect(tests[0].stringValue == "pnpm test")
+        } else { Issue.record("expected tests array") }
+        if case .array(let approvals)? = decoded["protectedPathApprovals"] {
+            #expect(approvals[0]["path"]?.stringValue == "packages/**/*.test.ts")
+            #expect(approvals[0]["reason"]?.stringValue == "test authoring requested")
+        } else { Issue.record("expected protectedPathApprovals array") }
         #expect(decoded["n"]?.doubleValue == 2)
     }
 
@@ -64,6 +88,39 @@ import Testing
         #expect(emptyObj?["interactionTimeoutMs"] == nil)
     }
 
+    @Test func settingsSnapshotDecodesRuntime() throws {
+        let data = Data("""
+        {
+          "sources": [],
+          "defaultPortfolio": "subscription-first",
+          "interactionTimeoutMs": 900000,
+          "routing": {
+            "defaultPolicy": "auto",
+            "primaryHarness": null,
+            "eligibleHarnesses": [],
+            "defaultModel": null,
+            "envInheritance": "mirror_native",
+            "authPreference": "auto"
+          },
+          "budget": { "maxUsdPerRun": null },
+          "runtime": {
+            "reviewerTimeoutMs": 2400000,
+            "transientRetry": {
+              "maxRetries": 3,
+              "initialDelayMs": 2000,
+              "maxDelayMs": 20000
+            }
+          },
+          "harnesses": {}
+        }
+        """.utf8)
+        let snapshot = try JSONDecoder().decode(SettingsSnapshot.self, from: data)
+        #expect(snapshot.runtime?.reviewerTimeoutMs == 2_400_000)
+        #expect(snapshot.runtime?.transientRetry.maxRetries == 3)
+        #expect(snapshot.runtime?.transientRetry.initialDelayMs == 2_000)
+        #expect(snapshot.runtime?.transientRetry.maxDelayMs == 20_000)
+    }
+
     @Test func harnessSettingsPatchEncodesClearVsSetForModelOverride() throws {
         // The macOS per-harness auto-save builds this patch from its drafts. The
         // revert bug was macOS-side @State handling, but the WIRE contract it
@@ -79,7 +136,8 @@ import Testing
             maxUsd: .some(2.5),
             toolsAllow: ["read"],
             toolsDeny: [],
-            fallbackModel: .some(nil)
+            fallbackModel: .some(nil),
+            authPreference: "api_key"
         )
         let setObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(setPatch)) as? [String: Any]
         #expect(setObj?["enabled"] as? Bool == true)
@@ -88,6 +146,7 @@ import Testing
         #expect(setObj?["web"] as? String == "live")
         #expect(setObj?["maxUsd"] as? Double == 2.5)
         #expect(setObj?["toolsAllow"] as? [String] == ["read"])
+        #expect(setObj?["authPreference"] as? String == "api_key")
         // fallback empty → explicit null (clear); untouched fields omitted (kept server-side).
         #expect(setObj?.keys.contains("fallbackModel") == true)
         #expect(setObj?["fallbackModel"] is NSNull)
@@ -332,17 +391,36 @@ import Testing
 
     @Test func threadTurnRequestEncodesRoutingAndStrategyKnobs() throws {
         // Every key must already exist on the engine's run-start request (the turn
-        // endpoint .strict()-parses the body) — primary/access/web/n/until-clean.
+        // endpoint .strict()-parses the body) — primary/access/web/n/until-clean/review.
         let req = ThreadTurnRequest(prompt: "go", mode: "agent", harnesses: ["codex", "claude"], n: 2,
                                     attempts: 5, untilClean: true, maxUsd: 0.5, primaryHarness: "claude",
-                                    access: "readonly", web: "off")
+                                    reviewerPanel: [
+                                        ReviewerPanelEntry(harness: "claude", model: "claude-opus-4-8", effort: "max"),
+                                        ReviewerPanelEntry(harness: "cursor", model: "gemini-3.1-pro")
+                                    ],
+                                    reviewerModels: ["openai": "gpt-5.5"],
+                                    reviewerEfforts: ["anthropic": "max"],
+                                    access: "readonly", web: "off",
+                                    tests: ["pnpm test -- --runInBand"],
+                                    protectedPathApprovals: [ProtectedPathApproval(path: "packages/**/*.test.ts", reason: "test authoring requested")],
+                                    authPreference: "api_key")
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
         #expect(obj?["primaryHarness"] as? String == "claude")
+        let panel = try #require(obj?["reviewerPanel"] as? [[String: Any]])
+        #expect(panel.count == 2)
+        #expect(panel[0]["effort"] as? String == "max")
+        #expect((obj?["reviewerModels"] as? [String: String])?["openai"] == "gpt-5.5")
+        #expect((obj?["reviewerEfforts"] as? [String: String])?["anthropic"] == "max")
         #expect(obj?["access"] as? String == "readonly")
         #expect(obj?["web"] as? String == "off")
         #expect(obj?["n"] as? Int == 2)
         #expect(obj?["untilClean"] as? Bool == true)
         #expect(obj?["maxUsd"] as? Double == 0.5)
+        let tests = try #require(obj?["tests"] as? [String])
+        #expect(tests == ["pnpm test -- --runInBand"])
+        let approvals = try #require(obj?["protectedPathApprovals"] as? [[String: Any]])
+        #expect(approvals[0]["path"] as? String == "packages/**/*.test.ts")
+        #expect(obj?["authPreference"] as? String == "api_key")
     }
 
     @Test func threadTurnRequestOmitsAbsentOptionalKeys() throws {
@@ -353,6 +431,10 @@ import Testing
         #expect(obj?["primaryHarness"] == nil)
         #expect(obj?["access"] == nil)
         #expect(obj?["web"] == nil)
+        #expect(obj?["reviewerPanel"] == nil)
+        #expect(obj?["tests"] == nil)
+        #expect(obj?["protectedPathApprovals"] == nil)
+        #expect(obj?["authPreference"] == nil)
         #expect(obj?["n"] == nil)
     }
 
@@ -375,13 +457,15 @@ import Testing
 
     @Test func harnessSettingsPatchEncodesFullPerHarnessFields() throws {
         let patch = HarnessSettingsPatch(enabled: true, maxUsd: .some(1.5), toolsAllow: ["bash"],
-                                         toolsDeny: ["net"], fallbackModel: .some("gpt-5-mini"))
+                                         toolsDeny: ["net"], fallbackModel: .some("gpt-5-mini"),
+                                         authPreference: "subscription")
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
         #expect(obj?["enabled"] as? Bool == true)
         #expect(obj?["maxUsd"] as? Double == 1.5)
         #expect(obj?["toolsAllow"] as? [String] == ["bash"])
         #expect(obj?["toolsDeny"] as? [String] == ["net"])
         #expect(obj?["fallbackModel"] as? String == "gpt-5-mini")
+        #expect(obj?["authPreference"] as? String == "subscription")
         // .some(nil) clears the cap (explicit JSON null); .none omits.
         let clear = HarnessSettingsPatch(maxUsd: .some(nil))
         let cobj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clear)) as? [String: Any]

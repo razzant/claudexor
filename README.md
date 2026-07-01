@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 and `audit`. Any harness that declares the capability can be assigned the
 intent.
 
-Current status: **v0.14.0 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.14.1 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -38,6 +38,10 @@ claudexor daemon start
 `apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
 not mutate the repo. Unknown flags and invalid `--access`/`--web`/`--effort`
 values fail loudly with exit code 2 — a typo never silently runs with defaults.
+When deterministic gates protect existing test/package surfaces and the task is
+explicitly test-authoring work, use `--allow-protected-path <glob[,glob...]>` to
+record typed per-run approval for those protected gate/test path changes. This
+does not bypass built-in critical/security human gates.
 
 ## Modes
 
@@ -131,6 +135,32 @@ Routing is `Pool + Primary + Portfolio`:
 - `--portfolio <id>` records the routing/budget portfolio, default
   `subscription-first`.
 
+Reviewer selection is also explicit when needed. `--reviewer-panel` accepts an
+ordered list of harness entries and preserves repeated harness ids, so one pass
+can request multiple Cursor models without provider-family dedupe:
+
+```bash
+claudexor run "fix the parser" --reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
+```
+
+Each entry is `harness[:effort]` or `harness[=model[:effort]]`; a trailing
+`:low|medium|high|xhigh|max` suffix is parsed as effort, while other colons
+remain part of the model id when a model is present.
+Exact panels may intentionally contain several entries from the same provider,
+for example a Cursor-only diagnostics pass, but a clean verified review/apply
+gate still requires at least two distinct observed provider families. A
+same-provider-only panel can run and produce findings, but it remains ungated
+until another provider family participates.
+Legacy `--reviewer-model` and `--reviewer-effort` remain per-provider defaults
+for the automatic reviewer selector; an explicit panel is used verbatim and
+fails loudly if any requested harness is unknown, unavailable, disabled,
+fake-only, lacks review intent, or rejects an explicit model id that its adapter
+can enumerate. When an adapter has no enumerable model producer, the requested
+model must at least match the harness manifest's known-good model hints;
+otherwise the panel fails loudly instead of silently forwarding an unverifiable
+model to the native CLI. Use `claudexor models --harness <id>` to inspect the
+current model ids for adapters that expose inventory.
+
 In the chat surface this is sticky per thread: a thread remembers which harness
 answers in chat (its primary) and the eligible pool Race competes over. The macOS
 app sets them via `POST /threads` / `PATCH /threads/:id` and may override per turn
@@ -140,11 +170,15 @@ Harness chips in the macOS app are not decorative toggles: unavailable,
 unauthenticated, degraded, or intent-incompatible harnesses are shown with the
 reason and are gated out of launch.
 
-Claudexor mirrors native harness auth first. API keys are a fallback and live in
-the OS Keychain where available, otherwise a `0600` file. Run params, daemon
-`jobs.json`, artifacts, summaries, patches, and PR text store only refs/metadata,
-not raw secret values. Subscription/native routes scrub provider API-key env
-vars unless an API-key source is explicitly selected.
+Claudexor mirrors native harness auth where that route is readiness-proven; API
+keys are fallback secret refs and live in the OS Keychain where available,
+otherwise a `0600` file. Cursor keeps normal non-scoped `auto` runs on the
+native session when it is ready, and only lets scoped/envelope `auto` prefer a
+smoke-proven API-key route; if a native Cursor session is also available, that
+scoped paid-route choice emits a typed auth-route disclosure so API billing is
+not silent. Run params, daemon `jobs.json`, artifacts, summaries, patches, and
+PR text store only refs/metadata, not raw secret values. Subscription/native
+routes scrub provider API-key env vars unless an API-key source is selected.
 
 ```bash
 claudexor auth status
@@ -399,6 +433,10 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
+- **v0.14.1** — checkpoint hardening for explicit reviewer panels, mandatory
+  review evidence preflight, scoped Cursor reviewer readiness, frozen SpecPack
+  gate merging, protected-path approvals, and thin control/macOS projection
+  parity.
 - **v0.14.0** — battery-driven hardening: typed transient retry evidence,
   configurable reviewer timeouts with stronger route-proof capture,
   `stuck_no_progress` convergence diagnostics, deterministic protected-path

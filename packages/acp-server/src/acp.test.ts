@@ -37,6 +37,175 @@ describe("AcpServer", () => {
     expect(messages.some((m) => m.method === "session/update")).toBe(true);
   });
 
+  it("forwards advanced run controls from session/prompt to the runner", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let received: any = null;
+    const server = new AcpServer({
+      runner: async (p) => {
+        received = p;
+        return { ok: true };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: "/tmp/project" } }) + "\n");
+    await sleep(20);
+    const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: {
+          sessionId: sid,
+          prompt: "go",
+          mode: "agent",
+          harness: "codex",
+          primaryHarness: "codex",
+          tests: ["pnpm test"],
+          maxUsd: 5,
+          access: "workspace_write",
+          reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
+          reviewerModels: { openai: "gpt-5.5" },
+          reviewerEfforts: { openai: "xhigh" },
+          protectedPathApprovals: [{ path: "docs/**", reason: "explicit ACP request" }],
+        },
+      }) + "\n",
+    );
+    await sleep(40);
+    c2s.end();
+    await serving;
+
+    expect(received).toMatchObject({
+      prompt: "go",
+      mode: "agent",
+      repoPath: "/tmp/project",
+      harness: "codex",
+      primaryHarness: "codex",
+      tests: ["pnpm test"],
+      maxUsd: 5,
+      access: "workspace_write",
+      reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
+      reviewerModels: { openai: "gpt-5.5" },
+      reviewerEfforts: { openai: "xhigh" },
+      protectedPathApprovals: [{ path: "docs/**", reason: "explicit ACP request" }],
+    });
+    expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("end_turn");
+  });
+
+  it("rejects malformed advanced run controls before invoking the runner", async () => {
+    const c2s = new PassThrough();
+    const s2c = new PassThrough();
+    let calls = 0;
+    const server = new AcpServer({
+      runner: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+      transport: { read: c2s, write: s2c },
+    });
+    const serving = server.serve();
+    const messages: any[] = [];
+    const rl = createInterface({ input: s2c });
+    rl.on("line", (l) => {
+      if (l.trim()) messages.push(JSON.parse(l));
+    });
+
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session/prompt",
+        params: { prompt: "go", tests: "pnpm test", reviewerPanel: [{ harness: "claude" }] },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "session/prompt",
+        params: { prompt: "go", effort: "turbo" },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "session/prompt",
+        params: { prompt: "go", reviewerModels: { opneai: "gpt-5.5" } },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "session/prompt",
+        params: { prompt: "go", reviewerEfforts: { openai: "turbo" } },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "session/prompt",
+        params: { prompt: "go", race: "true" },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "session/prompt",
+        params: { prompt: "" },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "session/prompt",
+        params: { prompt: "   " },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "session/prompt",
+        params: {},
+      }) + "\n",
+    );
+    await sleep(40);
+    c2s.end();
+    await serving;
+
+    expect(calls).toBe(0);
+    expect(messages.find((m) => m.id === 1)?.error?.code).toBe(-32600);
+    expect(messages.find((m) => m.id === 2)?.error?.message).toContain("unknown reviewerPanel field");
+    expect(messages.find((m) => m.id === 3)?.error?.message).toContain("effort must be a valid effort value");
+    expect(messages.find((m) => m.id === 4)?.error?.message).toContain("unknown provider family key");
+    expect(messages.find((m) => m.id === 5)?.error?.message).toContain("valid effort values");
+    expect(messages.find((m) => m.id === 6)?.error?.message).toContain("race must be a boolean");
+    expect(messages.find((m) => m.id === 7)?.error?.message).toContain("prompt must be a non-empty string");
+    expect(messages.find((m) => m.id === 8)?.error?.message).toContain("prompt must be a non-empty string");
+    expect(messages.find((m) => m.id === 9)?.error?.message).toContain("prompt must be a non-empty string");
+  });
+
   it("answers session/request_permission WHILE the prompt is still running (read loop never blocks)", async () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();

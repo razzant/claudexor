@@ -1,5 +1,38 @@
 # @claudexor/cli
 
+## 0.14.1
+
+### Patch Changes
+
+- Stabilize the checkpoint release with explicit reviewer-panel hardening, mandatory
+  review evidence preflight, scoped Cursor reviewer readiness, frozen SpecPack gate
+  merging, protected-path approvals, and thin control/macOS projection parity.
+- Preserve repeated/comma-separated `--harness`, `--attach`, and `--image` values
+  on run commands, and keep MCP/ACP runner passthrough aligned for reviewer panel,
+  gate, budget, and access fields.
+- Updated dependencies
+  - @claudexor/control-api@0.14.1
+  - @claudexor/core@0.14.1
+  - @claudexor/harness-cursor@0.14.1
+  - @claudexor/interview@0.14.1
+  - @claudexor/orchestrator@0.14.1
+  - @claudexor/schema@0.14.1
+  - @claudexor/delivery@0.14.1
+  - @claudexor/gateway@0.14.1
+  - @claudexor/harness-claude@0.14.1
+  - @claudexor/harness-codex@0.14.1
+  - @claudexor/harness-fake@0.14.1
+  - @claudexor/harness-opencode@0.14.1
+  - @claudexor/harness-raw-api@0.14.1
+  - @claudexor/workspace@0.14.1
+  - @claudexor/config@0.14.1
+  - @claudexor/daemon@0.14.1
+  - @claudexor/acp-server@0.14.1
+  - @claudexor/artifact-store@0.14.1
+  - @claudexor/mcp-server@0.14.1
+  - @claudexor/secrets@0.14.1
+  - @claudexor/util@0.14.1
+
 ## 0.14.0
 
 ### Minor Changes

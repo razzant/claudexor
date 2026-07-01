@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/mcp-server",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Minimal MCP server (stdio JSON-RPC) exposing Claudexor tools. Runner injected.",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +14,9 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@claudexor/schema": "workspace:*"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"

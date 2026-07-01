@@ -48,8 +48,12 @@ export const PROVIDER_SECRET_ENV: readonly string[] = [
   "OPENROUTER_API_KEY",
   "OPENROUTER_BASE_URL",
   "CURSOR_API_KEY",
+  "CLAUDEXOR_CURSOR_API_KEY",
   "CURSOR_API_URL",
   "OPENCODE_API_KEY",
+  // Raw OpenAI-compatible API harness
+  "CLAUDEXOR_RAWAPI_KEY",
+  "CLAUDEXOR_RAWAPI_BASE_URL",
   // Other providers harness CLIs can read (third-party routers / clouds)
   "GROQ_API_KEY",
   "MISTRAL_API_KEY",

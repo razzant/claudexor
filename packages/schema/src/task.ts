@@ -16,10 +16,28 @@ export const TestCommand = z.object({
 });
 export type TestCommand = z.infer<typeof TestCommand>;
 
+export const ProtectedPathApproval = z
+  .object({
+    /** Glob approved by the operator/user for this run; consumed only by the
+     * auto-protected gate/test path policy, not by built-in critical-path gates. */
+    path: z.string().min(1),
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
+export type ProtectedPathApproval = z.infer<typeof ProtectedPathApproval>;
+
 export const TaskConstraints = z.object({
   /** Globs whose changes escalate risk to a human-approval gate (wired into
-   * classifyRisk/requireHuman). The other constraint kinds were unwired and removed. */
+   * classifyRisk/requireHuman). These are spec/config-owned and cannot be
+   * suppressed by per-run protected-path approvals. The other constraint kinds
+   * were unwired and removed. */
   protected_paths: z.array(z.string()).default([]),
+  /** Engine-derived gate/test path protections. Per-run approvals can narrow
+   * only this auto-protected set, never spec/config-owned protected_paths. */
+  auto_protected_paths: z.array(z.string()).default([]),
+  /** Per-run typed approvals for protected gate/test path changes. These are
+   * produced by explicit surfaces (CLI/control/IDE), then consumed by policy. */
+  protected_path_approvals: z.array(ProtectedPathApproval).default([]),
 });
 export type TaskConstraints = z.infer<typeof TaskConstraints>;
 

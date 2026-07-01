@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -114,6 +114,7 @@ describe("evidence packet", () => {
     const dir = join(tmp(), ".adversarial-review");
     writeEvidencePacket(dir, { userIntent: "do X", diff: "diff --git a b\n" });
     expect(preflightEvidence(dir).ok).toBe(true);
+    expect(readFileSync(join(dir, "DIFF_SUMMARY.md"), "utf8")).toContain("Digest: sha256:");
     expect(readRound(dir)).toBe(0);
     expect(incrementRound(dir)).toBe(1);
     expect(readRound(dir)).toBe(1);
@@ -124,5 +125,53 @@ describe("evidence packet", () => {
     const pf = preflightEvidence(dir);
     expect(pf.ok).toBe(false);
     expect(pf.missing).toContain("USER_INTENT.md");
+  });
+
+  it("treats generated diff summary as mandatory evidence", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    writeEvidencePacket(dir, { userIntent: "do X", diff: "diff --git a b\n" });
+    rmSync(join(dir, "DIFF_SUMMARY.md"));
+    const pf = preflightEvidence(dir);
+    expect(pf.ok).toBe(false);
+    expect(pf.missing).toContain("DIFF_SUMMARY.md");
+  });
+
+  it("refuses to persist raw patch evidence when the diff contains secret-like tokens", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
+    expect(() =>
+      writeEvidencePacket(dir, {
+        userIntent: "do X",
+        diff: `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`,
+      }),
+    ).toThrow(/refusing to persist raw DIFF\.patch/);
+    expect(existsSync(join(dir, "DIFF.patch"))).toBe(false);
+    expect(existsSync(join(dir, "DIFF_SUMMARY.md"))).toBe(false);
+  });
+
+  it("reports raw patch stats in the redacted diff summary", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    const diff = `diff --git a/config.example b/config.example\n@@ -1 +1 @@\n-OLD=1\n+TOKEN=example-value\n`;
+    writeEvidencePacket(dir, { userIntent: "do X", diff });
+
+    const summary = readFileSync(join(dir, "DIFF_SUMMARY.md"), "utf8");
+    expect(summary).toContain(`- Patch bytes: ${Buffer.byteLength(diff, "utf8")}`);
+    expect(summary).toContain(`- Patch lines: ${diff.split(/\r?\n/).length}`);
+    expect(summary).toContain("config.example -> config.example");
+  });
+
+  it("summarizes git diff headers with spaces and b substrings in paths", () => {
+    const dir = join(tmp(), ".adversarial-review");
+    writeEvidencePacket(dir, {
+      userIntent: "do X",
+      diff: [
+        'diff --git "a/src/a b/file name.ts" "b/src/a b/file name.ts"',
+        "diff --git a/src/bright.ts b/src/bright.ts",
+        "",
+      ].join("\n"),
+    });
+    const summary = readFileSync(join(dir, "DIFF_SUMMARY.md"), "utf8");
+    expect(summary).toContain("src/a b/file name.ts -> src/a b/file name.ts");
+    expect(summary).toContain("src/bright.ts -> src/bright.ts");
   });
 });

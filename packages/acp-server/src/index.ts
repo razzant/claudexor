@@ -1,5 +1,12 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import {
+  AccessProfile,
+  EffortHint,
+  ExternalContextPolicy,
+  ModeKind,
+  ProviderFamily,
+} from "@claudexor/schema";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -134,6 +141,15 @@ export class AcpServer {
       case "session/prompt": {
         const sessionId = params?.sessionId as string | undefined;
         const text = extractPromptText(params?.prompt);
+        if (!text.trim()) {
+          this.error(id, -32600, "prompt must be a non-empty string");
+          return;
+        }
+        const runControlError = validateRunControls(params);
+        if (runControlError) {
+          this.error(id, -32600, runControlError);
+          return;
+        }
         // One active run per session: a second prompt while one is running is
         // a protocol misuse. ACP StopReason has no "error" member, so fail loudly
         // as a JSON-RPC error (-32600 Invalid Request) rather than inventing one.
@@ -158,6 +174,34 @@ export class AcpServer {
               prompt: text,
               mode: params?.mode ?? "agent",
               ...(sessionId && this.sessionCwds.has(sessionId) ? { repoPath: this.sessionCwds.get(sessionId) } : {}),
+              ...(params?.harness !== undefined ? { harness: params.harness } : {}),
+              ...(params?.primaryHarness !== undefined
+                ? { primaryHarness: params.primaryHarness }
+                : {}),
+              ...(params?.web !== undefined ? { web: params.web } : {}),
+              ...(params?.externalContextPolicy !== undefined
+                ? { externalContextPolicy: params.externalContextPolicy }
+                : {}),
+              ...(params?.model !== undefined ? { model: params.model } : {}),
+              ...(params?.effort !== undefined ? { effort: params.effort } : {}),
+              ...(params?.n !== undefined ? { n: params.n } : {}),
+              ...(params?.race === true ? { race: true } : {}),
+              ...(params?.untilClean === true ? { untilClean: true } : {}),
+              ...(params?.swarm === true ? { swarm: true } : {}),
+              ...(params?.create === true ? { create: true } : {}),
+              ...(params?.tests !== undefined ? { tests: params.tests } : {}),
+              ...(params?.maxUsd !== undefined ? { maxUsd: params.maxUsd } : {}),
+              ...(params?.access !== undefined ? { access: params.access } : {}),
+              ...(params?.protectedPathApprovals !== undefined
+                ? { protectedPathApprovals: params.protectedPathApprovals }
+                : {}),
+              ...(params?.reviewerPanel !== undefined ? { reviewerPanel: params.reviewerPanel } : {}),
+              ...(params?.reviewerModels !== undefined
+                ? { reviewerModels: params.reviewerModels }
+                : {}),
+              ...(params?.reviewerEfforts !== undefined
+                ? { reviewerEfforts: params.reviewerEfforts }
+                : {}),
             },
             hooks,
           );
@@ -372,4 +416,124 @@ function extractPromptText(prompt: unknown): string {
     return (prompt as any).text;
   }
   return "";
+}
+
+const EFFORTS: ReadonlySet<string> = new Set(EffortHint.options);
+const ACCESS_PROFILES: ReadonlySet<string> = new Set(AccessProfile.options);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateStringArray(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
+    return `${name} must be an array of non-empty strings`;
+  }
+  return null;
+}
+
+function validateStringMap(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!isPlainRecord(value)) return `${name} must be an object`;
+  for (const [key, child] of Object.entries(value)) {
+    if (!ProviderFamily.safeParse(key).success) {
+      return `${name} has unknown provider family key: ${key}`;
+    }
+    if (typeof child !== "string" || child.trim() === "") {
+      return `${name} must map provider family keys to non-empty strings`;
+    }
+  }
+  return null;
+}
+
+function validateEffortMap(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!isPlainRecord(value)) return `${name} must be an object`;
+  for (const [key, child] of Object.entries(value)) {
+    if (!ProviderFamily.safeParse(key).success) {
+      return `${name} has unknown provider family key: ${key}`;
+    }
+    if (typeof child !== "string" || !EFFORTS.has(child)) {
+      return `${name} must map provider family keys to valid effort values`;
+    }
+  }
+  return null;
+}
+
+function validateRunControls(params: unknown): string | null {
+  if (!isPlainRecord(params)) return null;
+  if (params.mode !== undefined && (typeof params.mode !== "string" || !ModeKind.safeParse(params.mode).success)) {
+    return "mode must be a valid mode";
+  }
+  if (params.harness !== undefined && typeof params.harness !== "string") return "harness must be a string";
+  if (params.primaryHarness !== undefined && typeof params.primaryHarness !== "string") {
+    return "primaryHarness must be a string";
+  }
+  if (params.web !== undefined && (typeof params.web !== "string" || !ExternalContextPolicy.safeParse(params.web).success)) {
+    return "web must be a valid external context policy";
+  }
+  if (
+    params.externalContextPolicy !== undefined &&
+    (typeof params.externalContextPolicy !== "string" || !ExternalContextPolicy.safeParse(params.externalContextPolicy).success)
+  ) {
+    return "externalContextPolicy must be a valid external context policy";
+  }
+  if (
+    params.web !== undefined &&
+    params.externalContextPolicy !== undefined &&
+    params.web !== params.externalContextPolicy
+  ) {
+    return "web and externalContextPolicy must be equal when both are provided";
+  }
+  if (params.model !== undefined && typeof params.model !== "string") return "model must be a string";
+  if (params.effort !== undefined && (typeof params.effort !== "string" || !EffortHint.safeParse(params.effort).success)) {
+    return "effort must be a valid effort value";
+  }
+  if (params.n !== undefined && (!Number.isInteger(params.n) || (params.n as number) < 1)) {
+    return "n must be an integer >= 1";
+  }
+  for (const name of ["race", "untilClean", "swarm", "create"]) {
+    if (params[name] !== undefined && typeof params[name] !== "boolean") {
+      return `${name} must be a boolean`;
+    }
+  }
+  if (params.tests !== undefined) {
+    const testsError = validateStringArray(params.tests, "tests");
+    if (testsError) return testsError;
+  }
+  if (params.maxUsd !== undefined && (typeof params.maxUsd !== "number" || !Number.isFinite(params.maxUsd) || params.maxUsd < 0)) {
+    return "maxUsd must be a non-negative number";
+  }
+  if (params.access !== undefined && (typeof params.access !== "string" || !ACCESS_PROFILES.has(params.access))) {
+    return "access must be a valid access profile";
+  }
+  if (params.reviewerPanel !== undefined) {
+    if (!Array.isArray(params.reviewerPanel) || params.reviewerPanel.length === 0) {
+      return "reviewerPanel must be a non-empty array";
+    }
+    for (const entry of params.reviewerPanel) {
+      if (!isPlainRecord(entry)) return "reviewerPanel entries must be objects";
+      const allowed = new Set(["harness", "model", "effort"]);
+      for (const key of Object.keys(entry)) if (!allowed.has(key)) return `unknown reviewerPanel field: ${key}`;
+      if (typeof entry.harness !== "string" || entry.harness.trim() === "") return "reviewerPanel[].harness must be a non-empty string";
+      if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model.trim() === "")) return "reviewerPanel[].model must be a non-empty string";
+      if (entry.effort !== undefined && (typeof entry.effort !== "string" || !EFFORTS.has(entry.effort))) return "reviewerPanel[].effort must be a valid effort value";
+    }
+  }
+  const modelsError = validateStringMap(params.reviewerModels, "reviewerModels");
+  if (modelsError) return modelsError;
+  const effortsError = validateEffortMap(params.reviewerEfforts, "reviewerEfforts");
+  if (effortsError) return effortsError;
+  if (params.protectedPathApprovals !== undefined) {
+    if (!Array.isArray(params.protectedPathApprovals)) return "protectedPathApprovals must be an array";
+    for (const entry of params.protectedPathApprovals) {
+      if (!isPlainRecord(entry)) return "protectedPathApprovals entries must be objects";
+      const allowed = new Set(["path", "reason"]);
+      for (const key of Object.keys(entry)) if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
+      if (typeof entry.path !== "string" || entry.path.trim() === "") return "protectedPathApprovals[].path must be a non-empty string";
+      if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) return "protectedPathApprovals[].reason must be a non-empty string";
+    }
+  }
+  return null;
 }

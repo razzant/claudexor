@@ -34,6 +34,28 @@ public struct RunExecution: Codable, Sendable, Equatable {
     }
 }
 
+public struct ReviewerPanelEntry: Codable, Sendable, Equatable {
+    public var harness: String
+    public var model: String?
+    public var effort: String?
+
+    public init(harness: String, model: String? = nil, effort: String? = nil) {
+        self.harness = harness
+        self.model = model
+        self.effort = effort
+    }
+}
+
+public struct ProtectedPathApproval: Codable, Sendable, Equatable {
+    public var path: String
+    public var reason: String?
+
+    public init(path: String, reason: String? = nil) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
 /// Command to start a run (POST /runs). Mirrors the public control-api DTO a client
 /// supplies; the server fills the rest. Policy fields flow through `daemon.enqueue`
 /// to `orchestrator.run` so the composer's controls are actually applied.
@@ -46,6 +68,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var primaryHarness: String?
     public var portfolio: String?
     public var model: String?
+    public var reviewerPanel: [ReviewerPanelEntry]?
     public var reviewerModels: [String: String]?
     public var reviewerEfforts: [String: String]?
     public var n: Int?
@@ -53,6 +76,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var access: String?
     public var web: String?
     public var tests: [String]?
+    public var protectedPathApprovals: [ProtectedPathApproval]?
     /// v0.9 strategy flags (modes collapsed to 5; strategies ride as flags).
     public var attempts: Int?
     public var untilClean: Bool?
@@ -65,10 +89,11 @@ public struct StartRunRequest: Codable, Sendable {
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
                 primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
+                reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
                 web: String? = nil,
-                tests: [String]? = nil,
+                tests: [String]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
                 threadId: String? = nil, authPreference: String? = nil) {
         self.prompt = prompt
@@ -79,6 +104,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.primaryHarness = primaryHarness
         self.portfolio = portfolio
         self.model = model
+        self.reviewerPanel = reviewerPanel
         self.reviewerModels = reviewerModels
         self.reviewerEfforts = reviewerEfforts
         self.n = n
@@ -86,6 +112,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.access = access
         self.web = web
         self.tests = tests
+        self.protectedPathApprovals = protectedPathApprovals
         self.attempts = attempts
         self.untilClean = untilClean
         self.swarm = swarm
@@ -334,6 +361,11 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// Per-turn model override forwarded to the primary harness. When nil the turn
     /// uses the harness default (Settings → Harnesses owns the global default).
     public var model: String?
+    /// Explicit reviewer panel for this turn. Mirrors StartRunRequest/control DTO
+    /// so thread turns can exercise the same CLI-first review route.
+    public var reviewerPanel: [ReviewerPanelEntry]?
+    public var reviewerModels: [String: String]?
+    public var reviewerEfforts: [String: String]?
     /// Per-turn access profile: readonly | workspace_write | full.
     public var access: String?
     /// Per-turn external-context policy: auto | off | cached | live.
@@ -349,12 +381,22 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// Files/images attached to this turn (bytes ride base64-inline in each
     /// AttachmentInput.data; the daemon resolves them to scoped paths).
     public var attachments: [AttachmentInput]?
+    /// Optional per-turn gate/test command list; mirrors ControlRunStartRequest.
+    public var tests: [String]?
+    /// Typed approvals for protected gate/test path changes; never inferred from prompt text.
+    public var protectedPathApprovals: [ProtectedPathApproval]?
+    /// Per-turn auth route override; nil inherits the thread setting/server default.
+    public var authPreference: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
                 maxUsd: Double? = nil, primaryHarness: String? = nil, model: String? = nil,
+                reviewerPanel: [ReviewerPanelEntry]? = nil,
+                reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
-                specPath: String? = nil, attachments: [AttachmentInput]? = nil) {
+                specPath: String? = nil, attachments: [AttachmentInput]? = nil,
+                tests: [String]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
+                authPreference: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -366,12 +408,18 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.maxUsd = maxUsd
         self.primaryHarness = primaryHarness
         self.model = model
+        self.reviewerPanel = reviewerPanel
+        self.reviewerModels = reviewerModels
+        self.reviewerEfforts = reviewerEfforts
         self.access = access
         self.web = web
         self.browser = browser
         self.planRunId = planRunId
         self.specPath = specPath
         self.attachments = attachments
+        self.tests = tests
+        self.protectedPathApprovals = protectedPathApprovals
+        self.authPreference = authPreference
     }
 }
 
@@ -1070,6 +1118,7 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
     public let defaultPortfolio: String
     public let routing: RoutingSettings
     public let budget: BudgetSettings
+    public let runtime: RuntimeSettings?
     public let harnesses: [String: HarnessSettings]?
     /// Wait before an unanswered interactive question declines benignly (ms).
     /// Optional: pre-v0.8 daemons do not report it.
@@ -1088,6 +1137,17 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
 
 public struct BudgetSettings: Codable, Sendable, Equatable {
     public let maxUsdPerRun: Double?
+}
+
+public struct RuntimeSettings: Codable, Sendable, Equatable {
+    public let reviewerTimeoutMs: Int
+    public let transientRetry: RuntimeTransientRetrySettings
+}
+
+public struct RuntimeTransientRetrySettings: Codable, Sendable, Equatable {
+    public let maxRetries: Int
+    public let initialDelayMs: Int
+    public let maxDelayMs: Int
 }
 
 public struct HarnessSettings: Codable, Sendable, Equatable {
@@ -1117,10 +1177,12 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     public var fallbackModel: String??
     public var maxTurns: Int??
     public var maxRounds: Int??
+    public var authPreference: String?
 
     public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
                 maxUsd: Double?? = nil, toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
-                fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil) {
+                fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil,
+                authPreference: String? = nil) {
         self.enabled = enabled
         self.defaultModel = defaultModel
         self.effort = effort
@@ -1131,10 +1193,11 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         self.fallbackModel = fallbackModel
         self.maxTurns = maxTurns
         self.maxRounds = maxRounds
+        self.authPreference = authPreference
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds
+        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1150,6 +1213,7 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         if let fallbackModel { try c.encode(fallbackModel, forKey: .fallbackModel) }
         if let maxTurns { try c.encode(maxTurns, forKey: .maxTurns) }
         if let maxRounds { try c.encode(maxRounds, forKey: .maxRounds) }
+        try c.encodeIfPresent(authPreference, forKey: .authPreference)
     }
 }
 

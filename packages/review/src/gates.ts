@@ -1,6 +1,9 @@
 import type { GateResult } from "@claudexor/schema";
 import { GateResult as GateResultSchema } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
+import { redactSecrets } from "@claudexor/util";
+
+const GATE_OUTPUT_TAIL_CHARS = 12_000;
 
 export interface GateSpec {
   id: string;
@@ -19,6 +22,8 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
   const start = Date.now();
   let code: number | null = null;
   let timedOut = false;
+  let stdout = "";
+  let stderr = "";
   try {
     const r = await runCapture("sh", ["-c", spec.command], {
       cwd: opts.cwd,
@@ -26,11 +31,16 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
       timeoutMs: opts.timeoutMs ?? 600_000,
     });
     code = r.code;
+    stdout = r.stdout;
+    stderr = r.stderr;
     if (r.signal === "SIGKILL") timedOut = true;
   } catch {
     code = null;
   }
   const status = timedOut ? "timed_out" : code === 0 ? "passed" : "failed";
+  const includeOutput = status !== "passed";
+  const stdoutEvidence = includeOutput ? outputTail(stdout) : EMPTY_OUTPUT_TAIL;
+  const stderrEvidence = includeOutput ? outputTail(stderr) : EMPTY_OUTPUT_TAIL;
   return GateResultSchema.parse({
     id: spec.id,
     command: spec.command,
@@ -38,6 +48,9 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
     status,
     duration_ms: Date.now() - start,
     required: spec.required ?? true,
+    stdout_tail: stdoutEvidence.tail,
+    stderr_tail: stderrEvidence.tail,
+    output_truncated: stdoutEvidence.truncated || stderrEvidence.truncated,
   });
 }
 
@@ -49,4 +62,15 @@ export async function runGates(specs: GateSpec[], opts: RunGatesOptions): Promis
 
 export function gatesPassed(gates: GateResult[]): boolean {
   return gates.filter((g) => g.required).every((g) => g.status === "passed");
+}
+
+const EMPTY_OUTPUT_TAIL = { tail: null, truncated: false } as const;
+
+function outputTail(text: string): { tail: string | null; truncated: boolean } {
+  const redacted = redactSecrets(text).trimEnd();
+  if (!redacted) return EMPTY_OUTPUT_TAIL;
+  return {
+    tail: redacted.slice(-GATE_OUTPUT_TAIL_CHARS),
+    truncated: redacted.length > GATE_OUTPUT_TAIL_CHARS,
+  };
 }

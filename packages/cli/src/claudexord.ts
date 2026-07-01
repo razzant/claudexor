@@ -1,19 +1,47 @@
 #!/usr/bin/env node
 import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { DaemonClient, DaemonServer, InteractionRegistry, RunEventBus, ThreadStore, daemonDir, defaultSocketPath, ensureToken, logPath } from "@claudexor/daemon";
+import {
+  DaemonClient,
+  DaemonServer,
+  InteractionRegistry,
+  RunEventBus,
+  ThreadStore,
+  daemonDir,
+  defaultSocketPath,
+  ensureToken,
+  logPath,
+} from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
 import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
 import { deliver } from "@claudexor/delivery";
-import { containsSecretLikeToken, newId, noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
-import { type Attachment, type AttachmentInput, type ControlRunStartRequest as ControlRunStartRequestDto, ControlSettingsUpdateRequest, GlobalConfig, InterviewAnswer } from "@claudexor/schema";
+import {
+  containsSecretLikeToken,
+  newId,
+  noProjectRepoRoot,
+  readTextSafe,
+  redactSecrets,
+} from "@claudexor/util";
+import {
+  type Attachment,
+  type AttachmentInput,
+  type ControlRunStartRequest as ControlRunStartRequestDto,
+  ControlSettingsUpdateRequest,
+  GlobalConfig,
+  InterviewAnswer,
+} from "@claudexor/schema";
 import { invalidateDoctorCache } from "@claudexor/core";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { buildGroundingPrompt, extractQuestionsFromPlan, freezeSpecFromGrounding, persistSpec } from "./spec.js";
+import {
+  buildGroundingPrompt,
+  extractQuestionsFromPlan,
+  freezeSpecFromGrounding,
+  persistSpec,
+} from "./spec.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -81,8 +109,13 @@ async function main(): Promise<void> {
       const orchestrator = new Orchestrator({
         registry: buildRegistry(),
         portfolio: p.portfolio,
-        reviewerModels: p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
-        reviewerEfforts: p.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined,
+        reviewerPanel: p.reviewerPanel,
+        reviewerModels:
+          p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
+        reviewerEfforts:
+          p.reviewerEfforts && typeof p.reviewerEfforts === "object"
+            ? p.reviewerEfforts
+            : undefined,
       });
       const threadId = typeof p.threadId === "string" && p.threadId ? p.threadId : undefined;
       // Resolve the execution tree: an ISOLATED thread runs in its persistent
@@ -133,7 +166,8 @@ async function main(): Promise<void> {
         // conversation in this thread; record new native ids for future turns.
         resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
         onSessionObserved: threadId
-          ? (harnessId, nativeSessionId, observedModel) => threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
+          ? (harnessId, nativeSessionId, observedModel) =>
+              threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
           : undefined,
         authPreference: p.authPreference,
         // Orchestrate autonomy (suggest/auto_safe/auto_full): consumed by the
@@ -147,12 +181,18 @@ async function main(): Promise<void> {
         prompt: String(p.prompt ?? ""),
         // Attachments ride on the turn (resolved to scoped paths); a direct
         // POST /runs without a turn resolves them here. Never base64 in jobs.json.
-        attachments: turnId ? (threads.getTurn(turnId)?.attachments ?? []) : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
+        attachments: turnId
+          ? (threads.getTurn(turnId)?.attachments ?? [])
+          : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
         // Agent-driven browser opt-in (Playwright MCP). The orchestrator gates it
         // on the harness's browser_tool capability + web policy != off.
         browser: (p as { browser?: boolean }).browser === true,
         mode: p.mode,
-        contextMode: noProjectAsk ? "off" : p.scope.kind === "project" ? p.scope.context : undefined,
+        contextMode: noProjectAsk
+          ? "off"
+          : p.scope.kind === "project"
+            ? p.scope.context
+            : undefined,
         harnesses: p.harnesses,
         primaryHarness: p.primaryHarness,
         portfolio: p.portfolio,
@@ -170,6 +210,9 @@ async function main(): Promise<void> {
         model: p.model,
         effort: p.effort,
         tests: Array.isArray(p.tests) ? p.tests : undefined,
+        protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
+          ? p.protectedPathApprovals
+          : undefined,
         specId: typeof p.specId === "string" ? p.specId : undefined,
         specHash: typeof p.specHash === "string" ? p.specHash : undefined,
         specPath: typeof p.specPath === "string" ? p.specPath : undefined,
@@ -182,7 +225,10 @@ async function main(): Promise<void> {
   });
 
   await server.start();
-  appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord listening on ${socketPath}\n`);
+  appendFileSync(
+    logPath(),
+    `[${new Date().toISOString()}] claudexord listening on ${socketPath}\n`,
+  );
   const control =
     process.env.CLAUDEXOR_NO_CONTROL_API === "1"
       ? null
@@ -200,9 +246,15 @@ async function main(): Promise<void> {
       JSON.stringify({ ...controlAddr, tokenPath: join(daemonDir(), "token") }, null, 2) + "\n",
       { mode: 0o600 },
     );
-    appendFileSync(logPath(), `[${new Date().toISOString()}] claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`);
+    appendFileSync(
+      logPath(),
+      `[${new Date().toISOString()}] claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`,
+    );
   } else {
-    appendFileSync(logPath(), `[${new Date().toISOString()}] claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1\n`);
+    appendFileSync(
+      logPath(),
+      `[${new Date().toISOString()}] claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1\n`,
+    );
   }
   await server.waitForShutdown();
   await control?.stop();
@@ -212,12 +264,17 @@ async function main(): Promise<void> {
 
 // Run-start normalization has exactly one owner (control-api); the socket
 // runner path delegates so scope/secret/absolute-root rules cannot drift.
-const normalizeDaemonRunStart = (raw: unknown): ControlRunStartRequestDto => normalizeRunStartRequest(raw);
+const normalizeDaemonRunStart = (raw: unknown): ControlRunStartRequestDto =>
+  normalizeRunStartRequest(raw);
 
 function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string): string {
-  if ("repoRoot" in p) throw new Error("legacy repoRoot field is not accepted; use scope.kind=project with scope.root");
+  if ("repoRoot" in p)
+    throw new Error(
+      "legacy repoRoot field is not accepted; use scope.kind=project with scope.root",
+    );
   const scope = p["scope"];
-  if (!scope || typeof scope !== "object" || Array.isArray(scope)) throw new Error(`project scope is required for ${purpose}`);
+  if (!scope || typeof scope !== "object" || Array.isArray(scope))
+    throw new Error(`project scope is required for ${purpose}`);
   const s = scope as Record<string, unknown>;
   if (s["kind"] !== "project") throw new Error(`project scope is required for ${purpose}`);
   const root = typeof s["root"] === "string" ? s["root"].trim() : "";
@@ -238,7 +295,12 @@ function applyHarnessSettingsPatches(
   const next = { ...current };
   for (const [id, patch] of Object.entries(patches)) {
     if (!knownIds.has(id)) {
-      throw Object.assign(new Error(`unknown harness id '${id}' (expected one of: ${[...knownIds].sort().join(", ")})`), { status: 400 });
+      throw Object.assign(
+        new Error(
+          `unknown harness id '${id}' (expected one of: ${[...knownIds].sort().join(", ")})`,
+        ),
+        { status: 400 },
+      );
     }
     const base = next[id] ?? GlobalConfig.shape.harnesses.removeDefault().valueSchema.parse({});
     next[id] = {
@@ -269,13 +331,25 @@ async function applyThreadDiff(
   if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
   const ws = thread.workspace;
   if (ws.mode !== "isolated" || !ws.worktree_path || !thread.repo) {
-    throw Object.assign(new Error("thread has no isolated worktree to apply (in-place threads write the project directly)"), { status: 400 });
+    throw Object.assign(
+      new Error(
+        "thread has no isolated worktree to apply (in-place threads write the project directly)",
+      ),
+      { status: 400 },
+    );
   }
   const projectRoot = thread.repo.root;
   const base = ws.base_sha ?? "HEAD";
   const patch = await diffStaged(ws.worktree_path, base);
-  if (!patch.trim()) return { applied: false, status: "empty", headMoved: false, detail: "no changes to apply" };
-  if (containsSecretLikeToken(patch)) return { applied: false, status: "rejected", headMoved: false, detail: "patch contains a secret-like token; refusing apply" };
+  if (!patch.trim())
+    return { applied: false, status: "empty", headMoved: false, detail: "no changes to apply" };
+  if (containsSecretLikeToken(patch))
+    return {
+      applied: false,
+      status: "rejected",
+      headMoved: false,
+      detail: "patch contains a secret-like token; refusing apply",
+    };
   // Best-effort: did the PROJECT advance past where this thread branched? (a
   // warning, not a blocker — git apply --3way still merges or fails loudly.)
   let headMoved = false;
@@ -286,13 +360,29 @@ async function applyThreadDiff(
   } catch {
     /* best-effort */
   }
-  const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as "apply" | "branch" | "commit" | "pr";
-  const delivered = await deliver(projectRoot, patch, { mode, branch: opts.branch, message: opts.message });
+  const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as
+    | "apply"
+    | "branch"
+    | "commit"
+    | "pr";
+  const delivered = await deliver(projectRoot, patch, {
+    mode,
+    branch: opts.branch,
+    message: opts.message,
+  });
   if (delivered.applied) {
     // Re-base the thread on the new project state so the next apply diffs only new work.
     threads.setThreadWorktree(id, ws.worktree_path, await snapshotTree(ws.worktree_path));
   }
-  const status = !delivered.applied ? "conflict" : mode === "branch" ? "branched" : mode === "commit" ? "committed" : mode === "pr" ? "pr_opened" : "applied";
+  const status = !delivered.applied
+    ? "conflict"
+    : mode === "branch"
+      ? "branched"
+      : mode === "commit"
+        ? "committed"
+        : mode === "pr"
+          ? "pr_opened"
+          : "applied";
   return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
 }
 
@@ -301,7 +391,8 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
   const setupJobs = createSetupJobManager();
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
-    createThread: async (input: unknown) => threads.createThread((input ?? {}) as Parameters<ThreadStore["createThread"]>[0]),
+    createThread: async (input: unknown) =>
+      threads.createThread((input ?? {}) as Parameters<ThreadStore["createThread"]>[0]),
     listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),
     threadDetail: async (id: string) => {
       const thread = threads.getThread(id);
@@ -312,20 +403,47 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         turns: threads.turnsFor(id) as unknown[],
       };
     },
-    createThreadTurn: async (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null; attachments?: AttachmentInput[] }) =>
+    createThreadTurn: async (
+      id: string,
+      prompt: string,
+      opts: {
+        kind?: unknown;
+        parentRunId?: string | null;
+        planRunId?: string | null;
+        attachments?: AttachmentInput[];
+      },
+    ) =>
       threads.createTurn(id, prompt, {
         kind: opts.kind as any,
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
         attachments: resolveAttachments(opts.attachments),
       }),
-    updateThread: async (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) =>
-      threads.updateThread(id, { title: patch.title, state: patch.state as any, primaryHarness: patch.primaryHarness, eligibleHarnesses: patch.eligibleHarnesses }),
-    applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) => applyThreadDiff(threads, id, opts),
+    updateThread: async (
+      id: string,
+      patch: {
+        title?: string;
+        state?: string;
+        primaryHarness?: string | null;
+        eligibleHarnesses?: string[];
+      },
+    ) =>
+      threads.updateThread(id, {
+        title: patch.title,
+        state: patch.state as any,
+        primaryHarness: patch.primaryHarness,
+        eligibleHarnesses: patch.eligibleHarnesses,
+      }),
+    applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) =>
+      applyThreadDiff(threads, id, opts),
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
-    answerInteraction: (runId: string, interactionId: string, answers: unknown) => interactions.answer(runId, interactionId, answers),
-    harnesses: async () => ({ harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }) }),
-    harnessModels: async (input: { harnessId: string }) => harnessModels(input.harnessId, NO_PROJECT_ROOT),
+    answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
+      interactions.answer(runId, interactionId, answers),
+    harnesses: async () => ({
+      harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }),
+    }),
+    harnessModels: async (input: { harnessId: string }) =>
+      harnessModels(input.harnessId, NO_PROJECT_ROOT),
     createSetupJob: async (input: unknown) => setupJobs.create(input),
     listSetupJobs: async () => ({ jobs: setupJobs.list() }),
     setupJobStatus: async (input: unknown) => setupJobs.status(input),
@@ -348,27 +466,43 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         budget: {
           maxUsdPerRun: cfg.global.budget.max_usd_per_run,
         },
-        harnesses: Object.fromEntries(Object.entries(cfg.global.harnesses).map(([id, h]) => [id, {
-          enabled: h.enabled,
-          defaultModel: h.default_model,
-          effort: h.effort,
-          maxTurns: h.max_turns,
-          maxRounds: h.max_rounds,
-          maxUsd: h.max_usd,
-          toolsAllow: h.tools_allow,
-          toolsDeny: h.tools_deny,
-          fallbackModel: h.fallback_model,
-          web: h.web,
-          nativeOptions: h.native_options,
-          authPreference: h.auth_preference,
-        }])),
+        runtime: {
+          reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
+          transientRetry: {
+            maxRetries: cfg.global.runtime.transient_retry.max_retries,
+            initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,
+            maxDelayMs: cfg.global.runtime.transient_retry.max_delay_ms,
+          },
+        },
+        harnesses: Object.fromEntries(
+          Object.entries(cfg.global.harnesses).map(([id, h]) => [
+            id,
+            {
+              enabled: h.enabled,
+              defaultModel: h.default_model,
+              effort: h.effort,
+              maxTurns: h.max_turns,
+              maxRounds: h.max_rounds,
+              maxUsd: h.max_usd,
+              toolsAllow: h.tools_allow,
+              toolsDeny: h.tools_deny,
+              fallbackModel: h.fallback_model,
+              web: h.web,
+              nativeOptions: h.native_options,
+              authPreference: h.auth_preference,
+            },
+          ]),
+        ),
       };
     },
     updateSettings: async (patch: unknown) => {
       // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
       // surface as a 4xx, never be silently dropped.
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
-      const nullableName = (value: string | null | undefined, current: string | null): string | null => {
+      const nullableName = (
+        value: string | null | undefined,
+        current: string | null,
+      ): string | null => {
         if (value === undefined) return current;
         if (value === null || value === "none" || value === "__none") return null;
         return value;
@@ -388,7 +522,8 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         },
         budget: {
           ...cfg.budget,
-          max_usd_per_run: p.clearMaxUsdPerRun === true ? null : p.maxUsdPerRun ?? cfg.budget.max_usd_per_run,
+          max_usd_per_run:
+            p.clearMaxUsdPerRun === true ? null : (p.maxUsdPerRun ?? cfg.budget.max_usd_per_run),
         },
         harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));
@@ -397,7 +532,10 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       invalidateDoctorCache();
       return updated;
     },
-    listSecrets: async () => ({ backend: secretStore.resolvedBackend(), secrets: secretStore.list() }),
+    listSecrets: async () => ({
+      backend: secretStore.resolvedBackend(),
+      secrets: secretStore.list(),
+    }),
     setSecret: async (input: unknown) => {
       const p = (input ?? {}) as Record<string, unknown>;
       const name = typeof p["name"] === "string" ? p["name"] : "";
@@ -407,7 +545,12 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       // A new key changes auth readiness immediately: drop the doctor TTL cache.
       invalidateDoctorCache();
       // Keychain->file degradation is disclosed, not silent (UI shows it).
-      return { name, backend, stored: true, ...(secretStore.lastFallbackReason ? { warning: secretStore.lastFallbackReason } : {}) };
+      return {
+        name,
+        backend,
+        stored: true,
+        ...(secretStore.lastFallbackReason ? { warning: secretStore.lastFallbackReason } : {}),
+      };
     },
     deleteSecret: async (name: string) => {
       secretStore.delete(name);
@@ -428,26 +571,36 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const priorDecisions = Array.isArray(p["priorDecisions"])
         ? (p["priorDecisions"] as unknown[]).filter(
             (d): d is { question: string; answer: string } =>
-              !!d && typeof d === "object"
-              && typeof (d as Record<string, unknown>).question === "string"
-              && typeof (d as Record<string, unknown>).answer === "string",
+              !!d &&
+              typeof d === "object" &&
+              typeof (d as Record<string, unknown>).question === "string" &&
+              typeof (d as Record<string, unknown>).answer === "string",
           )
         : [];
       const plan = await new Orchestrator({ registry: buildRegistry() }).run({
         repoRoot,
         prompt: buildGroundingPrompt(prompt, priorDecisions),
         mode: "plan",
-        harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
+        harnesses: Array.isArray(p["harnesses"])
+          ? p["harnesses"].filter((x): x is string => typeof x === "string")
+          : undefined,
         access: "readonly",
       });
       const planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
-      return { planRunId: plan.runId, planDir: plan.runDir, questions: extractQuestionsFromPlan(planText) };
+      return {
+        planRunId: plan.runId,
+        planDir: plan.runDir,
+        questions: extractQuestionsFromPlan(planText),
+      };
     },
     specFreeze: async (input: unknown) => {
       const p = (input ?? {}) as Record<string, unknown>;
       const prompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
       const planDir = typeof p["planDir"] === "string" ? p["planDir"] : "";
-      const plan = typeof p["plan"] === "string" ? p["plan"] : readTextSafe(join(planDir, "final", "plan.md")) ?? "";
+      const plan =
+        typeof p["plan"] === "string"
+          ? p["plan"]
+          : (readTextSafe(join(planDir, "final", "plan.md")) ?? "");
       if (!prompt.trim() || !plan.trim()) throw new Error("prompt and plan/planDir are required");
       const repoRoot = projectRootFromScopedInput(p, "spec freeze");
       // Forward the full SpecAnswersFile shape — not just answers — so a client that
@@ -476,10 +629,14 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const priorDecisions = Array.isArray(p["priorDecisions"])
         ? (p["priorDecisions"] as unknown[]).filter(
             (d): d is { question: string; answer: string } =>
-              !!d && typeof (d as { question?: unknown }).question === "string" && typeof (d as { answer?: unknown }).answer === "string",
+              !!d &&
+              typeof (d as { question?: unknown }).question === "string" &&
+              typeof (d as { answer?: unknown }).answer === "string",
           )
         : [];
-      const priorLines = priorDecisions.map((d) => `Interview (prior tier) — ${d.question} → ${d.answer}`);
+      const priorLines = priorDecisions.map(
+        (d) => `Interview (prior tier) — ${d.question} → ${d.answer}`,
+      );
       const explicitTradeoffs = strArr(p["decided_tradeoffs"], "decided_tradeoffs") ?? [];
       const mergedTradeoffs = [...priorLines, ...explicitTradeoffs];
       const spec = await freezeSpecFromGrounding(prompt, plan, {

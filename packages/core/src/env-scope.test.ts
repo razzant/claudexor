@@ -24,6 +24,12 @@ describe("providerScrubEnv", () => {
     expect(PROVIDER_SECRET_ENV).toContain("OPENAI_API_KEY");
     expect(PROVIDER_SECRET_ENV).toContain("ANTHROPIC_API_KEY");
   });
+
+  it("scrubs raw-api credentials and redirect config", () => {
+    const scrub = providerScrubEnv();
+    expect(scrub.CLAUDEXOR_RAWAPI_KEY).toBeNull();
+    expect(scrub.CLAUDEXOR_RAWAPI_BASE_URL).toBeNull();
+  });
 });
 
 describe("composeBaseEnv (env_inheritance)", () => {

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readTextSafe, writeText } from "@claudexor/util";
+import { containsSecretLikeToken, readTextSafe, redactSecrets, sha256, writeText } from "@claudexor/util";
 
 /**
  * The `.adversarial-review/` evidence packet that bridges clean-context
@@ -22,9 +22,17 @@ export const MANDATORY_EVIDENCE_FILES = [
   "FORBIDDEN_FINDINGS.md",
   "PLAN_ACCEPTED.md",
   "DIFF.patch",
+  "DIFF_SUMMARY.md",
   "TESTS.txt",
   "DECIDED_TRADEOFFS.md",
 ];
+
+export interface DiffEvidence {
+  diffPath: string;
+  summaryPath: string;
+  diffSha256: string;
+  summary: string;
+}
 
 export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
   writeText(join(dir, "USER_INTENT.md"), packet.userIntent.trim() + "\n");
@@ -36,11 +44,116 @@ export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
     join(dir, "PLAN_ACCEPTED.md"),
     (packet.planAccepted ?? "(no formal plan — see USER_INTENT.md for requirements)").trim() + "\n",
   );
-  writeText(join(dir, "DIFF.patch"), packet.diff.endsWith("\n") ? packet.diff : packet.diff + "\n");
-  writeText(join(dir, "FILES_TO_READ_WHOLE.txt"), (packet.filesToReadWhole ?? []).join("\n") + "\n");
+  writeDiffEvidence(dir, packet.diff);
+  writeText(
+    join(dir, "FILES_TO_READ_WHOLE.txt"),
+    (packet.filesToReadWhole ?? []).join("\n") + "\n",
+  );
   writeText(join(dir, "TESTS.txt"), (packet.tests ?? "(tests not run)").trim() + "\n");
   writeText(join(dir, "DECIDED_TRADEOFFS.md"), (packet.decidedTradeoffs ?? "(none)").trim() + "\n");
-  if (packet.runtime !== undefined) writeText(join(dir, "RUNTIME.md"), packet.runtime.trim() + "\n");
+  if (packet.runtime !== undefined)
+    writeText(join(dir, "RUNTIME.md"), packet.runtime.trim() + "\n");
+}
+
+export function writeDiffEvidence(dir: string, diff: string): DiffEvidence {
+  const normalizedDiff = diff || "(empty diff)\n";
+  const diffText = normalizedDiff.endsWith("\n") ? normalizedDiff : `${normalizedDiff}\n`;
+  if (containsSecretLikeToken(diffText)) {
+    throw new Error(
+      "diff evidence contains a secret-like token; refusing to persist raw DIFF.patch",
+    );
+  }
+  const diffPath = join(dir, "DIFF.patch");
+  const summaryPath = join(dir, "DIFF_SUMMARY.md");
+  const diffSha256 = sha256(diffText);
+  const summary = summarizeDiff(diffText, redactSecrets(diffText));
+  writeText(diffPath, diffText);
+  writeText(summaryPath, `# Diff Summary\n\nDigest: ${diffSha256}\n\n${summary}\n`);
+  writeText(join(dir, "DIFF_SHA256.txt"), `${diffSha256}\n`);
+  return { diffPath, summaryPath, diffSha256, summary };
+}
+
+function summarizeDiff(diff: string, displayDiff = diff): string {
+  const lines = diff.split(/\r?\n/);
+  const displayLines = displayDiff.split(/\r?\n/);
+  const allFiles = lines
+    .filter((line) => line.startsWith("diff --git "))
+    .map((line) => parseDiffGitHeader(line))
+    .filter((line): line is string => line !== null);
+  const displayFiles = displayLines
+    .filter((line) => line.startsWith("diff --git "))
+    .map((line) => parseDiffGitHeader(line))
+    .filter((line): line is string => line !== null);
+  const files = displayFiles.slice(0, 80);
+  const hunks = lines.filter((line) => line.startsWith("@@")).length;
+  const additions = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const deletions = lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  const fallbackHeaders = displayLines
+    .filter(
+      (line) => /^#{1,6}\s+\S/.test(line) || line.startsWith("### ") || line.startsWith("## "),
+    )
+    .slice(0, 40);
+  const body = [
+    `- Patch bytes: ${Buffer.byteLength(diff, "utf8")}`,
+    `- Patch lines: ${lines.length}`,
+    `- Files: ${allFiles.length}`,
+    `- Hunks: ${hunks}`,
+    `- Additions: ${additions}`,
+    `- Deletions: ${deletions}`,
+  ];
+  if (files.length) {
+    body.push("", "Files:", ...files.map((file) => `- ${file}`));
+    if (allFiles.length > files.length) {
+      body.push(`- ... ${allFiles.length - files.length} more file(s) omitted`);
+    }
+  } else if (fallbackHeaders.length) {
+    body.push(
+      "",
+      "Text sections:",
+      ...fallbackHeaders.map((line) => `- ${line.replace(/^#+\s*/, "")}`),
+    );
+  } else {
+    body.push("", "- No unified diff headers detected. Read DIFF.patch for the candidate content.");
+  }
+  return body.join("\n");
+}
+
+function parseDiffGitHeader(line: string): string | null {
+  const rest = line.slice("diff --git ".length);
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < rest.length && tokens.length < 2) {
+    while (rest[i] === " ") i += 1;
+    if (i >= rest.length) break;
+    if (rest[i] === '"') {
+      i += 1;
+      let token = "";
+      while (i < rest.length) {
+        const ch = rest[i] ?? "";
+        if (ch === '"') {
+          i += 1;
+          break;
+        }
+        if (ch === "\\" && i + 1 < rest.length) {
+          token += rest[i + 1] ?? "";
+          i += 2;
+          continue;
+        }
+        token += ch;
+        i += 1;
+      }
+      tokens.push(token);
+    } else {
+      const start = i;
+      while (i < rest.length && rest[i] !== " ") i += 1;
+      tokens.push(rest.slice(start, i));
+    }
+  }
+  const [from, to] = tokens;
+  if (!from || !to) return null;
+  const stripPrefix = (value: string, prefix: string): string =>
+    value.startsWith(prefix) ? value.slice(prefix.length) : value;
+  return `${stripPrefix(from, "a/")} -> ${stripPrefix(to, "b/")}`;
 }
 
 export interface PreflightResult {

@@ -244,6 +244,10 @@ struct SettingsScreen: View {
                     KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev") beta")
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Inline per-turn review; server-owned decision/apply endpoints")
+                    if let runtime = model.settingsSnapshot?.runtime {
+                        KeyValueRow(key: "Reviewer timeout", value: "\(max(1, runtime.reviewerTimeoutMs / 60_000)) min")
+                        KeyValueRow(key: "Reviewer retries", value: "\(runtime.transientRetry.maxRetries)")
+                    }
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
                     KeyValueRow(key: "Public architecture", value: "CLAUDEXOR_BIBLE.md + docs/ARCHITECTURE.md", mono: true)
                 }

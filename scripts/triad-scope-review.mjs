@@ -22,6 +22,7 @@
  *
  * Optional infrastructure fallbacks, off by default:
  *   TRIAD_MAX_OUTPUT_TOKENS=12000
+ *   TRIAD_MAX_PACK_BYTES=2800000
  *   TRIAD_DIRECT_OPENAI=1 OPENAI_API_KEY=...
  *   TRIAD_DIRECT_ANTHROPIC=1 ANTHROPIC_API_KEY=...
  *
@@ -65,7 +66,7 @@ const MAX_OUTPUT_TOKENS = positiveIntEnv("TRIAD_MAX_OUTPUT_TOKENS", 100_000);
 const REQUEST_TIMEOUT_MS = 900_000;
 /** Per-file cap inside the touched-file pack; the diff itself is never cut. */
 const MAX_FILE_BYTES = 200_000;
-const MAX_PACK_BYTES = 3_000_000;
+const MAX_PACK_BYTES = positiveIntEnv("TRIAD_MAX_PACK_BYTES", 3_000_000);
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(`--${name}`);

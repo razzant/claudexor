@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, parseArgs, requiredStringFlagError } from "./args.js";
+import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, flagStringList, flagValues, parseArgs, requiredStringFlagError } from "./args.js";
 
 describe("cli args", () => {
   it("parses --in-place as a boolean flag (present => true, absent => false)", () => {
@@ -34,6 +34,44 @@ describe("cli args", () => {
     expect(args._).toContain("the instruction");
   });
 
+  it("preserves repeated flag values while flagStr keeps last-value compatibility", () => {
+    const args = parseArgs(["run", "fix", "--test", "pnpm build", "--test=pnpm test", "--harness", "codex", "--harness", "claude"]);
+    expect(flagValues(args, "test")).toEqual(["pnpm build", "pnpm test"]);
+    expect(flagStr(args, "test")).toBe("pnpm test");
+    expect(flagValues(args, "harness")).toEqual(["codex", "claude"]);
+    expect(flagStr(args, "harness")).toBe("claude");
+  });
+
+  it("collects repeated and comma-separated string-list flags for run options", () => {
+    const args = parseArgs([
+      "run",
+      "fix",
+      "--harness",
+      "codex, claude",
+      "--harness",
+      "cursor",
+      "--attach",
+      "a.txt,b.txt",
+      "--attach",
+      "c.txt",
+      "--image",
+      "shot.png",
+      "--image",
+      "diagram.jpg, icon.png",
+    ]);
+    expect(flagStringList(args, "harness")).toEqual(["codex", "claude", "cursor"]);
+    expect(flagStringList(args, "attach")).toEqual(["a.txt", "b.txt", "c.txt"]);
+    expect(flagStringList(args, "image")).toEqual(["shot.png", "diagram.jpg", "icon.png"]);
+  });
+
+  it("stores flags in a prototype-free map", () => {
+    const args = parseArgs(["run", "--toString", "literal", "--__proto__", "not-a-prototype"]);
+    expect(Object.getPrototypeOf(args.flags)).toBeNull();
+    expect(flagStr(args, "toString")).toBe("literal");
+    expect(flagStr(args, "__proto__")).toBe("not-a-prototype");
+    expect(Object.prototype.hasOwnProperty.call(args.flags, "__proto__")).toBe(true);
+  });
+
   it("rejects plugin-only --force outside plugin commands", () => {
     expect(commandScopedFlagError(parseArgs(["run", "fix it", "--force"]))).toBe("claudexor: --force is only valid for plugin commands");
     expect(commandScopedFlagError(parseArgs(["run", "fix it", "--force=false"]))).toBe("claudexor: --force is only valid for plugin commands");
@@ -50,6 +88,9 @@ describe("cli args", () => {
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "--json"]), ["spec"])).toBe("claudexor: --spec requires a value");
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec="]), ["spec"])).toBe("claudexor: --spec requires a value");
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "spec.json"]), ["spec"])).toBeNull();
+    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--test", "pnpm build", "--test", "--json"]), ["test"])).toBe(
+      "claudexor: --test requires a value",
+    );
   });
 
   it("rejects unrelated known flags on command-specific allowlists", () => {

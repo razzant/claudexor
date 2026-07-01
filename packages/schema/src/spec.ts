@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Id, IsoTimestamp, SchemaVersion } from "./primitives.js";
-import { TaskConstraints, TestCommand } from "./task.js";
+import { TestCommand } from "./task.js";
 
 /**
  * SpecPack — the frozen, versioned, diffable specification produced by the
@@ -68,6 +68,14 @@ export const SpecTask = z.object({
 });
 export type SpecTask = z.infer<typeof SpecTask>;
 
+export const SpecConstraints = z
+  .object({
+    /** Spec-owned protected paths can raise review risk; per-run approvals cannot be frozen into a spec. */
+    protected_paths: z.array(z.string()).default([]),
+  })
+  .strict();
+export type SpecConstraints = z.infer<typeof SpecConstraints>;
+
 const SpecPackBase = z.object({
   schema_version: SchemaVersion,
   id: Id,
@@ -84,7 +92,7 @@ const SpecPackBase = z.object({
   non_goals: z.array(z.string()).default([]),
   forbidden_approaches: z.array(z.string()).default([]),
   decided_tradeoffs: z.array(z.string()).default([]),
-  constraints: TaskConstraints.default({}),
+  constraints: SpecConstraints.default({}),
   tests: z.array(TestCommand).default([]),
   tasks: z.array(SpecTask).default([]),
   open_questions: z.array(ClarificationItem).default([]),

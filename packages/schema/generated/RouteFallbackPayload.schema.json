@@ -44,6 +44,7 @@
             "fallback_model",
             "not_portable",
             "auth_unavailable",
+            "readiness_preferred",
             "manual"
           ],
           "default": "manual"

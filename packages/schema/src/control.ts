@@ -10,19 +10,33 @@ import {
   ProviderFamily,
 } from "./primitives.js";
 import { Portfolio } from "./budget.js";
-import { AdapterStatus, ConformanceCheck, EffortHint, HarnessManifest, HarnessModel, InteractionQuestion } from "./harness.js";
+import {
+  AdapterStatus,
+  ConformanceCheck,
+  EffortHint,
+  HarnessManifest,
+  HarnessModel,
+  InteractionQuestion,
+} from "./harness.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy, OrchestratePlanProgress } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
+import { ProtectedPathApproval } from "./task.js";
 
 export const RunScopeContext = z.enum(["auto", "deep"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
 
 export const RunScope = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
+  z
+    .object({
+      kind: z.literal("project"),
+      root: z.string(),
+      context: RunScopeContext.default("auto"),
+    })
+    .strict(),
   z.object({ kind: z.literal("none") }).strict(),
 ]);
 export type RunScope = z.infer<typeof RunScope>;
@@ -33,6 +47,19 @@ export const RunExecution = z
   })
   .strict();
 export type RunExecution = z.infer<typeof RunExecution>;
+
+export const ControlReviewerPanelEntry = z
+  .object({
+    /** Explicit reviewer harness id. Repeated harness ids are allowed so one
+     * native provider can review through multiple requested models. */
+    harness: Id,
+    /** Optional per-reviewer model hint, passed to that harness only. */
+    model: z.string().min(1).optional(),
+    /** Optional per-reviewer effort hint, passed to that harness only. */
+    effort: EffortHint.optional(),
+  })
+  .strict();
+export type ControlReviewerPanelEntry = z.infer<typeof ControlReviewerPanelEntry>;
 
 export const ControlRunStartRequest = z
   .object({
@@ -48,7 +75,7 @@ export const ControlRunStartRequest = z
     portfolio: Portfolio.optional(),
     model: z.string().optional(),
     effort: EffortHint.optional(),
-    reviewerModels: z.record(z.string(), z.string()).optional(),
+    reviewerModels: z.record(ProviderFamily, z.string().min(1)).optional(),
     reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),
     n: z.number().int().positive().optional(),
     attempts: z.number().int().positive().nullable().optional(),
@@ -71,6 +98,9 @@ export const ControlRunStartRequest = z
      *  for browser-capable harnesses when web policy is not `off`. */
     browser: z.boolean().optional(),
     tests: z.array(z.string()).optional(),
+    /** Typed per-run approval for changing auto-protected gate/test paths. This
+     * does not bypass built-in critical/security path human gates. */
+    protectedPathApprovals: z.array(ProtectedPathApproval).optional(),
     envProfile: z.string().optional(),
     specPath: z.string().optional(),
     specId: z.string().optional(),
@@ -84,6 +114,10 @@ export const ControlRunStartRequest = z
     /** When set, this turn implements an approved plan: the engine prefixes the
      * parent plan run's final/plan.md into the prompt (mode is forced to agent). */
     planRunId: Id.optional(),
+    /** Explicit reviewer panel. When present it overrides the legacy
+     * per-provider-family reviewerModels/reviewerEfforts maps and preserves
+     * duplicate harness entries for multi-model same-provider reviews. */
+    reviewerPanel: z.array(ControlReviewerPanelEntry).min(1).optional(),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional(),
     /** How much the orchestrate brain may act without confirmation
@@ -159,15 +193,23 @@ export const ControlSetupJobListResponse = z.object({
 });
 export type ControlSetupJobListResponse = z.infer<typeof ControlSetupJobListResponse>;
 
-export const ControlSetupJobConfirmRequest = z.object({
-  confirmed: z.boolean().default(true),
-}).strict();
+export const ControlSetupJobConfirmRequest = z
+  .object({
+    confirmed: z.boolean().default(true),
+  })
+  .strict();
 export type ControlSetupJobConfirmRequest = z.infer<typeof ControlSetupJobConfirmRequest>;
 
 export const ControlSpecQuestionsRequest = z
   .object({
     prompt: z.string(),
-    scope: z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
+    scope: z
+      .object({
+        kind: z.literal("project"),
+        root: z.string(),
+        context: RunScopeContext.default("auto"),
+      })
+      .strict(),
     harnesses: z.array(z.string()).optional(),
     /** Already-answered decisions from prior tiers; carried so each round goes
      *  DEEPER instead of re-asking (multi-tier adaptive interview). */
@@ -179,7 +221,13 @@ export type ControlSpecQuestionsRequest = z.infer<typeof ControlSpecQuestionsReq
 export const ControlSpecFreezeRequest = z
   .object({
     prompt: z.string(),
-    scope: z.object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext.default("auto") }).strict(),
+    scope: z
+      .object({
+        kind: z.literal("project"),
+        root: z.string(),
+        context: RunScopeContext.default("auto"),
+      })
+      .strict(),
     planDir: z.string().optional(),
     plan: z.string().optional(),
     answers: z.array(z.unknown()).optional(),
@@ -692,7 +740,15 @@ export type ControlThreadApplyRequest = z.infer<typeof ControlThreadApplyRequest
 
 export const ControlThreadApplyResponse = z.object({
   applied: z.boolean(),
-  status: z.enum(["applied", "branched", "committed", "pr_opened", "empty", "conflict", "rejected"]),
+  status: z.enum([
+    "applied",
+    "branched",
+    "committed",
+    "pr_opened",
+    "empty",
+    "conflict",
+    "rejected",
+  ]),
   /** True when the project HEAD moved past the thread base since the thread started. */
   headMoved: z.boolean().default(false),
   detail: z.string().nullable().default(null),
@@ -760,6 +816,18 @@ export const ControlSettingsSnapshot = z.object({
       maxUsdPerRun: z.number().nullable().default(null),
     })
     .default({}),
+  runtime: z
+    .object({
+      reviewerTimeoutMs: z.number().int().positive().default(600_000),
+      transientRetry: z
+        .object({
+          maxRetries: z.number().int().nonnegative().default(2),
+          initialDelayMs: z.number().int().nonnegative().default(1_000),
+          maxDelayMs: z.number().int().nonnegative().default(10_000),
+        })
+        .default({}),
+    })
+    .default({}),
   harnesses: z
     .record(
       z.string(),
@@ -820,7 +888,11 @@ export const ControlSettingsUpdateRequest = z
   .strict()
   .superRefine((value, ctx) => {
     if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxUsdPerRun"], message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive" });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["maxUsdPerRun"],
+        message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive",
+      });
     }
   });
 export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;

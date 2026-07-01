@@ -4,6 +4,8 @@ import type {
   AccessProfile,
   Attachment,
   AttemptTelemetryRecord,
+  ConformanceReport,
+  ControlReviewerPanelEntry,
   EffortHint,
   ExternalContextPolicy,
   GateResult,
@@ -13,12 +15,14 @@ import type {
   InteractionRequest,
   ModeKind,
   Portfolio,
+  ProtectedPathApproval,
   ProjectConfig,
   ReviewFinding,
   RunEvent,
   RunStatus,
   TaskContract,
   ProviderFamily,
+  AuthPreference,
   ToolKind,
   WebPolicySupport,
   WorkspaceEnvelope,
@@ -51,11 +55,22 @@ import {
 import { loadConfig } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError } from "@claudexor/core";
+import { HarnessUnavailableError, validateModel } from "@claudexor/core";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
-import { assertMandatoryContext, buildContextPack, preflightEvidence, writeEvidencePacket } from "@claudexor/context";
-import { WorkspaceManager, applyPatch, ensureGitRepository, snapshotTree } from "@claudexor/workspace";
+import {
+  assertMandatoryContext,
+  buildContextPack,
+  matchAny,
+  preflightEvidence,
+  writeEvidencePacket,
+} from "@claudexor/context";
+import {
+  WorkspaceManager,
+  applyPatch,
+  ensureGitRepository,
+  snapshotTree,
+} from "@claudexor/workspace";
 import { deliver, validateApplyGate } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
 import {
@@ -71,8 +86,19 @@ import {
 } from "@claudexor/review";
 import { type CandidateEvidence, arbitrate } from "@claudexor/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudexor/synthesis";
-import { BudgetLedger, type RouterCandidate, observationFromEvent, promptFingerprint, selectHarness } from "@claudexor/budget";
-import { classifyRisk, DEFAULT_REQUIRE_HUMAN_PATHS, requireHuman, reviewDepthForRisk } from "@claudexor/policy";
+import {
+  BudgetLedger,
+  type RouterCandidate,
+  observationFromEvent,
+  promptFingerprint,
+  selectHarness,
+} from "@claudexor/budget";
+import {
+  classifyRisk,
+  DEFAULT_REQUIRE_HUMAN_PATHS,
+  requireHuman,
+  reviewDepthForRisk,
+} from "@claudexor/policy";
 import {
   appendLine,
   containsSecretLikeToken,
@@ -84,6 +110,7 @@ import {
   safeInvoke,
   sha256,
   userConfigDir,
+  writeText,
 } from "@claudexor/util";
 
 export interface OrchestratorDeps {
@@ -91,11 +118,15 @@ export interface OrchestratorDeps {
   reviewers?: ReviewerSpec[];
   portfolio?: Portfolio;
   maxUsd?: number | null;
+  /** Ordered explicit reviewer panel. Unlike legacy per-family overrides this
+   * preserves duplicate harness entries, so one provider can review through
+   * multiple requested models in a single panel pass. */
+  reviewerPanel?: ControlReviewerPanelEntry[];
   /**
    * Optional per-provider-family reviewer model override. No hardcoded versions: the caller supplies the
    * model id, default keeps each harness's own default reviewer model.
-  */
-  reviewerModels?: Record<string, string>;
+   */
+  reviewerModels?: Partial<Record<ProviderFamily, string>>;
   /** Optional per-provider-family reviewer effort override where the harness supports it. */
   reviewerEfforts?: Partial<Record<ProviderFamily, EffortHint>>;
 }
@@ -136,6 +167,8 @@ export interface RunInput {
   synthesis?: SynthesisMode;
   /** Explicit deterministic gate commands from caller-provided run configuration. */
   tests?: string[];
+  /** Typed per-run approval for changing auto-protected gate/test paths. */
+  protectedPathApprovals?: ProtectedPathApproval[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
@@ -166,7 +199,11 @@ export interface RunInput {
    */
   resumeSessions?: Record<string, string>;
   /** Called when a harness emits its native session id (recorded for future resume). */
-  onSessionObserved?: (harnessId: string, nativeSessionId: string, observedModel?: string | null) => void;
+  onSessionObserved?: (
+    harnessId: string,
+    nativeSessionId: string,
+    observedModel?: string | null,
+  ) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
   onEvent?: (event: RunEvent) => void;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
@@ -213,7 +250,11 @@ export interface RunInput {
    * surface in this context) rather than silently claimed done. Read-only
    * w.r.t. the tree. Returns true when the answer was delivered.
    */
-  answerInteraction?: (runId: string, interactionId: string, answers: InteractionAnswerSet) => Promise<boolean>;
+  answerInteraction?: (
+    runId: string,
+    interactionId: string,
+    answers: InteractionAnswerSet,
+  ) => Promise<boolean>;
 }
 
 /** Context handed to RunInput.onInteraction for one pending question. */
@@ -309,7 +350,10 @@ interface AttemptTelemetry {
   /** Model identity the harness stream actually reported (route evidence). */
   observedModel: string | null;
   /** Adapter-declared transient failures seen during this attempt. */
-  transientFailures: { kind: NonNullable<HarnessEvent["transient"]>["kind"]; retryDelayMs: number | null }[];
+  transientFailures: {
+    kind: NonNullable<HarnessEvent["transient"]>["kind"];
+    retryDelayMs: number | null;
+  }[];
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
 }
@@ -351,6 +395,7 @@ const REVIEW_EVIDENCE_DIRNAME = ".claudexor-review-evidence";
 const MAX_PARALLEL_CANDIDATES = 4;
 /** Default wait for one interactive answer before a benign decline. */
 const DEFAULT_INTERACTION_TIMEOUT_MS = 900_000;
+const REVIEWER_MODEL_INVENTORY_RETRY_DELAY_MS = 250;
 
 /**
  * SAFETY INVARIANT 1 (asserted, not convention): a sub-run spawned by the
@@ -360,15 +405,26 @@ const DEFAULT_INTERACTION_TIMEOUT_MS = 900_000;
  */
 function assertEnvelopeSubRun(sub: RunInput): void {
   if (sub.inPlace === true) {
-    throw new Error("orchestrate safe sub-run must be an isolated envelope (inPlace must be false), refusing live-tree mutation");
+    throw new Error(
+      "orchestrate safe sub-run must be an isolated envelope (inPlace must be false), refusing live-tree mutation",
+    );
   }
   if (sub.threadId !== undefined || sub.executionRoot !== undefined) {
-    throw new Error("orchestrate safe sub-run must not bind a thread or in-place execution root (isolation envelope only)");
+    throw new Error(
+      "orchestrate safe sub-run must not bind a thread or in-place execution root (isolation envelope only)",
+    );
   }
 }
 
 /** Changed paths and +/- line counts parsed from a unified git diff. */
-function diffStats(diff: string): { paths: string[]; addedPaths: string[]; modifiedPaths: string[]; existingPaths: string[]; additions: number; deletions: number } {
+function diffStats(diff: string): {
+  paths: string[];
+  addedPaths: string[];
+  modifiedPaths: string[];
+  existingPaths: string[];
+  additions: number;
+  deletions: number;
+} {
   const paths: string[] = [];
   const addedPaths: string[] = [];
   const modifiedPaths: string[] = [];
@@ -406,11 +462,22 @@ function diffStats(diff: string): { paths: string[]; addedPaths: string[]; modif
     else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
   }
   flush();
-  return { paths, addedPaths, modifiedPaths, existingPaths: [...new Set(existingPaths)], additions, deletions };
+  return {
+    paths,
+    addedPaths,
+    modifiedPaths,
+    existingPaths: [...new Set(existingPaths)],
+    additions,
+    deletions,
+  };
 }
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
-async function runBounded<T>(items: T[], limit: number, work: (item: T, index: number) => Promise<void>): Promise<void> {
+async function runBounded<T>(
+  items: T[],
+  limit: number,
+  work: (item: T, index: number) => Promise<void>,
+): Promise<void> {
   if (items.length === 0) return;
   const concurrency = Math.max(1, Math.min(limit, items.length));
   let next = 0;
@@ -442,8 +509,12 @@ export class Orchestrator {
     // every mode, so the same repo state can't pass `run`/`ask` while failing
     // `audit`. No-op when the list is empty (the default) or for no-project runs.
     if (resolved.repoRoot !== NO_PROJECT_ROOT) {
-      assertMandatoryContext(resolved.repoRoot, this.projectConfig(resolved.repoRoot).context.mandatory_files);
+      assertMandatoryContext(
+        resolved.repoRoot,
+        this.projectConfig(resolved.repoRoot).context.mandatory_files,
+      );
     }
+    const reviewerPreflight = await this.preflightExplicitReviewerPanel(resolved);
     switch (mode) {
       case "ask":
         return this.runAsk(resolved);
@@ -454,53 +525,289 @@ export class Orchestrator {
         // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
         // and `--attempts` select the convergence loop; `--n` selects the race
         // width; `--create` switches the candidate intent to create_from_scratch.
-        if (resolved.untilClean) return this.runConvergence(resolved, mode, null);
+        if (resolved.untilClean) return this.runConvergence(resolved, mode, null, reviewerPreflight);
         if (resolved.attempts !== undefined && resolved.attempts !== null) {
-          return this.runConvergence(resolved, mode, resolved.attempts);
+          return this.runConvergence(resolved, mode, resolved.attempts, reviewerPreflight);
         }
-        return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode);
+        return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, reviewerPreflight);
       case "plan":
-        return this.runPlan(resolved);
+        return this.runPlan(resolved, reviewerPreflight);
       case "orchestrate":
         // Recursion guard: a sub-run spawned by the orchestrate executor carries
         // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
         // recursion). Fail loudly rather than silently degrade.
         if ((resolved.orchestrateDepth ?? 0) > 0) {
-          throw new Error("orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate");
+          throw new Error(
+            "orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate",
+          );
         }
         return this.runOrchestrate(resolved);
     }
   }
 
-  private async resolveReviewers(cwd: string): Promise<ReviewerSpec[]> {
+  private async resolveReviewers(
+    cwd: string,
+    runAuthPreference?: AuthPreference,
+  ): Promise<ReviewerSpec[]> {
     if (this.deps.reviewers) return this.deps.reviewers;
+    if (this.deps.reviewerPanel && this.deps.reviewerPanel.length > 0) {
+      return this.resolveExplicitReviewerPanel(cwd, this.deps.reviewerPanel, runAuthPreference);
+    }
     const specs: ReviewerSpec[] = [];
     const seen = new Set<string>();
-    const statuses = await this.gateway.statusAll({ cwd });
     const harnessSettings = this.config(cwd)?.global.harnesses ?? {};
-    for (const status of statuses) {
-      const m = status.manifest;
-      if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
-      if (status.status !== "ok") continue; // reviewer eligibility needs doctor-OK, not key presence
-      if (!status.enabledIntents.includes("review")) continue;
-      if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
-      // Per-harness settings gate reviewers too (a disabled harness never reviews).
-      if (harnessSettings[status.id]?.enabled === false) continue;
-      const adapter = this.deps.registry.get(status.id);
-      if (!adapter) continue;
-      seen.add(m.provider_family);
-      specs.push({
-        adapter,
-        providerFamily: m.provider_family,
-        // Explicit per-family override first, then the user's per-harness
-        // default model: an explicit model request makes the route provable
-        // (accepted_model_arg) on CLIs that never echo their model.
-        requestedModel: this.deps.reviewerModels?.[m.provider_family] ?? harnessSettings[status.id]?.default_model ?? null,
-        requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
-      });
-      if (specs.length >= 2) break;
+    const reviewHome = new WorkspaceManager(cwd).readOnlyHomeEnv();
+    try {
+      for (const adapter of this.deps.registry.values()) {
+        let m: Awaited<ReturnType<HarnessAdapter["discover"]>> | null = null;
+        try {
+          m = await adapter.discover();
+        } catch {
+          continue;
+        }
+        if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
+        const authPreference = this.authPreferenceForHarness(cwd, adapter.id, runAuthPreference);
+        let report: ConformanceReport | null = null;
+        try {
+          report = await adapter.doctor({ cwd, env: reviewHome.env, authPreference });
+        } catch {
+          continue;
+        }
+        if (report.status !== "ok") continue; // reviewer eligibility needs scoped doctor-OK.
+        if (!report.enabled_intents.includes("review")) continue;
+        if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
+        // Per-harness settings gate reviewers too (a disabled harness never reviews).
+        if (harnessSettings[adapter.id]?.enabled === false) continue;
+        seen.add(m.provider_family);
+        specs.push({
+          adapter,
+          providerFamily: m.provider_family,
+          // Explicit per-family override first, then the user's per-harness
+          // default model: an explicit model request makes the route provable
+          // (accepted_model_arg) on CLIs that never echo their model.
+          requestedModel:
+            this.deps.reviewerModels?.[m.provider_family] ??
+            harnessSettings[adapter.id]?.default_model ??
+            null,
+          requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
+          authPreference,
+        });
+        if (specs.length >= 2) break;
+      }
+    } finally {
+      reviewHome.dispose();
     }
     return specs;
+  }
+
+  private async preflightExplicitReviewerPanel(
+    input: RunInput,
+  ): Promise<ReviewerSpec[] | undefined> {
+    if (!this.deps.reviewerPanel || this.deps.reviewerPanel.length === 0) return undefined;
+    return this.resolveReviewers(input.repoRoot, input.authPreference);
+  }
+
+  private async resolveExplicitReviewerPanel(
+    cwd: string,
+    panel: ControlReviewerPanelEntry[],
+    runAuthPreference?: AuthPreference,
+  ): Promise<ReviewerSpec[]> {
+    const known = [...this.deps.registry.keys()].sort().join(", ");
+    const harnessSettings = this.config(cwd)?.global.harnesses ?? {};
+    const modelInventory = new Map<string, Set<string>>();
+    const statusByRoute = new Map<
+      string,
+      {
+        manifest: Awaited<ReturnType<HarnessAdapter["discover"]>> | null;
+        status: "ok" | "degraded" | "unavailable";
+        enabledIntents: Intent[];
+        reasons: string[];
+      }
+    >();
+    const specs: ReviewerSpec[] = [];
+    const reviewModelHome: {
+      current: { env: Record<string, string>; dispose: () => void } | null;
+    } = { current: null };
+    try {
+      const reviewModelEnv = (): Record<string, string> => {
+        reviewModelHome.current ??= new WorkspaceManager(cwd).readOnlyHomeEnv();
+        return reviewModelHome.current.env;
+      };
+      for (const entry of panel) {
+        const adapter = this.deps.registry.get(entry.harness);
+        if (!adapter) {
+          throw new HarnessUnavailableError(
+            `unknown reviewer harness '${entry.harness}' (registered: ${known}); run \`claudexor harness list --all\``,
+          );
+        }
+        const authPreference = this.authPreferenceForHarness(cwd, entry.harness, runAuthPreference);
+        const routeKey = `${entry.harness}\0${authPreference}`;
+        if (!statusByRoute.has(routeKey)) {
+          let manifest: Awaited<ReturnType<HarnessAdapter["discover"]>> | null = null;
+          try {
+            manifest = await adapter.discover();
+          } catch {
+            manifest = null;
+          }
+          try {
+            const report = await adapter.doctor({ cwd, env: reviewModelEnv(), authPreference });
+            statusByRoute.set(routeKey, {
+              manifest,
+              status: report.status,
+              enabledIntents: report.enabled_intents,
+              reasons: report.reasons ?? [],
+            });
+          } catch (err) {
+            statusByRoute.set(routeKey, {
+              manifest,
+              status: "unavailable",
+              enabledIntents: [],
+              reasons: [safeErrorMessage(err)],
+            });
+          }
+        }
+        const status = statusByRoute.get(routeKey);
+        const manifest = status?.manifest;
+        if (!status || !manifest) {
+          throw new HarnessUnavailableError(`reviewer harness '${entry.harness}' is unavailable`);
+        }
+        if (manifest.kind === "fake") {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
+          );
+        }
+        if (status.status !== "ok") {
+          const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' is not doctor-ok${reason}`,
+          );
+        }
+        if (harnessSettings[entry.harness]?.enabled === false) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' is disabled in settings (harnesses.${entry.harness}.enabled=false)`,
+          );
+        }
+        if (
+          !status.enabledIntents.includes("review") ||
+          !manifest.capabilities.review ||
+          !manifest.access_profiles_supported.includes("readonly")
+        ) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' cannot perform readonly review`,
+          );
+        }
+        const requestedModel = entry.model ?? harnessSettings[entry.harness]?.default_model ?? null;
+        if (requestedModel) {
+          if (typeof adapter.models !== "function") {
+            const knownModels = manifest.capabilities.known_models;
+            if (knownModels.length === 0) {
+              throw new HarnessUnavailableError(
+                `reviewer harness '${entry.harness}' could not verify requested model '${requestedModel}' because it exposes neither model inventory nor manifest known-model hints; run \`claudexor models --harness ${entry.harness}\``,
+              );
+            }
+            const check = validateModel(
+              requestedModel,
+              knownModels,
+              manifest.capabilities.models_authoritative,
+            );
+            if (check.status !== "ok") {
+              throw new HarnessUnavailableError(
+                `reviewer harness '${entry.harness}' could not verify requested model '${requestedModel}' from manifest known-model hints: ${check.message}; run \`claudexor models --harness ${entry.harness}\``,
+              );
+            }
+          } else {
+            const inventoryKey = `${entry.harness}\0${authPreference}`;
+            if (!modelInventory.has(inventoryKey)) {
+              modelInventory.set(
+                inventoryKey,
+                await this.listReviewerModelIdsWithRetry(adapter.models.bind(adapter), {
+                  cwd,
+                  authPreference,
+                  env: reviewModelEnv,
+                  harnessId: entry.harness,
+                  requestedModel,
+                }),
+              );
+            }
+            const models = modelInventory.get(inventoryKey);
+            if (models && !models.has(requestedModel)) {
+              const available = [...models].slice(0, 80).join(", ");
+              const suffix = models.size > 80 ? `, ... (${models.size} total)` : "";
+              throw new HarnessUnavailableError(
+                `reviewer harness '${entry.harness}' does not support requested model '${requestedModel}' on the review route (available: ${available}${suffix}); run \`claudexor models --harness ${entry.harness}\``,
+              );
+            }
+          }
+        }
+        const requestedEffort = entry.effort ?? null;
+        if (requestedEffort && !manifest.capabilities.effort_levels.includes(requestedEffort)) {
+          const supported = manifest.capabilities.effort_levels.join(", ");
+          const suffix = supported ? ` (supported: ${supported})` : " (harness declares no effort controls)";
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' does not support requested effort '${requestedEffort}'${suffix}`,
+          );
+        }
+        specs.push({
+          adapter,
+          providerFamily: manifest.provider_family,
+          requestedModel,
+          requestedEffort,
+          authPreference,
+        });
+      }
+    } finally {
+      reviewModelHome.current?.dispose();
+    }
+    return specs;
+  }
+
+  private async listReviewerModelIdsWithRetry(
+    listModels: NonNullable<HarnessAdapter["models"]>,
+    input: {
+      cwd: string;
+      authPreference: AuthPreference;
+      env: () => Record<string, string>;
+      harnessId: string;
+      requestedModel: string;
+    },
+  ): Promise<Set<string>> {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const models = await listModels({
+          cwd: input.cwd,
+          env: input.env(),
+          authPreference: input.authPreference,
+        });
+        if (models.length === 0) {
+          throw new Error("model inventory was empty");
+        }
+        return new Set(models.map((m) => m.id));
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0) await sleep(REVIEWER_MODEL_INVENTORY_RETRY_DELAY_MS);
+      }
+    }
+    const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
+    throw new HarnessUnavailableError(
+      `reviewer harness '${input.harnessId}' could not verify requested model '${input.requestedModel}' because its model inventory call failed after retry: ${detail}; run \`claudexor models --harness ${input.harnessId}\``,
+    );
+  }
+
+  private authPreferenceForHarness(
+    repoRoot: string,
+    harnessId: string,
+    runAuthPreference?: AuthPreference,
+  ): AuthPreference {
+    const cfg = this.config(repoRoot)?.global;
+    const explicit = (v?: AuthPreference): "subscription" | "api_key" | undefined =>
+      v && v !== "auto" ? v : undefined;
+    return (
+      explicit(runAuthPreference) ??
+      explicit(cfg?.harnesses?.[harnessId]?.auth_preference) ??
+      explicit(cfg?.routing?.auth_preference) ??
+      "auto"
+    );
   }
 
   private artifactStore(input: RunInput): ArtifactStore {
@@ -555,10 +862,14 @@ export class Orchestrator {
     return input.executionRoot ?? input.repoRoot;
   }
 
-  private sessionSpecFields(input: RunInput, harnessId: string): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
+  private sessionSpecFields(
+    input: RunInput,
+    harnessId: string,
+  ): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
     const cfg = this.config(input.repoRoot)?.global;
-    const explicit = (v?: "subscription" | "api_key" | "auto"): "subscription" | "api_key" | undefined =>
-      v && v !== "auto" ? v : undefined;
+    const explicit = (
+      v?: "subscription" | "api_key" | "auto",
+    ): "subscription" | "api_key" | undefined => (v && v !== "auto" ? v : undefined);
     return {
       // "auto" at ANY level falls through (thread turns send the thread default
       // "auto" as a per-run value; it must not shadow a configured preference).
@@ -572,7 +883,11 @@ export class Orchestrator {
   }
 
   /** Record a harness-emitted native session id for future thread resume (observer never fails the run). */
-  private observeNativeSession(input: RunInput | undefined, harnessId: string, ev: HarnessEvent): void {
+  private observeNativeSession(
+    input: RunInput | undefined,
+    harnessId: string,
+    ev: HarnessEvent,
+  ): void {
     if (!input?.onSessionObserved || ev.type !== "started") return;
     const nid = ev.payload?.["native_session_id"];
     if (typeof nid === "string" && nid.length > 0) {
@@ -587,14 +902,21 @@ export class Orchestrator {
   /**
    * Lift an adapter's auth-route override marker into the typed
    * `route.fallback.auth_switched` run event (validated payload). An explicit
-   * subscription/api_key preference that could not be honored is never silent.
+   * subscription/api_key preference that could not be honored is never silent;
+   * neither is an `auto` choice that selects a smoke-proven paid route over an
+   * available native route.
    */
-  private observeAuthSwitch(log: EventLog | undefined, harnessId: string, attemptId: string, ev: HarnessEvent): void {
+  private observeAuthSwitch(
+    log: EventLog | undefined,
+    harnessId: string,
+    attemptId: string,
+    ev: HarnessEvent,
+  ): void {
     if (!log || ev.type !== "message" || ev.payload?.["auth_switched"] !== true) return;
-    // An auth_switched marker always means the preferred auth route was
-    // unavailable and the harness fell back — so the honest typed reason is
-    // `auth_unavailable`, not the old hardcoded `manual`. An adapter may still
-    // override with a more specific typed reason in the payload.
+    // Most auth_switched markers mean the preferred auth route was unavailable,
+    // so the default reason is `auth_unavailable`. Adapters may override with a
+    // more specific typed reason, e.g. `readiness_preferred` when auto selects a
+    // smoke-proven route for reliability/cost transparency.
     const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
     try {
       log.emit(
@@ -609,7 +931,7 @@ export class Orchestrator {
         }) as unknown as Record<string, unknown>,
       );
     } catch {
-      /* a malformed marker must not fail the run; the prose message still lands */
+      /* a malformed marker must not fail the run */
     }
   }
 
@@ -620,7 +942,10 @@ export class Orchestrator {
    * expand to n. Fails loudly if nothing can perform the intent.
    */
   private resolveRunInput(input: RunInput): RunInput {
-    if (input.contextMode === "off" && !(input.mode === "ask" && input.repoRoot === NO_PROJECT_ROOT)) {
+    if (
+      input.contextMode === "off" &&
+      !(input.mode === "ask" && input.repoRoot === NO_PROJECT_ROOT)
+    ) {
       throw new Error("contextMode 'off' is only supported for Ask without a repoRoot");
     }
     const cfg = this.config(input.repoRoot);
@@ -634,8 +959,15 @@ export class Orchestrator {
           ? [cfg.global.routing.primary_harness]
           : undefined);
     const primaryHarness = input.primaryHarness ?? cfg?.global.routing.primary_harness ?? undefined;
-    if (primaryHarness && harnesses && harnesses.length > 0 && !harnesses.includes(primaryHarness)) {
-      throw new Error(`primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`);
+    if (
+      primaryHarness &&
+      harnesses &&
+      harnesses.length > 0 &&
+      !harnesses.includes(primaryHarness)
+    ) {
+      throw new Error(
+        `primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`,
+      );
     }
     if (input.web && input.externalContextPolicy && input.web !== input.externalContextPolicy) {
       throw new Error(
@@ -648,13 +980,22 @@ export class Orchestrator {
       harnesses,
       primaryHarness,
       model: input.model ?? cfg?.global.routing.default_model ?? undefined,
-      portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.project.budget?.portfolio ?? cfg?.global.default_portfolio ?? "subscription-first",
+      portfolio:
+        input.portfolio ??
+        this.deps.portfolio ??
+        cfg?.project.budget?.portfolio ??
+        cfg?.global.default_portfolio ??
+        "subscription-first",
       web,
       externalContextPolicy: web,
     };
   }
 
-  private async resolveCandidateAdapters(input: RunInput, intent: Intent, ledger?: BudgetLedger): Promise<RoutedAdapter[]> {
+  private async resolveCandidateAdapters(
+    input: RunInput,
+    intent: Intent,
+    ledger?: BudgetLedger,
+  ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
     const statuses = await this.gateway.statusAll({ cwd: input.repoRoot });
@@ -664,7 +1005,10 @@ export class Orchestrator {
       // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
       // readiness; a key string or degraded route is visible but not routable).
       ids = statuses
-        .filter((s) => s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.includes(intent))
+        .filter(
+          (s) =>
+            s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.includes(intent),
+        )
         .map((s) => s.id);
       if (ids.length === 0) {
         throw new HarnessUnavailableError(
@@ -689,14 +1033,19 @@ export class Orchestrator {
         // dropped into a generic "no harness can perform" message.
         if (explicitPool) {
           const known = [...this.deps.registry.keys()].sort().join(", ");
-          throw new HarnessUnavailableError(`unknown harness '${id}' (registered: ${known}); run \`claudexor harness list --all\``);
+          throw new HarnessUnavailableError(
+            `unknown harness '${id}' (registered: ${known}); run \`claudexor harness list --all\``,
+          );
         }
         dropped.push(`${id} (not registered)`);
         continue;
       }
       const status = statusById.get(id);
       const manifest = status?.manifest ?? null;
-      if (!status || !manifest) { dropped.push(`${id} (unavailable)`); continue; }
+      if (!status || !manifest) {
+        dropped.push(`${id} (unavailable)`);
+        continue;
+      }
       // Doctor status is the readiness truth: auto-pools take only doctor-OK
       // routes, and explicitly selecting an UNAVAILABLE harness fails loudly
       // with the doctor's reasons. A DEGRADED harness (e.g. key present but
@@ -710,7 +1059,9 @@ export class Orchestrator {
         continue;
       }
       if (status.status !== "ok" && !explicitPool) {
-        dropped.push(`${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`);
+        dropped.push(
+          `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`,
+        );
         continue;
       }
       // Per-harness settings: a user-disabled harness never routes. Explicit
@@ -722,18 +1073,27 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
-      const readOnlyIntent = intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit" || intent === "orchestrate";
+      const readOnlyIntent =
+        intent === "plan" ||
+        intent === "spec" ||
+        intent === "explain" ||
+        intent === "audit" ||
+        intent === "orchestrate";
       // Mirror buildContract: the trust-config default decides write-mode access
       // when the run does not request a profile explicitly.
-      const requiredAccess = readOnlyIntent ? "readonly" : input.access ?? this.config(input.repoRoot).trust.access_default;
-      const accessSupported = !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
+      const requiredAccess = readOnlyIntent
+        ? "readonly"
+        : (input.access ?? this.config(input.repoRoot).trust.access_default);
+      const accessSupported =
+        !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
       const webSupport = manifest.capabilities.web_policy;
       // The PER-ROUTE policy is what this harness will actually execute: a
       // per-harness `web` default upgrades a run-level `auto` (routeSpecKnobs
       // applies the same rule when building the spec), so the capability gate
       // must judge that effective policy — not admit a route whose configured
       // default it could never honor.
-      const routePolicy = policy === "auto" && cfgEntry?.web && cfgEntry.web !== "auto" ? cfgEntry.web : policy;
+      const routePolicy =
+        policy === "auto" && cfgEntry?.web && cfgEntry.web !== "auto" ? cfgEntry.web : policy;
       const routeWebRequired = routePolicy === "cached" || routePolicy === "live";
       // Web policy is a capability: `off` needs an enforceable off state and a
       // web-required run needs a route that can produce web evidence.
@@ -781,7 +1141,10 @@ export class Orchestrator {
               }
             : null,
         });
-      } else dropped.push(`${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`);
+      } else
+        dropped.push(
+          `${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`,
+        );
     }
     if (pool.length === 0) {
       throw new HarnessUnavailableError(
@@ -818,7 +1181,11 @@ export class Orchestrator {
           harnessId: r.adapter.id,
           providerFamily: r.providerFamily,
           available: true,
-          authMode: authModes.includes("local_session") ? "local_session" : authModes.includes("api_key") ? "api_key" : "unknown",
+          authMode: authModes.includes("local_session")
+            ? "local_session"
+            : authModes.includes("api_key")
+              ? "api_key"
+              : "unknown",
         };
       });
       const ranked: RoutedAdapter[] = [];
@@ -876,10 +1243,17 @@ export class Orchestrator {
       files: pack.atlas.length,
       estimated_tokens: pack.token_budget?.estimated_used ?? null,
     });
-    const readable = pack.atlas.filter((e) => e.disposition === "full" || e.disposition === "included");
+    const readable = pack.atlas.filter(
+      (e) => e.disposition === "full" || e.disposition === "included",
+    );
     const omitted = pack.atlas.length - readable.length;
-    const lines = readable.slice(0, 200).map((e) => `- ${e.path}${e.bytes !== undefined ? ` (${e.bytes}B)` : ""}`);
-    if (readable.length > 200) lines.push(`- … ${readable.length - 200} more readable paths (see context/context_pack.yaml)`);
+    const lines = readable
+      .slice(0, 200)
+      .map((e) => `- ${e.path}${e.bytes !== undefined ? ` (${e.bytes}B)` : ""}`);
+    if (readable.length > 200)
+      lines.push(
+        `- … ${readable.length - 200} more readable paths (see context/context_pack.yaml)`,
+      );
     return [
       "",
       "## Repository scope atlas (compact)",
@@ -894,7 +1268,11 @@ export class Orchestrator {
    * `max_usd` get a child sub-ledger (spend rolls up to the run cap), so one
    * harness exhausting its own budget cannot drain the whole run.
    */
-  private harnessLedger(map: Map<string, BudgetLedger>, parent: BudgetLedger, routed: RoutedAdapter): BudgetLedger {
+  private harnessLedger(
+    map: Map<string, BudgetLedger>,
+    parent: BudgetLedger,
+    routed: RoutedAdapter,
+  ): BudgetLedger {
     const cap = routed.settings?.maxUsd;
     if (!cap || cap <= 0) return parent;
     let child = map.get(routed.adapter.id);
@@ -910,7 +1288,10 @@ export class Orchestrator {
    * Tools-permissioned web (e.g. claude) has no cached index: `cached` upgrades
    * to `live` and MUST be disclosed via a `policy.web.upgraded` event.
    */
-  private effectiveWebMode(policy: ExternalContextPolicy, webSupport: WebPolicySupport): ExternalContextPolicy {
+  private effectiveWebMode(
+    policy: ExternalContextPolicy,
+    webSupport: WebPolicySupport,
+  ): ExternalContextPolicy {
     if (policy === "cached" && webSupport === "tools") return "live";
     return policy;
   }
@@ -968,18 +1349,10 @@ export class Orchestrator {
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
-    // Deterministic gate commands come from explicit run input first, then the
-    // versioned project config. Without these, gateSpecs is empty and convergence
-    // is review-only; with them, convergence is test-driven.
-    const commands = [...(input.tests ?? []), ...(cfg?.tests?.commands ?? [])]
-      .map((c) => c.trim())
-      .filter(Boolean)
-      .map((command, i) => {
-        assertNoSecretLikeTokens(`gate command ${i + 1}`, command);
-        return { id: `gate-${i + 1}`, command, required: true };
-      });
-    const readOnlyMode = mode === "ask" || mode === "plan" || mode === "audit" || mode === "orchestrate";
-    const requestedAccess = input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
+    const readOnlyMode =
+      mode === "ask" || mode === "plan" || mode === "audit" || mode === "orchestrate";
+    const requestedAccess =
+      input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
     // Effective access is COMPUTED by the engine, never echoed from a client:
     // read-only modes clamp to readonly regardless of the request.
     const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
@@ -999,10 +1372,16 @@ export class Orchestrator {
     // its metadata did, leaving the arbitration acceptance axis permanently
     // empty and the interview pipeline dead in production.
     let specFields: Partial<TaskContract> = {};
+    let specTestCommands: string[] = [];
     if (input.specPath) {
       try {
         const spec = SpecPackZ.parse(JSON.parse(readFileSync(input.specPath, "utf8")));
-        const fromSpec = specPackToTaskContract(spec, { repoRoot: input.repoRoot, mode, baseRef: input.baseRef, maxUsd: input.maxUsd });
+        const fromSpec = specPackToTaskContract(spec, {
+          repoRoot: input.repoRoot,
+          mode,
+          baseRef: input.baseRef,
+          maxUsd: input.maxUsd,
+        });
         specFields = {
           success_criteria: fromSpec.success_criteria,
           non_goals: fromSpec.non_goals,
@@ -1011,17 +1390,37 @@ export class Orchestrator {
           task_graph: fromSpec.task_graph,
           constraints: fromSpec.constraints,
         };
+        specTestCommands = fromSpec.tests.commands.map((test) => test.command);
       } catch (err) {
         // An unreadable/unfrozen spec must fail the run loudly, never silently
         // degrade into an unspecced contract.
-        throw new Error(`failed to resolve frozen SpecPack at ${input.specPath}: ${safeErrorMessage(err)}`);
+        throw new Error(
+          `failed to resolve frozen SpecPack at ${input.specPath}: ${safeErrorMessage(err)}`,
+        );
       }
     }
-    const protectedPaths = [
-      ...new Set([
-        ...(specFields.constraints?.protected_paths ?? []),
-        ...gateProtectedPaths(commands.map((c) => c.command)),
-      ]),
+    // Deterministic gate commands come from the frozen SpecPack, explicit run
+    // input, then versioned project config. Without these, gateSpecs is empty
+    // and convergence is review-only; with them, convergence is test-driven.
+    const seenCommands = new Set<string>();
+    const commands = [...specTestCommands, ...(input.tests ?? []), ...(cfg?.tests?.commands ?? [])]
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .filter((command) => {
+        if (seenCommands.has(command)) return false;
+        seenCommands.add(command);
+        return true;
+      })
+      .map((command, i) => {
+        assertNoSecretLikeTokens(`gate command ${i + 1}`, command);
+        return { id: `gate-${i + 1}`, command, required: true };
+      });
+    const protectedPaths = [...new Set(specFields.constraints?.protected_paths ?? [])];
+    const autoProtectedPaths = [...new Set(gateProtectedPaths(commands.map((c) => c.command)))];
+    const protectedPathApprovals = [
+      ...new Map(
+        [...(input.protectedPathApprovals ?? [])].map((approval) => [approval.path, approval]),
+      ).values(),
     ];
     return TaskContractSchema.parse({
       schema_version: SCHEMA_VERSION,
@@ -1030,16 +1429,21 @@ export class Orchestrator {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
-      spec: input.specId || input.specHash || input.specPath || input.envProfile
-        ? {
-            id: input.specId,
-            hash: input.specHash,
-            path: input.specPath,
-            env_profile: input.envProfile,
-          }
-        : undefined,
+      spec:
+        input.specId || input.specHash || input.specPath || input.envProfile
+          ? {
+              id: input.specId,
+              hash: input.specHash,
+              path: input.specPath,
+              env_profile: input.envProfile,
+            }
+          : undefined,
       ...specFields,
-      constraints: { protected_paths: protectedPaths },
+      constraints: {
+        protected_paths: protectedPaths,
+        auto_protected_paths: autoProtectedPaths,
+        protected_path_approvals: protectedPathApprovals,
+      },
       tests: { commands },
       access: {
         requested_profile: requestedAccess,
@@ -1061,17 +1465,73 @@ export class Orchestrator {
         deny: [],
       },
       budget: {
-        portfolio: input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
+        portfolio:
+          input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
         // Run cap precedence: explicit run input > surface deps > the user's
         // configured global per-run default. ($/day caps were removed; the budget
         // priority is respecting harness-reported subscription/OAuth quota — SF3.)
-        max_usd: input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
+        max_usd:
+          input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
       },
     });
   }
 
   private gateSpecs(contract: TaskContract): GateSpec[] {
-    return contract.tests.commands.map((c) => ({ id: c.id, command: c.command, required: c.required }));
+    return contract.tests.commands.map((c) => ({
+      id: c.id,
+      command: c.command,
+      required: c.required,
+    }));
+  }
+
+  private testsEvidence(contract: TaskContract, gates?: GateResult[]): string {
+    const specs = this.gateSpecs(contract);
+    if (gates === undefined) {
+      if (specs.length === 0) return "(no test commands configured)";
+      return [
+        "Configured test commands (not run yet):",
+        ...specs.map(
+          (spec) => `- ${spec.id}${spec.required === false ? " (optional)" : ""}: ${spec.command}`,
+        ),
+      ].join("\n");
+    }
+    if (gates.length === 0) {
+      if (specs.length === 0) return "(no test commands configured)";
+      return [
+        "Configured test commands did not produce gate results before this review:",
+        ...specs.map(
+          (spec) => `- ${spec.id}${spec.required === false ? " (optional)" : ""}: ${spec.command}`,
+        ),
+      ].join("\n");
+    }
+    const required = gates.filter((gate) => gate.required);
+    const requiredPassed = required.filter((gate) => gate.status === "passed").length;
+    const lines = [
+      `Gate results: required ${requiredPassed}/${required.length} passed; total ${gates.length}.`,
+    ];
+    const appendTail = (label: string, text: string | null): void => {
+      if (!text) return;
+      lines.push(`  ${label}: |`);
+      for (const line of text.split(/\r?\n/)) lines.push(`    ${line}`);
+    };
+    for (const gate of gates) {
+      lines.push(
+        `- ${gate.id}${gate.required === false ? " (optional)" : ""}: ${gate.status}; exit=${gate.exit_code ?? "null"}; duration_ms=${gate.duration_ms}`,
+      );
+      lines.push(`  command: ${gate.command}`);
+      if (gate.output_truncated) lines.push("  output_truncated: true");
+      appendTail("stdout_tail", gate.stdout_tail);
+      appendTail("stderr_tail", gate.stderr_tail);
+    }
+    return lines.join("\n");
+  }
+
+  private writeTestsEvidence(
+    evidenceDir: string,
+    contract: TaskContract,
+    gates?: GateResult[],
+  ): void {
+    writeText(join(evidenceDir, "TESTS.txt"), this.testsEvidence(contract, gates).trim() + "\n");
   }
 
   /** Terminal result for a cancelled run: emits run.failed with status "cancelled" so every mode ends consistently. */
@@ -1084,7 +1544,16 @@ export class Orchestrator {
     candidates: { attemptId: string; harnessId: string; status: string }[],
   ): OrchestratorResult {
     log.emit("run.failed", { status: "cancelled" });
-    return { runId, taskId, mode, status: "cancelled", winner: null, runDir, summary: "run cancelled", candidates };
+    return {
+      runId,
+      taskId,
+      mode,
+      status: "cancelled",
+      winner: null,
+      runDir,
+      summary: "run cancelled",
+      candidates,
+    };
   }
 
   /**
@@ -1117,8 +1586,22 @@ export class Orchestrator {
       nextActions: ["Open diagnostics", "Retry the run"],
     });
     log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-    log.emit("run.failed", { status: "failed", phase, error: message, failure_ref: "final/failure.yaml" });
-    return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: message, candidates: [] };
+    log.emit("run.failed", {
+      status: "failed",
+      phase,
+      error: message,
+      failure_ref: "final/failure.yaml",
+    });
+    return {
+      runId,
+      taskId,
+      mode,
+      status: "failed",
+      winner: null,
+      runDir: paths.root,
+      summary: message,
+      candidates: [],
+    };
   }
 
   /**
@@ -1147,14 +1630,19 @@ export class Orchestrator {
     let toolsDeny: string[] = [];
     if (s?.maxTurns) {
       if (routed.supportsMaxTurns) maxTurns = s.maxTurns;
-      else ignored.push(`max_turns=${s.maxTurns} (manifest capabilities.max_turns=false for ${routed.adapter.id})`);
+      else
+        ignored.push(
+          `max_turns=${s.maxTurns} (manifest capabilities.max_turns=false for ${routed.adapter.id})`,
+        );
     }
     if ((s?.toolsAllow.length ?? 0) > 0 || (s?.toolsDeny.length ?? 0) > 0) {
       if (routed.supportsToolLists) {
         toolsAllow = s?.toolsAllow ?? [];
         toolsDeny = s?.toolsDeny ?? [];
       } else {
-        ignored.push(`tools_allow/tools_deny (manifest capabilities.tool_lists=false for ${routed.adapter.id})`);
+        ignored.push(
+          `tools_allow/tools_deny (manifest capabilities.tool_lists=false for ${routed.adapter.id})`,
+        );
       }
     }
     // The per-harness web default applies only when the run-level policy is the
@@ -1196,7 +1684,12 @@ export class Orchestrator {
     runInput?: RunInput,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
-    const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelHint, effortHint);
+    const knobs = this.routeSpecKnobs(
+      routed,
+      contract.external_context.policy,
+      modelHint,
+      effortHint,
+    );
     // In-place envelopes mutate the live tree under the user's native environment
     // (no scoped HOME), so the vendor's own session store is reachable: the turn
     // RESUMES the native CLI session (real continuity, like the read-only paths).
@@ -1208,7 +1701,12 @@ export class Orchestrator {
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
-      prompt: promptWithProtectedPathConstraint(prompt, contract.constraints.protected_paths),
+      prompt: promptWithProtectedPathConstraint(
+        prompt,
+        contract.constraints.protected_paths,
+        contract.constraints.auto_protected_paths,
+        contract.constraints.protected_path_approvals,
+      ),
       attachments: runInput?.attachments ?? [],
       browser: this.browserSpecFor(runInput, routed, knobs.webPolicy, access, paths),
       cwd: envelope.worktree_path,
@@ -1257,7 +1755,9 @@ export class Orchestrator {
     const retryPolicy = this.transientRetryPolicy(contract.repo.root);
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
-      contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live",
+      contract.external_context.web_required ||
+        knobs.webPolicy === "cached" ||
+        knobs.webPolicy === "live",
       effectiveWebMode ?? knobs.webPolicy,
     );
     let activeSessionId = spec.session_id;
@@ -1270,7 +1770,10 @@ export class Orchestrator {
     }
     try {
       for (let nativeTry = 0; !signal?.aborted; nativeTry += 1) {
-        const runSpec = nativeTry === 0 ? spec : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), extra: { ...spec.extra } });
+        const runSpec =
+          nativeTry === 0
+            ? spec
+            : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), extra: { ...spec.extra } });
         activeSessionId = runSpec.session_id;
         const transientStart = telemetry.transientFailures.length;
         try {
@@ -1302,7 +1805,12 @@ export class Orchestrator {
               if (budgetGuard?.(cost)) {
                 harnessErrored = true;
                 errors.push("budget hard cap reached mid-attempt; stream aborted");
-                log?.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "cooldown", detail: "hard cap mid-flight abort" });
+                log?.emit("budget.observation", {
+                  harness_id: adapter.id,
+                  attempt_id: attemptId,
+                  kind: "cooldown",
+                  detail: "hard cap mid-flight abort",
+                });
                 void adapter.cancel?.(runSpec.session_id)?.catch(() => {});
                 break;
               }
@@ -1313,7 +1821,13 @@ export class Orchestrator {
             }
             // Capture assistant prose so an answer-only turn (no file changes) still
             // has an honest output artifact instead of an empty "succeeded".
-            if (safeEv.type === "message" && safeEv.text) pushUniqueText(messageParts, safeEv.text);
+            if (
+              safeEv.type === "message" &&
+              safeEv.text &&
+              safeEv.payload?.["auth_switched"] !== true
+            ) {
+              pushUniqueText(messageParts, safeEv.text);
+            }
             // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
             const obs = observationFromEvent(adapter.id, safeEv);
             if (obs) ledger.observe(obs);
@@ -1330,12 +1844,33 @@ export class Orchestrator {
         const currentDiff = await wsm.diff(envelope);
         const currentAnswer = messageParts.join("\n").trim();
         const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
-        if (!harnessErrored || !sawTransient || !deliverableEmpty || nativeTry >= retryPolicy.maxRetries || signal?.aborted) break;
+        if (
+          !harnessErrored ||
+          !sawTransient ||
+          !deliverableEmpty ||
+          nativeTry >= retryPolicy.maxRetries ||
+          signal?.aborted
+        )
+          break;
 
         const nextTry = nativeTry + 1;
-        const delayMs = transientRetryDelayMs(transient?.retryDelayMs ?? null, retryPolicy, nativeTry);
-        log?.emit("route.transient.detected", { harness_id: adapter.id, attempt_id: attemptId, kind: transient?.kind ?? "unknown", native_try: nativeTry + 1 });
-        log?.emit("route.transient.retry_scheduled", { harness_id: adapter.id, attempt_id: attemptId, retry: nextTry, delay_ms: delayMs });
+        const delayMs = transientRetryDelayMs(
+          transient?.retryDelayMs ?? null,
+          retryPolicy,
+          nativeTry,
+        );
+        log?.emit("route.transient.detected", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          kind: transient?.kind ?? "unknown",
+          native_try: nativeTry + 1,
+        });
+        log?.emit("route.transient.retry_scheduled", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          retry: nextTry,
+          delay_ms: delayMs,
+        });
         errors.length = 0;
         harnessErrored = false;
         await sleep(delayMs);
@@ -1344,7 +1879,11 @@ export class Orchestrator {
       signal?.removeEventListener("abort", onAbort);
     }
     if (harnessErrored && telemetry.transientFailures.length > 0) {
-      log?.emit("route.transient.exhausted", { harness_id: adapter.id, attempt_id: attemptId, retries: retryPolicy.maxRetries });
+      log?.emit("route.transient.exhausted", {
+        harness_id: adapter.id,
+        attempt_id: attemptId,
+        retries: retryPolicy.maxRetries,
+      });
     }
     const unrecovered = unrecoveredToolErrors(telemetry);
     if (webUnsatisfied(telemetry)) {
@@ -1363,7 +1902,15 @@ export class Orchestrator {
     });
     log?.emit("gate.completed", {
       attempt_id: attemptId,
-      gates: gates.map((g) => ({ id: g.id, status: g.status, exit_code: g.exit_code })),
+      gates: gates.map((g) => ({
+        id: g.id,
+        status: g.status,
+        exit_code: g.exit_code,
+        duration_ms: g.duration_ms,
+        stdout_tail: g.stdout_tail,
+        stderr_tail: g.stderr_tail,
+        output_truncated: g.output_truncated,
+      })),
       passed: gatesPassed(gates),
     });
     const webBlocked = webUnsatisfied(telemetry);
@@ -1417,10 +1964,26 @@ export class Orchestrator {
     // (no spec). The old code fabricated a 1/1 ("AC-implicit") cover, which made
     // arbitration report a vacuous "acceptance=100%" that just restated gates.
     const acTotal = contract.success_criteria.length;
-    const acCovered = passed && contract.success_criteria.length > 0 ? contract.success_criteria.map((c) => c.id) : [];
+    const acCovered =
+      passed && contract.success_criteria.length > 0
+        ? contract.success_criteria.map((c) => c.id)
+        : [];
     // Treat a harness error as a failed required gate so it cannot win arbitration.
     const gates = run.errored
-      ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed" as const, duration_ms: 0, required: true }]
+      ? [
+          ...run.gates,
+          {
+            id: "harness",
+            command: "harness",
+            exit_code: 1,
+            status: "failed" as const,
+            duration_ms: 0,
+            required: true,
+            stdout_tail: null,
+            stderr_tail: null,
+            output_truncated: false,
+          },
+        ]
       : run.gates;
     return {
       attemptId: run.attemptId,
@@ -1435,7 +1998,8 @@ export class Orchestrator {
       testsTotal: gates.length,
       finalReviewClean,
       reviewVerified,
-      toolWarningsCount: run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
+      toolWarningsCount:
+        run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
       diffSize: run.diff.split("\n").length,
       diffBytes: Buffer.byteLength(run.diff, "utf8"),
       costUsd: run.cost,
@@ -1470,7 +2034,15 @@ export class Orchestrator {
         // interaction.requested — `claudexor follow` checks pendingInteractions
         // before prompting — finds the registry already populated. The reverse
         // order would make that guarantee depend on event-loop timing.
-        const answersPromise = handler({ runId, taskId, attemptId, harnessId, request, requestedAt, timeoutAt }).catch(() => null);
+        const answersPromise = handler({
+          runId,
+          taskId,
+          attemptId,
+          harnessId,
+          request,
+          requestedAt,
+          timeoutAt,
+        }).catch(() => null);
         log.emit("interaction.requested", {
           interaction_id: request.interaction_id,
           attempt_id: attemptId,
@@ -1558,16 +2130,32 @@ export class Orchestrator {
         category: "project",
         safeMessage: message,
         runDir: paths.root,
-        nextActions: ["Check the project folder permissions", "Initialize git manually (git init)", "Retry the run"],
+        nextActions: [
+          "Check the project folder permissions",
+          "Initialize git manually (git init)",
+          "Retry the run",
+        ],
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: workspace\n\n${message}\n`);
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: workspace\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "workspace", error: message, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "workspace",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return message;
     }
   }
 
-  private async runRace(input: RunInput, mode: ModeKind): Promise<OrchestratorResult> {
+  private async runRace(
+    input: RunInput,
+    mode: ModeKind,
+    preflightReviewers?: ReviewerSpec[],
+  ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     // Contract validation (trust gates, secret scans) runs BEFORE the run is
@@ -1596,9 +2184,25 @@ export class Orchestrator {
     // silent mutation (user-locked decision, comparator: Codex requires git).
     // For an isolated thread the execution root is already a git worktree, so
     // this is a no-op there; for in-place it ensures the live project is git.
-    const gitPreconditionError = await this.ensureWriteModeGitBoundary(execRoot, log, store, paths, runId, mode);
+    const gitPreconditionError = await this.ensureWriteModeGitBoundary(
+      execRoot,
+      log,
+      store,
+      paths,
+      runId,
+      mode,
+    );
     if (gitPreconditionError) {
-      return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: gitPreconditionError, candidates: [] };
+      return {
+        runId,
+        taskId,
+        mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: gitPreconditionError,
+        candidates: [],
+      };
     }
     // Pre-turn snapshot of the live tree for in-place runs: the revert restore
     // target (server-owned revertInPlace). A snapshot failure must never fail the
@@ -1620,7 +2224,7 @@ export class Orchestrator {
     writeEvidencePacket(reviewDir, {
       userIntent: redactSecrets(input.prompt),
       diff: "(per-candidate diffs are supplied to reviewers individually)\n",
-      tests: contract.tests.commands.map((c) => c.command).join("\n") || "(no test commands configured)",
+      tests: this.testsEvidence(contract),
     });
 
     let adapters: RoutedAdapter[];
@@ -1628,11 +2232,27 @@ export class Orchestrator {
       adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(input), ledger);
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "routing", category: "harness_unavailable", safeMessage: message, runDir: paths.root });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Routing Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "routing",
+        category: "harness_unavailable",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "routing", error: message, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "routing",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -1644,7 +2264,7 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    const reviewers = await this.resolveReviewers(input.repoRoot);
+    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
     const reviewVerified = this.routeVerified(reviewers);
     const harnessLedgers = new Map<string, BudgetLedger>();
 
@@ -1671,17 +2291,33 @@ export class Orchestrator {
       const routed = adapters[i] as RoutedAdapter;
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
       // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
-      const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({ taskId, attemptId, intent: this.candidateIntent(input), harnessId: routed.adapter.id });
-      log.emit("budget.lease.created", { granted: lease.granted, reason: lease.reason, attempt_id: attemptId, harness_id: routed.adapter.id });
+      const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({
+        taskId,
+        attemptId,
+        intent: this.candidateIntent(input),
+        harnessId: routed.adapter.id,
+      });
+      log.emit("budget.lease.created", {
+        granted: lease.granted,
+        reason: lease.reason,
+        attempt_id: attemptId,
+        harness_id: routed.adapter.id,
+      });
       if (!lease.granted) {
         budgetStopped = true;
         break; // hard cap: do not spawn more paid work
       }
-      slots.push({ routed, attemptId, label: `Candidate ${LABELS[i] ?? i + 1}`, leaseId: lease.lease?.lease_id ?? "" });
+      slots.push({
+        routed,
+        attemptId,
+        label: `Candidate ${LABELS[i] ?? i + 1}`,
+        leaseId: lease.lease?.lease_id ?? "",
+      });
     }
 
     const runsBySlot = new Array<CandidateRun | undefined>(slots.length);
-    const slotLedger = (slot: CandidateSlot) => this.harnessLedger(harnessLedgers, ledger, slot.routed);
+    const slotLedger = (slot: CandidateSlot) =>
+      this.harnessLedger(harnessLedgers, ledger, slot.routed);
     const runSlot = async (slot: CandidateSlot, slotIdx: number): Promise<void> => {
       if (input.signal?.aborted) {
         slotLedger(slot).cancel(slot.leaseId);
@@ -1690,9 +2326,15 @@ export class Orchestrator {
       // Leases are granted upfront (before spend exists); a worker still
       // re-checks the circuit breaker so queued slots beyond the parallel wave
       // do not start after earlier candidates already blew the hard cap.
-      if (slotLedger(slot).tier() === "hard") {
+      if (budgetStopped || slotLedger(slot).tier() === "hard") {
         slotLedger(slot).cancel(slot.leaseId);
-        log.emit("budget.lease.created", { granted: false, reason: "budget exhausted (hard cap reached)", attempt_id: slot.attemptId, harness_id: slot.routed.adapter.id, cancelled_after_grant: true });
+        log.emit("budget.lease.created", {
+          granted: false,
+          reason: "budget exhausted (hard cap reached)",
+          attempt_id: slot.attemptId,
+          harness_id: slot.routed.adapter.id,
+          cancelled_after_grant: true,
+        });
         budgetStopped = true;
         return;
       }
@@ -1703,15 +2345,36 @@ export class Orchestrator {
       const breakerTier = slotLedger(slot).tier();
       if (breakerTier === "soft" && !softWarned) {
         softWarned = true;
-        log.emit("budget.observation", { harness_id: adapter.id, attempt_id: slot.attemptId, kind: "manual", detail: "budget soft cap reached — approaching the run ceiling" });
+        log.emit("budget.observation", {
+          harness_id: adapter.id,
+          attempt_id: slot.attemptId,
+          kind: "manual",
+          detail: "budget soft cap reached — approaching the run ceiling",
+        });
       }
-      const downgradeModel = breakerTier === "downgrade" ? slot.routed.settings?.fallbackModel ?? null : null;
+      const downgradeModel =
+        breakerTier === "downgrade" ? (slot.routed.settings?.fallbackModel ?? null) : null;
       if (downgradeModel) {
-        log.emit("budget.observation", { harness_id: adapter.id, attempt_id: slot.attemptId, kind: "manual", detail: `budget downgrade — switching to fallback model ${downgradeModel}` });
+        log.emit("budget.observation", {
+          harness_id: adapter.id,
+          attempt_id: slot.attemptId,
+          kind: "manual",
+          detail: `budget downgrade — switching to fallback model ${downgradeModel}`,
+        });
       }
       const modelForAttempt = downgradeModel ?? input.model;
-      const knobs = this.routeSpecKnobs(slot.routed, contract.external_context.policy, modelForAttempt, input.effort);
-      const effectiveWeb = this.discloseWebUpgrade(log, slot.routed, knobs.webPolicy, slot.attemptId);
+      const knobs = this.routeSpecKnobs(
+        slot.routed,
+        contract.external_context.policy,
+        modelForAttempt,
+        input.effort,
+      );
+      const effectiveWeb = this.discloseWebUpgrade(
+        log,
+        slot.routed,
+        knobs.webPolicy,
+        slot.attemptId,
+      );
       let envelope: WorkspaceEnvelope | undefined;
       try {
         log.emit("harness.started", {
@@ -1759,7 +2422,9 @@ export class Orchestrator {
           (streamedUsd) => {
             const lg = slotLedger(slot);
             lg.updateHold(slot.leaseId, streamedUsd);
-            return lg.tier() === "hard";
+            if (lg.tier() !== "hard") return false;
+            budgetStopped = true;
+            return true;
           },
           input,
         );
@@ -1781,8 +2446,15 @@ export class Orchestrator {
         const message = safeErrorMessage(err);
         // envelope is still undefined when wsm.create() itself threw — that is
         // a workspace-phase infrastructure failure, not a harness error.
-        const infraPhase: "workspace" | "harness" = envelope === undefined ? "workspace" : "harness";
-        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: slot.attemptId, status: "failed", error: message, phase: infraPhase });
+        const infraPhase: "workspace" | "harness" =
+          envelope === undefined ? "workspace" : "harness";
+        log.emit("harness.completed", {
+          harness_id: adapter.id,
+          attempt_id: slot.attemptId,
+          status: "failed",
+          error: message,
+          phase: infraPhase,
+        });
         // Minimal attempt record so failure.yaml's rawDetailRef never dangles.
         store.writeYaml(join(paths.attemptsDir, slot.attemptId, "attempt.yaml"), {
           attempt_id: slot.attemptId,
@@ -1802,7 +2474,11 @@ export class Orchestrator {
           errored: true,
           costEstimated: false,
           errors: [message],
-          telemetry: createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required, effectiveWeb),
+          telemetry: createAttemptTelemetry(
+            knobs.webPolicy,
+            contract.external_context.web_required,
+            effectiveWeb,
+          ),
           infraPhase,
         };
       } finally {
@@ -1811,6 +2487,12 @@ export class Orchestrator {
     };
     await runBounded(slots, Math.min(slots.length, MAX_PARALLEL_CANDIDATES), runSlot);
     const runs: CandidateRun[] = runsBySlot.filter((r): r is CandidateRun => r !== undefined);
+    const cancelledCandidates = () =>
+      runs.map((r) => ({
+        attemptId: r.attemptId,
+        harnessId: r.harnessId,
+        status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
+      }));
 
     // Revert divergence fence for the single-candidate in-place path: the
     // candidate mutated the LIVE tree during execution above, so the post-turn
@@ -1829,23 +2511,14 @@ export class Orchestrator {
 
     if (input.signal?.aborted) {
       await disposeReviewEnvelopes();
-      return this.cancelledResult(
-        log,
-        runId,
-        taskId,
-        mode,
-        paths.root,
-        runs.map((r) => ({
-          attemptId: r.attemptId,
-          harnessId: r.harnessId,
-          status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
-        })),
-      );
+      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
     }
 
     if (runs.length === 0) {
       const status: RunStatus = budgetStopped ? "exhausted" : "failed";
-      const why = budgetStopped ? "budget exhausted before any candidate run" : "no candidates produced";
+      const why = budgetStopped
+        ? "budget exhausted before any candidate run"
+        : "no candidates produced";
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
         winner: null,
         status,
@@ -1855,10 +2528,23 @@ export class Orchestrator {
         apply_recommendation: "continue",
         budget_summary: { spend_usd: ledger.spend(), estimated: false },
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: budget\n\n${why}\n`);
-      writeFailure(store, paths, { phase: "budget", category: status === "exhausted" ? "budget" : "internal", safeMessage: why, runDir: paths.root });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: budget\n\n${why}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "budget",
+        category: status === "exhausted" ? "budget" : "internal",
+        safeMessage: why,
+        runDir: paths.root,
+      });
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status, phase: "budget", error: why, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status,
+        phase: "budget",
+        error: why,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -1882,7 +2568,9 @@ export class Orchestrator {
       const first = runs[0] as CandidateRun;
       const phase = first.infraPhase ?? "harness";
       const rootCause = runs
-        .map((r) => `${r.attemptId}/${r.harnessId}: ${r.errors[0] ?? "failed before producing work"}`)
+        .map(
+          (r) => `${r.attemptId}/${r.harnessId}: ${r.errors[0] ?? "failed before producing work"}`,
+        )
         .join("; ");
       const status: RunStatus = "failed";
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
@@ -1890,12 +2578,30 @@ export class Orchestrator {
         status,
         outcome: "blocked",
         why_winner: rootCause,
-        evidence_facts: runs.map((r) => `${r.attemptId} produced no work: ${r.errors[0] ?? "unknown"}`),
+        evidence_facts: runs.map(
+          (r) => `${r.attemptId} produced no work: ${r.errors[0] ?? "unknown"}`,
+        ),
         apply_recommendation: "continue",
         budget_summary: { spend_usd: ledger.spend(), estimated: false },
       });
-      this.writeRunTelemetry(store, paths, contract, runId, taskId, mode, runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })), null);
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: ${phase}\n\n${rootCause}\n`);
+      this.writeRunTelemetry(
+        store,
+        paths,
+        contract,
+        runId,
+        taskId,
+        mode,
+        runs.map((r) => ({
+          attemptId: r.attemptId,
+          harnessId: r.harnessId,
+          telemetry: r.telemetry,
+        })),
+        null,
+      );
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: ${phase}\n\n${rootCause}\n`,
+      );
       const existingEventRefs = runs
         .map((r) => `attempts/${r.attemptId}/events.jsonl`)
         .filter((rel) => existsSync(join(paths.root, rel)));
@@ -1914,7 +2620,12 @@ export class Orchestrator {
             : ["Open diagnostics", "Check harness authentication", "Retry the run"],
       });
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status, phase, error: rootCause, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status,
+        phase,
+        error: rootCause,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -1923,7 +2634,11 @@ export class Orchestrator {
         winner: null,
         runDir: paths.root,
         summary: rootCause,
-        candidates: runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, status: "red" })),
+        candidates: runs.map((r) => ({
+          attemptId: r.attemptId,
+          harnessId: r.harnessId,
+          status: "red",
+        })),
       };
     }
 
@@ -1934,7 +2649,20 @@ export class Orchestrator {
       // candidates ("привет" in agent mode no longer burns two reviewers on
       // "(empty diff)"). Candidates still flow through arbitration/gates so the
       // no_op/answer outcome and gate failures are unchanged.
-      evidences = await this.reviewRuns(workingRuns, reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log, ledger, taskId);
+      evidences = await this.reviewRuns(
+        workingRuns,
+        reviewers,
+        reviewVerified,
+        reviewDir,
+        input.repoRoot,
+        contract,
+        store,
+        paths,
+        log,
+        ledger,
+        taskId,
+        input.signal,
+      );
     } catch (err) {
       // Review preflight/evidence failures end TERMINALLY with artifacts —
       // never as an escaped throw that orphans the run dir (#5).
@@ -1943,6 +2671,9 @@ export class Orchestrator {
       // Review preflight failures must not leak candidate worktrees.
       await disposeReviewEnvelopes();
     }
+    if (input.signal?.aborted) {
+      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
+    }
 
     // Synthesis: if worthwhile, run a synthesizer as a NEW, re-checked candidate.
     const synth = decideSynthesis(evidences, input.synthesis ?? "auto");
@@ -1950,18 +2681,41 @@ export class Orchestrator {
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
       const synthRouted = adapters[0] as RoutedAdapter;
-      const lease = ledger.reserve({ taskId, attemptId: "synth", intent: "synthesize", harnessId: synthRouted.adapter.id });
+      const lease = ledger.reserve({
+        taskId,
+        attemptId: "synth",
+        intent: "synthesize",
+        harnessId: synthRouted.adapter.id,
+      });
       if (lease.granted) {
         let envelope: WorkspaceEnvelope | undefined;
         try {
           const plan = buildSynthesisPlan(evidences);
-          const sourceDiffs = workingRuns.map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`).join("\n\n");
+          const sourceDiffs = workingRuns
+            .map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`)
+            .join("\n\n");
           const synthAdapter = synthRouted.adapter;
           // Disclose against the PER-ROUTE policy (per-harness web defaults
           // included), exactly like the candidate slots do.
-          const synthKnobs = this.routeSpecKnobs(synthRouted, contract.external_context.policy, input.model, input.effort);
-          const effectiveWeb = this.discloseWebUpgrade(log, synthRouted, synthKnobs.webPolicy, "synth");
-          envelope = await wsm.create({ taskId, attemptId: "synth", baseRef: contract.repo.base_ref, dirtyPolicy: "snapshot", accessProfile: candidateAccess });
+          const synthKnobs = this.routeSpecKnobs(
+            synthRouted,
+            contract.external_context.policy,
+            input.model,
+            input.effort,
+          );
+          const effectiveWeb = this.discloseWebUpgrade(
+            log,
+            synthRouted,
+            synthKnobs.webPolicy,
+            "synth",
+          );
+          envelope = await wsm.create({
+            taskId,
+            attemptId: "synth",
+            baseRef: contract.repo.base_ref,
+            dirtyPolicy: "snapshot",
+            accessProfile: candidateAccess,
+          });
           const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
             synthRouted,
@@ -1994,8 +2748,31 @@ export class Orchestrator {
           reviewEnvelopes.push(envelope);
           envelope = undefined;
           try {
-            const synthEvidence = await this.reviewRuns([run], reviewers, reviewVerified, reviewDir, input.repoRoot, contract, store, paths, log, ledger, taskId);
+            const synthEvidence = await this.reviewRuns(
+              [run],
+              reviewers,
+              reviewVerified,
+              reviewDir,
+              input.repoRoot,
+              contract,
+              store,
+              paths,
+              log,
+              ledger,
+              taskId,
+              input.signal,
+            );
             evidences.push(...synthEvidence);
+            if (input.signal?.aborted) {
+              return this.cancelledResult(
+                log,
+                runId,
+                taskId,
+                mode,
+                paths.root,
+                cancelledCandidates(),
+              );
+            }
           } finally {
             await disposeReviewEnvelopes();
           }
@@ -2003,11 +2780,18 @@ export class Orchestrator {
           workingRuns.push(run);
         } catch (err) {
           ledger.settle(lease.lease?.lease_id ?? "", 0);
-          log.emit("harness.completed", { attempt_id: "synth", status: "failed", error: safeErrorMessage(err) });
+          log.emit("harness.completed", {
+            attempt_id: "synth",
+            status: "failed",
+            error: safeErrorMessage(err),
+          });
         } finally {
           if (envelope) await wsm.dispose(envelope);
         }
       }
+    }
+    if (input.signal?.aborted) {
+      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
     }
 
     const actualReviewVerified = evidences.length > 0 && evidences.every((e) => e.reviewVerified);
@@ -2021,17 +2805,27 @@ export class Orchestrator {
       // Arbitration throws end terminally with artifacts, never as an orphan (#5).
       return this.failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err);
     }
-    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), { ...result.decision, review_verified: actualReviewVerified });
+    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
+      ...result.decision,
+      review_verified: actualReviewVerified,
+    });
     store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
-    log.emit("arbitration.completed", { winner: result.decision.winner, status: result.decision.status });
+    log.emit("arbitration.completed", {
+      winner: result.decision.winner,
+      status: result.decision.status,
+    });
 
     // Winner can only be a candidate that actually produced work; corpses are
     // excluded from arbitration upstream and from the fallback here.
-    const winnerRun = workingRuns.find((r) => r.attemptId === result.decision.winner) ?? workingRuns[0];
+    const winnerRun =
+      workingRuns.find((r) => r.attemptId === result.decision.winner) ?? workingRuns[0];
     // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
-    const needsHuman = evidences.some((e) => e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)));
-    const status: RunStatus = needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
+    const needsHuman = evidences.some((e) =>
+      e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)),
+    );
+    const status: RunStatus =
+      needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
     if (winnerRun) {
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       const patchSha256 = sha256(winnerRun.diff);
@@ -2039,7 +2833,9 @@ export class Orchestrator {
       const wstats = diffStats(winnerRun.diff);
       const hasDiff = winnerRun.diff.trim().length > 0;
       const winnerEvidence = evidences.find((e) => e.attemptId === winnerRun.attemptId);
-      const blockers = winnerEvidence ? winnerEvidence.findings.filter((f) => isBlocking(f)).length : 0;
+      const blockers = winnerEvidence
+        ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
+        : 0;
       // An empty-diff winner that produced prose is an ANSWER (the chat shows it
       // and the honest result_kind is "answer", not a misleading "patch").
       const winnerAnswer = winnerRun.answerText?.trim() ?? "";
@@ -2062,7 +2858,8 @@ export class Orchestrator {
       // live tree only when we apply it, which we gate on a clean terminal.
       const adoptable = status === "success" || status === "ungated";
       let adopted: boolean | null = null;
-      let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" = "not_applied";
+      let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
+        "not_applied";
       let postTurnSha: string | null = null;
       if (input.inPlace === true && hasDiff) {
         if (slots.length === 1) {
@@ -2077,7 +2874,11 @@ export class Orchestrator {
             await applyPatch(execRoot, winnerRun.diff);
             adopted = true;
             applyState = "applied";
-            log.emit("work_product.adopted", { applied: true, patch_sha256: patchSha256, winner: winnerRun.attemptId });
+            log.emit("work_product.adopted", {
+              applied: true,
+              patch_sha256: patchSha256,
+              winner: winnerRun.attemptId,
+            });
             // Race winner: snapshot immediately after applying (minimal window).
             try {
               postTurnSha = await snapshotTree(execRoot);
@@ -2087,7 +2888,11 @@ export class Orchestrator {
           } catch (err) {
             adopted = false;
             applyState = "not_applied";
-            log.emit("work_product.adopted", { applied: false, patch_sha256: patchSha256, detail: safeErrorMessage(err) });
+            log.emit("work_product.adopted", {
+              applied: false,
+              patch_sha256: patchSha256,
+              detail: safeErrorMessage(err),
+            });
           }
         }
       }
@@ -2104,7 +2909,11 @@ export class Orchestrator {
           budget_stopped: budgetStopped,
           patch_sha256: patchSha256,
           result_kind: resultKind,
-          diffstat: { files: wstats.paths.length, additions: wstats.additions, deletions: wstats.deletions },
+          diffstat: {
+            files: wstats.paths.length,
+            additions: wstats.additions,
+            deletions: wstats.deletions,
+          },
           blockers,
           adopted,
           apply_state: applyState,
@@ -2112,7 +2921,17 @@ export class Orchestrator {
           post_turn_sha: postTurnSha,
         },
       });
-      store.writeText(join(paths.finalDir, "summary.md"), renderSummary(runId, mode, { ...result.decision, status }, evidences, synth.reason, actualReviewVerified));
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        renderSummary(
+          runId,
+          mode,
+          { ...result.decision, status },
+          evidences,
+          synth.reason,
+          actualReviewVerified,
+        ),
+      );
       // A non-success run's summary/patch is diagnostic context, not an applyable green output.
       log.emit("output.ready", {
         kind: "summary",
@@ -2121,25 +2940,62 @@ export class Orchestrator {
       });
     }
 
-    this.writeRunTelemetry(store, paths, contract, runId, taskId, mode, runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })), result.decision.status === "success" ? result.decision.winner : winnerRun?.attemptId ?? null);
+    this.writeRunTelemetry(
+      store,
+      paths,
+      contract,
+      runId,
+      taskId,
+      mode,
+      runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+      result.decision.status === "success"
+        ? result.decision.winner
+        : (winnerRun?.attemptId ?? null),
+    );
 
-    const honestTerminal = status === "no_op" || status === "ungated" || status === "review_not_run";
+    const honestTerminal =
+      status === "no_op" || status === "ungated" || status === "review_not_run";
     if (status !== "success" && !honestTerminal) {
       writeFailure(store, paths, {
         phase: needsHuman ? "review" : "arbitration",
-        category: needsHuman ? "policy" : winnerRun?.errored ? "harness_error" : status === "exhausted" ? "budget" : "internal",
+        category: needsHuman
+          ? "policy"
+          : winnerRun?.errored
+            ? "harness_error"
+            : status === "exhausted"
+              ? "budget"
+              : "internal",
         harnessId: winnerRun?.errored ? winnerRun.harnessId : undefined,
         attemptId: winnerRun?.errored ? winnerRun.attemptId : undefined,
-        safeMessage: needsHuman ? `review escalated to a human decision: ${result.decision.why_winner}` : result.decision.why_winner,
-        rawDetailRef: winnerRun?.errored ? `attempts/${winnerRun.attemptId}/attempt.yaml` : undefined,
+        safeMessage: needsHuman
+          ? `review escalated to a human decision: ${result.decision.why_winner}`
+          : result.decision.why_winner,
+        rawDetailRef: winnerRun?.errored
+          ? `attempts/${winnerRun.attemptId}/attempt.yaml`
+          : undefined,
         runDir: paths.root,
         nextActions: needsHuman
-          ? ["Open the review queue", "Decide the NEEDS_HUMAN findings", "Re-run after the decision"]
-          : ["Open diagnostics", "Inspect candidate artifacts", "Retry with a narrower prompt or different harness pool"],
+          ? [
+              "Open the review queue",
+              "Decide the NEEDS_HUMAN findings",
+              "Re-run after the decision",
+            ]
+          : [
+              "Open diagnostics",
+              "Inspect candidate artifacts",
+              "Retry with a narrower prompt or different harness pool",
+            ],
       });
       if (!winnerRun) {
-        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`);
-        log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+        store.writeText(
+          join(paths.finalDir, "summary.md"),
+          `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`,
+        );
+        log.emit("output.ready", {
+          kind: "summary",
+          path: "final/summary.md",
+          state: "diagnostic",
+        });
       }
     }
 
@@ -2181,8 +3037,12 @@ export class Orchestrator {
     attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
     finalAttemptId: string | null,
   ): void {
-    const records = attempts.map((a) => attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry));
-    const finalRecord = finalAttemptId ? records.find((r) => r.attempt_id === finalAttemptId) : undefined;
+    const records = attempts.map((a) =>
+      attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry),
+    );
+    const finalRecord = finalAttemptId
+      ? records.find((r) => r.attempt_id === finalAttemptId)
+      : undefined;
     const runWeb = finalRecord?.web ?? aggregateRunWebEvidence(records, contract);
     const telemetry = RunTelemetrySchema.parse({
       schema_version: SCHEMA_VERSION,
@@ -2192,7 +3052,8 @@ export class Orchestrator {
       requested_access: contract.access.requested_profile,
       effective_access: contract.access.effective_profile,
       external_context_policy: contract.external_context.policy,
-      effective_web_mode: finalRecord?.web.effective_mode ?? contract.external_context.effective_mode,
+      effective_web_mode:
+        finalRecord?.web.effective_mode ?? contract.external_context.effective_mode,
       web_required: contract.external_context.web_required,
       final_attempt_id: finalAttemptId,
       web: runWeb,
@@ -2214,72 +3075,136 @@ export class Orchestrator {
     run: CandidateRun,
     reviewVerified: boolean,
     protectedPaths: string[] = [],
-  ): { findings: ReviewFinding[]; risk: { level: string; reasons: string[]; changedFiles: number } } {
+    autoProtectedPaths: string[] = [],
+    protectedPathApprovals: ProtectedPathApproval[] = [],
+  ): {
+    findings: ReviewFinding[];
+    risk: { level: string; reasons: string[]; changedFiles: number };
+  } {
     const stats = diffStats(run.diff);
-    const risk = classifyRisk({ changedPaths: stats.paths, additions: stats.additions, deletions: stats.deletions, protectedPaths: [] });
+    const approvalPatterns = protectedPathApprovals.map((approval) => approval.path);
+    const unapprovedExistingAutoProtectedPaths = stats.existingPaths.filter(
+      (path) => !matchAny(path, approvalPatterns),
+    );
+    const specProtectedOnly = requireHuman(stats.existingPaths, protectedPaths);
+    const autoProtectedOnly = requireHuman(
+      unapprovedExistingAutoProtectedPaths,
+      autoProtectedPaths,
+    );
+    const protectedOnly = {
+      required: specProtectedOnly.required || autoProtectedOnly.required,
+      reasons: [...new Set([...specProtectedOnly.reasons, ...autoProtectedOnly.reasons])],
+      matchedPaths: [
+        ...new Set([...specProtectedOnly.matchedPaths, ...autoProtectedOnly.matchedPaths]),
+      ],
+    };
+    const risk = classifyRisk({
+      changedPaths: stats.paths,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      protectedPaths: protectedOnly.matchedPaths,
+    });
     const findings: ReviewFinding[] = [];
-    const reviewer = { harness_id: "policy", requested_model: null, requested_effort: null, observed_model: null, route_proof_status: "verified" as const };
+    const reviewer = {
+      harness_id: "policy",
+      requested_model: null,
+      requested_effort: null,
+      observed_model: null,
+      route_proof_status: "verified" as const,
+    };
     const evidenceFor = (reasons: string[]) => ({
-      files: stats.paths.filter((p) => reasons.some((r) => r.includes(p))).map((path) => ({ path, lines: null })),
+      files: stats.paths
+        .filter((p) => reasons.some((r) => r.includes(p)))
+        .map((path) => ({ path, lines: null })),
     });
     // Structured matched-path evidence (never reconstructed from prose).
-    const evidenceFromPaths = (paths: string[]) => ({ files: paths.map((path) => ({ path, lines: null })) });
-    const protectedOnly = requireHuman(stats.existingPaths, protectedPaths);
+    const evidenceFromPaths = (paths: string[]) => ({
+      files: paths.map((path) => ({ path, lines: null })),
+    });
+    const reportedRisk = protectedOnly.required
+      ? {
+          level: "critical" as const,
+          reasons: [...new Set([...risk.reasons, ...protectedOnly.reasons])],
+          matchedPaths: [...new Set([...risk.matchedPaths, ...protectedOnly.matchedPaths])],
+        }
+      : risk;
     if (protectedOnly.required) {
-      findings.push(ReviewFindingSchema.parse({
-        id: newId("find"),
-        severity: "BLOCK",
-        category: "test_gap",
-        claim: `candidate changed protected gate/test path(s): ${protectedOnly.matchedPaths.join(", ")}`,
-        evidence: evidenceFromPaths(protectedOnly.matchedPaths),
-        reviewer,
-        status: "accepted",
-      }));
+      findings.push(
+        ReviewFindingSchema.parse({
+          id: newId("find"),
+          severity: "BLOCK",
+          category: "test_gap",
+          claim: `candidate changed protected path(s): ${protectedOnly.matchedPaths.join(", ")}`,
+          evidence: evidenceFromPaths(protectedOnly.matchedPaths),
+          reviewer,
+          status: "accepted",
+        }),
+      );
     }
     // Contract protected_paths escalate the human gate only for tampering with
     // existing protected files. Creating a new test/package file for create or
     // test-authoring flows is not tamper by itself; built-in critical paths still
     // apply to all changed paths.
-    const builtInHuman = requireHuman(stats.paths, DEFAULT_REQUIRE_HUMAN_PATHS);
+    const builtInHumanPaths = [...new Set([...stats.paths, ...stats.existingPaths])];
+    const builtInHuman = requireHuman(builtInHumanPaths, DEFAULT_REQUIRE_HUMAN_PATHS);
     const human = {
       required: builtInHuman.required || protectedOnly.required,
       reasons: [...new Set([...builtInHuman.reasons, ...protectedOnly.reasons])],
       matchedPaths: [...new Set([...builtInHuman.matchedPaths, ...protectedOnly.matchedPaths])],
     };
     if (human.required) {
-      findings.push(ReviewFindingSchema.parse({
-        id: newId("find"),
-        severity: "NEEDS_HUMAN",
-        category: "security",
-        claim: `protected-path change requires human approval: ${human.reasons.join("; ")}`,
-        evidence: evidenceFromPaths(human.matchedPaths),
-        reviewer,
-        status: "accepted",
-      }));
+      findings.push(
+        ReviewFindingSchema.parse({
+          id: newId("find"),
+          severity: "NEEDS_HUMAN",
+          category: "security",
+          claim: `protected-path change requires human approval: ${human.reasons.join("; ")}`,
+          evidence: evidenceFromPaths(human.matchedPaths),
+          reviewer,
+          status: "accepted",
+        }),
+      );
     }
-    const depth = reviewDepthForRisk(risk.level as never);
+    const depth = reviewDepthForRisk(reportedRisk.level as never);
     if (depth.humanApproval) {
-      findings.push(ReviewFindingSchema.parse({
-        id: newId("find"),
-        severity: "NEEDS_HUMAN",
-        category: "security",
-        claim: `critical-risk diff requires human approval: ${risk.reasons.join("; ")}`,
-        evidence: risk.matchedPaths.length > 0 ? evidenceFromPaths(risk.matchedPaths) : evidenceFor(risk.reasons),
-        reviewer,
-        status: "accepted",
-      }));
+      findings.push(
+        ReviewFindingSchema.parse({
+          id: newId("find"),
+          severity: "NEEDS_HUMAN",
+          category: "security",
+          claim: `critical-risk diff requires human approval: ${reportedRisk.reasons.join("; ")}`,
+          evidence:
+            reportedRisk.matchedPaths.length > 0
+              ? evidenceFromPaths(reportedRisk.matchedPaths)
+              : evidenceFor(reportedRisk.reasons),
+          reviewer,
+          status: "accepted",
+        }),
+      );
     } else if (depth.crossFamily && !reviewVerified) {
-      findings.push(ReviewFindingSchema.parse({
-        id: newId("find"),
-        severity: "NEEDS_HUMAN",
-        category: "architecture",
-        claim: `high-risk diff requires a cross-family review panel (>=2 provider families), which is not available: ${risk.reasons.join("; ")}`,
-        evidence: risk.matchedPaths.length > 0 ? evidenceFromPaths(risk.matchedPaths) : evidenceFor(risk.reasons),
-        reviewer,
-        status: "accepted",
-      }));
+      findings.push(
+        ReviewFindingSchema.parse({
+          id: newId("find"),
+          severity: "NEEDS_HUMAN",
+          category: "architecture",
+          claim: `high-risk diff requires a cross-family review panel (>=2 provider families), which is not available: ${reportedRisk.reasons.join("; ")}`,
+          evidence:
+            reportedRisk.matchedPaths.length > 0
+              ? evidenceFromPaths(reportedRisk.matchedPaths)
+              : evidenceFor(reportedRisk.reasons),
+          reviewer,
+          status: "accepted",
+        }),
+      );
     }
-    return { findings, risk: { level: risk.level, reasons: risk.reasons, changedFiles: stats.paths.length } };
+    return {
+      findings,
+      risk: {
+        level: reportedRisk.level,
+        reasons: reportedRisk.reasons,
+        changedFiles: stats.paths.length,
+      },
+    };
   }
 
   /**
@@ -2291,7 +3216,9 @@ export class Orchestrator {
    * MUST go through here so the scoping cannot drift. Disposed once the panel
    * settles (resolve OR reject).
    */
-  private reviewScoped(input: Omit<Parameters<typeof reviewCandidate>[0], "env">): ReturnType<typeof reviewCandidate> {
+  private reviewScoped(
+    input: Omit<Parameters<typeof reviewCandidate>[0], "env">,
+  ): ReturnType<typeof reviewCandidate> {
     const reviewHome = new WorkspaceManager(input.cwd).readOnlyHomeEnv();
     return reviewCandidate({
       ...input,
@@ -2313,68 +3240,128 @@ export class Orchestrator {
     log: EventLog,
     ledger?: BudgetLedger,
     taskId?: string,
+    signal?: AbortSignal,
   ): Promise<CandidateEvidence[]> {
     const evidences: CandidateEvidence[] = [];
     for (const run of runs) {
       const candidateCwd = run.reviewCwd ?? cwd;
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
-      // №25: a candidate that changed NO files has nothing to review — never
-      // spend a reviewer panel on "(empty diff)" ("привет" in agent mode used to
-      // cost two reviewers). It still flows through policy gates and arbitration
-      // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
-      const hasDiff = run.diff.trim().length > 0;
-      // Reviewer panels spend real money: reserve before, settle the observed cost.
-      const reviewLease = hasDiff ? ledger?.reserve({ taskId: taskId ?? "task", attemptId: run.attemptId, intent: "review", harnessId: "review-panel" }) : undefined;
-      const result =
-        hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
-          ? await this.reviewScoped({
-              candidateLabel: run.label,
-              diff: run.diff,
-              evidenceDir: candidateEvidenceDir,
-              artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
-              cwd: candidateCwd,
-              reviewers,
-              reviewerTimeoutMs: this.reviewerTimeoutMs(contract.repo.root),
-              envInheritance: this.envInheritance(cwd),
-              onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+      try {
+        this.writeTestsEvidence(candidateEvidenceDir, contract, run.gates);
+        // №25: a candidate that changed NO files has nothing to review — never
+        // spend a reviewer panel on "(empty diff)" ("привет" in agent mode used to
+        // cost two reviewers). It still flows through policy gates and arbitration
+        // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
+        const hasDiff = run.diff.trim().length > 0;
+        // Reviewer panels spend real money: reserve before, settle the observed cost.
+        const reviewLease = hasDiff
+          ? ledger?.reserve({
+              taskId: taskId ?? "task",
+              attemptId: run.attemptId,
+              intent: "review",
+              harnessId: "review-panel",
             })
-          : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
-      if (reviewLease?.granted) {
-        ledger?.settle(reviewLease.lease?.lease_id ?? "", result.reviewSpendUsd ?? 0);
-        if ((result.reviewSpendUsd ?? 0) > 0) {
-          log.emit("budget.observation", { harness_id: "review-panel", attempt_id: run.attemptId, kind: "spend", usd: result.reviewSpendUsd, estimated: result.reviewSpendEstimated === true });
+          : undefined;
+        const result =
+          hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
+            ? await this.reviewScoped({
+                candidateLabel: run.label,
+                diff: run.diff,
+                evidenceDir: candidateEvidenceDir,
+                artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
+                cwd: candidateCwd,
+                reviewers,
+                reviewerTimeoutMs: this.reviewerTimeoutMs(contract.repo.root),
+                envInheritance: this.envInheritance(cwd),
+                signal,
+                onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+              })
+            : {
+                findings: [],
+                routeProofs: [],
+                reviewerRequests: [],
+                crossFamilyHealthy: false,
+                healthyProviders: [],
+                crossFamilyVerified: false,
+                distinctProviders: [],
+                reviewSpendUsd: 0,
+                reviewSpendEstimated: false,
+              };
+        if (reviewLease?.granted) {
+          ledger?.settle(reviewLease.lease?.lease_id ?? "", result.reviewSpendUsd ?? 0);
+          if ((result.reviewSpendUsd ?? 0) > 0) {
+            log.emit("budget.observation", {
+              harness_id: "review-panel",
+              attempt_id: run.attemptId,
+              kind: "spend",
+              usd: result.reviewSpendUsd,
+              estimated: result.reviewSpendEstimated === true,
+            });
+          }
+        } else if (reviewLease && !reviewLease.granted) {
+          log.emit("budget.lease.created", {
+            granted: false,
+            reason: reviewLease.reason,
+            attempt_id: run.attemptId,
+            harness_id: "review-panel",
+          });
         }
-      } else if (reviewLease && !reviewLease.granted) {
-        log.emit("budget.lease.created", { granted: false, reason: reviewLease.reason, attempt_id: run.attemptId, harness_id: "review-panel" });
+        const revalidated = await revalidateFindings(result.findings, {
+          candidateRoot: candidateCwd,
+          evidenceDir: candidateEvidenceDir,
+        });
+        // The high-risk human gate must key off the ACTUAL cross-family verification
+        // (stream-observed route proofs), not the preliminary routeVerified (families
+        // merely configured). Otherwise a high-risk diff skips its NEEDS_HUMAN gate
+        // when two families were configured but their route proofs went unverified.
+        // Mirrors the convergence path (actualReviewVerified).
+        const candidateReviewVerified =
+          reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified;
+        // Typed policy gate (risk + protected paths) merges with reviewer findings.
+        const policy = this.policyFindings(
+          run,
+          candidateReviewVerified,
+          contract.constraints.protected_paths,
+          contract.constraints.auto_protected_paths,
+          contract.constraints.protected_path_approvals,
+        );
+        const allFindings = [...policy.findings, ...revalidated];
+        const inconclusive = allFindings.some(
+          (f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence",
+        );
+        const noBlockers = !allFindings.some((f) => isBlocking(f));
+        const reviewClean =
+          result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
+        store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
+          attempt_id: run.attemptId,
+          review_verified: candidateReviewVerified,
+          cross_family_healthy: result.crossFamilyHealthy,
+          cross_family_verified: result.crossFamilyVerified,
+          healthy_providers: result.healthyProviders,
+          verified_providers: result.distinctProviders,
+          reviewer_requests: result.reviewerRequests,
+          risk: policy.risk,
+          findings: allFindings,
+          route_proofs: result.routeProofs,
+        });
+        for (const f of allFindings)
+          log.emit("finding.revalidated", {
+            attempt_id: run.attemptId,
+            severity: f.severity,
+            status: f.status,
+          });
+        evidences.push(
+          this.toEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified),
+        );
+      } finally {
+        this.recordReviewEvidenceCleanup(
+          store,
+          join(paths.reviewsDir, `${run.attemptId}-evidence-cleanup.yaml`),
+          run.attemptId,
+          candidateEvidenceDir,
+          candidateCwd,
+        );
       }
-      this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
-      const revalidated = await revalidateFindings(result.findings);
-      // The high-risk human gate must key off the ACTUAL cross-family verification
-      // (stream-observed route proofs), not the preliminary routeVerified (families
-      // merely configured). Otherwise a high-risk diff skips its NEEDS_HUMAN gate
-      // when two families were configured but their route proofs went unverified.
-      // Mirrors the convergence path (actualReviewVerified).
-      const candidateReviewVerified = reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified;
-      // Typed policy gate (risk + protected paths) merges with reviewer findings.
-      const policy = this.policyFindings(run, candidateReviewVerified, contract.constraints.protected_paths);
-      const allFindings = [...policy.findings, ...revalidated];
-      const inconclusive = allFindings.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
-      const noBlockers = !allFindings.some((f) => isBlocking(f));
-      const reviewClean = result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
-      store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
-        attempt_id: run.attemptId,
-        review_verified: candidateReviewVerified,
-        cross_family_healthy: result.crossFamilyHealthy,
-        cross_family_verified: result.crossFamilyVerified,
-        healthy_providers: result.healthyProviders,
-        verified_providers: result.distinctProviders,
-        reviewer_requests: result.reviewerRequests,
-        risk: policy.risk,
-        findings: allFindings,
-        route_proofs: result.routeProofs,
-      });
-      for (const f of allFindings) log.emit("finding.revalidated", { attempt_id: run.attemptId, severity: f.severity, status: f.status });
-      evidences.push(this.toEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified));
     }
     return evidences;
   }
@@ -2402,16 +3389,56 @@ export class Orchestrator {
     if (result.ok) return dir;
     const missing = result.missing.length ? `missing=${result.missing.join(",")}` : "";
     const empty = result.empty.length ? `empty=${result.empty.join(",")}` : "";
-    throw new Error(`review evidence preflight failed for ${dir}: ${[missing, empty].filter(Boolean).join(" ")}`);
+    throw new Error(
+      `review evidence preflight failed for ${dir}: ${[missing, empty].filter(Boolean).join(" ")}`,
+    );
   }
 
-  private cleanupReviewEvidenceDir(candidateEvidenceDir: string, candidateCwd: string): void {
+  private cleanupReviewEvidenceDir(
+    candidateEvidenceDir: string,
+    candidateCwd: string,
+  ): Record<string, string> | null {
     if (candidateEvidenceDir === join(candidateCwd, REVIEW_EVIDENCE_DIRNAME)) {
-      rmSync(candidateEvidenceDir, { recursive: true, force: true });
+      try {
+        rmSync(candidateEvidenceDir, { recursive: true, force: true });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          review_evidence_cleanup: "failed",
+          candidate_evidence_dir: candidateEvidenceDir,
+          error: redactSecrets(detail),
+        };
+      }
+    }
+    return null;
+  }
+
+  private recordReviewEvidenceCleanup(
+    store: ArtifactStore,
+    metadataPath: string,
+    attemptId: string,
+    candidateEvidenceDir: string,
+    candidateCwd: string,
+  ): void {
+    const cleanupMetadata = this.cleanupReviewEvidenceDir(candidateEvidenceDir, candidateCwd);
+    if (!cleanupMetadata) return;
+    try {
+      store.writeYaml(metadataPath, {
+        ...cleanupMetadata,
+        attempt_id: attemptId,
+      });
+    } catch {
+      // Cleanup telemetry must not mask the review/revalidation failure that
+      // triggered best-effort cleanup.
     }
   }
 
-  private async runConvergence(input: RunInput, mode: ModeKind, maxAttempts: number | null): Promise<OrchestratorResult> {
+  private async runConvergence(
+    input: RunInput,
+    mode: ModeKind,
+    maxAttempts: number | null,
+    preflightReviewers?: ReviewerSpec[],
+  ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     // Contract validation BEFORE the run is announced (see runRace).
@@ -2435,28 +3462,67 @@ export class Orchestrator {
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
     if (!input.inPlace) {
-      const gitPreconditionError = await this.ensureWriteModeGitBoundary(execRoot, log, store, paths, runId, mode);
+      const gitPreconditionError = await this.ensureWriteModeGitBoundary(
+        execRoot,
+        log,
+        store,
+        paths,
+        runId,
+        mode,
+      );
       if (gitPreconditionError) {
-        return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: gitPreconditionError, candidates: [] };
+        return {
+          runId,
+          taskId,
+          mode,
+          status: "failed",
+          winner: null,
+          runDir: paths.root,
+          summary: gitPreconditionError,
+          candidates: [],
+        };
       }
     }
 
     const reviewDir = join(paths.root, "review-evidence");
-    writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(per-attempt)\n" });
-    const reviewers = await this.resolveReviewers(input.repoRoot);
+    writeEvidencePacket(reviewDir, {
+      userIntent: redactSecrets(input.prompt),
+      diff: "(per-attempt)\n",
+      tests: this.testsEvidence(contract),
+    });
+    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
     const reviewVerified = this.routeVerified(reviewers);
 
     // One envelope carried forward across attempts so the harness can repair its own work.
     let adapterPool: RoutedAdapter[];
     try {
-      adapterPool = await this.resolveCandidateAdapters({ ...input, n: undefined }, this.candidateIntent(input));
+      adapterPool = await this.resolveCandidateAdapters(
+        { ...input, n: undefined },
+        this.candidateIntent(input),
+      );
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "routing", category: "harness_unavailable", safeMessage: message, runDir: paths.root });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Routing Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "routing",
+        category: "harness_unavailable",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "routing", error: message, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "routing",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -2475,12 +3541,41 @@ export class Orchestrator {
       const message =
         `convergence requires a cross-family clean review (>=2 healthy reviewer provider families); found ${new Set(reviewers.map((r) => r.providerFamily)).size}. ` +
         "Configure reviewers for a second provider family, or run with a convergence predicate that does not require cross-family review.";
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Convergence Preflight Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "review", category: "policy", safeMessage: message, runDir: paths.root, nextActions: ["Configure a second reviewer family", "Check harness doctor for reviewer readiness"] });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Convergence Preflight Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "review",
+        category: "policy",
+        safeMessage: message,
+        runDir: paths.root,
+        nextActions: [
+          "Configure a second reviewer family",
+          "Check harness doctor for reviewer readiness",
+        ],
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "review", error: message, failure_ref: "final/failure.yaml" });
-      return { runId, taskId, mode, status: "failed", winner: null, runDir: paths.root, summary: message, candidates: [] };
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "review",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
+      return {
+        runId,
+        taskId,
+        mode,
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: [],
+      };
     }
     let adapterIdx = 0;
     let routed = adapterPool[0] as RoutedAdapter;
@@ -2511,7 +3606,11 @@ export class Orchestrator {
     // failure signature after every available harness has tried it).
     const stallThreshold = input.untilClean === true ? 4 : 2;
     const allCooledDown = () => adapterPool.every((a) => ledger.cooldownActive(a.adapter.id));
-    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    const attemptTelemetries: {
+      attemptId: string;
+      harnessId: string;
+      telemetry: AttemptTelemetry;
+    }[] = [];
     const harnessLedgers = new Map<string, BudgetLedger>();
     let lastDiffStable = true;
     let reviewSpendEstimated = false;
@@ -2557,19 +3656,34 @@ export class Orchestrator {
         const fingerprint = promptFingerprint(prompt);
         ledger.recordPrompt(fingerprint);
         if (ledger.isLoop(fingerprint)) {
-          log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "loop_detected", fingerprint });
+          log.emit("budget.observation", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            kind: "loop_detected",
+            fingerprint,
+          });
           exhausted = true;
           break;
         }
 
         // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
-        const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({ taskId, attemptId, intent: "repair", harnessId: adapter.id });
+        const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({
+          taskId,
+          attemptId,
+          intent: "repair",
+          harnessId: adapter.id,
+        });
         if (!lease.granted) {
           exhausted = true;
           break;
         }
 
-        const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, input.model, input.effort);
+        const knobs = this.routeSpecKnobs(
+          routed,
+          contract.external_context.policy,
+          input.model,
+          input.effort,
+        );
         const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
         let run: CandidateRun;
         try {
@@ -2610,7 +3724,10 @@ export class Orchestrator {
             },
             input,
           );
-          this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", run.cost);
+          this.harnessLedger(harnessLedgers, ledger, routed).settle(
+            lease.lease?.lease_id ?? "",
+            run.cost,
+          );
           log.emit("harness.completed", {
             harness_id: adapter.id,
             attempt_id: attemptId,
@@ -2622,7 +3739,12 @@ export class Orchestrator {
           // Envelope/setup failure before the stream; stream errors are absorbed
           // inside runCandidateInEnvelope with their real accumulated cost.
           this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", 0);
-          log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "failed", error: safeErrorMessage(err) });
+          log.emit("harness.completed", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            status: "failed",
+            error: safeErrorMessage(err),
+          });
           run = {
             attemptId,
             harnessId: adapter.id,
@@ -2633,7 +3755,11 @@ export class Orchestrator {
             errored: true,
             costEstimated: false,
             errors: [safeErrorMessage(err)],
-            telemetry: createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required, effectiveWeb),
+            telemetry: createAttemptTelemetry(
+              knobs.webPolicy,
+              contract.external_context.web_required,
+              effectiveWeb,
+            ),
           };
         }
         lastRun = run;
@@ -2655,71 +3781,153 @@ export class Orchestrator {
         try {
           conv = await (async () => {
             const candidateReviewCwd = run.reviewCwd ?? input.repoRoot;
-            const candidateReviewEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateReviewCwd);
-            // Reviewer panels spend real money in convergence too: reserve before,
-            // settle the observed cost, and surface it as a budget observation
-            // (parity with the race path's reviewRuns metering).
-            const reviewLease = reviewers.length > 0 ? ledger.reserve({ taskId, attemptId, intent: "review", harnessId: "review-panel" }) : null;
-            const reviewResult =
-              reviewers.length > 0 && (reviewLease?.granted ?? false)
-                ? await this.reviewScoped({
-                    candidateLabel: `Attempt ${attempt}`,
-                    diff: run.diff,
-                    evidenceDir: candidateReviewEvidenceDir,
-                    artifactsDir: join(paths.reviewsDir, `${attemptId}-reviewers`),
-                    cwd: candidateReviewCwd,
-                    reviewers,
-                    envInheritance: this.envInheritance(input.repoRoot),
-                    onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-                  })
-                : { findings: [], routeProofs: [], reviewerRequests: [], crossFamilyHealthy: false, healthyProviders: [], crossFamilyVerified: false, distinctProviders: [], reviewSpendUsd: 0, reviewSpendEstimated: false };
-            if (reviewLease?.granted) {
-              ledger.settle(reviewLease.lease?.lease_id ?? "", reviewResult.reviewSpendUsd ?? 0);
-              if ((reviewResult.reviewSpendUsd ?? 0) > 0) {
-                log.emit("budget.observation", { harness_id: "review-panel", attempt_id: attemptId, kind: "spend", usd: reviewResult.reviewSpendUsd, estimated: reviewResult.reviewSpendEstimated === true });
-                if (reviewResult.reviewSpendEstimated === true) reviewSpendEstimated = true;
+            const candidateReviewEvidenceDir = this.prepareReviewEvidenceDir(
+              reviewDir,
+              candidateReviewCwd,
+            );
+            try {
+              this.writeTestsEvidence(candidateReviewEvidenceDir, contract, run.gates);
+              // Reviewer panels spend real money in convergence too: reserve before,
+              // settle the observed cost, and surface it as a budget observation
+              // (parity with the race path's reviewRuns metering).
+              const reviewLease =
+                reviewers.length > 0
+                  ? ledger.reserve({
+                      taskId,
+                      attemptId,
+                      intent: "review",
+                      harnessId: "review-panel",
+                    })
+                  : null;
+              const reviewResult =
+                reviewers.length > 0 && (reviewLease?.granted ?? false)
+                  ? await this.reviewScoped({
+                      candidateLabel: `Attempt ${attempt}`,
+                      diff: run.diff,
+                      evidenceDir: candidateReviewEvidenceDir,
+                      artifactsDir: join(paths.reviewsDir, `${attemptId}-reviewers`),
+                      cwd: candidateReviewCwd,
+                      reviewers,
+                      envInheritance: this.envInheritance(input.repoRoot),
+                      signal: input.signal,
+                      onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+                    })
+                  : {
+                      findings: [],
+                      routeProofs: [],
+                      reviewerRequests: [],
+                      crossFamilyHealthy: false,
+                      healthyProviders: [],
+                      crossFamilyVerified: false,
+                      distinctProviders: [],
+                      reviewSpendUsd: 0,
+                      reviewSpendEstimated: false,
+                    };
+              if (reviewLease?.granted) {
+                ledger.settle(reviewLease.lease?.lease_id ?? "", reviewResult.reviewSpendUsd ?? 0);
+                if ((reviewResult.reviewSpendUsd ?? 0) > 0) {
+                  log.emit("budget.observation", {
+                    harness_id: "review-panel",
+                    attempt_id: attemptId,
+                    kind: "spend",
+                    usd: reviewResult.reviewSpendUsd,
+                    estimated: reviewResult.reviewSpendEstimated === true,
+                  });
+                  if (reviewResult.reviewSpendEstimated === true) reviewSpendEstimated = true;
+                }
+              } else if (reviewLease && !reviewLease.granted) {
+                log.emit("budget.lease.created", {
+                  granted: false,
+                  reason: reviewLease.reason,
+                  attempt_id: attemptId,
+                  harness_id: "review-panel",
+                });
               }
-            } else if (reviewLease && !reviewLease.granted) {
-              log.emit("budget.lease.created", { granted: false, reason: reviewLease.reason, attempt_id: attemptId, harness_id: "review-panel" });
+              actualReviewVerified =
+                reviewVerified &&
+                reviewResult.crossFamilyHealthy &&
+                reviewResult.crossFamilyVerified;
+              const revalidated = await revalidateFindings(reviewResult.findings, {
+                candidateRoot: candidateReviewCwd,
+                evidenceDir: candidateReviewEvidenceDir,
+              });
+              // Typed policy gate (risk + protected paths) merges with reviewer findings.
+              const policy = this.policyFindings(
+                run,
+                actualReviewVerified,
+                contract.constraints.protected_paths,
+                contract.constraints.auto_protected_paths,
+                contract.constraints.protected_path_approvals,
+              );
+              const allFindings = [...policy.findings, ...revalidated];
+              lastFindings = allFindings;
+              store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
+                attempt_id: attemptId,
+                review_verified: actualReviewVerified,
+                cross_family_healthy: reviewResult.crossFamilyHealthy,
+                cross_family_verified: reviewResult.crossFamilyVerified,
+                healthy_providers: reviewResult.healthyProviders,
+                verified_providers: reviewResult.distinctProviders,
+                reviewer_requests: reviewResult.reviewerRequests,
+                risk: policy.risk,
+                findings: allFindings,
+                route_proofs: reviewResult.routeProofs,
+              });
+              const inconclusive = allFindings.some(
+                (f) =>
+                  f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence",
+              );
+              const finalReviewClean =
+                reviewResult.crossFamilyHealthy &&
+                reviewResult.crossFamilyVerified &&
+                !inconclusive &&
+                !allFindings.some((f) => isBlocking(f));
+              lastFinalReviewClean = finalReviewClean;
+
+              // Measure diff stability instead of asserting it: the tree must not have
+              // changed between the candidate diff capture and the end of review.
+              const postReviewDiff = await wsm.diff(envelope);
+              const diffStableAfterReview = sha256(postReviewDiff) === sha256(run.diff);
+              lastDiffStable = diffStableAfterReview;
+
+              const evaluated = evaluateConvergence({
+                predicate: contract.convergence,
+                gates: run.errored
+                  ? [
+                      ...run.gates,
+                      {
+                        id: "harness",
+                        command: "harness",
+                        exit_code: 1,
+                        status: "failed",
+                        duration_ms: 0,
+                        required: true,
+                        stdout_tail: null,
+                        stderr_tail: null,
+                        output_truncated: false,
+                      },
+                    ]
+                  : run.gates,
+                findings: allFindings,
+                finalReviewClean,
+                diffStableAfterReview,
+              });
+              log.emit("finding.revalidated", {
+                attempt_id: attemptId,
+                converged: evaluated.converged,
+                reasons: evaluated.reasons,
+                diff_stable_after_review: diffStableAfterReview,
+              });
+              return evaluated;
+            } finally {
+              this.recordReviewEvidenceCleanup(
+                store,
+                join(paths.reviewsDir, `${attemptId}-evidence-cleanup.yaml`),
+                attemptId,
+                candidateReviewEvidenceDir,
+                candidateReviewCwd,
+              );
             }
-            this.cleanupReviewEvidenceDir(candidateReviewEvidenceDir, candidateReviewCwd);
-            actualReviewVerified = reviewVerified && reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified;
-            const revalidated = await revalidateFindings(reviewResult.findings);
-            // Typed policy gate (risk + protected paths) merges with reviewer findings.
-            const policy = this.policyFindings(run, actualReviewVerified, contract.constraints.protected_paths);
-            const allFindings = [...policy.findings, ...revalidated];
-            lastFindings = allFindings;
-            store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
-              attempt_id: attemptId,
-              review_verified: actualReviewVerified,
-              cross_family_healthy: reviewResult.crossFamilyHealthy,
-              cross_family_verified: reviewResult.crossFamilyVerified,
-              healthy_providers: reviewResult.healthyProviders,
-              verified_providers: reviewResult.distinctProviders,
-              reviewer_requests: reviewResult.reviewerRequests,
-              risk: policy.risk,
-              findings: allFindings,
-              route_proofs: reviewResult.routeProofs,
-            });
-            const inconclusive = allFindings.some((f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence");
-            const finalReviewClean = reviewResult.crossFamilyHealthy && reviewResult.crossFamilyVerified && !inconclusive && !allFindings.some((f) => isBlocking(f));
-            lastFinalReviewClean = finalReviewClean;
-
-            // Measure diff stability instead of asserting it: the tree must not have
-            // changed between the candidate diff capture and the end of review.
-            const postReviewDiff = await wsm.diff(envelope);
-            const diffStableAfterReview = sha256(postReviewDiff) === sha256(run.diff);
-            lastDiffStable = diffStableAfterReview;
-
-            const evaluated = evaluateConvergence({
-              predicate: contract.convergence,
-              gates: run.errored ? [...run.gates, { id: "harness", command: "harness", exit_code: 1, status: "failed", duration_ms: 0, required: true }] : run.gates,
-              findings: allFindings,
-              finalReviewClean,
-              diffStableAfterReview,
-            });
-            log.emit("finding.revalidated", { attempt_id: attemptId, converged: evaluated.converged, reasons: evaluated.reasons, diff_stable_after_review: diffStableAfterReview });
-            return evaluated;
           })();
         } catch (err) {
           return this.failTerminally(log, store, paths, runId, taskId, mode, "review", err);
@@ -2740,9 +3948,16 @@ export class Orchestrator {
         }
         if (sameFailingGateDiffs >= 2) {
           stuckNoProgress = true;
-          const failedGateIds = run.gates.filter((g) => g.required && g.status !== "passed").map((g) => g.id);
+          const failedGateIds = run.gates
+            .filter((g) => g.required && g.status !== "passed")
+            .map((g) => g.id);
           stuckNoProgressReason = `same candidate diff (${diffHash}) produced ${sameFailingGateDiffs} consecutive failing required gate round(s): ${failedGateIds.join(", ") || "unknown gate"}`;
-          log.emit("finding.revalidated", { attempt_id: attemptId, stuck_no_progress: true, diff_sha256: diffHash, failed_gates: failedGateIds });
+          log.emit("finding.revalidated", {
+            attempt_id: attemptId,
+            stuck_no_progress: true,
+            diff_sha256: diffHash,
+            failed_gates: failedGateIds,
+          });
           break;
         }
 
@@ -2771,7 +3986,11 @@ export class Orchestrator {
             adapterIdx = (adapterIdx + 1) % adapterPool.length;
             routed = adapterPool[adapterIdx] as RoutedAdapter;
             adapter = routed.adapter;
-            log.emit("route.fallback.started", { from_harness: lastRun?.harnessId ?? null, to_harness: adapter.id, reason: "stall" });
+            log.emit("route.fallback.started", {
+              from_harness: lastRun?.harnessId ?? null,
+              to_harness: adapter.id,
+              reason: "stall",
+            });
           } else {
             break; // tried every available harness on this failure and still stuck -> stop
           }
@@ -2787,15 +4006,26 @@ export class Orchestrator {
         ? "success"
         : stuckNoProgress
           ? "stuck_no_progress"
-        : exhausted
-          ? "exhausted"
-          : "not_converged";
+          : exhausted
+            ? "exhausted"
+            : "not_converged";
     let decision: ReturnType<typeof arbitrate>["decision"] | null = null;
     if (lastRun) {
-      const arb = arbitrate([this.toEvidence(lastRun, contract, lastFindings, lastFinalReviewClean, actualReviewVerified)], {
-        spendUsd: ledger.spend(),
-        estimatedSpend: lastRun.costEstimated || reviewSpendEstimated,
-      });
+      const arb = arbitrate(
+        [
+          this.toEvidence(
+            lastRun,
+            contract,
+            lastFindings,
+            lastFinalReviewClean,
+            actualReviewVerified,
+          ),
+        ],
+        {
+          spendUsd: ledger.spend(),
+          estimatedSpend: lastRun.costEstimated || reviewSpendEstimated,
+        },
+      );
       decision = arb.decision;
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
       if (converged && decision.status !== "not_converged") {
@@ -2807,7 +4037,16 @@ export class Orchestrator {
     // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
     const needsHuman = lastFindings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f));
     if (needsHuman && status !== "success" && status !== "cancelled") status = "blocked";
-    this.writeRunTelemetry(store, paths, contract, runId, taskId, mode, attemptTelemetries, lastRun?.attemptId ?? null);
+    this.writeRunTelemetry(
+      store,
+      paths,
+      contract,
+      runId,
+      taskId,
+      mode,
+      attemptTelemetries,
+      lastRun?.attemptId ?? null,
+    );
 
     // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
     if (lastRun) {
@@ -2821,7 +4060,11 @@ export class Orchestrator {
       const convAdoptable = status === "success" || status === "ungated";
       const convAdopted: boolean | null = input.inPlace === true && convHasDiff ? true : null;
       const convApplyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
-        convAdopted === true ? (convAdoptable ? "applied" : "applied_review_blocked") : "not_applied";
+        convAdopted === true
+          ? convAdoptable
+            ? "applied"
+            : "applied_review_blocked"
+          : "not_applied";
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: "patch",
@@ -2856,37 +4099,76 @@ export class Orchestrator {
     if (!converged) {
       writeFailure(store, paths, {
         phase: "convergence",
-        category: status === "exhausted" ? "budget" : status === "cancelled" ? "cancelled" : status === "blocked" ? "policy" : "internal",
-        safeMessage: status === "blocked"
-          ? `review escalated to a human decision after ${attempt} attempt(s)`
-          : status === "stuck_no_progress"
-            ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
-          : `${status} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
+        category:
+          status === "exhausted"
+            ? "budget"
+            : status === "cancelled"
+              ? "cancelled"
+              : status === "blocked"
+                ? "policy"
+                : "internal",
+        safeMessage:
+          status === "blocked"
+            ? `review escalated to a human decision after ${attempt} attempt(s)`
+            : status === "stuck_no_progress"
+              ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
+              : `${status} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
         runDir: paths.root,
-        nextActions: status === "cancelled"
-          ? ["Retry if cancellation was accidental"]
-          : status === "blocked"
-            ? ["Open the review queue", "Decide the NEEDS_HUMAN findings", "Re-run after the decision"]
-            : status === "stuck_no_progress"
-              ? ["Inspect the stable patch", "Inspect the failing gate output", "Fix the gate or provide a different repair instruction"]
-              : ["Open diagnostics", "Inspect latest patch and review findings", "Retry with more attempts or a narrower prompt"],
+        nextActions:
+          status === "cancelled"
+            ? ["Retry if cancellation was accidental"]
+            : status === "blocked"
+              ? [
+                  "Open the review queue",
+                  "Decide the NEEDS_HUMAN findings",
+                  "Re-run after the decision",
+                ]
+              : status === "stuck_no_progress"
+                ? [
+                    "Inspect the stable patch",
+                    "Inspect the failing gate output",
+                    "Fix the gate or provide a different repair instruction",
+                  ]
+                : [
+                    "Open diagnostics",
+                    "Inspect latest patch and review findings",
+                    "Retry with more attempts or a narrower prompt",
+                  ],
       });
       if (!lastRun) {
-        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n`);
-        log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+        store.writeText(
+          join(paths.finalDir, "summary.md"),
+          `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n`,
+        );
+        log.emit("output.ready", {
+          kind: "summary",
+          path: "final/summary.md",
+          state: "diagnostic",
+        });
       }
     }
 
     log.emit("work_product.emitted", { winner: lastRun?.attemptId ?? null });
-    const completed = converged || status === "no_op" || status === "ungated" || status === "review_not_run";
+    const completed =
+      converged || status === "no_op" || status === "ungated" || status === "review_not_run";
     if (completed) {
       log.emit("run.completed", { status, attempts: attempt });
     } else if (status === "blocked") {
-      log.emit("run.blocked", { status, attempts: attempt, phase: "review", failure_ref: "final/failure.yaml" });
+      log.emit("run.blocked", {
+        status,
+        attempts: attempt,
+        phase: "review",
+        failure_ref: "final/failure.yaml",
+      });
     } else {
-      log.emit("run.failed", { status, attempts: attempt, phase: "convergence", failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status,
+        attempts: attempt,
+        phase: "convergence",
+        failure_ref: "final/failure.yaml",
+      });
     }
     return {
       runId,
@@ -2895,8 +4177,12 @@ export class Orchestrator {
       status,
       winner: lastRun?.attemptId ?? null,
       runDir: paths.root,
-      summary: converged ? `converged in ${attempt} attempt(s)` : `${status} after ${attempt} attempt(s)`,
-      candidates: lastRun ? [{ attemptId: lastRun.attemptId, harnessId: lastRun.harnessId, status }] : [],
+      summary: converged
+        ? `converged in ${attempt} attempt(s)`
+        : `${status} after ${attempt} attempt(s)`,
+      candidates: lastRun
+        ? [{ attemptId: lastRun.attemptId, harnessId: lastRun.harnessId, status }]
+        : [],
       reviewVerified: actualReviewVerified,
     };
   }
@@ -2934,11 +4220,16 @@ export class Orchestrator {
    */
   private relayPriorPlansSection(plans: { id: string; text: string }[]): string {
     if (plans.length === 0) return "";
-    const blocks = plans.map((p) => `### Plan already proposed by ${p.id}\n${p.text.slice(0, 4000)}`).join("\n\n");
+    const blocks = plans
+      .map((p) => `### Plan already proposed by ${p.id}\n${p.text.slice(0, 4000)}`)
+      .join("\n\n");
     return `\n\n---\nOTHER HARNESSES HAVE ALREADY PROPOSED PLANS FOR THIS SAME TASK (below). Read them, then produce YOUR plan: build on what is solid, RECONCILE the differences, and EXPLICITLY call out where you disagree and why. Do not blindly repeat them — converge toward one aligned plan.\n\n${blocks}\n---\n`;
   }
 
-  private async runPlan(input: RunInput): Promise<OrchestratorResult> {
+  private async runPlan(
+    input: RunInput,
+    preflightReviewers?: ReviewerSpec[],
+  ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     // Plan runs get the same immutable contract truth as every other mode;
@@ -2954,17 +4245,34 @@ export class Orchestrator {
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
 
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "routing", category: "harness_unavailable", safeMessage: message, runDir: paths.root });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Routing Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "routing",
+        category: "harness_unavailable",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "routing", error: message, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "routing",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -2982,128 +4290,217 @@ export class Orchestrator {
       contextSection = await this.lazyContextSection(input, contract, store, paths, log);
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "context", category: "project", safeMessage: message, runDir: paths.root });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: context\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Context Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "context",
+        category: "project",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: context\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "context", error: message, failure_ref: "final/failure.yaml" });
-      return { runId, taskId, mode: "plan", status: "failed", winner: null, runDir: paths.root, summary: `context failed: ${message}`, candidates: [] };
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "context",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
+      return {
+        runId,
+        taskId,
+        mode: "plan",
+        status: "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: `context failed: ${message}`,
+        candidates: [],
+      };
     }
 
     const plans: { id: string; text: string }[] = [];
-    const planAttempts: { attemptId: string; harnessId: string; status: "success" | "failed" | "blocked"; error: string | null }[] = [];
-    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    const planAttempts: {
+      attemptId: string;
+      harnessId: string;
+      status: "success" | "failed" | "blocked";
+      error: string | null;
+    }[] = [];
+    const attemptTelemetries: {
+      attemptId: string;
+      harnessId: string;
+      telemetry: AttemptTelemetry;
+    }[] = [];
     // B10: scope the planners' HOME/config dirs so claude-code plan files (and any
     // native session state) stay inside the run's scoped home, never the
     // operator's real ~/.claude/plans. Disposed after the planners finish.
     const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     try {
-    for (const [idx, routed] of adapters.entries()) {
-      if (input.signal?.aborted) break;
-      const adapter = routed.adapter;
-      const attemptId = `p${String(idx + 1).padStart(2, "0")}`;
-      const lease = ledger.reserve({ taskId, attemptId, intent: "plan", harnessId: adapter.id });
-      if (!lease.granted) {
-        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
-        break;
-      }
-      const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, input.model, input.effort);
-      const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
-      const spec = HarnessRunSpec.parse({
-        session_id: newId("ses"),
-        intent: "plan",
-        prompt: this.planPrompt(input.prompt) + contextSection + this.relayPriorPlansSection(plans),
-        cwd: this.execRootOf(input),
-        access: "readonly",
-        // Planners must SEE any image/file the user attached (e.g. "plan a fix for
-        // what's in this screenshot"), not just agent/race runs.
-        attachments: input.attachments ?? [],
-        ...this.sessionSpecFields(input, adapter.id),
-        external_context_policy: knobs.webPolicy,
-        tool_permission_policy: {
-          web: knobs.webPolicy,
-          allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
-          deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
-        },
-        model_hint: knobs.model,
-        effort_hint: knobs.effort,
-        max_turns: knobs.maxTurns,
-        env_inheritance: this.envInheritance(input.repoRoot),
-        env: roHome.env,
-      });
-      if (input.signal) spec.extra["abortSignal"] = input.signal;
-      const planInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
-      if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
-      const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
-      const parts: string[] = [];
-      const telemetry = createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live", effectiveWeb);
-      const onAbort = () => {
-        void adapter.cancel?.(spec.session_id)?.catch(() => {});
-      };
-      if (input.signal) {
-        if (input.signal.aborted) onAbort();
-        else input.signal.addEventListener("abort", onAbort, { once: true });
-      }
-      let cost = 0;
-      let harnessError: string | null = null;
-      try {
-        log.emit("harness.started", {
+      for (const [idx, routed] of adapters.entries()) {
+        if (input.signal?.aborted) break;
+        const adapter = routed.adapter;
+        const attemptId = `p${String(idx + 1).padStart(2, "0")}`;
+        const lease = ledger.reserve({ taskId, attemptId, intent: "plan", harnessId: adapter.id });
+        if (!lease.granted) {
+          log.emit("budget.lease.created", {
+            granted: false,
+            reason: lease.reason,
+            attempt_id: attemptId,
+            harness_id: adapter.id,
+          });
+          break;
+        }
+        const knobs = this.routeSpecKnobs(
+          routed,
+          contract.external_context.policy,
+          input.model,
+          input.effort,
+        );
+        const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
+        const spec = HarnessRunSpec.parse({
+          session_id: newId("ses"),
+          intent: "plan",
+          prompt:
+            this.planPrompt(input.prompt) + contextSection + this.relayPriorPlansSection(plans),
+          cwd: this.execRootOf(input),
+          access: "readonly",
+          // Planners must SEE any image/file the user attached (e.g. "plan a fix for
+          // what's in this screenshot"), not just agent/race runs.
+          attachments: input.attachments ?? [],
+          ...this.sessionSpecFields(input, adapter.id),
+          external_context_policy: knobs.webPolicy,
+          tool_permission_policy: {
+            web: knobs.webPolicy,
+            allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
+            deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
+          },
+          model_hint: knobs.model,
+          effort_hint: knobs.effort,
+          max_turns: knobs.maxTurns,
+          env_inheritance: this.envInheritance(input.repoRoot),
+          env: roHome.env,
+        });
+        if (input.signal) spec.extra["abortSignal"] = input.signal;
+        const planInteraction = this.interactionChannelFor(
+          input,
+          log,
+          runId,
+          taskId,
+          attemptId,
+          adapter.id,
+        );
+        if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
+        const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
+        const parts: string[] = [];
+        const telemetry = createAttemptTelemetry(
+          knobs.webPolicy,
+          contract.external_context.web_required ||
+            knobs.webPolicy === "cached" ||
+            knobs.webPolicy === "live",
+          effectiveWeb,
+        );
+        const onAbort = () => {
+          void adapter.cancel?.(spec.session_id)?.catch(() => {});
+        };
+        if (input.signal) {
+          if (input.signal.aborted) onAbort();
+          else input.signal.addEventListener("abort", onAbort, { once: true });
+        }
+        let cost = 0;
+        let harnessError: string | null = null;
+        try {
+          log.emit("harness.started", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            external_context_policy: knobs.webPolicy,
+            ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+          });
+          if (!input.signal?.aborted) {
+            for await (const ev of adapter.run(spec)) {
+              if (input.signal?.aborted) break;
+              const safeEv = redactHarnessEvent(ev);
+              safeInvoke(input.onHarnessEvent, safeEv);
+              // NOT observed for resume: this read-only/plan attempt runs in a
+              // DISPOSABLE roHome (disposed below), so its native session id is
+              // unreachable afterwards. Recording it would poison the thread resume
+              // map with dead ids — the read-side mirror of the agent path's
+              // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
+              this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+              appendLine(attemptEventsPath, JSON.stringify(safeEv));
+              observeAttemptTelemetry(telemetry, safeEv);
+              if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+                cost += safeEv.usage.cost_usd;
+                log.emit("budget.observation", {
+                  harness_id: adapter.id,
+                  attempt_id: attemptId,
+                  kind: "spend",
+                  usd: safeEv.usage.cost_usd,
+                  estimated: safeEv.usage.estimated === true,
+                });
+              }
+              if (
+                safeEv.type === "message" &&
+                safeEv.text &&
+                safeEv.payload?.["auth_switched"] !== true
+              ) {
+                pushUniqueText(parts, safeEv.text);
+              }
+              if (safeEv.type === "error")
+                harnessError = safeEv.error
+                  ? redactSecrets(safeEv.error)
+                  : "harness emitted an error";
+            }
+          }
+        } catch (err) {
+          harnessError = safeErrorMessage(err);
+        } finally {
+          input.signal?.removeEventListener("abort", onAbort);
+          ledger.settle(lease.lease?.lease_id ?? "", cost);
+        }
+        attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
+        const unrecovered = unrecoveredToolErrors(telemetry);
+        const webBlocked = webUnsatisfied(telemetry);
+        if (!harnessError && webBlocked) {
+          harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
+        }
+        if (!harnessError && unrecovered.length > 0) {
+          const first = unrecovered[0] as ToolErrorRecord;
+          harnessError = `${first.tool} failed without recovery: ${first.summary}`;
+        }
+        if (harnessError) {
+          // One failed planner does not abort a multi-harness plan; the run fails
+          // only when EVERY planner fails (parity with explore).
+          log.emit("harness.completed", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            status: webBlocked ? "blocked" : "failed",
+            error: harnessError,
+            ...telemetrySummary(telemetry),
+          });
+          planAttempts.push({
+            attemptId,
+            harnessId: adapter.id,
+            status: webBlocked ? "blocked" : "failed",
+            error: harnessError,
+          });
+          continue;
+        }
+        const text = parts.join("\n").trim() || "(no output)";
+        log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: attemptId,
-          external_context_policy: knobs.webPolicy,
-          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+          status: "success",
+          ...telemetrySummary(telemetry),
         });
-        if (!input.signal?.aborted) {
-          for await (const ev of adapter.run(spec)) {
-            if (input.signal?.aborted) break;
-            const safeEv = redactHarnessEvent(ev);
-            safeInvoke(input.onHarnessEvent, safeEv);
-            // NOT observed for resume: this read-only/plan attempt runs in a
-            // DISPOSABLE roHome (disposed below), so its native session id is
-            // unreachable afterwards. Recording it would poison the thread resume
-            // map with dead ids — the read-side mirror of the agent path's
-            // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
-            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-            log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
-            appendLine(attemptEventsPath, JSON.stringify(safeEv));
-            observeAttemptTelemetry(telemetry, safeEv);
-            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-              cost += safeEv.usage.cost_usd;
-              log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
-            }
-            if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
-            if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
-          }
-        }
-      } catch (err) {
-        harnessError = safeErrorMessage(err);
-      } finally {
-        input.signal?.removeEventListener("abort", onAbort);
-        ledger.settle(lease.lease?.lease_id ?? "", cost);
+        planAttempts.push({ attemptId, harnessId: adapter.id, status: "success", error: null });
+        plans.push({ id: adapter.id, text });
+        store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
       }
-      attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
-      const unrecovered = unrecoveredToolErrors(telemetry);
-      const webBlocked = webUnsatisfied(telemetry);
-      if (!harnessError && webBlocked) {
-        harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
-      }
-      if (!harnessError && unrecovered.length > 0) {
-        const first = unrecovered[0] as ToolErrorRecord;
-        harnessError = `${first.tool} failed without recovery: ${first.summary}`;
-      }
-      if (harnessError) {
-        // One failed planner does not abort a multi-harness plan; the run fails
-        // only when EVERY planner fails (parity with explore).
-        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: webBlocked ? "blocked" : "failed", error: harnessError, ...telemetrySummary(telemetry) });
-        planAttempts.push({ attemptId, harnessId: adapter.id, status: webBlocked ? "blocked" : "failed", error: harnessError });
-        continue;
-      }
-      const text = parts.join("\n").trim() || "(no output)";
-      log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "success", ...telemetrySummary(telemetry) });
-      planAttempts.push({ attemptId, harnessId: adapter.id, status: "success", error: null });
-      plans.push({ id: adapter.id, text });
-      store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
-    }
     } finally {
       // Planners done (or threw) — always reclaim the scoped home (it may hold seeded creds).
       roHome.dispose();
@@ -3116,15 +4513,34 @@ export class Orchestrator {
         taskId,
         "plan",
         paths.root,
-        planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: "cancelled" })),
+        planAttempts.map((p) => ({
+          attemptId: p.attemptId,
+          harnessId: p.harnessId,
+          status: p.status,
+        })),
       );
     }
 
     if (plans.length === 0) {
       const blocked = planAttempts.some((p) => p.status === "blocked");
-      const message = planAttempts.map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`).join("\n") || "all planners failed";
-      this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${message}\n`);
+      const message =
+        planAttempts
+          .map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`)
+          .join("\n") || "all planners failed";
+      this.writeRunTelemetry(
+        store,
+        paths,
+        contract,
+        runId,
+        taskId,
+        "plan",
+        attemptTelemetries,
+        null,
+      );
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Harness Error\n\n${message}\n`,
+      );
       writeFailure(store, paths, {
         phase: "harness",
         category: blocked ? "policy" : "harness_error",
@@ -3133,10 +4549,25 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (plan)\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`);
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (plan)\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      if (blocked) log.emit("run.blocked", { status: "blocked", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
-      else log.emit("run.failed", { status: "failed", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
+      if (blocked)
+        log.emit("run.blocked", {
+          status: "blocked",
+          phase: "harness",
+          error: message,
+          failure_ref: "final/failure.yaml",
+        });
+      else
+        log.emit("run.failed", {
+          status: "failed",
+          phase: "harness",
+          error: message,
+          failure_ref: "final/failure.yaml",
+        });
       return {
         runId,
         taskId,
@@ -3145,19 +4576,31 @@ export class Orchestrator {
         winner: null,
         runDir: paths.root,
         summary: message,
-        candidates: planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: p.status })),
+        candidates: planAttempts.map((p) => ({
+          attemptId: p.attemptId,
+          harnessId: p.harnessId,
+          status: p.status,
+        })),
       };
     }
 
-    const reviewers = await this.resolveReviewers(input.repoRoot);
     let ambiguities: ReviewFinding[] = [];
     let reviewFindings: ReviewFinding[] = [];
     if (reviewers.length > 0 && plans.length > 0) {
       const reviewDir = join(paths.root, "review-evidence");
-      writeEvidencePacket(reviewDir, { userIntent: redactSecrets(input.prompt), diff: "(plan review — no code diff)\n" });
+      writeEvidencePacket(reviewDir, {
+        userIntent: redactSecrets(input.prompt),
+        diff: "(plan review — no code diff)\n",
+        tests: this.testsEvidence(contract),
+      });
       // Reserve BEFORE spending: a hard budget tier must stop the paid plan
       // review from starting, not account for it after the fact.
-      const lease = ledger.reserve({ taskId, attemptId: "plan-review", intent: "review", harnessId: "review-panel" });
+      const lease = ledger.reserve({
+        taskId,
+        attemptId: "plan-review",
+        intent: "review",
+        harnessId: "review-panel",
+      });
       if (lease.granted) {
         const res = await this.reviewScoped({
           candidateLabel: "Plan",
@@ -3167,18 +4610,53 @@ export class Orchestrator {
           cwd: this.execRootOf(input),
           reviewers,
           envInheritance: this.envInheritance(input.repoRoot),
+          signal: input.signal,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });
-        reviewFindings = res.findings;
-        ambiguities = res.findings.filter((f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN");
-        store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), { findings: res.findings, route_proofs: res.routeProofs, reviewer_requests: res.reviewerRequests });
+        reviewFindings = await revalidateFindings(res.findings, {
+          candidateRoot: this.execRootOf(input),
+          evidenceDir: reviewDir,
+        });
+        ambiguities = reviewFindings.filter(
+          (f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN",
+        );
+        store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), {
+          findings: reviewFindings,
+          route_proofs: res.routeProofs,
+          reviewer_requests: res.reviewerRequests,
+        });
         ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd ?? 0);
         if ((res.reviewSpendUsd ?? 0) > 0) {
-          log.emit("budget.observation", { harness_id: "review-panel", kind: "spend", usd: res.reviewSpendUsd, estimated: res.reviewSpendEstimated });
+          log.emit("budget.observation", {
+            harness_id: "review-panel",
+            kind: "spend",
+            usd: res.reviewSpendUsd,
+            estimated: res.reviewSpendEstimated,
+          });
         }
       } else {
-        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: "plan-review", harness_id: "review-panel" });
+        log.emit("budget.lease.created", {
+          granted: false,
+          reason: lease.reason,
+          attempt_id: "plan-review",
+          harness_id: "review-panel",
+        });
       }
+    }
+
+    if (input.signal?.aborted) {
+      return this.cancelledResult(
+        log,
+        runId,
+        taskId,
+        "plan",
+        paths.root,
+        planAttempts.map((p) => ({
+          attemptId: p.attemptId,
+          harnessId: p.harnessId,
+          status: p.status,
+        })),
+      );
     }
 
     const failedPlanners = planAttempts.filter((p) => p.status !== "success");
@@ -3186,7 +4664,11 @@ export class Orchestrator {
     // requested feature is not delivered" is visible on the plan itself — not
     // silently filtered down to spec_gap/NEEDS_HUMAN the way v0.9 hid it.
     const blockingFindings = reviewFindings.filter((f) => isBlocking(f));
-    const sevMark: Record<string, string> = { BLOCK: "🔴 BLOCK", FIX_FIRST: "🟠 FIX_FIRST", NEEDS_HUMAN: "🟠 NEEDS_HUMAN" };
+    const sevMark: Record<string, string> = {
+      BLOCK: "🔴 BLOCK",
+      FIX_FIRST: "🟠 FIX_FIRST",
+      NEEDS_HUMAN: "🟠 NEEDS_HUMAN",
+    };
     const planDoc = [
       `# Plan`,
       "",
@@ -3196,11 +4678,25 @@ export class Orchestrator {
       `## Plan${plans.length > 1 ? "s" : ""} (${plans.length}/${planAttempts.length} planner${planAttempts.length === 1 ? "" : "s"})`,
       ...plans.map((p) => `\n### Plan — ${p.id}\n${redactSecrets(p.text)}`),
       ...(reviewFindings.length > 0
-        ? ["", "## Review findings", ...reviewFindings.map((f) => `- ${sevMark[f.severity] ?? f.severity}: ${redactSecrets(f.claim)}`)]
+        ? [
+            "",
+            "## Review findings",
+            ...reviewFindings.map(
+              (f) => `- ${sevMark[f.severity] ?? f.severity}: ${redactSecrets(f.claim)}`,
+            ),
+          ]
         : []),
-      ...(ambiguities.length > 0 ? ["", "## Open questions", ...ambiguities.map((a) => `- ${redactSecrets(a.claim)}`)] : []),
+      ...(ambiguities.length > 0
+        ? ["", "## Open questions", ...ambiguities.map((a) => `- ${redactSecrets(a.claim)}`)]
+        : []),
       ...(failedPlanners.length > 0
-        ? ["", "## Planner omissions", ...failedPlanners.map((p) => `- ${p.attemptId} / ${p.harnessId} ${p.status}: ${p.error}`)]
+        ? [
+            "",
+            "## Planner omissions",
+            ...failedPlanners.map(
+              (p) => `- ${p.attemptId} / ${p.harnessId} ${p.status}: ${p.error}`,
+            ),
+          ]
         : []),
       "",
     ].join("\n");
@@ -3227,7 +4723,16 @@ export class Orchestrator {
       join(paths.finalDir, "summary.md"),
       `# Run ${runId} (plan)\n\n- Status: success (plan only — no files changed)\n- Planners: ${plans.length}/${planAttempts.length} succeeded\n- Plan: final/plan.md\n- Review blockers: ${blockingFindings.length}\n- Open questions: ${ambiguities.length}\n${failedPlanners.length > 0 ? `- Omissions: ${failedPlanners.map((p) => `${p.harnessId} ${p.status}`).join(", ")}\n` : ""}`,
     );
-    this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, planAttempts.find((p) => p.status === "success")?.attemptId ?? null);
+    this.writeRunTelemetry(
+      store,
+      paths,
+      contract,
+      runId,
+      taskId,
+      "plan",
+      attemptTelemetries,
+      planAttempts.find((p) => p.status === "success")?.attemptId ?? null,
+    );
     log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
     log.emit("run.completed", { status: "success" });
 
@@ -3239,7 +4744,11 @@ export class Orchestrator {
       winner: null,
       runDir: paths.root,
       summary: `Plan from ${plans.length} planner(s); ${blockingFindings.length} blocker(s), ${ambiguities.length} open question(s).`,
-      candidates: planAttempts.map((p) => ({ attemptId: p.attemptId, harnessId: p.harnessId, status: p.status })),
+      candidates: planAttempts.map((p) => ({
+        attemptId: p.attemptId,
+        harnessId: p.harnessId,
+        status: p.status,
+      })),
     };
   }
 
@@ -3263,7 +4772,8 @@ export class Orchestrator {
       intent: "audit",
       title: "Explore synthesis",
       artifactName: "explore.md",
-      defaultPrompt: "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
+      defaultPrompt:
+        "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
     });
   }
 
@@ -3313,7 +4823,9 @@ export class Orchestrator {
       goal,
       ``,
       `## Available harness pool (doctor-verified)`,
-      pool.length > 0 ? pool.map((id) => `- ${id}`).join("\n") : "- (none verified; plan must say what setup is needed)",
+      pool.length > 0
+        ? pool.map((id) => `- ${id}`).join("\n")
+        : "- (none verified; plan must say what setup is needed)",
       crossFamily
         ? `Cross-family race and cross-family review ARE available (2+ harnesses).`
         : `Only single-route execution is available (fewer than 2 verified harnesses).`,
@@ -3323,12 +4835,12 @@ export class Orchestrator {
       ``,
       `## Required output`,
       `1. A concise markdown orchestration plan (numbered steps; each step names ONE tool and its arguments).`,
-      "2. A fenced ```json block: {\"tool_calls\": [ … ]}. Each call puts the tool name AND its arguments at the TOP LEVEL — there is NO nested \"args\" object. Per-tool shapes (use only belt tools):",
-      "   - start_run: {\"tool\":\"start_run\",\"prompt\":\"…\",\"mode\":\"agent\",\"harness\":\"<optional id>\",\"why\":\"…\"}",
-      "   - race:      {\"tool\":\"race\",\"prompt\":\"…\",\"n\":2,\"why\":\"…\"}",
-      "   - review:    {\"tool\":\"review\",\"run_id\":\"<id>\",\"why\":\"…\"}",
-      "   - status:    {\"tool\":\"status\",\"run_id\":\"<id>\",\"why\":\"…\"}",
-      "   - apply:     {\"tool\":\"apply\",\"run_id\":\"<id>\",\"mode\":\"apply\",\"why\":\"…\"}",
+      '2. A fenced ```json block: {"tool_calls": [ … ]}. Each call puts the tool name AND its arguments at the TOP LEVEL — there is NO nested "args" object. Per-tool shapes (use only belt tools):',
+      '   - start_run: {"tool":"start_run","prompt":"…","mode":"agent","harness":"<optional id>","why":"…"}',
+      '   - race:      {"tool":"race","prompt":"…","n":2,"why":"…"}',
+      '   - review:    {"tool":"review","run_id":"<id>","why":"…"}',
+      '   - status:    {"tool":"status","run_id":"<id>","why":"…"}',
+      '   - apply:     {"tool":"apply","run_id":"<id>","mode":"apply","why":"…"}',
       `Keep the plan minimal and budget-aware. Do not propose tools outside the belt.`,
     ].join("\n");
     return this.runReadOnlyReport(
@@ -3358,7 +4870,16 @@ export class Orchestrator {
 
   private async runReadOnlyReport(
     input: RunInput,
-    opts: { mode: "ask" | "audit" | "orchestrate"; swarm: boolean; intent: "explain" | "audit" | "orchestrate"; title: string; artifactName: string; defaultPrompt: string; contractIntent?: string; orchestrateContract?: OrchestrateContractT },
+    opts: {
+      mode: "ask" | "audit" | "orchestrate";
+      swarm: boolean;
+      intent: "explain" | "audit" | "orchestrate";
+      title: string;
+      artifactName: string;
+      defaultPrompt: string;
+      contractIntent?: string;
+      orchestrateContract?: OrchestrateContractT;
+    },
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -3366,7 +4887,11 @@ export class Orchestrator {
     // Contract validation BEFORE the run is announced (see runRace). The
     // recorded user intent is the CALLER's goal, not a synthesized wrapper
     // prompt (orchestrate wraps the goal in a brain prompt).
-    const contract = this.buildContract({ ...input, prompt: opts.contractIntent ?? prompt }, taskId, opts.mode);
+    const contract = this.buildContract(
+      { ...input, prompt: opts.contractIntent ?? prompt },
+      taskId,
+      opts.mode,
+    );
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
@@ -3376,7 +4901,10 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
     if (opts.orchestrateContract) {
-      store.writeYaml(join(paths.contextDir, "orchestrate_contract.yaml"), opts.orchestrateContract);
+      store.writeYaml(
+        join(paths.contextDir, "orchestrate_contract.yaml"),
+        opts.orchestrateContract,
+      );
     }
 
     // Lazy ContextPack: explore/audit attach the compact scope atlas; ask stays bare.
@@ -3386,12 +4914,41 @@ export class Orchestrator {
         contextSection = await this.lazyContextSection(input, contract, store, paths, log);
       } catch (err) {
         const message = safeErrorMessage(err);
-        store.writeText(join(paths.contextDir, "context_error.md"), `# Context Error\n\n${message}\n`);
-        writeFailure(store, paths, { phase: "context", category: "project", safeMessage: message, runDir: paths.root });
-        store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: context\n\n${message}\n`);
-        log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-        log.emit("run.failed", { status: "failed", phase: "context", error: message, failure_ref: "final/failure.yaml" });
-        return { runId, taskId, mode: opts.mode, status: "failed", winner: null, runDir: paths.root, summary: `context failed: ${message}`, candidates: [] };
+        store.writeText(
+          join(paths.contextDir, "context_error.md"),
+          `# Context Error\n\n${message}\n`,
+        );
+        writeFailure(store, paths, {
+          phase: "context",
+          category: "project",
+          safeMessage: message,
+          runDir: paths.root,
+        });
+        store.writeText(
+          join(paths.finalDir, "summary.md"),
+          `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: context\n\n${message}\n`,
+        );
+        log.emit("output.ready", {
+          kind: "summary",
+          path: "final/summary.md",
+          state: "diagnostic",
+        });
+        log.emit("run.failed", {
+          status: "failed",
+          phase: "context",
+          error: message,
+          failure_ref: "final/failure.yaml",
+        });
+        return {
+          runId,
+          taskId,
+          mode: opts.mode,
+          status: "failed",
+          winner: null,
+          runDir: paths.root,
+          summary: `context failed: ${message}`,
+          candidates: [],
+        };
       }
     }
 
@@ -3414,11 +4971,27 @@ export class Orchestrator {
       }
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Routing Error\n\n${message}\n`);
-      writeFailure(store, paths, { phase: "routing", category: "harness_unavailable", safeMessage: message, runDir: paths.root });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Routing Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "routing",
+        category: "harness_unavailable",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", { status: "failed", phase: "routing", error: message, failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "routing",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         runId,
         taskId,
@@ -3445,7 +5018,11 @@ export class Orchestrator {
       telemetry: AttemptTelemetry;
     }
     const attempts: ReadonlyAttempt[] = [];
-    const attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] = [];
+    const attemptTelemetries: {
+      attemptId: string;
+      harnessId: string;
+      telemetry: AttemptTelemetry;
+    }[] = [];
     let fallbackOpen = false;
     let budgetStopped = false;
     // №15: in a swarm the same harness appears in several slots; resuming the
@@ -3454,22 +5031,45 @@ export class Orchestrator {
     // Grant resume to the first slot of each harness only; the rest run fresh.
     const resumeGranted = new Set<string>();
 
-    const runReadonlyAttempt = async (routed: RoutedAdapter, idx: number, modelOverride?: string): Promise<void> => {
+    const runReadonlyAttempt = async (
+      routed: RoutedAdapter,
+      idx: number,
+      modelOverride?: string,
+    ): Promise<void> => {
       const adapter = routed.adapter;
-      const attemptId = modelOverride ? `a${String(idx + 1).padStart(2, "0")}-fb` : `a${String(idx + 1).padStart(2, "0")}`;
-      const lease = ledger.reserve({ taskId, attemptId, intent: opts.intent, harnessId: adapter.id });
+      const attemptId = modelOverride
+        ? `a${String(idx + 1).padStart(2, "0")}-fb`
+        : `a${String(idx + 1).padStart(2, "0")}`;
+      const lease = ledger.reserve({
+        taskId,
+        attemptId,
+        intent: opts.intent,
+        harnessId: adapter.id,
+      });
       if (!lease.granted) {
-        log.emit("budget.lease.created", { granted: false, reason: lease.reason, attempt_id: attemptId, harness_id: adapter.id });
+        log.emit("budget.lease.created", {
+          granted: false,
+          reason: lease.reason,
+          attempt_id: attemptId,
+          harness_id: adapter.id,
+        });
         budgetStopped = true;
         return;
       }
-      const knobs = this.routeSpecKnobs(routed, contract.external_context.policy, modelOverride ?? input.model, input.effort);
+      const knobs = this.routeSpecKnobs(
+        routed,
+        contract.external_context.policy,
+        modelOverride ?? input.model,
+        input.effort,
+      );
       const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
-      const explorerPrompt = (opts.swarm
-        ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
-        : prompt) + contextSection;
+      const explorerPrompt =
+        (opts.swarm
+          ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
+          : prompt) + contextSection;
       const sessionFields = this.sessionSpecFields(input, adapter.id);
-      const grantResume = sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
+      const grantResume =
+        sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
       if (grantResume) resumeGranted.add(adapter.id);
       const spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
@@ -3496,11 +5096,24 @@ export class Orchestrator {
         env: roHome.env,
       });
       if (input.signal) spec.extra["abortSignal"] = input.signal;
-      const reportInteraction = this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id);
+      const reportInteraction = this.interactionChannelFor(
+        input,
+        log,
+        runId,
+        taskId,
+        attemptId,
+        adapter.id,
+      );
       if (reportInteraction) spec.extra["interactionChannel"] = reportInteraction;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const parts: string[] = [];
-      const telemetry = createAttemptTelemetry(knobs.webPolicy, contract.external_context.web_required || knobs.webPolicy === "cached" || knobs.webPolicy === "live", effectiveWeb);
+      const telemetry = createAttemptTelemetry(
+        knobs.webPolicy,
+        contract.external_context.web_required ||
+          knobs.webPolicy === "cached" ||
+          knobs.webPolicy === "live",
+        effectiveWeb,
+      );
       const retryPolicy = this.transientRetryPolicy(input.repoRoot);
       let activeSessionId = spec.session_id;
       const onAbort = () => {
@@ -3514,7 +5127,15 @@ export class Orchestrator {
       let harnessError: string | null = null;
       try {
         for (let nativeTry = 0; !input.signal?.aborted; nativeTry += 1) {
-          const runSpec = nativeTry === 0 ? spec : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), resume_session_id: null, extra: { ...spec.extra } });
+          const runSpec =
+            nativeTry === 0
+              ? spec
+              : HarnessRunSpec.parse({
+                  ...spec,
+                  session_id: newId("ses"),
+                  resume_session_id: null,
+                  extra: { ...spec.extra },
+                });
           activeSessionId = runSpec.session_id;
           const transientStart = telemetry.transientFailures.length;
           log.emit("harness.started", {
@@ -3541,10 +5162,25 @@ export class Orchestrator {
               observeAttemptTelemetry(telemetry, safeEv);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
-                log.emit("budget.observation", { harness_id: adapter.id, attempt_id: attemptId, kind: "spend", usd: safeEv.usage.cost_usd, estimated: safeEv.usage.estimated === true });
+                log.emit("budget.observation", {
+                  harness_id: adapter.id,
+                  attempt_id: attemptId,
+                  kind: "spend",
+                  usd: safeEv.usage.cost_usd,
+                  estimated: safeEv.usage.estimated === true,
+                });
               }
-              if (safeEv.type === "message" && safeEv.text) pushUniqueText(parts, safeEv.text);
-              if (safeEv.type === "error") harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+              if (
+                safeEv.type === "message" &&
+                safeEv.text &&
+                safeEv.payload?.["auth_switched"] !== true
+              ) {
+                pushUniqueText(parts, safeEv.text);
+              }
+              if (safeEv.type === "error")
+                harnessError = safeEv.error
+                  ? redactSecrets(safeEv.error)
+                  : "harness emitted an error";
             }
           } catch (err) {
             harnessError = safeErrorMessage(err);
@@ -3553,12 +5189,33 @@ export class Orchestrator {
           const transient = telemetry.transientFailures.at(-1) ?? null;
           const sawTransient = telemetry.transientFailures.length > transientStart;
           const reportSoFar = parts.join("\n").trim();
-          if (!harnessError || !sawTransient || reportSoFar.length > 0 || nativeTry >= retryPolicy.maxRetries || input.signal?.aborted) break;
+          if (
+            !harnessError ||
+            !sawTransient ||
+            reportSoFar.length > 0 ||
+            nativeTry >= retryPolicy.maxRetries ||
+            input.signal?.aborted
+          )
+            break;
 
           const nextTry = nativeTry + 1;
-          const delayMs = transientRetryDelayMs(transient?.retryDelayMs ?? null, retryPolicy, nativeTry);
-          log.emit("route.transient.detected", { harness_id: adapter.id, attempt_id: attemptId, kind: transient?.kind ?? "unknown", native_try: nativeTry + 1 });
-          log.emit("route.transient.retry_scheduled", { harness_id: adapter.id, attempt_id: attemptId, retry: nextTry, delay_ms: delayMs });
+          const delayMs = transientRetryDelayMs(
+            transient?.retryDelayMs ?? null,
+            retryPolicy,
+            nativeTry,
+          );
+          log.emit("route.transient.detected", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            kind: transient?.kind ?? "unknown",
+            native_try: nativeTry + 1,
+          });
+          log.emit("route.transient.retry_scheduled", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            retry: nextTry,
+            delay_ms: delayMs,
+          });
           harnessError = null;
           await sleep(delayMs);
         }
@@ -3567,7 +5224,11 @@ export class Orchestrator {
         ledger.settle(lease.lease?.lease_id ?? "", cost);
       }
       if (harnessError && telemetry.transientFailures.length > 0) {
-        log.emit("route.transient.exhausted", { harness_id: adapter.id, attempt_id: attemptId, retries: retryPolicy.maxRetries });
+        log.emit("route.transient.exhausted", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          retries: retryPolicy.maxRetries,
+        });
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       const report = redactSecrets(parts.join("\n").trim());
@@ -3588,78 +5249,135 @@ export class Orchestrator {
         webRequiredUnsatisfied: webBlocked,
       });
       if (harnessError) {
-        log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: webBlocked ? "blocked" : "failed", error: harnessError, ...telemetrySummary(telemetry) });
-        attempts.push({ attemptId, harnessId: adapter.id, status: webBlocked ? "blocked" : "failed", report, error: harnessError, telemetry });
+        log.emit("harness.completed", {
+          harness_id: adapter.id,
+          attempt_id: attemptId,
+          status: webBlocked ? "blocked" : "failed",
+          error: harnessError,
+          ...telemetrySummary(telemetry),
+        });
+        attempts.push({
+          attemptId,
+          harnessId: adapter.id,
+          status: webBlocked ? "blocked" : "failed",
+          report,
+          error: harnessError,
+          telemetry,
+        });
         if (opts.swarm) {
-          store.writeText(join(paths.findingsDir, `${attemptId}-error.md`), `# Explorer ${attemptId} failed\n\n${harnessError}\n`);
+          store.writeText(
+            join(paths.findingsDir, `${attemptId}-error.md`),
+            `# Explorer ${attemptId} failed\n\n${harnessError}\n`,
+          );
         }
         return;
       }
-      log.emit("harness.completed", { harness_id: adapter.id, attempt_id: attemptId, status: "success", ...telemetrySummary(telemetry) });
-      attempts.push({ attemptId, harnessId: adapter.id, status: "success", report: report || "(no output)", error: null, telemetry });
+      log.emit("harness.completed", {
+        harness_id: adapter.id,
+        attempt_id: attemptId,
+        status: "success",
+        ...telemetrySummary(telemetry),
+      });
+      attempts.push({
+        attemptId,
+        harnessId: adapter.id,
+        status: "success",
+        report: report || "(no output)",
+        error: null,
+        telemetry,
+      });
       if (opts.swarm) {
         const warningNote = toolWarnings(telemetry).length
-          ? `\n\n> Tool warnings: ${toolWarnings(telemetry).map((e) => `${e.tool}: ${e.summary}`).join("; ")}\n`
+          ? `\n\n> Tool warnings: ${toolWarnings(telemetry)
+              .map((e) => `${e.tool}: ${e.summary}`)
+              .join("; ")}\n`
           : "";
-        store.writeText(join(paths.findingsDir, `${attemptId}.md`), `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}${warningNote}\n`);
+        store.writeText(
+          join(paths.findingsDir, `${attemptId}.md`),
+          `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}${warningNote}\n`,
+        );
       }
     };
 
     try {
-    if (opts.swarm) {
-      // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
-      await runBounded(adapters, Math.min(adapters.length, MAX_PARALLEL_CANDIDATES), runReadonlyAttempt);
-    } else {
-      // ask/audit: sequential fallback chain — first success wins; a blocked
-      // attempt opens a fallback arc to the next eligible harness.
-      for (const [idx, routed] of adapters.entries()) {
-        if (input.signal?.aborted) break;
-        await runReadonlyAttempt(routed, idx);
-        let last = attempts[attempts.length - 1];
-        // Per-harness fallback_model: one same-harness retry on FAILURE (not
-        // policy blocks) before falling through to the next harness.
-        const fallbackModel = routed.settings?.fallbackModel;
-        const firstModel = input.model ?? routed.settings?.defaultModel ?? null;
-        if (last && last.status === "failed" && fallbackModel && fallbackModel !== firstModel && !budgetStopped && !input.signal?.aborted) {
-          log.emit("route.fallback.started", {
-            from_harness: last.harnessId,
-            to_harness: last.harnessId,
-            attempt_id: last.attemptId,
-            reason: "fallback_model",
-            fallback_model: fallbackModel,
-          });
-          await runReadonlyAttempt(routed, idx, fallbackModel);
-          last = attempts[attempts.length - 1];
-          if (last?.status === "success") {
-            log.emit("route.fallback.completed", { harness_id: last.harnessId, attempt_id: last.attemptId, status: "success", reason: "fallback_model" });
-          } else {
-            log.emit("route.fallback.exhausted", { harness_id: last?.harnessId ?? routed.adapter.id, attempt_id: last?.attemptId ?? null, reason: "fallback_model" });
+      if (opts.swarm) {
+        // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
+        await runBounded(
+          adapters,
+          Math.min(adapters.length, MAX_PARALLEL_CANDIDATES),
+          runReadonlyAttempt,
+        );
+      } else {
+        // ask/audit: sequential fallback chain — first success wins; a blocked
+        // attempt opens a fallback arc to the next eligible harness.
+        for (const [idx, routed] of adapters.entries()) {
+          if (input.signal?.aborted) break;
+          await runReadonlyAttempt(routed, idx);
+          let last = attempts[attempts.length - 1];
+          // Per-harness fallback_model: one same-harness retry on FAILURE (not
+          // policy blocks) before falling through to the next harness.
+          const fallbackModel = routed.settings?.fallbackModel;
+          const firstModel = input.model ?? routed.settings?.defaultModel ?? null;
+          if (
+            last &&
+            last.status === "failed" &&
+            fallbackModel &&
+            fallbackModel !== firstModel &&
+            !budgetStopped &&
+            !input.signal?.aborted
+          ) {
+            log.emit("route.fallback.started", {
+              from_harness: last.harnessId,
+              to_harness: last.harnessId,
+              attempt_id: last.attemptId,
+              reason: "fallback_model",
+              fallback_model: fallbackModel,
+            });
+            await runReadonlyAttempt(routed, idx, fallbackModel);
+            last = attempts[attempts.length - 1];
+            if (last?.status === "success") {
+              log.emit("route.fallback.completed", {
+                harness_id: last.harnessId,
+                attempt_id: last.attemptId,
+                status: "success",
+                reason: "fallback_model",
+              });
+            } else {
+              log.emit("route.fallback.exhausted", {
+                harness_id: last?.harnessId ?? routed.adapter.id,
+                attempt_id: last?.attemptId ?? null,
+                reason: "fallback_model",
+              });
+            }
           }
-        }
-        if (!last) continue; // budget-denied slot
-        if (last.status === "success") {
-          if (fallbackOpen) {
-            log.emit("route.fallback.completed", { harness_id: last.harnessId, attempt_id: last.attemptId, status: "success" });
-            fallbackOpen = false;
+          if (!last) continue; // budget-denied slot
+          if (last.status === "success") {
+            if (fallbackOpen) {
+              log.emit("route.fallback.completed", {
+                harness_id: last.harnessId,
+                attempt_id: last.attemptId,
+                status: "success",
+              });
+              fallbackOpen = false;
+            }
+            break;
           }
+          const hasNext = idx < adapters.length - 1 && !budgetStopped;
+          if (last.status === "blocked" && hasNext) {
+            log.emit("route.fallback.started", {
+              from_harness: last.harnessId,
+              to_harness: adapters[idx + 1]?.adapter.id ?? null,
+              attempt_id: last.attemptId,
+              reason: "web_evidence_unsatisfied",
+              error: last.error,
+            });
+            fallbackOpen = true;
+            continue;
+          }
+          // Terminal failure (non-web failure, or no remaining fallback).
           break;
         }
-        const hasNext = idx < adapters.length - 1 && !budgetStopped;
-        if (last.status === "blocked" && hasNext) {
-          log.emit("route.fallback.started", {
-            from_harness: last.harnessId,
-            to_harness: adapters[idx + 1]?.adapter.id ?? null,
-            attempt_id: last.attemptId,
-            reason: "web_evidence_unsatisfied",
-            error: last.error,
-          });
-          fallbackOpen = true;
-          continue;
-        }
-        // Terminal failure (non-web failure, or no remaining fallback).
-        break;
       }
-    }
     } finally {
       // All read-only attempts done (or threw) — reclaim the scoped harness home
       // (it contained every native write for this run and may hold seeded creds).
@@ -3668,7 +5386,11 @@ export class Orchestrator {
 
     if (input.signal?.aborted) {
       return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
-        ...attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
+        ...attempts.map((a) => ({
+          attemptId: a.attemptId,
+          harnessId: a.harnessId,
+          status: a.status,
+        })),
       ]);
     }
 
@@ -3676,18 +5398,43 @@ export class Orchestrator {
     if (!opts.swarm && succeededReadonly.length === 0) {
       const last = attempts[attempts.length - 1];
       const webBlocked = attempts.some((a) => a.status === "blocked");
-      const singleError = last?.error ?? (budgetStopped ? "budget exhausted before any attempt" : "harness failed");
+      const singleError =
+        last?.error ?? (budgetStopped ? "budget exhausted before any attempt" : "harness failed");
       if (fallbackOpen || webBlocked) {
-        log.emit("route.fallback.exhausted", { harness_id: last?.harnessId ?? null, attempt_id: last?.attemptId ?? null, reason: "web_evidence_unsatisfied", error: singleError });
+        log.emit("route.fallback.exhausted", {
+          harness_id: last?.harnessId ?? null,
+          attempt_id: last?.attemptId ?? null,
+          reason: "web_evidence_unsatisfied",
+          error: singleError,
+        });
         fallbackOpen = false;
       }
       const partialReport = [...attempts].reverse().find((a) => a.report)?.report ?? "";
       if (partialReport) {
-        store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n> Unverified partial output. The run is ${webBlocked ? "blocked" : "failed"} because a required/attempted tool failed.\n\n${partialReport}\n`);
-        log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}`, state: "diagnostic" });
+        store.writeText(
+          join(paths.finalDir, opts.artifactName),
+          `# ${opts.title}\n\n> Unverified partial output. The run is ${webBlocked ? "blocked" : "failed"} because a required/attempted tool failed.\n\n${partialReport}\n`,
+        );
+        log.emit("output.ready", {
+          kind: opts.mode === "ask" ? "answer" : "report",
+          path: `final/${opts.artifactName}`,
+          state: "diagnostic",
+        });
       }
-      this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null);
-      store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${singleError}\n`);
+      this.writeRunTelemetry(
+        store,
+        paths,
+        contract,
+        runId,
+        taskId,
+        opts.mode,
+        attemptTelemetries,
+        null,
+      );
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Harness Error\n\n${singleError}\n`,
+      );
       writeFailure(store, paths, {
         phase: "harness",
         category: webBlocked ? "policy" : budgetStopped ? "budget" : "harness_error",
@@ -3698,13 +5445,30 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
       });
-      const terminal = webBlocked ? "blocked" : budgetStopped && attempts.length === 0 ? "exhausted" : "failed";
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Status: ${terminal}\n\n${singleError}\n`);
+      const terminal = webBlocked
+        ? "blocked"
+        : budgetStopped && attempts.length === 0
+          ? "exhausted"
+          : "failed";
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Status: ${terminal}\n\n${singleError}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       if (terminal === "blocked") {
-        log.emit("run.blocked", { status: terminal, harness_id: last?.harnessId, error: singleError, failure_ref: "final/failure.yaml" });
+        log.emit("run.blocked", {
+          status: terminal,
+          harness_id: last?.harnessId,
+          error: singleError,
+          failure_ref: "final/failure.yaml",
+        });
       } else {
-        log.emit("run.failed", { status: terminal, harness_id: last?.harnessId, error: singleError, failure_ref: "final/failure.yaml" });
+        log.emit("run.failed", {
+          status: terminal,
+          harness_id: last?.harnessId,
+          error: singleError,
+          failure_ref: "final/failure.yaml",
+        });
       }
       return {
         runId,
@@ -3714,27 +5478,75 @@ export class Orchestrator {
         winner: null,
         runDir: paths.root,
         summary: singleError,
-        candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
+        candidates: attempts.map((a) => ({
+          attemptId: a.attemptId,
+          harnessId: a.harnessId,
+          status: a.status,
+        })),
       };
     }
     const succeeded = succeededReadonly;
     if (opts.swarm && succeeded.length === 0) {
-      const message = attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n");
+      const message = attempts
+        .map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`)
+        .join("\n");
       const blocked = attempts.some((a) => a.status === "blocked");
-      this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null);
+      this.writeRunTelemetry(
+        store,
+        paths,
+        contract,
+        runId,
+        taskId,
+        opts.mode,
+        attemptTelemetries,
+        null,
+      );
       writeFailure(store, paths, {
         phase: "harness",
         category: blocked ? "policy" : "harness_error",
         safeMessage: message || "all explorers failed",
         eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
         runDir: paths.root,
-        nextActions: ["Open diagnostics", "Check harness authentication", "Reduce explore width", "Retry after setup"],
+        nextActions: [
+          "Open diagnostics",
+          "Check harness authentication",
+          "Reduce explore width",
+          "Retry after setup",
+        ],
       });
-      store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`);
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${opts.mode})\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`,
+      );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      if (blocked) log.emit("run.blocked", { status: "blocked", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
-      else log.emit("run.failed", { status: "failed", phase: "harness", error: message, failure_ref: "final/failure.yaml" });
-      return { runId, taskId, mode: opts.mode, status: blocked ? "blocked" : "failed", winner: null, runDir: paths.root, summary: message, candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })) };
+      if (blocked)
+        log.emit("run.blocked", {
+          status: "blocked",
+          phase: "harness",
+          error: message,
+          failure_ref: "final/failure.yaml",
+        });
+      else
+        log.emit("run.failed", {
+          status: "failed",
+          phase: "harness",
+          error: message,
+          failure_ref: "final/failure.yaml",
+        });
+      return {
+        runId,
+        taskId,
+        mode: opts.mode,
+        status: blocked ? "blocked" : "failed",
+        winner: null,
+        runDir: paths.root,
+        summary: message,
+        candidates: attempts.map((a) => ({
+          attemptId: a.attemptId,
+          harnessId: a.harnessId,
+          status: a.status,
+        })),
+      };
     }
     const unsuccessful = attempts.filter((a) => a.status !== "success");
     const report = opts.swarm
@@ -3753,7 +5565,9 @@ export class Orchestrator {
           "## Omissions / Uncertainty",
           ...(unsuccessful.length
             ? unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} ${a.status}: ${a.error}`)
-            : ["- No explorer failures recorded. Claims still need evidence review before edit execution."]),
+            : [
+                "- No explorer failures recorded. Claims still need evidence review before edit execution.",
+              ]),
           "",
           "## Follow-up Questions",
           "- Which findings should become a frozen implementation spec?",
@@ -3775,23 +5589,56 @@ export class Orchestrator {
         log.emit("output.ready", { kind: "report", path: "final/orchestration.yaml" });
         typedPlanNote = `\n- Typed plan: final/orchestration.yaml (${extracted.plan.tool_calls.length} tool call(s))`;
       } else {
-        store.writeText(join(paths.finalDir, "orchestration_parse_error.md"), `# Typed plan missing\n\n${extracted.error}\n`);
-        log.emit("output.ready", { kind: "report", path: "final/orchestration_parse_error.md", state: "diagnostic" });
+        store.writeText(
+          join(paths.finalDir, "orchestration_parse_error.md"),
+          `# Typed plan missing\n\n${extracted.error}\n`,
+        );
+        log.emit("output.ready", {
+          kind: "report",
+          path: "final/orchestration_parse_error.md",
+          state: "diagnostic",
+        });
         typedPlanNote = `\n- Typed plan: MISSING (${extracted.error}); the markdown plan above is the only artifact`;
       }
     }
-    this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, opts.swarm ? null : succeeded[0]?.attemptId ?? null);
-    log.emit("output.ready", { kind: opts.mode === "ask" ? "answer" : "report", path: `final/${opts.artifactName}` });
+    this.writeRunTelemetry(
+      store,
+      paths,
+      contract,
+      runId,
+      taskId,
+      opts.mode,
+      attemptTelemetries,
+      opts.swarm ? null : (succeeded[0]?.attemptId ?? null),
+    );
+    log.emit("output.ready", {
+      kind: opts.mode === "ask" ? "answer" : "report",
+      path: `final/${opts.artifactName}`,
+    });
     if (opts.swarm) {
       store.writeYaml(join(paths.finalDir, "explore-findings.yaml"), {
         mode: "explore",
         width,
-        attempts: attempts.map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, status: a.status, error: a.error, telemetry: telemetrySummary(a.telemetry) })),
+        attempts: attempts.map((a) => ({
+          attempt_id: a.attemptId,
+          harness_id: a.harnessId,
+          status: a.status,
+          error: a.error,
+          telemetry: telemetrySummary(a.telemetry),
+        })),
         // Omissions account for EVERY unsuccessful explorer, including blocked ones.
-        omissions: unsuccessful.map((a) => ({ attempt_id: a.attemptId, harness_id: a.harnessId, status: a.status, error: a.error })),
+        omissions: unsuccessful.map((a) => ({
+          attempt_id: a.attemptId,
+          harness_id: a.harnessId,
+          status: a.status,
+          error: a.error,
+        })),
         read_only: true,
       });
-      store.writeText(join(paths.finalDir, "omissions.md"), `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`);
+      store.writeText(
+        join(paths.finalDir, "omissions.md"),
+        `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`,
+      );
     }
     // orchestrate executor (auto_safe/auto_full): the plan is no longer just a
     // suggestion — run its tool_calls in order, classifying each via toolRisk
@@ -3799,7 +5646,8 @@ export class Orchestrator {
     // a RISKY step (apply) blocks under auto_safe (awaiting a human decision) and
     // applies through the single existing gate under auto_full. The executor's
     // terminal outcome (success / blocked / failed) becomes the run's terminal.
-    const autonomy: OrchestrateAutonomy = opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
+    const autonomy: OrchestrateAutonomy =
+      opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
     let terminal: RunStatus = "success";
     // D5: orchestrate's contract output IS the typed plan. If the brain failed to
     // produce a valid one, the run is NOT a clean success — disclose it honestly
@@ -3810,39 +5658,75 @@ export class Orchestrator {
       // Thread the GENERATED runId onto input so the executor's answer_question
       // step keys the interaction registry by this orchestrate run's id (callers
       // often invoke run() without a preassigned runId).
-      const exec = await this.executeOrchestratePlan({ ...input, runId }, orchestratePlan, autonomy, opts.orchestrateContract ?? null, store, paths, log);
+      const exec = await this.executeOrchestratePlan(
+        { ...input, runId },
+        orchestratePlan,
+        autonomy,
+        opts.orchestrateContract ?? null,
+        store,
+        paths,
+        log,
+      );
       terminal = exec.terminal;
       typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
     }
-    const harnessLabel = attempts.map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`).join(", ");
-    store.writeText(join(paths.finalDir, "summary.md"), `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: ${terminal}${typedPlanNote}\n\n${report}\n`);
+    const harnessLabel = attempts
+      .map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`)
+      .join(", ");
+    store.writeText(
+      join(paths.finalDir, "summary.md"),
+      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: ${terminal}${typedPlanNote}\n\n${report}\n`,
+    );
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
       source_task_id: taskId,
       producer_attempt_id: succeeded[0]?.attemptId ?? "a01",
       files: { [opts.artifactName]: join(paths.finalDir, opts.artifactName) },
-      meta: { harnesses: attempts.map((a) => a.harnessId), mode: opts.mode, intent: opts.intent, read_only: true },
+      meta: {
+        harnesses: attempts.map((a) => a.harnessId),
+        mode: opts.mode,
+        intent: opts.intent,
+        read_only: true,
+      },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
     if (terminal === "blocked") {
       writeFailure(store, paths, {
         phase: "executor",
         category: "policy",
-        safeMessage: "orchestrate executor stopped at a risky step (apply) under auto_safe; awaiting a human decision",
+        safeMessage:
+          "orchestrate executor stopped at a risky step (apply) under auto_safe; awaiting a human decision",
         runDir: paths.root,
-        nextActions: ["Review the proposed apply", "Approve via the run decision endpoint", "Re-run with auto_full to apply automatically"],
+        nextActions: [
+          "Review the proposed apply",
+          "Approve via the run decision endpoint",
+          "Re-run with auto_full to apply automatically",
+        ],
       });
-      log.emit("run.blocked", { status: terminal, phase: "executor", failure_ref: "final/failure.yaml" });
+      log.emit("run.blocked", {
+        status: terminal,
+        phase: "executor",
+        failure_ref: "final/failure.yaml",
+      });
     } else if (terminal === "failed") {
       writeFailure(store, paths, {
         phase: "executor",
         category: "internal",
-        safeMessage: "orchestrate executor failed: a safe step errored fatally (see final/orchestration_progress.yaml)",
+        safeMessage:
+          "orchestrate executor failed: a safe step errored fatally (see final/orchestration_progress.yaml)",
         runDir: paths.root,
-        nextActions: ["Inspect final/orchestration_progress.yaml", "Open the failed sub-run", "Re-run after the cause is fixed"],
+        nextActions: [
+          "Inspect final/orchestration_progress.yaml",
+          "Open the failed sub-run",
+          "Re-run after the cause is fixed",
+        ],
       });
-      log.emit("run.failed", { status: terminal, phase: "executor", failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        status: terminal,
+        phase: "executor",
+        failure_ref: "final/failure.yaml",
+      });
     } else {
       log.emit("run.completed", { status: terminal });
     }
@@ -3855,7 +5739,11 @@ export class Orchestrator {
       winner: null,
       runDir: paths.root,
       summary: redactSecrets(report).slice(0, 400),
-      candidates: attempts.map((a) => ({ attemptId: a.attemptId, harnessId: a.harnessId, status: a.status })),
+      candidates: attempts.map((a) => ({
+        attemptId: a.attemptId,
+        harnessId: a.harnessId,
+        status: a.status,
+      })),
     };
   }
 
@@ -3939,11 +5827,19 @@ export class Orchestrator {
         persist();
         executed++;
         try {
-          const r = await this.executeApplyStep(input, call as Extract<OrchestratePlanCallT, { tool: "apply" }>);
+          const r = await this.executeApplyStep(
+            input,
+            call as Extract<OrchestratePlanCallT, { tool: "apply" }>,
+          );
           step.status = r.ok ? "done" : "failed";
           step.run_id = r.runId;
           step.detail = r.detail;
-          log.emit("orchestrate.step.done", { index: i, tool: call.tool, ok: r.ok, run_id: r.runId });
+          log.emit("orchestrate.step.done", {
+            index: i,
+            tool: call.tool,
+            ok: r.ok,
+            run_id: r.runId,
+          });
           if (!r.ok) {
             terminal = "failed";
             stoppedReason = `apply step #${i} failed: ${r.detail}`;
@@ -3970,7 +5866,12 @@ export class Orchestrator {
         step.status = r.status;
         step.run_id = r.runId;
         step.detail = r.detail;
-        log.emit("orchestrate.step.done", { index: i, tool: call.tool, status: r.status, run_id: r.runId });
+        log.emit("orchestrate.step.done", {
+          index: i,
+          tool: call.tool,
+          status: r.status,
+          run_id: r.runId,
+        });
         if (r.status === "failed") {
           terminal = "failed";
           stoppedReason = `safe step #${i} (${call.tool}) errored: ${r.detail}`;
@@ -4041,7 +5942,11 @@ export class Orchestrator {
         // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
         // isolated envelope — never a live in-place turn.
         assertEnvelopeSubRun(subInput);
-        log.emit("orchestrate.subrun.started", { tool: call.tool, mode: subInput.mode, n: subInput.n ?? null });
+        log.emit("orchestrate.subrun.started", {
+          tool: call.tool,
+          mode: subInput.mode,
+          n: subInput.n ?? null,
+        });
         const res = await this.run(subInput);
         return {
           status: res.status === "failed" || res.status === "cancelled" ? "failed" : "done",
@@ -4052,7 +5957,11 @@ export class Orchestrator {
       case "status": {
         // Pure read of the referenced run's decision/work_product artifacts.
         const read = this.readRunStatus(input.repoRoot, call.run_id);
-        return { status: read ? "done" : "skipped", runId: call.run_id, detail: read ?? `run ${call.run_id} has no readable status artifacts` };
+        return {
+          status: read ? "done" : "skipped",
+          runId: call.run_id,
+          detail: read ?? `run ${call.run_id} has no readable status artifacts`,
+        };
       }
       case "review": {
         // Read-only review over the referenced run's recorded patch diff. The
@@ -4060,10 +5969,28 @@ export class Orchestrator {
         // "done" review must mean a review happened), persists its artifacts, and
         // reports the real outcome; eligibility alone is never reported as done.
         const diff = this.readRunPatch(input.repoRoot, call.run_id);
-        if (diff === null) return { status: "skipped", runId: call.run_id, detail: `run ${call.run_id} has no patch.diff to review` };
-        const reviewers = await this.resolveReviewers(input.repoRoot);
-        if (reviewers.length === 0) return { status: "skipped", runId: call.run_id, detail: "no doctor-OK reviewers available" };
+        if (diff === null)
+          return {
+            status: "skipped",
+            runId: call.run_id,
+            detail: `run ${call.run_id} has no patch.diff to review`,
+          };
+        const reviewers = await this.resolveReviewers(input.repoRoot, input.authPreference);
+        if (reviewers.length === 0)
+          return {
+            status: "skipped",
+            runId: call.run_id,
+            detail: "no doctor-OK reviewers available",
+          };
         const evidenceDir = join(paths.reviewsDir, `orchestrate-${call.run_id}`, "evidence");
+        writeEvidencePacket(evidenceDir, {
+          userIntent: redactSecrets(input.prompt),
+          planAccepted: `orchestrate review tool requested a read-only review of run ${call.run_id}.`,
+          diff,
+          tests: input.tests?.join("\n") || "(no test commands configured)",
+          decidedTradeoffs:
+            "This review is scoped to the referenced run patch and must use typed reviewer artifacts, not summary-only evidence.",
+        });
         const result = await this.reviewScoped({
           candidateLabel: `Run ${call.run_id}`,
           diff,
@@ -4072,9 +5999,13 @@ export class Orchestrator {
           cwd: input.repoRoot,
           reviewers,
           envInheritance: this.envInheritance(input.repoRoot),
+          signal: input.signal,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });
-        const revalidated = await revalidateFindings(result.findings);
+        const revalidated = await revalidateFindings(result.findings, {
+          candidateRoot: input.repoRoot,
+          evidenceDir,
+        });
         store.writeYaml(join(paths.reviewsDir, `orchestrate-${call.run_id}.yaml`), {
           target_run_id: call.run_id,
           cross_family_healthy: result.crossFamilyHealthy,
@@ -4102,18 +6033,34 @@ export class Orchestrator {
         // answer_question plan call MUST carry the target sub-run id and pass it
         // here instead of input.runId (the registry is keyed by runId+interactionId).
         if (!input.answerInteraction) {
-          return { status: "skipped", runId: null, detail: "no live interaction surface in this context" };
+          return {
+            status: "skipped",
+            runId: null,
+            detail: "no live interaction surface in this context",
+          };
         }
         const delivered = await input.answerInteraction(input.runId ?? "", call.interaction_id, {
           interaction_id: call.interaction_id,
-          answers: call.answers.map((a) => ({ question_id: a.question_id, selected_labels: a.selected_labels, free_text: a.free_text })),
+          answers: call.answers.map((a) => ({
+            question_id: a.question_id,
+            selected_labels: a.selected_labels,
+            free_text: a.free_text,
+          })),
         });
-        return { status: delivered ? "done" : "skipped", runId: null, detail: delivered ? `delivered answers to ${call.interaction_id}` : `interaction ${call.interaction_id} not found / already resolved` };
+        return {
+          status: delivered ? "done" : "skipped",
+          runId: null,
+          detail: delivered
+            ? `delivered answers to ${call.interaction_id}`
+            : `interaction ${call.interaction_id} not found / already resolved`,
+        };
       }
       default: {
         // FAIL-CLOSED: a risky tool (apply) must never reach the safe executor;
         // the caller routes risky steps to executeApplyStep / the auto_safe block.
-        throw new Error(`executeSafeStep refused a non-safe tool '${(call as { tool: string }).tool}' (risky tools must not run as safe steps)`);
+        throw new Error(
+          `executeSafeStep refused a non-safe tool '${(call as { tool: string }).tool}' (risky tools must not run as safe steps)`,
+        );
       }
     }
   }
@@ -4132,8 +6079,18 @@ export class Orchestrator {
     const sub = store.runPaths(call.run_id);
     const patchPath = join(sub.finalDir, "patch.diff");
     const patchText = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : null;
-    if (patchText === null) return { ok: false, runId: call.run_id, detail: `run ${call.run_id} has no patch.diff to apply` };
-    if (containsSecretLikeToken(patchText)) return { ok: false, runId: call.run_id, detail: "patch contains a secret-like token; refusing apply" };
+    if (patchText === null)
+      return {
+        ok: false,
+        runId: call.run_id,
+        detail: `run ${call.run_id} has no patch.diff to apply`,
+      };
+    if (containsSecretLikeToken(patchText))
+      return {
+        ok: false,
+        runId: call.run_id,
+        detail: "patch contains a secret-like token; refusing apply",
+      };
     const decision = store.readYaml(join(sub.arbitrationDir, "decision.yaml"));
     const workProduct = store.readYaml(join(sub.finalDir, "work_product.yaml"));
     const parsedDecision = decision ? DecisionRecordSchema.safeParse(decision) : null;
@@ -4153,17 +6110,28 @@ export class Orchestrator {
       targetRepoRoot: input.repoRoot,
       operatorDecision: null,
     });
-    if (gateError) return { ok: false, runId: call.run_id, detail: `apply gate refused: ${gateError}` };
+    if (gateError)
+      return { ok: false, runId: call.run_id, detail: `apply gate refused: ${gateError}` };
     const delivered = await deliver(input.repoRoot, patchText, { mode: call.mode });
-    return { ok: delivered.applied, runId: call.run_id, detail: delivered.applied ? `applied (${call.mode})` : `deliver failed: ${delivered.detail ?? "unknown"}` };
+    return {
+      ok: delivered.applied,
+      runId: call.run_id,
+      detail: delivered.applied
+        ? `applied (${call.mode})`
+        : `deliver failed: ${delivered.detail ?? "unknown"}`,
+    };
   }
 
   /** Pure read: a referenced run's decision/work_product status, or null. */
   private readRunStatus(repoRoot: string, runId: string): string | null {
     const store = new ArtifactStore(repoRoot);
     const sub = store.runPaths(runId);
-    const decision = store.readYaml<{ status?: string; outcome?: string }>(join(sub.arbitrationDir, "decision.yaml"));
-    const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(join(sub.finalDir, "work_product.yaml"));
+    const decision = store.readYaml<{ status?: string; outcome?: string }>(
+      join(sub.arbitrationDir, "decision.yaml"),
+    );
+    const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(
+      join(sub.finalDir, "work_product.yaml"),
+    );
     if (!decision && !wp) return null;
     const parts: string[] = [];
     if (decision?.status) parts.push(`decision=${decision.status}`);
@@ -4193,7 +6161,11 @@ function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null
   if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
   try {
     const parsed = OrchestratePlanSchema.safeParse(JSON.parse(lastBlock));
-    if (!parsed.success) return { plan: null, error: `plan block failed schema validation: ${parsed.error.issues[0]?.message ?? "invalid"}` };
+    if (!parsed.success)
+      return {
+        plan: null,
+        error: `plan block failed schema validation: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+      };
     return { plan: parsed.data, error: "" };
   } catch (err) {
     return { plan: null, error: `plan block is not valid JSON: ${safeErrorMessage(err)}` };
@@ -4256,7 +6228,11 @@ function createAttemptTelemetry(
   };
 }
 
-function transientRetryDelayMs(nativeDelayMs: number | null, policy: TransientRetryPolicy, retryIndex: number): number {
+function transientRetryDelayMs(
+  nativeDelayMs: number | null,
+  policy: TransientRetryPolicy,
+  retryIndex: number,
+): number {
   const fallback = policy.initialDelayMs * 2 ** retryIndex;
   const delay = nativeDelayMs ?? fallback;
   return Math.min(delay, policy.maxDelayMs);
@@ -4264,28 +6240,74 @@ function transientRetryDelayMs(nativeDelayMs: number | null, policy: TransientRe
 
 function gateProtectedPaths(commands: string[]): string[] {
   if (commands.length === 0) return [];
-  const paths = new Set(["package.json", "**/package.json", "test/**", "tests/**", "__tests__/**", "**/*.test.*", "**/*.spec.*"]);
+  const paths = new Set([
+    "package.json",
+    "**/package.json",
+    "test/**",
+    "tests/**",
+    "__tests__/**",
+    "**/*.test.*",
+    "**/*.spec.*",
+  ]);
   for (const command of commands) {
     for (const raw of command.split(/\s+/)) {
       const token = raw.trim().replace(/^['"]|['"]$/g, "");
-      if (!token || token.startsWith("-") || token.includes("=") || token.includes("://") || token.startsWith("/")) continue;
+      if (
+        !token ||
+        token.startsWith("-") ||
+        token.includes("=") ||
+        token.includes("://") ||
+        token.startsWith("/")
+      )
+        continue;
       if (!token.includes("/") && !token.includes(".")) continue;
       const clean = token.replace(/^[./]+/, "").replace(/[),;]+$/g, "");
       if (!clean || clean === "package.json") continue;
-      const testish = clean.startsWith("test/") || clean.startsWith("tests/") || clean.startsWith("__tests__/") || clean.includes(".test.") || clean.includes(".spec.");
+      const testish =
+        clean.startsWith("test/") ||
+        clean.startsWith("tests/") ||
+        clean.startsWith("__tests__/") ||
+        clean.includes(".test.") ||
+        clean.includes(".spec.");
       if (testish) paths.add(clean.endsWith("/") ? `${clean}**` : clean);
     }
   }
   return [...paths];
 }
 
-function promptWithProtectedPathConstraint(prompt: string, protectedPaths: string[]): string {
-  if (protectedPaths.length === 0) return prompt;
+function promptWithProtectedPathConstraint(
+  prompt: string,
+  protectedPaths: string[],
+  autoProtectedPaths: string[] = [],
+  approvals: ProtectedPathApproval[] = [],
+): string {
+  if (protectedPaths.length === 0 && autoProtectedPaths.length === 0) return prompt;
+  const specLines = protectedPaths.length
+    ? [
+        "",
+        "Engine constraint: do not edit spec/config protected paths unless the frozen task contract explicitly asks for it. Protected paths:",
+        ...protectedPaths.slice(0, 20).map((p) => `- ${p}`),
+      ]
+    : [];
+  const approvalLines = approvals.length
+    ? [
+        "",
+        "Approved auto-protected gate/test path changes for this run:",
+        ...approvals.slice(0, 20).map((a) => `- ${a.path}${a.reason ? ` (${a.reason})` : ""}`),
+      ]
+    : [];
+  const autoLines = autoProtectedPaths.length
+    ? [
+        "",
+        "Engine constraint: do not edit auto-protected gate/test paths, test commands, or package test scripts unless the user explicitly asked to change tests. Auto-protected paths:",
+        ...autoProtectedPaths.slice(0, 20).map((p) => `- ${p}`),
+        ...approvalLines,
+      ]
+    : [];
   return [
     prompt,
-    "",
-    "Engine constraint: do not edit protected gate/test paths, test commands, or package test scripts unless the user explicitly asked to change tests. Protected paths:",
-    ...protectedPaths.slice(0, 20).map((p) => `- ${p}`),
+    ...specLines,
+    ...autoLines,
   ].join("\n");
 }
 
@@ -4311,7 +6333,8 @@ function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   }
   if (ev.type === "completed") {
     const dropped =
-      Number(ev.payload?.["dropped_unparsed_lines"] ?? 0) + Number(ev.payload?.["dropped_unrecognized_events"] ?? 0);
+      Number(ev.payload?.["dropped_unparsed_lines"] ?? 0) +
+      Number(ev.payload?.["dropped_unrecognized_events"] ?? 0);
     if (Number.isFinite(dropped) && dropped > 0) t.droppedEvents += dropped;
     return;
   }
@@ -4346,7 +6369,9 @@ function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
       tool: tool.name,
       kind: tool.kind,
       target: tool.target ?? null,
-      summary: redactSecrets(tool.error_summary ?? tool.content_summary ?? "tool result marked error").slice(0, 1000),
+      summary: redactSecrets(
+        tool.error_summary ?? tool.content_summary ?? "tool result marked error",
+      ).slice(0, 1000),
       toolUseId: tool.use_id ?? null,
       recovered: false,
     });
@@ -4355,7 +6380,9 @@ function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
       t.web.attempted = true;
       t.web.tool = tool.name;
       t.web.target = tool.target ?? t.web.target;
-      t.web.errorSummary = redactSecrets(tool.error_summary ?? "web tool result marked error").slice(0, 1000);
+      t.web.errorSummary = redactSecrets(
+        tool.error_summary ?? "web tool result marked error",
+      ).slice(0, 1000);
     }
     return;
   }
@@ -4413,7 +6440,9 @@ function setAttemptOutcome(
   };
 }
 
-function webStatus(t: AttemptTelemetry): "none" | "attempted" | "satisfied" | "failed" | "unverified" {
+function webStatus(
+  t: AttemptTelemetry,
+): "none" | "attempted" | "satisfied" | "failed" | "unverified" {
   if (t.web.satisfied) return "satisfied";
   if (t.web.failed) return "failed";
   if (t.web.attempted) return "attempted";
@@ -4438,17 +6467,35 @@ function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
     },
     tool_errors_total: t.toolErrors.length,
     unrecovered_tool_errors: unrecovered.length,
-    tool_errors: unrecovered.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })),
+    tool_errors: unrecovered
+      .slice(-5)
+      .map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })),
     tool_warnings_count: warnings.length,
-    ...(warnings.length ? { tool_warnings: warnings.slice(-5).map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })) } : {}),
+    ...(warnings.length
+      ? {
+          tool_warnings: warnings
+            .slice(-5)
+            .map((e) => ({ tool: e.tool, kind: e.kind, target: e.target, summary: e.summary })),
+        }
+      : {}),
     ...(t.outcome ? { outcome: t.outcome } : {}),
-    ...(t.transientFailures.length > 0 ? { transient_failures: t.transientFailures.slice(-5).map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })) } : {}),
+    ...(t.transientFailures.length > 0
+      ? {
+          transient_failures: t.transientFailures
+            .slice(-5)
+            .map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
+        }
+      : {}),
     ...(t.droppedEvents > 0 ? { dropped_events: t.droppedEvents } : {}),
     ...(t.statuslessResults > 0 ? { statusless_tool_results: t.statuslessResults } : {}),
   };
 }
 
-function attemptTelemetryRecord(attemptId: string, harnessId: string, t: AttemptTelemetry): AttemptTelemetryRecord {
+function attemptTelemetryRecord(
+  attemptId: string,
+  harnessId: string,
+  t: AttemptTelemetry,
+): AttemptTelemetryRecord {
   const errors = t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX);
   const warnings = toolWarnings(t);
   return {
@@ -4478,7 +6525,9 @@ function attemptTelemetryRecord(attemptId: string, harnessId: string, t: Attempt
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
     statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
-    transient_failures: t.transientFailures.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
+    transient_failures: t.transientFailures
+      .slice(-TELEMETRY_TOOL_ERRORS_MAX)
+      .map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
     outcome: {
       deliverable_present: t.outcome?.deliverablePresent ?? false,
       gates_passed: t.outcome?.gatesPassed ?? null,
@@ -4490,22 +6539,29 @@ function attemptTelemetryRecord(attemptId: string, harnessId: string, t: Attempt
   };
 }
 
-function aggregateRunWebEvidence(records: AttemptTelemetryRecord[], contract: TaskContract): AttemptTelemetryRecord["web"] {
+function aggregateRunWebEvidence(
+  records: AttemptTelemetryRecord[],
+  contract: TaskContract,
+): AttemptTelemetryRecord["web"] {
   const satisfied = records.find((r) => r.web.satisfied);
   if (satisfied) return satisfied.web;
   const severityRank = { none: 0, attempted: 1, unverified: 2, failed: 3, satisfied: 4 } as const;
-  const worst = [...records].sort((a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0))[0];
-  return worst?.web ?? {
-    required: contract.external_context.web_required,
-    policy: contract.external_context.policy,
-    effective_mode: contract.external_context.effective_mode,
-    attempted: false,
-    satisfied: false,
-    status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
-    tool: null,
-    target: null,
-    error_summary: null,
-  };
+  const worst = [...records].sort(
+    (a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0),
+  )[0];
+  return (
+    worst?.web ?? {
+      required: contract.external_context.web_required,
+      policy: contract.external_context.policy,
+      effective_mode: contract.external_context.effective_mode,
+      attempted: false,
+      satisfied: false,
+      status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
+      tool: null,
+      target: null,
+      error_summary: null,
+    }
+  );
 }
 
 /**
@@ -4543,7 +6599,11 @@ function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
   }
 }
 
-function harnessEventPayload(harnessId: string, attemptId: string, ev: HarnessEvent): Record<string, unknown> {
+function harnessEventPayload(
+  harnessId: string,
+  attemptId: string,
+  ev: HarnessEvent,
+): Record<string, unknown> {
   const safe = redactHarnessEvent(ev);
   const title =
     safe.error ??
@@ -4586,7 +6646,9 @@ function formatFindings(findings: ReviewFinding[]): string {
     .map(
       (f) =>
         `- [${f.severity}/${f.status}] ${f.claim}` +
-        (f.evidence.files.length > 0 ? ` (${f.evidence.files.map((x) => x.path).join(", ")})` : "") +
+        (f.evidence.files.length > 0
+          ? ` (${f.evidence.files.map((x) => x.path).join(", ")})`
+          : "") +
         (f.proposed_fix ? ` -> fix: ${f.proposed_fix}` : ""),
     )
     .join("\n");
@@ -4595,7 +6657,13 @@ function formatFindings(findings: ReviewFinding[]): string {
 function renderSummary(
   runId: string,
   mode: ModeKind,
-  decision: { winner: string | null; status: string; outcome?: string; why_winner: string; apply_recommendation: string },
+  decision: {
+    winner: string | null;
+    status: string;
+    outcome?: string;
+    why_winner: string;
+    apply_recommendation: string;
+  },
   evidences: CandidateEvidence[],
   synthReason: string,
   reviewVerified: boolean,

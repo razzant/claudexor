@@ -1,4 +1,5 @@
 import type {
+  AuthPreference,
   ConformanceReport,
   HarnessEvent,
   HarnessManifest,
@@ -12,6 +13,10 @@ export interface DoctorSpec {
   cwd: string;
   /** When true, run deeper write/edit/structured-output probes (may mutate a temp dir). */
   deep?: boolean;
+  /** Optional scoped env for probes that must mirror a concrete run route. */
+  env?: Record<string, string | null | undefined>;
+  /** Optional auth route preference for probes that must mirror a concrete run route. */
+  authPreference?: AuthPreference;
 }
 
 /**

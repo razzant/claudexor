@@ -159,7 +159,20 @@
         "reviewerModels": {
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "enum": [
+              "openai",
+              "anthropic",
+              "google",
+              "cursor",
+              "opencode",
+              "xai",
+              "local",
+              "unknown"
+            ]
           }
         },
         "reviewerEfforts": {
@@ -256,6 +269,26 @@
             "type": "string"
           }
         },
+        "protectedPathApprovals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
         "envProfile": {
           "type": "string"
         },
@@ -281,6 +314,29 @@
         },
         "planRunId": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+        },
+        "reviewerPanel": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "effort": {
+                "$ref": "#/definitions/ControlRunStartRequest/properties/effort"
+              }
+            },
+            "required": [
+              "harness"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
         },
         "authPreference": {
           "type": "string",

@@ -3,10 +3,10 @@ import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { HarnessAdapter } from "@claudexor/core";
+import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
-import type { ProviderFamily } from "@claudexor/schema";
+import type { ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
@@ -18,7 +18,17 @@ async function initRepo(): Promise<string> {
   await runCapture("git", ["-C", repo, "init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# repo\n");
   await runCapture("git", ["-C", repo, "add", "-A"]);
-  await runCapture("git", ["-C", repo, "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "init"]);
+  await runCapture("git", [
+    "-C",
+    repo,
+    "-c",
+    "user.email=t@t.dev",
+    "-c",
+    "user.name=t",
+    "commit",
+    "-m",
+    "init",
+  ]);
   return repo;
 }
 
@@ -26,7 +36,13 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
   const adapter: HarnessAdapter = {
     id,
     async discover() {
-      return HarnessManifest.parse({ id, display_name: id, kind: "local_cli", provider_family: family, capabilities: { review: true } });
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: family,
+        capabilities: { review: true },
+      });
     },
     async doctor() {
       return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review"] });
@@ -56,7 +72,11 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement", "review"] });
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["implement", "review"],
+      });
     },
     async *run(spec) {
       const ts = new Date().toISOString();
@@ -85,20 +105,32 @@ function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessA
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["implement"],
+      });
     },
     async *run(spec) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
       writeFileSync(join(spec.cwd, "CHANGED.txt"), "real change\n");
       yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
-      yield { type: "usage", session_id: spec.session_id, ts, usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } };
+      yield {
+        type: "usage",
+        session_id: spec.session_id,
+        ts,
+        usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 },
+      };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
 }
 
-function transientThenDiffImplementer(id: string): { adapter: HarnessAdapter; calls: () => number } {
+function transientThenDiffImplementer(id: string): {
+  adapter: HarnessAdapter;
+  calls: () => number;
+} {
   let calls = 0;
   return {
     calls: () => calls,
@@ -115,14 +147,24 @@ function transientThenDiffImplementer(id: string): { adapter: HarnessAdapter; ca
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         calls += 1;
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
         if (calls === 1) {
-          yield { type: "error", session_id: spec.session_id, ts, error: "network dropped", transient: { kind: "network", retry_delay_ms: 0 } };
+          yield {
+            type: "error",
+            session_id: spec.session_id,
+            ts,
+            error: "network dropped",
+            transient: { kind: "network", retry_delay_ms: 0 },
+          };
           yield { type: "completed", session_id: spec.session_id, ts };
           return;
         }
@@ -140,12 +182,19 @@ function noImplementAdapter(id: string, family: ProviderFamily = "openai"): Harn
     id,
     async discover() {
       return HarnessManifest.parse({
-        id, display_name: id, kind: "remote_api", provider_family: family,
+        id,
+        display_name: id,
+        kind: "remote_api",
+        provider_family: family,
         capabilities: { plan: true, review: true, implement: false, edit_files: false },
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review", "plan"] });
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["review", "plan"],
+      });
     },
     async *run(spec) {
       const ts = new Date().toISOString();
@@ -155,7 +204,12 @@ function noImplementAdapter(id: string, family: ProviderFamily = "openai"): Harn
   };
 }
 
-function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unknown> | Iterable<unknown>, family: ProviderFamily = "openai", webPolicy: "native" | "tools" | "uncontrolled" | "none" = "tools"): HarnessAdapter {
+function askAdapter(
+  id: string,
+  events: (sessionId: string) => AsyncIterable<unknown> | Iterable<unknown>,
+  family: ProviderFamily = "openai",
+  webPolicy: "native" | "tools" | "uncontrolled" | "none" = "tools",
+): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -164,12 +218,22 @@ function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unk
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { plan: true, review: true, read_files: true, structured_events: true, web_policy: webPolicy },
+        capabilities: {
+          plan: true,
+          review: true,
+          read_files: true,
+          structured_events: true,
+          web_policy: webPolicy,
+        },
         access_profiles_supported: ["readonly"],
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["explain", "audit", "plan", "review"] });
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["explain", "audit", "plan", "review"],
+      });
     },
     async *run(spec) {
       for await (const event of events(spec.session_id) as AsyncIterable<Record<string, unknown>>) {
@@ -179,7 +243,10 @@ function askAdapter(id: string, events: (sessionId: string) => AsyncIterable<unk
   };
 }
 
-const reviewers = () => [cleanReviewer("rev-openai", "openai"), cleanReviewer("rev-anthropic", "anthropic")];
+const reviewers = () => [
+  cleanReviewer("rev-openai", "openai"),
+  cleanReviewer("rev-anthropic", "anthropic"),
+];
 
 describe("Orchestrator", () => {
   it("fails closed when review evidence cannot be copied into the candidate tree", () => {
@@ -189,20 +256,35 @@ describe("Orchestrator", () => {
       diff: "diff --git a/a b/a\n",
       tests: "not run",
     });
-    const candidateFile = join(mkdtempSync(join(tmpdir(), "claudexor-review-candidate-")), "not-a-dir");
+    const candidateFile = join(
+      mkdtempSync(join(tmpdir(), "claudexor-review-candidate-")),
+      "not-a-dir",
+    );
     writeFileSync(candidateFile, "file blocks candidate evidence dir");
     const orch = new Orchestrator({ registry: new Map() });
 
     expect(() =>
-      (orch as unknown as { prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string }).prepareReviewEvidenceDir(source, candidateFile),
+      (
+        orch as unknown as {
+          prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string;
+        }
+      ).prepareReviewEvidenceDir(source, candidateFile),
     ).toThrow(/review evidence copy into candidate tree failed/);
   });
 
   it("runs a best-of-n race end to end and emits a DecisionRecord", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "agent", harnesses: ["fake-success"], n: 2 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 2,
+    });
     expect(res.mode).toBe("agent");
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
     expect(res.status).toBe("no_op");
@@ -214,9 +296,17 @@ describe("Orchestrator", () => {
 
   it("max-attempts converges and delivers to final/ (apply/inspect can use it)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], attempts: 3 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      attempts: 3,
+    });
     expect(res.status).toBe("no_op");
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
@@ -225,9 +315,17 @@ describe("Orchestrator", () => {
 
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-fail-tests", createFakeHarness("fake-fail-tests")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-fail-tests", createFakeHarness("fake-fail-tests")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", untilClean: true, harnesses: ["fake-fail-tests"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      untilClean: true,
+      harnesses: ["fake-fail-tests"],
+    });
     // The identical-repair-prompt loop detector stops the run as exhausted
     // (3rd identical prompt) before the slower stall detector can mark it failed.
     expect(res.status).toBe("exhausted");
@@ -237,9 +335,18 @@ describe("Orchestrator", () => {
 
   it("until-clean stops as stuck_no_progress on repeated identical diff plus failing gate", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-implement", createFakeHarness("fake-implement")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "write deterministic file", mode: "agent", untilClean: true, harnesses: ["fake-implement"], tests: ["false"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      untilClean: true,
+      harnesses: ["fake-implement"],
+      tests: ["false"],
+    });
     expect(res.status).toBe("stuck_no_progress");
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
     expect(summary).toContain("No-progress reason");
@@ -252,7 +359,13 @@ describe("Orchestrator", () => {
     const transient = transientThenDiffImplementer("transient-impl");
     const registry = new Map<string, HarnessAdapter>([[transient.adapter.id, transient.adapter]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "write file", mode: "agent", harnesses: [transient.adapter.id], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write file",
+      mode: "agent",
+      harnesses: [transient.adapter.id],
+      n: 1,
+    });
     expect(transient.calls()).toBe(2);
     expect(res.status).not.toBe("failed");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
@@ -264,9 +377,16 @@ describe("Orchestrator", () => {
 
   it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "map the repo", mode: "plan", harnesses: ["fake-success"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map the repo",
+      mode: "plan",
+      harnesses: ["fake-success"],
+    });
     expect(res.status).toBe("success");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
@@ -274,28 +394,41 @@ describe("Orchestrator", () => {
   it("enforces an explicit project mandatory_files contract UNIFORMLY across modes (P1)", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
-    writeFileSync(join(repo, ".claudexor", "config.yaml"), "version: 1\ncontext:\n  mandatory_files:\n    - MISSING.md\n");
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\ncontext:\n  mandatory_files:\n    - MISSING.md\n",
+    );
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
     // ask (skips ContextPack), audit (builds it), and agent (never built it) must
     // now ALL fail the same way on a missing explicit mandatory file — the P1 bug
     // was that audit failed while run/ask silently passed the same repo state.
     for (const mode of ["ask", "audit", "agent"] as const) {
-      await expect(orch.run({ repoRoot: repo, prompt: "x", mode, harnesses: ["fake-success"] })).rejects.toThrow(
-        /mandatory context missing\/unreadable/,
-      );
+      await expect(
+        orch.run({ repoRoot: repo, prompt: "x", mode, harnesses: ["fake-success"] }),
+      ).rejects.toThrow(/mandatory context missing\/unreadable/);
     }
   });
 
   it("enforces the budget cap mid-flight: no candidate beyond the wave spawns and the cap abort is evidenced", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.005 });
     // Each fake streams 0.01 usage (> 0.005 cap). With amount-bearing holds the
     // FIRST usage event already drives the tier hard: in-flight candidates abort
     // mid-stream (no silent overshoot), pre-start wave slots are skipped, and the
     // queued slots beyond the parallel wave (a05, a06) are never spawned.
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 6 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 6,
+    });
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBeGreaterThanOrEqual(1);
     expect(primary.length).toBeLessThanOrEqual(4);
@@ -311,7 +444,13 @@ describe("Orchestrator", () => {
       ["fake-success", createFakeHarness("fake-success")],
     ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["raw-ish", "fake-success"], n: 2 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["raw-ish", "fake-success"],
+      n: 2,
+    });
     // Primary candidates (a01..) must all be the implementing harness; raw-ish is excluded.
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBe(2);
@@ -324,12 +463,7 @@ describe("Orchestrator", () => {
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
     writeFileSync(
       join(repo, ".claudexor", "config.yaml"),
-      [
-        "version: 1",
-        "budget:",
-        "  portfolio: balanced",
-        "",
-      ].join("\n"),
+      ["version: 1", "budget:", "  portfolio: balanced", ""].join("\n"),
     );
     const seen: { id: string; model: string | null }[] = [];
     const adapterA = realLikeAdapter("codex", "openai");
@@ -340,9 +474,20 @@ describe("Orchestrator", () => {
         yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
       },
     };
-    const registry = new Map<string, HarnessAdapter>([["codex", adapterA], ["claude", adapterB]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", adapterA],
+      ["claude", adapterB],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["codex", "claude"], primaryHarness: "claude", model: "model-x", n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["codex", "claude"],
+      primaryHarness: "claude",
+      model: "model-x",
+      n: 1,
+    });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(res.candidates[0]?.harnessId).toBe("claude");
     expect(seen[0]?.model).toBe("model-x");
@@ -351,11 +496,19 @@ describe("Orchestrator", () => {
 
   it("auto-protects test and package surfaces when deterministic gates are configured", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], tests: ["node --test test/*.test.js"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      tests: ["node --test test/*.test.js"],
+    });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
-    expect(taskYaml).toContain("protected_paths");
+    expect(taskYaml).toContain("auto_protected_paths");
     expect(taskYaml).toContain("package.json");
     expect(taskYaml).toContain("test/**");
     expect(taskYaml).toContain("test/*.test.js");
@@ -363,26 +516,300 @@ describe("Orchestrator", () => {
 
   it("emits a deterministic BLOCK when a candidate edits a protected gate path", async () => {
     const repo = await initRepo();
-    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ scripts: { test: "node --test" } }, null, 2),
+    );
     await runCapture("git", ["-C", repo, "add", "package.json"]);
-    await runCapture("git", ["-C", repo, "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "add package"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add package",
+    ]);
     const adapter: HarnessAdapter = {
       ...diffImplementer("tamper-impl"),
       async *run(spec) {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts, observed_model: "tamper-model" };
-        writeFileSync(join(spec.cwd, "package.json"), JSON.stringify({ scripts: { test: "true" } }, null, 2));
+        writeFileSync(
+          join(spec.cwd, "package.json"),
+          JSON.stringify({ scripts: { test: "true" } }, null, 2),
+        );
         yield { type: "message", session_id: spec.session_id, ts, text: "changed package script" };
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
     const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "fix implementation only", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "fix implementation only",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      n: 1,
+    });
     expect(res.status).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
-    expect(review).toContain("candidate changed protected gate/test path");
+    expect(review).toContain("level: critical");
+    expect(review).toContain("candidate changed protected path");
     expect(review).toContain("severity: BLOCK");
+  });
+
+  it("allows explicitly approved existing protected gate path changes", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, "test"), { recursive: true });
+    writeFileSync(
+      join(repo, "test", "math.test.js"),
+      "import test from 'node:test';\ntest('old', () => {});\n",
+    );
+    await runCapture("git", ["-C", repo, "add", "test/math.test.js"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add test",
+    ]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("approved-test-edit-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "approved-test-edit-model",
+        };
+        writeFileSync(
+          join(spec.cwd, "test", "math.test.js"),
+          "import test from 'node:test';\ntest('updated', () => {});\n",
+        );
+        yield { type: "message", session_id: spec.session_id, ts, text: "updated test" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "update the tests",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      protectedPathApprovals: [{ path: "test/**", reason: "test authoring requested" }],
+      n: 1,
+    });
+    expect(res.status).not.toBe("blocked");
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_path_approvals");
+    expect(taskYaml).toContain("test/**");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).not.toContain("candidate changed protected gate/test path");
+  });
+
+  it("does not let protected path approval bypass built-in human paths", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(repo, ".github", "workflows", "release.yml"), "name: release\n");
+    await runCapture("git", ["-C", repo, "add", ".github/workflows/release.yml"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add workflow",
+    ]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("approved-critical-edit-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "approved-critical-edit-model",
+        };
+        writeFileSync(
+          join(spec.cwd, ".github", "workflows", "release.yml"),
+          "name: release\non: push\n",
+        );
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: "updated release workflow",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "update workflow",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      protectedPathApprovals: [
+        { path: ".github/workflows/**", reason: "operator approved test path changes" },
+      ],
+      n: 1,
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("protected-path change requires human approval");
+    expect(review).toContain(".github/workflows/release.yml");
+  });
+
+  it("uses frozen SpecPack protected paths when calculating critical review depth", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, "guarded"), { recursive: true });
+    writeFileSync(join(repo, "guarded", "rules.txt"), "locked\n");
+    await runCapture("git", ["-C", repo, "add", "guarded/rules.txt"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add guarded file",
+    ]);
+    const specPath = join(repo, "spec.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        schema_version: 2,
+        id: "spec-protected-depth",
+        version: 1,
+        created_at: new Date().toISOString(),
+        intent: { raw: "modify guarded file" },
+        summary: "guarded path work",
+        success_criteria: [],
+        non_goals: [],
+        forbidden_approaches: [],
+        decided_tradeoffs: [],
+        constraints: { protected_paths: ["guarded/**"] },
+        tests: [],
+        tasks: [],
+        open_questions: [],
+        frozen: true,
+      }),
+    );
+    let seenPrompt = "";
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("protected-depth-impl"),
+      async *run(spec) {
+        seenPrompt = spec.prompt;
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "protected-depth-model",
+        };
+        writeFileSync(join(spec.cwd, "guarded", "rules.txt"), "changed\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: "changed guarded file" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "modify guarded file",
+      mode: "agent",
+      harnesses: [adapter.id],
+      specPath,
+      protectedPathApprovals: [{ path: "guarded/**", reason: "must not suppress spec path" }],
+      n: 1,
+    });
+
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("level: critical");
+    expect(review).toContain("critical-risk diff requires human approval: protected-path change");
+    expect(review).toContain("guarded/rules.txt");
+    expect(seenPrompt).toContain("spec/config protected paths");
+    expect(seenPrompt).toContain("guarded/**");
+    expect(seenPrompt).not.toContain("Approved protected gate/test path changes");
+    expect(seenPrompt).not.toContain("Approved auto-protected gate/test path changes");
+  });
+
+  it("blocks renaming a built-in human path out of the protected glob", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(repo, ".github", "workflows", "release.yml"), "name: release\n");
+    await runCapture("git", ["-C", repo, "add", ".github/workflows/release.yml"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add workflow",
+    ]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("rename-critical-edit-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "rename-critical-edit-model",
+        };
+        mkdirSync(join(spec.cwd, "scripts"), { recursive: true });
+        await runCapture("git", [
+          "-C",
+          spec.cwd,
+          "mv",
+          ".github/workflows/release.yml",
+          "scripts/release.yml",
+        ]);
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: "moved release workflow",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "move workflow",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      n: 1,
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("protected-path change requires human approval");
+    expect(review).toContain(".github/workflows/release.yml");
   });
 
   it("does not treat newly-created package/test files as protected-path tamper", async () => {
@@ -391,17 +818,35 @@ describe("Orchestrator", () => {
       ...diffImplementer("create-test-impl"),
       async *run(spec) {
         const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts, observed_model: "create-test-model" };
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "create-test-model",
+        };
         mkdirSync(join(spec.cwd, "test"), { recursive: true });
-        writeFileSync(join(spec.cwd, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2));
-        writeFileSync(join(spec.cwd, "test", "hello.test.js"), "import test from 'node:test';\ntest('ok', () => {});\n");
+        writeFileSync(
+          join(spec.cwd, "package.json"),
+          JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2),
+        );
+        writeFileSync(
+          join(spec.cwd, "test", "hello.test.js"),
+          "import test from 'node:test';\ntest('ok', () => {});\n",
+        );
         yield { type: "message", session_id: spec.session_id, ts, text: "created test scaffold" };
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
     const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "create test scaffold", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "create test scaffold",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      n: 1,
+    });
     expect(res.status).not.toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).not.toContain("candidate changed protected gate/test path");
@@ -410,14 +855,32 @@ describe("Orchestrator", () => {
   it("blocks renaming an existing protected gate path out of the protected glob", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, "test"), { recursive: true });
-    writeFileSync(join(repo, "test", "math.test.js"), "import test from 'node:test';\ntest('ok', () => {});\n");
+    writeFileSync(
+      join(repo, "test", "math.test.js"),
+      "import test from 'node:test';\ntest('ok', () => {});\n",
+    );
     await runCapture("git", ["-C", repo, "add", "test/math.test.js"]);
-    await runCapture("git", ["-C", repo, "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "add test"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add test",
+    ]);
     const adapter: HarnessAdapter = {
       ...diffImplementer("rename-test-impl"),
       async *run(spec) {
         const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts, observed_model: "rename-test-model" };
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "rename-test-model",
+        };
         mkdirSync(join(spec.cwd, "src"), { recursive: true });
         await runCapture("git", ["-C", spec.cwd, "mv", "test/math.test.js", "src/math-check.js"]);
         yield { type: "message", session_id: spec.session_id, ts, text: "renamed test" };
@@ -426,7 +889,14 @@ describe("Orchestrator", () => {
     };
     const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "do not edit tests", mode: "agent", harnesses: [adapter.id], tests: ["true"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do not edit tests",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: ["true"],
+      n: 1,
+    });
     expect(res.status).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("test/math.test.js");
@@ -435,7 +905,14 @@ describe("Orchestrator", () => {
 
   it("resolves a frozen SpecPack: provenance AND content (criteria/non-goals/task graph) reach the contract", async () => {
     const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      'tests:\n  commands:\n    - \'node -e "console.log(\\"project gate\\")"\'\n',
+    );
     const specPath = join(repo, "spec.json");
+    const specGate = "node -e \"console.log('spec gate')\"";
+    const explicitGate = "node -e \"console.log('explicit gate')\"";
     writeFileSync(
       specPath,
       JSON.stringify({
@@ -450,7 +927,7 @@ describe("Orchestrator", () => {
         forbidden_approaches: ["no global state"],
         decided_tradeoffs: [],
         constraints: { protected_paths: [] },
-        tests: [],
+        tests: [{ id: "spec-gate", command: specGate, required: true }],
         tasks: [
           { id: "t1", title: "scaffold", depends_on: [] },
           { id: "t2", title: "wire", depends_on: ["t1"] },
@@ -459,7 +936,9 @@ describe("Orchestrator", () => {
         frozen: true,
       }),
     );
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
     const res = await orch.run({
       repoRoot: repo,
@@ -469,6 +948,7 @@ describe("Orchestrator", () => {
       specId: "spec-123",
       specHash: "sha256:abc",
       specPath,
+      tests: [specGate, explicitGate],
     });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("id: spec-123");
@@ -480,14 +960,63 @@ describe("Orchestrator", () => {
     // ...including the topologically-ordered task graph.
     expect(taskYaml).toContain("task_graph");
     expect(taskYaml.indexOf("t1")).toBeGreaterThan(-1);
+    expect(taskYaml).toContain(specGate);
+    expect(taskYaml).toContain(explicitGate);
+    expect(taskYaml).toContain("project gate");
+    expect(taskYaml.match(/spec gate/g)?.length).toBe(1);
+    expect(taskYaml.indexOf(specGate)).toBeLessThan(taskYaml.indexOf(explicitGate));
+    expect(taskYaml.indexOf(explicitGate)).toBeLessThan(taskYaml.indexOf("project gate"));
+  });
+
+  it("does not let a frozen SpecPack self-authorize protected path edits", async () => {
+    const repo = await initRepo();
+    const specPath = join(repo, "spec.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        schema_version: 2,
+        id: "spec-approval",
+        version: 1,
+        created_at: new Date().toISOString(),
+        intent: { raw: "update tests" },
+        constraints: {
+          protected_paths: ["test/**"],
+          protected_path_approvals: [{ path: "test/**", reason: "self-authorized by frozen spec" }],
+        },
+        open_questions: [],
+        frozen: true,
+      }),
+    );
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-success"],
+        specPath,
+      }),
+    ).rejects.toThrow(/failed to resolve frozen SpecPack/);
   });
 
   it("fails loudly when the spec path cannot be resolved (no silent unspecced contract)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
     await expect(
-      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], specPath: join(repo, "missing-spec.json") }),
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-success"],
+        specPath: join(repo, "missing-spec.json"),
+      }),
     ).rejects.toThrow(/failed to resolve frozen SpecPack/);
   });
 
@@ -498,9 +1027,15 @@ describe("Orchestrator", () => {
       ["claude", realLikeAdapter("claude", "anthropic")],
     ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    await expect(orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["codex"], primaryHarness: "claude" })).rejects.toThrow(
-      /primary harness 'claude'/,
-    );
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex"],
+        primaryHarness: "claude",
+      }),
+    ).rejects.toThrow(/primary harness 'claude'/);
   });
 
   it("does not persist secret-like tokens from generated patch diffs", async () => {
@@ -509,10 +1044,21 @@ describe("Orchestrator", () => {
     const adapter: HarnessAdapter = {
       id: "leaky",
       async discover() {
-        return HarnessManifest.parse({ id: "leaky", display_name: "leaky", kind: "local_cli", provider_family: "openai", capabilities: { implement: true }, access_profiles_supported: ["workspace_write"] });
+        return HarnessManifest.parse({
+          id: "leaky",
+          display_name: "leaky",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "leaky", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "leaky",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         writeFileSync(join(spec.cwd, ".env"), `OPENAI_API_KEY=${secret}\n`);
@@ -520,7 +1066,13 @@ describe("Orchestrator", () => {
       },
     };
     const orch = new Orchestrator({ registry: new Map([["leaky", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["leaky"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["leaky"],
+      n: 1,
+    });
     // The leaky candidate is refused before any artifact persists; with zero
     // working candidates the run fails with the ROOT CAUSE (no corpse review,
     // no empty final patch pretending to be a work product).
@@ -536,21 +1088,36 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["raw-ish"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["raw-ish"],
+      n: 1,
+    });
     expect(res.status).toBe("failed");
     expect(res.summary).toMatch(/perform 'implement'/);
-    expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(/perform 'implement'/);
+    expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(
+      /perform 'implement'/,
+    );
   });
 
   it("records an ask routing failure as inspectable artifacts instead of crashing the run", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["raw-ish"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "2+2?",
+      mode: "ask",
+      harnesses: ["raw-ish"],
+    });
     expect(res.status).toBe("failed");
     expect(res.summary).toMatch(/perform 'explain'/);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("Status: failed");
+    expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain(
+      "Status: failed",
+    );
   });
 
   it("blocks ask success when an attempted WebSearch tool_result errors without recovery", async () => {
@@ -558,22 +1125,45 @@ describe("Orchestrator", () => {
     const adapter = askAdapter("web-bad", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
-      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" } };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "WebSearch",
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" },
+      };
       yield {
         type: "tool_result",
         session_id: sessionId,
         ts,
         text: "tool_result: error: permission denied",
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", status: "error", error_summary: "permission denied" },
+        tool: {
+          name: "WebSearch",
+          kind: "web",
+          use_id: "toolu_web",
+          status: "error",
+          error_summary: "permission denied",
+        },
       };
       yield { type: "message", session_id: sessionId, ts, text: "Memory answer only." };
       yield { type: "completed", session_id: sessionId, ts };
     });
     const orch = new Orchestrator({ registry: new Map([["web-bad", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["web-bad"], web: "auto", n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "google this",
+      mode: "ask",
+      harnesses: ["web-bad"],
+      web: "auto",
+      n: 1,
+    });
     expect(res.status).toBe("blocked");
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("web evidence unsatisfied");
-    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Unverified partial output");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "web evidence unsatisfied",
+    );
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
+      "Unverified partial output",
+    );
     const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(eventLog).toContain("route.fallback.exhausted");
     expect(eventLog).toContain("run.blocked");
@@ -588,13 +1178,27 @@ describe("Orchestrator", () => {
     const adapter = askAdapter("no-web", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
-      yield { type: "message", session_id: sessionId, ts, text: "Answer from memory, no web call made." };
+      yield {
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: "Answer from memory, no web call made.",
+      };
       yield { type: "completed", session_id: sessionId, ts };
     });
     const orch = new Orchestrator({ registry: new Map([["no-web", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["no-web"], web: "live", n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "google this",
+      mode: "ask",
+      harnesses: ["no-web"],
+      web: "live",
+      n: 1,
+    });
     expect(res.status).toBe("blocked");
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("never attempted");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "never attempted",
+    );
   });
 
   it("does not block on a tool error that was later recovered by the same tool", async () => {
@@ -602,17 +1206,59 @@ describe("Orchestrator", () => {
     const adapter = askAdapter("recovers", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
-      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t1", target: "pnpm test" } };
-      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t1", status: "error", error_summary: "2 tests failed" } };
-      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t2", target: "pnpm test" } };
-      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t2", status: "ok", content_summary: "all green" } };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "Bash",
+        tool: { name: "Bash", kind: "command", use_id: "t1", target: "pnpm test" },
+      };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: {
+          name: "Bash",
+          kind: "command",
+          use_id: "t1",
+          status: "error",
+          error_summary: "2 tests failed",
+        },
+      };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "Bash",
+        tool: { name: "Bash", kind: "command", use_id: "t2", target: "pnpm test" },
+      };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: {
+          name: "Bash",
+          kind: "command",
+          use_id: "t2",
+          status: "ok",
+          content_summary: "all green",
+        },
+      };
       yield { type: "message", session_id: sessionId, ts, text: "Recovered and finished." };
       yield { type: "completed", session_id: sessionId, ts };
     });
     const orch = new Orchestrator({ registry: new Map([["recovers", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["recovers"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "ask",
+      harnesses: ["recovers"],
+      n: 1,
+    });
     expect(res.status).toBe("success");
-    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Recovered and finished.");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
+      "Recovered and finished.",
+    );
   });
 
   it("keeps a readonly answer with an unrecovered non-web tool warning usable", async () => {
@@ -620,48 +1266,159 @@ describe("Orchestrator", () => {
     const adapter = askAdapter("warns", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
-      yield { type: "tool_call", session_id: sessionId, ts, text: "Bash", tool: { name: "Bash", kind: "command", use_id: "t1", target: "make it" } };
-      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Bash", kind: "command", use_id: "t1", status: "error", error_summary: "command not found" } };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "Bash",
+        tool: { name: "Bash", kind: "command", use_id: "t1", target: "make it" },
+      };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: {
+          name: "Bash",
+          kind: "command",
+          use_id: "t1",
+          status: "error",
+          error_summary: "command not found",
+        },
+      };
       yield { type: "message", session_id: sessionId, ts, text: "Claimed done anyway." };
       yield { type: "completed", session_id: sessionId, ts };
     });
     const orch = new Orchestrator({ registry: new Map([["warns", adapter]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "do it", mode: "ask", harnesses: ["warns"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "ask",
+      harnesses: ["warns"],
+      n: 1,
+    });
     expect(res.status).toBe("success");
-    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Claimed done anyway.");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
+      "Claimed done anyway.",
+    );
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
     expect(telemetry).toContain("tool_warnings_total: 1");
     expect(telemetry).toContain("status: success_with_warnings");
+  });
+
+  it("lifts readiness-preferred auth route disclosures into typed run events", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("authy", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield {
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: "[auth] auto selected api_key route because doctor smoke-proved it",
+        payload: {
+          auth_switched: true,
+          from_auth_mode: "local_session",
+          to_auth_mode: "api_key",
+          reason: "readiness_preferred",
+        },
+      };
+      yield { type: "message", session_id: sessionId, ts, text: "Answered." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const orch = new Orchestrator({ registry: new Map([["authy", adapter]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "ask",
+      harnesses: ["authy"],
+      n: 1,
+    });
+    expect(res.status).toBe("success");
+    const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(eventLog).toContain("route.fallback.auth_switched");
+    expect(eventLog).toContain("readiness_preferred");
+    expect(eventLog).toContain('"from_auth_mode":"local_session"');
+    expect(eventLog).toContain('"to_auth_mode":"api_key"');
+    const answer = readFileSync(join(res.runDir, "final", "answer.md"), "utf8");
+    expect(answer).toContain("Answered.");
+    expect(answer).not.toContain("[auth]");
   });
 
   it("falls back to another ask harness when web evidence is unsatisfied", async () => {
     const repo = await initRepo();
     const bad = askAdapter("web-bad", function* (sessionId) {
       const ts = new Date().toISOString();
-      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" } };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "WebSearch",
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" },
+      };
       yield {
         type: "tool_result",
         session_id: sessionId,
         ts,
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", status: "error", error_summary: "permission denied" },
+        tool: {
+          name: "WebSearch",
+          kind: "web",
+          use_id: "toolu_web",
+          status: "error",
+          error_summary: "permission denied",
+        },
       };
       yield { type: "message", session_id: sessionId, ts, text: "Memory answer only." };
     });
-    const good = askAdapter("web-good", function* (sessionId) {
-      const ts = new Date().toISOString();
-      yield { type: "tool_call", session_id: sessionId, ts, text: "WebSearch", tool: { name: "WebSearch", kind: "web", use_id: "toolu_web2", target: "Anton Razzhigaev" } };
-      yield {
-        type: "tool_result",
-        session_id: sessionId,
-        ts,
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web2", status: "ok", content_summary: "search result" },
-      };
-      yield { type: "message", session_id: sessionId, ts, text: "Web-backed answer." };
-    }, "anthropic");
-    const orch = new Orchestrator({ registry: new Map([["web-bad", bad], ["web-good", good]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "google this", mode: "ask", harnesses: ["web-bad", "web-good"], web: "auto" });
+    const good = askAdapter(
+      "web-good",
+      function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "tool_call",
+          session_id: sessionId,
+          ts,
+          text: "WebSearch",
+          tool: {
+            name: "WebSearch",
+            kind: "web",
+            use_id: "toolu_web2",
+            target: "Anton Razzhigaev",
+          },
+        };
+        yield {
+          type: "tool_result",
+          session_id: sessionId,
+          ts,
+          tool: {
+            name: "WebSearch",
+            kind: "web",
+            use_id: "toolu_web2",
+            status: "ok",
+            content_summary: "search result",
+          },
+        };
+        yield { type: "message", session_id: sessionId, ts, text: "Web-backed answer." };
+      },
+      "anthropic",
+    );
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["web-bad", bad],
+        ["web-good", good],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "google this",
+      mode: "ask",
+      harnesses: ["web-bad", "web-good"],
+      web: "auto",
+    });
     expect(res.status).toBe("success");
-    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("Web-backed answer.");
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
+      "Web-backed answer.",
+    );
     const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(eventLog).toContain("route.fallback.started");
     expect(eventLog).toContain("route.fallback.completed");
@@ -674,7 +1431,9 @@ describe("Orchestrator", () => {
     try {
       const noProjectRoot = noProjectRepoRoot();
       mkdirSync(noProjectRoot, { recursive: true });
-      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-success", createFakeHarness("fake-success")],
+      ]);
       const orch = new Orchestrator({ registry, reviewers: [] });
       const res = await orch.run({
         repoRoot: noProjectRoot,
@@ -695,23 +1454,42 @@ describe("Orchestrator", () => {
 
   it("rejects contextMode off outside no-project Ask", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    await expect(orch.run({ repoRoot: repo, prompt: "2+2?", mode: "ask", contextMode: "off", harnesses: ["fake-success"] })).rejects.toThrow(
-      "contextMode 'off' is only supported for Ask without a repoRoot",
-    );
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        contextMode: "off",
+        harnesses: ["fake-success"],
+      }),
+    ).rejects.toThrow("contextMode 'off' is only supported for Ask without a repoRoot");
   });
 
   it("runs explore as a bounded read-only swarm with synthesis and per-explorer artifacts", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "audit", swarm: true, harnesses: ["fake-success"], n: 2 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "audit",
+      swarm: true,
+      harnesses: ["fake-success"],
+      n: 2,
+    });
     expect(res.status).toBe("success");
     expect(res.candidates).toHaveLength(2);
     expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
     expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "explore.md"), "utf8")).toContain("Explorers succeeded: 2/2");
+    expect(readFileSync(join(res.runDir, "final", "explore.md"), "utf8")).toContain(
+      "Explorers succeeded: 2/2",
+    );
     expect(existsSync(join(res.runDir, "final", "explore-findings.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
   });
@@ -721,19 +1499,53 @@ describe("Orchestrator", () => {
     const warned = askAdapter("warned", function* (sessionId) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: sessionId, ts };
-      yield { type: "tool_call", session_id: sessionId, ts, text: "Grep", tool: { name: "Grep", kind: "search", use_id: "g1", target: "packages/*/package.json" } };
-      yield { type: "tool_result", session_id: sessionId, ts, tool: { name: "Grep", kind: "search", use_id: "g1", status: "error", error_summary: "bad glob" } };
+      yield {
+        type: "tool_call",
+        session_id: sessionId,
+        ts,
+        text: "Grep",
+        tool: { name: "Grep", kind: "search", use_id: "g1", target: "packages/*/package.json" },
+      };
+      yield {
+        type: "tool_result",
+        session_id: sessionId,
+        ts,
+        tool: {
+          name: "Grep",
+          kind: "search",
+          use_id: "g1",
+          status: "error",
+          error_summary: "bad glob",
+        },
+      };
       yield { type: "message", session_id: sessionId, ts, text: "Useful repository analysis." };
       yield { type: "completed", session_id: sessionId, ts };
     });
-    const clean = askAdapter("clean", function* (sessionId) {
-      const ts = new Date().toISOString();
-      yield { type: "started", session_id: sessionId, ts };
-      yield { type: "message", session_id: sessionId, ts, text: "Second useful analysis." };
-      yield { type: "completed", session_id: sessionId, ts };
-    }, "anthropic");
-    const orch = new Orchestrator({ registry: new Map([["warned", warned], ["clean", clean]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "map auth and run storage", mode: "audit", swarm: true, harnesses: ["warned", "clean"], n: 2 });
+    const clean = askAdapter(
+      "clean",
+      function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "Second useful analysis." };
+        yield { type: "completed", session_id: sessionId, ts };
+      },
+      "anthropic",
+    );
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["warned", warned],
+        ["clean", clean],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "audit",
+      swarm: true,
+      harnesses: ["warned", "clean"],
+      n: 2,
+    });
     expect(res.status).toBe("success");
     const explore = readFileSync(join(res.runDir, "final", "explore.md"), "utf8");
     expect(explore).toContain("Explorers succeeded: 2/2");
@@ -745,18 +1557,30 @@ describe("Orchestrator", () => {
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
 
     // A failing gate must make the candidate red (gates are no longer vacuous).
     const failed = await orch.run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, tests: ["exit 1"],
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 1,
+      tests: ["exit 1"],
     });
     expect(failed.candidates[0]?.status).toBe("red");
 
     // A passing gate keeps the candidate green.
     const passed = await orch.run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, tests: ["true"],
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 1,
+      tests: ["true"],
     });
     expect(passed.candidates[0]?.status).toBe("green");
   });
@@ -784,10 +1608,18 @@ describe("Orchestrator", () => {
     };
     const registry = new Map<string, HarnessAdapter>([["throwing", throwing]]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["throwing"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["throwing"],
+      n: 1,
+    });
     expect(res.status).toBe("failed");
     expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("attempts/a01/attempt.yaml");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "attempts/a01/attempt.yaml",
+    );
     expect(existsSync(join(repo, ".claudexor", "workspaces", res.taskId, "a01"))).toBe(false);
   });
 
@@ -802,7 +1634,13 @@ describe("Orchestrator", () => {
       registry,
       reviewerModels: { openai: "o-cheap-model", anthropic: "a-cheap-model" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+    });
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("o-cheap-model");
     expect(reviewYaml).toContain("a-cheap-model");
@@ -820,17 +1658,37 @@ describe("Orchestrator", () => {
             display_name: id,
             kind: "local_cli",
             provider_family: family,
-            capabilities: { review: true, structured_events: true },
+            capabilities: {
+              review: true,
+              structured_events: true,
+              effort_levels: family === "anthropic" ? ["max"] : [],
+            },
             access_profiles_supported: ["readonly"],
           });
         },
         async doctor() {
-          return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review"] });
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async models() {
+          const ids =
+            family === "anthropic"
+              ? ["claude-opus-4-8"]
+              : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M"];
+          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null }));
         },
         async *run(spec) {
           const ts = new Date().toISOString();
           seen.push({ id, model: spec.model_hint, effort: spec.effort_hint });
-          yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-observed` };
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: `${id}-observed`,
+          };
           yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
         },
       };
@@ -845,7 +1703,13 @@ describe("Orchestrator", () => {
       reviewerModels: { openai: "o-review", anthropic: "opus" },
       reviewerEfforts: { anthropic: "max" },
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+    });
     expect(seen).toEqual(
       expect.arrayContaining([
         { id: "rev-openai", model: "o-review", effort: null },
@@ -857,9 +1721,661 @@ describe("Orchestrator", () => {
     expect(reviewYaml).toContain("requested_effort: max");
   });
 
+  it("honors an explicit reviewer panel with repeated same-harness model entries", async () => {
+    const repo = await initRepo();
+    const seen: { id: string; model: string | null; effort: string | null }[] = [];
+    function reviewer(id: string, family: ProviderFamily): HarnessAdapter {
+      return {
+        id,
+        async discover() {
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: family,
+            capabilities: {
+              review: true,
+              structured_events: true,
+              effort_levels: family === "anthropic" ? ["max"] : [],
+            },
+            access_profiles_supported: ["readonly"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async models() {
+          const ids =
+            family === "anthropic"
+              ? ["claude-opus-4-8"]
+              : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M"];
+          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null }));
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          seen.push({ id, model: spec.model_hint, effort: spec.effort_hint });
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: spec.model_hint ?? `${id}-observed`,
+          };
+          yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+    }
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-impl", diffImplementer("fake-impl")],
+      ["rev-claude", reviewer("rev-claude", "anthropic")],
+      ["rev-cursor", reviewer("rev-cursor", "cursor")],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewerPanel: [
+        { harness: "rev-claude", model: "claude-opus-4-8", effort: "max" },
+        { harness: "rev-cursor", model: "gemini-3.1-pro" },
+        { harness: "rev-cursor", model: "gemini-3.5-flash" },
+        { harness: "rev-cursor", model: "gpt-5.5-xhigh-1M" },
+      ],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+    });
+    expect(res.status).toBe("success");
+    expect(seen).toEqual([
+      { id: "rev-claude", model: "claude-opus-4-8", effort: "max" },
+      { id: "rev-cursor", model: "gemini-3.1-pro", effort: null },
+      { id: "rev-cursor", model: "gemini-3.5-flash", effort: null },
+      { id: "rev-cursor", model: "gpt-5.5-xhigh-1M", effort: null },
+    ]);
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(reviewYaml).toContain("reviewer_requests:");
+    expect(reviewYaml).toContain("claude-opus-4-8");
+    expect(reviewYaml).toContain("gemini-3.1-pro");
+    expect(reviewYaml).toContain("gemini-3.5-flash");
+    expect(reviewYaml).toContain("gpt-5.5-xhigh-1M");
+  });
+
+  it("rejects explicit reviewer panel effort hints unsupported by the harness", async () => {
+    const repo = await initRepo();
+    const reviewer: HarnessAdapter = {
+      id: "rev-cursor",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev-cursor",
+          display_name: "rev cursor",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true, effort_levels: [] },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "rev-cursor",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async models() {
+        return [{ id: "gemini-3.1-pro", label: null, context_window: null }];
+      },
+      async *run() {
+        throw new Error("reviewer should not run when effort validation fails");
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev-cursor", reviewer],
+      ]),
+      reviewerPanel: [{ harness: "rev-cursor", model: "gemini-3.1-pro", effort: "max" }],
+    });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        n: 1,
+      }),
+    ).rejects.toThrow(
+      "reviewer harness 'rev-cursor' does not support requested effort 'max' (harness declares no effort controls)",
+    );
+  });
+
+  it("uses configured default model for harness-only explicit reviewer panel entries", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-default-config-"));
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      "harnesses:\n  rev:\n    default_model: configured-review-model\n",
+    );
+    const seen: { model: string | null; effort: string | null }[] = [];
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async models() {
+        return [{ id: "configured-review-model", label: null, context_window: null }];
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seen.push({ model: spec.model_hint, effort: spec.effort_hint });
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: spec.model_hint ?? "rev-observed",
+        };
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer],
+      ]);
+      const orch = new Orchestrator({ registry, reviewerPanel: [{ harness: "rev" }] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        n: 1,
+      });
+      expect(res.status).toBe("ungated");
+      expect(seen).toEqual([{ model: "configured-review-model", effort: null }]);
+      const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+      expect(reviewYaml).toContain("requested_model: configured-review-model");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("validates explicit reviewer models against the scoped per-run auth route", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-config-"));
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      "harnesses:\n  rev:\n    auth_preference: subscription\n",
+    );
+    const modelSpecs: DoctorSpec[] = [];
+    const doctorSpecs: DoctorSpec[] = [];
+    const runSpecs: Array<{ auth: string; home: string | undefined }> = [];
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor(spec) {
+        doctorSpecs.push(spec);
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: spec.env?.["HOME"] && spec.authPreference === "api_key" ? "ok" : "unavailable",
+          enabled_intents:
+            spec.env?.["HOME"] && spec.authPreference === "api_key" ? ["review"] : [],
+        });
+      },
+      async models(spec) {
+        modelSpecs.push(spec ?? { cwd: "" });
+        return spec?.env?.["HOME"] && spec.authPreference === "api_key"
+          ? [{ id: "scoped-api-model", label: null, context_window: null }]
+          : [{ id: "native-model", label: null, context_window: null }];
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        runSpecs.push({ auth: spec.auth_preference, home: spec.env?.["HOME"] });
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: spec.model_hint ?? "rev-observed",
+        };
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer],
+      ]);
+      const orch = new Orchestrator({
+        registry,
+        reviewerPanel: [{ harness: "rev", model: "scoped-api-model" }],
+      });
+      await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        authPreference: "api_key",
+        n: 1,
+      });
+      const scopedDoctorSpec = doctorSpecs.find(
+        (spec) => spec.authPreference === "api_key" && Boolean(spec.env?.["HOME"]),
+      );
+      expect(scopedDoctorSpec).toBeTruthy();
+      expect(modelSpecs).toHaveLength(1);
+      expect(modelSpecs[0]?.authPreference).toBe("api_key");
+      expect(modelSpecs[0]?.env?.["HOME"]).toBeTruthy();
+      expect(runSpecs).toHaveLength(1);
+      expect(runSpecs[0]?.auth).toBe("api_key");
+      expect(runSpecs[0]?.home).toBeTruthy();
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("selects automatic reviewers using scoped per-run auth readiness", async () => {
+    const repo = await initRepo();
+    const doctorSpecs: DoctorSpec[] = [];
+    const runSpecs: Array<{ auth: string; home: string | undefined }> = [];
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor(spec) {
+        doctorSpecs.push(spec);
+        const scopedSubscription = spec.env?.["HOME"] && spec.authPreference === "subscription";
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: scopedSubscription ? "ok" : "unavailable",
+          enabled_intents: scopedSubscription ? ["review"] : [],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        runSpecs.push({ auth: spec.auth_preference, home: spec.env?.["HOME"] });
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-impl", diffImplementer("fake-impl")],
+      ["rev", reviewer],
+    ]);
+    const orch = new Orchestrator({ registry });
+
+    await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      authPreference: "subscription",
+      n: 1,
+    });
+
+    expect(doctorSpecs).toContainEqual(
+      expect.objectContaining({
+        authPreference: "subscription",
+        env: expect.objectContaining({ HOME: expect.any(String) }),
+      }),
+    );
+    expect(runSpecs).toEqual([{ auth: "subscription", home: expect.any(String) }]);
+  });
+
+  it("retries transient explicit reviewer model inventory failures before failing the panel", async () => {
+    const repo = await initRepo();
+    let modelCalls = 0;
+    const modelCallTimes: number[] = [];
+    const seenModels: Array<string | null> = [];
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async models() {
+        modelCalls += 1;
+        modelCallTimes.push(Date.now());
+        if (modelCalls === 1) throw new Error("transient inventory crash");
+        return [{ id: "retry-model", label: null, context_window: null }];
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seenModels.push(spec.model_hint ?? null);
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: spec.model_hint ?? "rev-observed",
+        };
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-impl", diffImplementer("fake-impl")],
+      ["rev", reviewer],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewerPanel: [{ harness: "rev", model: "retry-model" }],
+    });
+
+    await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
+
+    expect(modelCalls).toBe(2);
+    expect((modelCallTimes[1] ?? 0) - (modelCallTimes[0] ?? 0)).toBeGreaterThanOrEqual(200);
+    expect(seenModels).toEqual(["retry-model"]);
+  });
+
+  it("retries empty explicit reviewer model inventories before failing the panel", async () => {
+    const repo = await initRepo();
+    let modelCalls = 0;
+    const modelCallTimes: number[] = [];
+    const reviewer: HarnessAdapter = {
+      id: "rev",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "rev",
+          display_name: "rev",
+          kind: "local_cli",
+          provider_family: "cursor",
+          capabilities: { review: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "rev",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async models() {
+        modelCalls += 1;
+        modelCallTimes.push(Date.now());
+        return [];
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: spec.model_hint ?? "rev-observed",
+        };
+        yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-impl", diffImplementer("fake-impl")],
+      ["rev", reviewer],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewerPanel: [{ harness: "rev", model: "retry-model" }],
+    });
+
+    await expect(
+      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
+    ).rejects.toThrow(/model inventory call failed after retry: model inventory was empty/);
+    expect(modelCalls).toBe(2);
+    expect((modelCallTimes[1] ?? 0) - (modelCallTimes[0] ?? 0)).toBeGreaterThanOrEqual(200);
+  });
+
+  it("validates explicit reviewer panel entries and model evidence loudly", async () => {
+    function reviewer(
+      id: string,
+      opts: {
+        kind?: "local_cli" | "fake";
+        status?: "ok" | "degraded" | "unavailable";
+        enabledIntents?: string[];
+        reviewCapability?: boolean;
+        accessProfiles?: string[];
+        discoverThrows?: boolean;
+        models?: string[];
+        modelsThrow?: boolean;
+        omitModels?: boolean;
+        knownModels?: string[];
+        modelsAuthoritative?: boolean;
+      } = {},
+    ): HarnessAdapter {
+      const adapter: HarnessAdapter = {
+        id,
+        async discover() {
+          if (opts.discoverThrows) throw new Error("missing reviewer");
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: opts.kind ?? "local_cli",
+            provider_family: "cursor",
+            capabilities: {
+              review: opts.reviewCapability ?? true,
+              structured_events: true,
+              known_models: opts.knownModels ?? [],
+              models_authoritative: opts.modelsAuthoritative ?? false,
+            },
+            access_profiles_supported: opts.accessProfiles ?? ["readonly"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: opts.status ?? "ok",
+            enabled_intents: opts.enabledIntents ?? ["review"],
+            reasons: opts.status && opts.status !== "ok" ? ["doctor said no"] : [],
+          });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: spec.model_hint ?? "ok",
+          };
+          yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+      if (!opts.omitModels) {
+        adapter.models = async () => {
+          if (opts.modelsThrow) throw new Error("inventory crashed");
+          return (opts.models ?? []).map((id) => ({ id, label: null, context_window: null }));
+        };
+      }
+      return adapter;
+    }
+
+    async function expectRejected(
+      registry: Map<string, HarnessAdapter>,
+      message: RegExp,
+      configYaml = "",
+      reviewerPanel: ControlReviewerPanelEntry[] = [{ harness: "rev" }],
+    ): Promise<void> {
+      const repo = await initRepo();
+      const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-config-"));
+      if (configYaml) writeFileSync(join(configDir, "config.yaml"), configYaml);
+      const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+      process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+      try {
+        const orch = new Orchestrator({ registry, reviewerPanel });
+        await expect(
+          orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
+        ).rejects.toThrow(message);
+      } finally {
+        if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+        else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+      }
+    }
+
+    await expectRejected(
+      new Map([["fake-impl", diffImplementer("fake-impl")]]),
+      /unknown reviewer harness 'rev'/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { discoverThrows: true })],
+      ]),
+      /reviewer harness 'rev' is unavailable/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { kind: "fake" })],
+      ]),
+      /fake harness/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { status: "degraded" })],
+      ]),
+      /not doctor-ok: doctor said no/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev")],
+      ]),
+      /disabled in settings/,
+      "harnesses:\n  rev:\n    enabled: false\n",
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { enabledIntents: ["plan"] })],
+      ]),
+      /cannot perform readonly review/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { reviewCapability: false })],
+      ]),
+      /cannot perform readonly review/,
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { accessProfiles: ["workspace_write"] })],
+      ]),
+      /cannot perform readonly review/,
+    );
+    {
+      const repo = await initRepo();
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { omitModels: true, knownModels: ["manifest-model"] })],
+      ]);
+      const orch = new Orchestrator({
+        registry,
+        reviewerPanel: [{ harness: "rev", model: "manifest-model" }],
+      });
+      await expect(
+        orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
+      ).resolves.toMatchObject({ status: "ungated" });
+    }
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { models: ["gpt-5.5-extra-high"] })],
+      ]),
+      /does not support requested model 'gpt-5.5-xhigh-1M'.*claudexor models --harness rev/,
+      "",
+      [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { models: [] })],
+      ]),
+      /could not verify requested model 'gpt-5.5-xhigh-1M'.*model inventory call failed after retry: model inventory was empty.*claudexor models --harness rev/,
+      "",
+      [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { modelsThrow: true })],
+      ]),
+      /could not verify requested model 'gpt-5.5-xhigh-1M'.*model inventory call failed after retry: inventory crashed.*claudexor models --harness rev/,
+      "",
+      [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
+    );
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { omitModels: true })],
+      ]),
+      /could not verify requested model 'gpt-5.5-xhigh-1M'.*neither model inventory nor manifest known-model hints.*claudexor models --harness rev/,
+      "",
+      [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
+    );
+  });
+
   it("persists convergence review artifacts with reviewer effort metadata", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const anthropic = cleanReviewer("rev-anthropic", "anthropic");
     const orch = new Orchestrator({
       registry,
@@ -881,6 +2397,13 @@ describe("Orchestrator", () => {
     expect(reviewYaml).toContain("requested_effort: max");
     expect(reviewYaml).toContain("findings:");
     expect(reviewYaml).toContain("route_proofs:");
+    const testsEvidence = readFileSync(
+      join(res.runDir, "reviews", "a01-reviewers", "evidence", "TESTS.txt"),
+      "utf8",
+    );
+    expect(testsEvidence).toContain("Gate results:");
+    expect(testsEvidence).toContain("- gate-1: passed");
+    expect(testsEvidence).toContain("command: true");
   });
 
   it("in-place agent turn runs in the LIVE tree and resumes the native session (v0.10 chat)", async () => {
@@ -889,15 +2412,32 @@ describe("Orchestrator", () => {
     const impl: HarnessAdapter = {
       id: "impl",
       async discover() {
-        return HarnessManifest.parse({ id: "impl", display_name: "impl", kind: "local_cli", provider_family: "local", capabilities: { implement: true, structured_events: true }, access_profiles_supported: ["workspace_write"] });
+        return HarnessManifest.parse({
+          id: "impl",
+          display_name: "impl",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, structured_events: true },
+          access_profiles_supported: ["workspace_write"],
+        });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "impl", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "impl",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         sawResume = spec.resume_session_id; // in-place turns pass the native resume id
         const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts, observed_model: "impl-model", payload: { native_session_id: "vendor-sess-9" } };
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "impl-model",
+          payload: { native_session_id: "vendor-sess-9" },
+        };
         writeFileSync(join(spec.cwd, "LIVE.txt"), "in place\n");
         yield { type: "completed", session_id: spec.session_id, ts };
       },
@@ -905,9 +2445,17 @@ describe("Orchestrator", () => {
     const observed: Record<string, string> = {};
     const orch = new Orchestrator({ registry: new Map([["impl", impl]]), reviewers: reviewers() });
     const res = await orch.run({
-      repoRoot: repo, prompt: "edit it", mode: "agent", harnesses: ["impl"], n: 1,
-      inPlace: true, threadId: "th-1", resumeSessions: { impl: "vendor-sess-prev" },
-      onSessionObserved: (h, nid) => { observed[h] = nid; },
+      repoRoot: repo,
+      prompt: "edit it",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+      inPlace: true,
+      threadId: "th-1",
+      resumeSessions: { impl: "vendor-sess-prev" },
+      onSessionObserved: (h, nid) => {
+        observed[h] = nid;
+      },
     });
     // The file landed in the LIVE project tree (no isolated worktree), and the
     // candidate ran in-place (spec.cwd === repo).
@@ -921,10 +2469,20 @@ describe("Orchestrator", () => {
   it("race auto-adopts the winner's patch into the live in-place tree (Р8)", async () => {
     const repo = await initRepo();
     const orch = new Orchestrator({
-      registry: new Map([["a", diffImplementer("a", "local")], ["b", diffImplementer("b", "openai")]]),
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
       reviewers: reviewers(),
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["a", "b"], n: 2, inPlace: true });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      inPlace: true,
+    });
     // No test gates configured -> a clean candidate terminates "ungated"; it is
     // still adopted into the live tree (review passed, nothing to certify).
     expect(["success", "ungated"]).toContain(res.status);
@@ -942,18 +2500,60 @@ describe("Orchestrator", () => {
       providerFamily: "anthropic",
       adapter: {
         id: "rev-block",
-        async discover() { return HarnessManifest.parse({ id: "rev-block", display_name: "rev-block", kind: "local_cli", provider_family: "anthropic", capabilities: { review: true } }); },
-        async doctor() { return ConformanceReport.parse({ harness_id: "rev-block", status: "ok", enabled_intents: ["review"] }); },
+        async discover() {
+          return HarnessManifest.parse({
+            id: "rev-block",
+            display_name: "rev-block",
+            kind: "local_cli",
+            provider_family: "anthropic",
+            capabilities: { review: true },
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: "rev-block",
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
         async *run(spec) {
           const ts = new Date().toISOString();
-          yield { type: "started", session_id: spec.session_id, ts, observed_model: "rev-block-model" };
-          yield { type: "message", session_id: spec.session_id, ts, text: '```json\n[{"severity":"BLOCK","category":"deploy","claim":"the requested feature is not delivered"}]\n```' };
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: "rev-block-model",
+          };
+          yield {
+            type: "message",
+            session_id: spec.session_id,
+            ts,
+            text:
+              "```json\n" +
+              JSON.stringify([
+                {
+                  severity: "BLOCK",
+                  category: "deploy",
+                  claim: "the requested feature is not delivered",
+                  evidence: { files: [{ path: "DIFF.patch", lines: "1" }] },
+                },
+              ]) +
+              "\n```",
+          };
           yield { type: "completed", session_id: spec.session_id, ts };
         },
       },
     };
-    const orch = new Orchestrator({ registry: new Map([["fake-success", createFakeHarness("fake-success")]]), reviewers: [blocker] });
-    const res = await orch.run({ repoRoot: repo, prompt: "make a racing game", mode: "plan", harnesses: ["fake-success"] });
+    const orch = new Orchestrator({
+      registry: new Map([["fake-success", createFakeHarness("fake-success")]]),
+      reviewers: [blocker],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "make a racing game",
+      mode: "plan",
+      harnesses: ["fake-success"],
+    });
     expect(res.status).toBe("success");
     const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
     expect(plan).toContain("# Plan");
@@ -963,6 +2563,61 @@ describe("Orchestrator", () => {
     // Plan is a work product (report) with result_kind=plan: NO files changed.
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("result_kind: plan");
+    expect(wp).toContain("blockers: 1");
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("- Review blockers: 1");
+    const reviewYaml = readFileSync(join(res.runDir, "reviews", "plan-review.yaml"), "utf8");
+    expect(reviewYaml).toContain("status: accepted");
+  });
+
+  it("validates explicit reviewer panel before starting plan harness work", async () => {
+    const repo = await initRepo();
+    let plannerStarted = false;
+    let runStarted = false;
+    const planner: HarnessAdapter = {
+      id: "planner",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "planner",
+          display_name: "planner",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { plan: true, structured_events: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "planner",
+          status: "ok",
+          enabled_intents: ["plan"],
+        });
+      },
+      async *run(spec) {
+        plannerStarted = true;
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map([["planner", planner]]),
+      reviewerPanel: [{ harness: "missing-reviewer" }],
+    });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "plan",
+        mode: "plan",
+        harnesses: ["planner"],
+        runId: "invalid-panel-plan",
+        onRunStart: () => {
+          runStarted = true;
+        },
+      }),
+    ).rejects.toThrow(/unknown reviewer harness 'missing-reviewer'/);
+    expect(plannerStarted).toBe(false);
+    expect(runStarted).toBe(false);
+    expect(existsSync(join(repo, ".claudexor", "runs", "invalid-panel-plan"))).toBe(false);
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {
@@ -975,28 +2630,52 @@ describe("Orchestrator", () => {
           display_name: "writer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { implement: true, edit_files: true, review: true, structured_events: true },
+          capabilities: {
+            implement: true,
+            edit_files: true,
+            review: true,
+            structured_events: true,
+          },
           access_profiles_supported: ["workspace_write"],
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "writer", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "writer",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         const ts = new Date().toISOString();
         writeFileSync(join(spec.cwd, "README.md"), "OK\n");
         yield { type: "started", session_id: spec.session_id, ts, observed_model: "writer-model" };
-        yield { type: "completed", session_id: spec.session_id, ts, observed_model: "writer-model" };
+        yield {
+          type: "completed",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "writer-model",
+        };
       },
     };
     function cwdAwareReviewer(id: string, family: ProviderFamily): ReviewerSpec {
       const adapter: HarnessAdapter = {
         id,
         async discover() {
-          return HarnessManifest.parse({ id, display_name: id, kind: "local_cli", provider_family: family, capabilities: { review: true } });
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: family,
+            capabilities: { review: true },
+          });
         },
         async doctor() {
-          return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["review"] });
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["review"],
+          });
         },
         async *run(spec) {
           const ts = new Date().toISOString();
@@ -1015,7 +2694,12 @@ describe("Orchestrator", () => {
                 ]);
           yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
           yield { type: "message", session_id: spec.session_id, ts, text: findings };
-          yield { type: "completed", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+          yield {
+            type: "completed",
+            session_id: spec.session_id,
+            ts,
+            observed_model: `${id}-model`,
+          };
         },
       };
       return { adapter, providerFamily: family };
@@ -1024,7 +2708,10 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([["writer", writer]]);
     const orch = new Orchestrator({
       registry,
-      reviewers: [cwdAwareReviewer("rev-openai", "openai"), cwdAwareReviewer("rev-anthropic", "anthropic")],
+      reviewers: [
+        cwdAwareReviewer("rev-openai", "openai"),
+        cwdAwareReviewer("rev-anthropic", "anthropic"),
+      ],
     });
     const res = await orch.run({
       repoRoot: repo,
@@ -1050,7 +2737,9 @@ describe("Orchestrator", () => {
 
   it("surfaces runId early and streams events via in-proc hooks (agent)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry });
     const runEvents: string[] = [];
     const harnessEvents: string[] = [];
@@ -1071,14 +2760,16 @@ describe("Orchestrator", () => {
     expect(runEvents).toContain("run.completed");
     expect(harnessEvents).toContain("message");
     const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
-    expect(eventLog).toContain("\"type\":\"harness.event\"");
-    expect(eventLog).toContain("\"harness_id\":\"fake-success\"");
-    expect(eventLog).toContain("\"attempt_id\":\"a01\"");
+    expect(eventLog).toContain('"type":"harness.event"');
+    expect(eventLog).toContain('"harness_id":"fake-success"');
+    expect(eventLog).toContain('"attempt_id":"a01"');
   });
 
   it("honors a pre-aborted signal (agent -> cancelled, no harness work forwarded)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry });
     const ac = new AbortController();
     ac.abort();
@@ -1110,7 +2801,11 @@ describe("Orchestrator", () => {
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "silent-process", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "silent-process",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
@@ -1120,7 +2815,10 @@ describe("Orchestrator", () => {
           `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1500)`,
           "setTimeout(() => {}, 5000)",
         ].join(";");
-        for await (const ev of spawnProcess(process.execPath, ["-e", script], { abortSignal: signal, cancelKillDelayMs: 100 })) {
+        for await (const ev of spawnProcess(process.execPath, ["-e", script], {
+          abortSignal: signal,
+          cancelKillDelayMs: 100,
+        })) {
           if (ev.type === "stdout" && ev.line === "ready") {
             yield { type: "started", session_id: spec.session_id, ts: new Date().toISOString() };
           }
@@ -1146,7 +2844,9 @@ describe("Orchestrator", () => {
 
   it("isolates a throwing onHarnessEvent observer (agent stays terminal no-op)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry });
     const res = await orch.run({
       repoRoot: repo,
@@ -1162,7 +2862,9 @@ describe("Orchestrator", () => {
 
   it("isolates a throwing onHarnessEvent observer in best_of_n (candidate not failed by observer)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({
       repoRoot: repo,
@@ -1179,14 +2881,171 @@ describe("Orchestrator", () => {
 
   it("a pre-aborted signal yields a cancelled result (plan + best_of_n, no misleading errors)", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const ac = new AbortController();
     ac.abort();
-    const plan = await orch.run({ repoRoot: repo, prompt: "x", mode: "plan", harnesses: ["fake-success"], signal: ac.signal });
+    const plan = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "plan",
+      harnesses: ["fake-success"],
+      signal: ac.signal,
+    });
     expect(plan.status).toBe("cancelled");
-    const race = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 2, signal: ac.signal });
+    const race = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 2,
+      signal: ac.signal,
+    });
     expect(race.status).toBe("cancelled");
+  });
+
+  it("cancels plan mode after a plan-review abort instead of writing a success plan", async () => {
+    const repo = await initRepo();
+    let reviewerStarted = false;
+    const reviewer: ReviewerSpec = {
+      providerFamily: "anthropic",
+      adapter: {
+        id: "slow-plan-reviewer",
+        async discover() {
+          return HarnessManifest.parse({
+            id: "slow-plan-reviewer",
+            display_name: "slow plan reviewer",
+            kind: "local_cli",
+            provider_family: "anthropic",
+            capabilities: { review: true },
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: "slow-plan-reviewer",
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async *run(spec) {
+          reviewerStarted = true;
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: "slow-plan-reviewer-model",
+          };
+          const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+          await new Promise<void>((resolve) => {
+            if (!signal || signal.aborted) {
+              resolve();
+              return;
+            }
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      },
+    };
+    const controller = new AbortController();
+    const eventTypes: string[] = [];
+    const orch = new Orchestrator({
+      registry: new Map([["fake-success", createFakeHarness("fake-success")]]),
+      reviewers: [reviewer],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map cancellation",
+      mode: "plan",
+      harnesses: ["fake-success"],
+      signal: controller.signal,
+      onEvent: (event) => {
+        eventTypes.push(event.type);
+        if (event.type === "reviewer.first_event") controller.abort();
+      },
+    });
+    expect(reviewerStarted).toBe(true);
+    expect(eventTypes).toContain("reviewer.first_event");
+    expect(res.status).toBe("cancelled");
+    expect(res.candidates.some((candidate) => candidate.status === "success")).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain('"type":"run.failed"');
+    expect(events).toContain('"status":"cancelled"');
+  });
+
+  it("cancels agent mode after a reviewer-panel abort instead of continuing to arbitration", async () => {
+    const repo = await initRepo();
+    let reviewerStarted = false;
+    const reviewer: ReviewerSpec = {
+      providerFamily: "anthropic",
+      adapter: {
+        id: "slow-agent-reviewer",
+        async discover() {
+          return HarnessManifest.parse({
+            id: "slow-agent-reviewer",
+            display_name: "slow agent reviewer",
+            kind: "local_cli",
+            provider_family: "anthropic",
+            capabilities: { review: true },
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: "slow-agent-reviewer",
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async *run(spec) {
+          reviewerStarted = true;
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: "slow-agent-reviewer-model",
+          };
+          const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+          await new Promise<void>((resolve) => {
+            if (!signal || signal.aborted) {
+              resolve();
+              return;
+            }
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      },
+    };
+    const controller = new AbortController();
+    const eventTypes: string[] = [];
+    const orch = new Orchestrator({
+      registry: new Map([["diff-impl", diffImplementer("diff-impl")]]),
+      reviewers: [reviewer],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "change then cancel review",
+      mode: "agent",
+      harnesses: ["diff-impl"],
+      signal: controller.signal,
+      onEvent: (event) => {
+        eventTypes.push(event.type);
+        if (event.type === "reviewer.first_event") controller.abort();
+      },
+    });
+
+    expect(reviewerStarted).toBe(true);
+    expect(eventTypes).toContain("reviewer.first_event");
+    expect(eventTypes).not.toContain("arbitration.completed");
+    expect(res.status).toBe("cancelled");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain('"type":"run.failed"');
+    expect(events).toContain('"status":"cancelled"');
+    expect(events).not.toContain('"type":"arbitration.completed"');
+    expect(events).not.toContain('"type":"run.completed"');
   });
 
   it("in-place convergence runs against a non-git live dir and never deletes it", async () => {
@@ -1200,7 +3059,9 @@ describe("Orchestrator", () => {
     writeFileSync(join(configDir, "trust", `${repoHash(dir)}.yaml`), "allow_full_access: true\n");
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
-      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-success", createFakeHarness("fake-success")],
+      ]);
       // Two clean cross-family reviewers -> review-only convergence succeeds on attempt 1.
       const orch = new Orchestrator({ registry, reviewers: reviewers() });
       const res = await orch.run({
@@ -1233,7 +3094,14 @@ describe("Orchestrator", () => {
       registry: new Map([["impl", diffImplementer("impl", "local")]]),
       reviewers: reviewers(),
     });
-    const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], attempts: 2, inPlace: true });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      attempts: 2,
+      inPlace: true,
+    });
     expect(["success", "ungated"]).toContain(res.status);
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
@@ -1249,10 +3117,19 @@ describe("Orchestrator", () => {
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-notrust-"));
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
-      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-success", createFakeHarness("fake-success")],
+      ]);
       const orch = new Orchestrator({ registry, reviewers: reviewers() });
       await expect(
-        orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 1, access: "full" }),
+        orch.run({
+          repoRoot: repo,
+          prompt: "x",
+          mode: "agent",
+          harnesses: ["fake-success"],
+          n: 1,
+          access: "full",
+        }),
       ).rejects.toThrow(/allow_full_access/);
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1263,19 +3140,36 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const answer = (sessionId: string) => [
       { type: "started", session_id: sessionId, ts: new Date().toISOString() },
-      { type: "message", session_id: sessionId, ts: new Date().toISOString(), text: "local answer" },
+      {
+        type: "message",
+        session_id: sessionId,
+        ts: new Date().toISOString(),
+        text: "local answer",
+      },
       { type: "completed", session_id: sessionId, ts: new Date().toISOString() },
     ];
     // `none` (no web at ALL) trivially satisfies --web off.
-    const noWeb = new Map<string, HarnessAdapter>([["no-web", askAdapter("no-web", answer, "openai", "none")]]);
+    const noWeb = new Map<string, HarnessAdapter>([
+      ["no-web", askAdapter("no-web", answer, "openai", "none")],
+    ]);
     const ok = await new Orchestrator({ registry: noWeb, reviewers: [] }).run({
-      repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["no-web"], web: "off",
+      repoRoot: repo,
+      prompt: "q",
+      mode: "ask",
+      harnesses: ["no-web"],
+      web: "off",
     });
     expect(ok.status).toBe("success");
     // `uncontrolled` (web exists, no switch) cannot enforce off: explicit selection fails loudly.
-    const uncontrolled = new Map<string, HarnessAdapter>([["wild-web", askAdapter("wild-web", answer, "openai", "uncontrolled")]]);
+    const uncontrolled = new Map<string, HarnessAdapter>([
+      ["wild-web", askAdapter("wild-web", answer, "openai", "uncontrolled")],
+    ]);
     const blocked = await new Orchestrator({ registry: uncontrolled, reviewers: [] }).run({
-      repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["wild-web"], web: "off",
+      repoRoot: repo,
+      prompt: "q",
+      mode: "ask",
+      harnesses: ["wild-web"],
+      web: "off",
     });
     expect(blocked.status).toBe("failed");
     expect(blocked.summary).toContain("cannot enforce web policy 'off'");
@@ -1288,12 +3182,20 @@ describe("Orchestrator", () => {
     writeFileSync(join(configDir, "config.yaml"), "budget:\n  max_usd_per_run: 0.005\n");
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
-      const registry = new Map<string, HarnessAdapter>([["fake-success", createFakeHarness("fake-success")]]);
+      const registry = new Map<string, HarnessAdapter>([
+        ["fake-success", createFakeHarness("fake-success")],
+      ]);
       const orch = new Orchestrator({ registry, reviewers: reviewers() });
       // No explicit --max-usd: the configured default cap must bind (each fake
       // candidate costs 0.01 > 0.005, so the wave settles into the hard tier
       // and queued slots are denied — same shape as the explicit-cap test).
-      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 6 });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-success"],
+        n: 6,
+      });
       const contract = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
       expect(contract).toContain("max_usd: 0.005");
       const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
@@ -1306,7 +3208,11 @@ describe("Orchestrator", () => {
 
 /** A brain adapter that doctor-OKs the orchestrate intent and emits a fenced
  * JSON plan in its message (the typed plan the executor consumes). */
-function brainAdapter(id: string, plan: unknown, family: ProviderFamily = "anthropic"): HarnessAdapter {
+function brainAdapter(
+  id: string,
+  plan: unknown,
+  family: ProviderFamily = "anthropic",
+): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -1315,17 +3221,32 @@ function brainAdapter(id: string, plan: unknown, family: ProviderFamily = "anthr
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { orchestrate: true, plan: true, review: true, read_files: true, structured_events: true },
+        capabilities: {
+          orchestrate: true,
+          plan: true,
+          review: true,
+          read_files: true,
+          structured_events: true,
+        },
         access_profiles_supported: ["readonly"],
       });
     },
     async doctor() {
-      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["orchestrate", "plan", "review"] });
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["orchestrate", "plan", "review"],
+      });
     },
     async *run(spec) {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
-      yield { type: "message", session_id: spec.session_id, ts, text: "Plan:\n\n```json\n" + JSON.stringify(plan) + "\n```\n" };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts,
+        text: "Plan:\n\n```json\n" + JSON.stringify(plan) + "\n```\n",
+      };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -1337,9 +3258,16 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     // Plan = a single risky apply step referencing some run. Under auto_safe the
     // executor must STOP at it (blocked terminal), never deliver it.
     const plan = { tool_calls: [{ tool: "apply", run_id: "run-nonexistent", why: "ship it" }] };
-    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
+    const orch = new Orchestrator({
+      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      reviewers: [],
+    });
     const res = await orch.run({
-      repoRoot: repo, prompt: "do the thing", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+      repoRoot: repo,
+      prompt: "do the thing",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+      autonomy: "auto_safe",
     });
     expect(res.status).toBe("blocked");
     // The plan was still produced (suggest artifact), and progress records the block.
@@ -1355,7 +3283,15 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(types).toContain("run.blocked");
     // The live tree was NEVER mutated (no apply happened): the only working-tree
     // change is the engine's own .claudexor/ artifacts, never user source.
-    const status = await runCapture("git", ["-C", repo, "status", "--porcelain", "--", ".", ":(exclude).claudexor"]);
+    const status = await runCapture("git", [
+      "-C",
+      repo,
+      "status",
+      "--porcelain",
+      "--",
+      ".",
+      ":(exclude).claudexor",
+    ]);
     expect(status.stdout.trim()).toBe("");
   });
 
@@ -1364,7 +3300,11 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     // The plan asks for one safe start_run. The sub-run's implementer writes a
     // file; because it runs in an isolated envelope, the LIVE repo tree is NOT
     // mutated by the sub-run (the envelope is disposed; nothing adopted).
-    const plan = { tool_calls: [{ tool: "start_run", prompt: "edit something", mode: "agent", why: "kick it off" }] };
+    const plan = {
+      tool_calls: [
+        { tool: "start_run", prompt: "edit something", mode: "agent", why: "kick it off" },
+      ],
+    };
     const registry = new Map<string, HarnessAdapter>([
       ["brain", brainAdapter("brain", plan)],
       ["impl", diffImplementer("impl", "local")],
@@ -1372,7 +3312,11 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({
       // harnesses pins the brain; the sub-run auto-resolves the impl harness.
-      repoRoot: repo, prompt: "go", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+      repoRoot: repo,
+      prompt: "go",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+      autonomy: "auto_safe",
     });
     // The executor ran the safe step and the orchestrate run succeeded.
     expect(res.status).toBe("success");
@@ -1395,10 +3339,21 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const recordingImpl: HarnessAdapter = {
       id: "rec",
       async discover() {
-        return HarnessManifest.parse({ id: "rec", display_name: "rec", kind: "local_cli", provider_family: "local", capabilities: { implement: true, structured_events: true }, access_profiles_supported: ["workspace_write"] });
+        return HarnessManifest.parse({
+          id: "rec",
+          display_name: "rec",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, structured_events: true },
+          access_profiles_supported: ["workspace_write"],
+        });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "rec", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "rec",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         subCwd = spec.cwd;
@@ -1407,10 +3362,19 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
-    const plan = { tool_calls: [{ tool: "start_run", prompt: "do it", mode: "agent", why: "spawn" }] };
-    const registry = new Map<string, HarnessAdapter>([["brain", brainAdapter("brain", plan)], ["rec", recordingImpl]]);
+    const plan = {
+      tool_calls: [{ tool: "start_run", prompt: "do it", mode: "agent", why: "spawn" }],
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["brain", brainAdapter("brain", plan)],
+      ["rec", recordingImpl],
+    ]);
     const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "go", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_safe",
+      repoRoot: repo,
+      prompt: "go",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+      autonomy: "auto_safe",
     });
     expect(res.status).toBe("success");
     expect(subCwd).not.toBeNull();
@@ -1426,15 +3390,31 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const seed = await new Orchestrator({
       registry: new Map([["impl", diffImplementer("impl", "local")]]),
       reviewers: reviewers(),
-    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1, tests: ["true"] });
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+      tests: ["true"],
+    });
     expect(existsSync(join(seed.runDir, "final", "patch.diff"))).toBe(true);
     const seedRunId = seed.runId;
 
     // Now an orchestrate auto_full run whose plan applies that referenced run.
-    const plan = { tool_calls: [{ tool: "apply", run_id: seedRunId, mode: "apply", why: "land it" }] };
-    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
+    const plan = {
+      tool_calls: [{ tool: "apply", run_id: seedRunId, mode: "apply", why: "land it" }],
+    };
+    const orch = new Orchestrator({
+      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      reviewers: [],
+    });
     const res = await orch.run({
-      repoRoot: repo, prompt: "land the work", mode: "orchestrate", harnesses: ["brain"], autonomy: "auto_full",
+      repoRoot: repo,
+      prompt: "land the work",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+      autonomy: "auto_full",
     });
     expect(res.status).toBe("success");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
@@ -1447,8 +3427,16 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
   it("suggest autonomy never executes: the plan is the work product (read-only)", async () => {
     const repo = await initRepo();
     const plan = { tool_calls: [{ tool: "apply", run_id: "run-x", why: "would mutate" }] };
-    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", plan)]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "plan only", mode: "orchestrate", harnesses: ["brain"] });
+    const orch = new Orchestrator({
+      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan only",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+    });
     expect(res.status).toBe("success");
     // No executor ran under suggest: no progress artifact, no apply.
     expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
@@ -1458,14 +3446,27 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
 
   it("forbids orchestrate-within-orchestrate (recursion guard)", async () => {
     const repo = await initRepo();
-    const orch = new Orchestrator({ registry: new Map([["brain", brainAdapter("brain", { tool_calls: [{ tool: "status", run_id: "r" }] })]]), reviewers: [] });
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["brain", brainAdapter("brain", { tool_calls: [{ tool: "status", run_id: "r" }] })],
+      ]),
+      reviewers: [],
+    });
     await expect(
-      orch.run({ repoRoot: repo, prompt: "x", mode: "orchestrate", harnesses: ["brain"], orchestrateDepth: 1 }),
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "orchestrate",
+        harnesses: ["brain"],
+        orchestrateDepth: 1,
+      }),
     ).rejects.toThrow(/orchestrate-within-orchestrate is forbidden/);
   });
 });
 
-function readRunEvents(runDir: string): { seq?: number; type: string; payload: Record<string, unknown> }[] {
+function readRunEvents(
+  runDir: string,
+): { seq?: number; type: string; payload: Record<string, unknown> }[] {
   return readFileSync(join(runDir, "events.jsonl"), "utf8")
     .trim()
     .split("\n")
@@ -1476,7 +3477,9 @@ function readRunEvents(runDir: string): { seq?: number; type: string; payload: R
 /** Lifecycle invariant: output.ready precedes the terminal event (non-cancelled). */
 function expectOutputReadyBeforeTerminal(runDir: string): void {
   const events = readRunEvents(runDir);
-  const terminalIdx = events.findIndex((e) => ["run.completed", "run.failed", "run.blocked"].includes(e.type));
+  const terminalIdx = events.findIndex((e) =>
+    ["run.completed", "run.failed", "run.blocked"].includes(e.type),
+  );
   expect(terminalIdx).toBeGreaterThan(-1);
   const terminal = events[terminalIdx]!;
   if (terminal.type === "run.failed" && terminal.payload["status"] === "cancelled") return; // cancelled runs promise no output
@@ -1489,7 +3492,13 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
   it("stamps a strictly monotonic seq on every run event", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
-    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1 });
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+    });
     const events = readRunEvents(res.runDir);
     expect(events.length).toBeGreaterThan(3);
     for (const [idx, ev] of events.entries()) {
@@ -1507,16 +3516,38 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     ];
     const askRegistry = new Map<string, HarnessAdapter>([["asker", askAdapter("asker", answer)]]);
 
-    const race = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1 });
+    const race = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+    });
     expectOutputReadyBeforeTerminal(race.runDir);
 
-    const converge = await new Orchestrator({ registry, reviewers: reviewers() }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["impl"], attempts: 1 });
+    const converge = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      attempts: 1,
+    });
     expectOutputReadyBeforeTerminal(converge.runDir);
 
-    const ask = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({ repoRoot: repo, prompt: "q", mode: "ask", harnesses: ["asker"] });
+    const ask = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "q",
+      mode: "ask",
+      harnesses: ["asker"],
+    });
     expectOutputReadyBeforeTerminal(ask.runDir);
 
-    const plan = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({ repoRoot: repo, prompt: "q", mode: "plan", harnesses: ["asker"] });
+    const plan = await new Orchestrator({ registry: askRegistry, reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "q",
+      mode: "plan",
+      harnesses: ["asker"],
+    });
     expectOutputReadyBeforeTerminal(plan.runDir);
   });
 
@@ -1525,18 +3556,36 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     const crashing: HarnessAdapter = {
       id: "crasher",
       async discover() {
-        return HarnessManifest.parse({ id: "crasher", display_name: "crasher", kind: "local_cli", provider_family: "openai", capabilities: { implement: true }, access_profiles_supported: ["workspace_write"] });
+        return HarnessManifest.parse({
+          id: "crasher",
+          display_name: "crasher",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "crasher", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "crasher",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       // eslint-disable-next-line require-yield
       async *run(): AsyncIterable<never> {
         throw new Error("adapter exploded before any work");
       },
     };
-    const res = await new Orchestrator({ registry: new Map([["crasher", crashing]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["crasher"], n: 2,
+    const res = await new Orchestrator({
+      registry: new Map([["crasher", crashing]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["crasher"],
+      n: 2,
     });
     expect(res.status).toBe("failed");
     expect(res.summary).toContain("adapter exploded");
@@ -1559,7 +3608,11 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     writeFileSync(join(dir, "notes.txt"), "pre-existing file\n");
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
     const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: dir, prompt: "x", mode: "agent", harnesses: ["impl"], n: 1,
+      repoRoot: dir,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
     });
     expect(existsSync(join(dir, ".git"))).toBe(true);
     const gitignore = readFileSync(join(dir, ".gitignore"), "utf8");
@@ -1583,12 +3636,20 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       id: "asker",
       async discover() {
         return HarnessManifest.parse({
-          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
-          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true },
+          access_profiles_supported: ["workspace_write"],
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -1600,15 +3661,30 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
           const answers = await channel.request({
             interaction_id: "int-1",
             source_tool: "AskUserQuestion",
-            questions: [{ id: "q1", question: "Which flavor?", header: null, options: [{ label: "vanilla", description: null }], multi_select: false }],
+            questions: [
+              {
+                id: "q1",
+                question: "Which flavor?",
+                header: null,
+                options: [{ label: "vanilla", description: null }],
+                multi_select: false,
+              },
+            ],
           });
           seen.push(answers);
         }
         yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
       },
     };
-    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
+    const res = await new Orchestrator({
+      registry: new Map([["asker", interactive]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["asker"],
+      n: 1,
       onInteraction: async (ctx) => ({
         interaction_id: ctx.request.interaction_id,
         answers: [{ question_id: "q1", selected_labels: ["vanilla"], free_text: null }],
@@ -1629,12 +3705,20 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       id: "asker",
       async discover() {
         return HarnessManifest.parse({
-          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
-          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true },
+          access_profiles_supported: ["workspace_write"],
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -1643,13 +3727,26 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
           | { request(req: unknown): Promise<unknown> }
           | undefined;
         if (channel) {
-          seen.push(await channel.request({ interaction_id: "int-t", source_tool: "AskUserQuestion", questions: [] }));
+          seen.push(
+            await channel.request({
+              interaction_id: "int-t",
+              source_tool: "AskUserQuestion",
+              questions: [],
+            }),
+          );
         }
         yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
       },
     };
-    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
+    const res = await new Orchestrator({
+      registry: new Map([["asker", interactive]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["asker"],
+      n: 1,
       interactionTimeoutMs: 50,
       onInteraction: () => new Promise(() => {}), // never answers
     });
@@ -1667,12 +3764,20 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       id: "asker",
       async discover() {
         return HarnessManifest.parse({
-          id: "asker", display_name: "asker", kind: "local_cli", provider_family: "anthropic",
-          capabilities: { implement: true, interactive: true }, access_profiles_supported: ["workspace_write"],
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "anthropic",
+          capabilities: { implement: true, interactive: true },
+          access_profiles_supported: ["workspace_write"],
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: "asker", status: "ok", enabled_intents: ["implement"] });
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -1681,15 +3786,26 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
           | { request(req: unknown): Promise<unknown> }
           | undefined;
         if (channel) {
-          await channel.request({ interaction_id: "int-c", source_tool: "AskUserQuestion", questions: [] });
+          await channel.request({
+            interaction_id: "int-c",
+            source_tool: "AskUserQuestion",
+            questions: [],
+          });
         }
         yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
       },
     };
     const controller = new AbortController();
     const startedAt = Date.now();
-    const res = await new Orchestrator({ registry: new Map([["asker", interactive]]), reviewers: reviewers() }).run({
-      repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["asker"], n: 1,
+    const res = await new Orchestrator({
+      registry: new Map([["asker", interactive]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["asker"],
+      n: 1,
       interactionTimeoutMs: 60_000, // the wait must NOT sit this out
       signal: controller.signal,
       // Abort only once the question is actually parked (a wall-clock timer

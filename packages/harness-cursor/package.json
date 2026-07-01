@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-cursor",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Cursor CLI adapter (cursor-agent -p --output-format stream-json).",
   "type": "module",
   "main": "./dist/index.js",

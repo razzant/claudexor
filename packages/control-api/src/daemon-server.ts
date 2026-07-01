@@ -55,6 +55,7 @@ import {
   OrchestratePlanProgress,
   Portfolio,
   ReviewFinding,
+  FallbackReason,
   RunEventType,
   RunFailure,
   RunTelemetry,
@@ -1865,6 +1866,14 @@ const WARNING_EVENT_TYPES = new Set([
 ]);
 const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
 
+function timelineSeverity(type: string, payload: Record<string, unknown>, tool: Record<string, unknown>): "info" | "warning" | "error" {
+  if (payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)) return "error";
+  const reason = FallbackReason.safeParse(payload["reason"]);
+  if (type === "route.fallback.auth_switched" && reason.success && reason.data === "readiness_preferred") return "info";
+  if (WARNING_EVENT_TYPES.has(type)) return "warning";
+  return "info";
+}
+
 function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
   const out: ControlTimelineEvent[] = [];
   for (const ev of readRunEvents(rec)) {
@@ -1881,11 +1890,7 @@ function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
     const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ?? stringOrNull(tool["content_summary"]) ?? errorSummary;
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
-    const severity = payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)
-      ? "error"
-      : WARNING_EVENT_TYPES.has(type)
-        ? "warning"
-        : "info";
+    const severity = timelineSeverity(type, payload, tool);
     out.push(ControlTimelineEvent.parse({
       type,
       ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,

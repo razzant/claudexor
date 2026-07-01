@@ -179,6 +179,13 @@ pnpm test
 - Before release, run the local multi-review protocol and Claudexor dogfood
   review when available; if reviewer output is empty, erroneous, or reads the
   wrong tree, treat the review gate as failed rather than ceremonial.
+- If a change intentionally edits existing protected gate/test files, record the
+  approval through the typed run surface (`--allow-protected-path` or
+  `protectedPathApprovals`) instead of relying on prompt prose, frozen SpecPack
+  constraints, or repo config.
+- When the required review gate names exact reviewers or repeated models from
+  the same harness, use the explicit `reviewerPanel` / `--reviewer-panel` path
+  and verify the per-reviewer telemetry records every requested entry separately.
 - Reviewers must read file-backed evidence (`DIFF.patch`, `DIFF_SUMMARY.md`,
   user intent, decided tradeoffs, tests) from the candidate tree. Do not pass the
   full diff through the process argv or a giant prompt as the normal review path.

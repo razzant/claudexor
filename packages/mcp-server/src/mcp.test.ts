@@ -100,6 +100,15 @@ describe("McpServer", () => {
       { id: 5, name: "claudexor_run", arguments: { prompt: "go", n: 1.5 } },
       { id: 6, name: "claudexor_run", arguments: { prompt: "go", extra: true } },
       { id: 7, name: "claudexor_race", arguments: { prompt: "go", n: 1 } },
+      { id: 8, name: "claudexor_run", arguments: { prompt: "go", tests: "pnpm test" } },
+      { id: 9, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "" }] } },
+      { id: 10, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] } },
+      { id: 11, name: "claudexor_run", arguments: { prompt: "go", maxUsd: -1 } },
+      { id: 12, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ reason: "missing path" }] } },
+      { id: 13, name: "claudexor_run", arguments: { prompt: "go", reviewerModels: { opneai: "gpt-5.5" } } },
+      { id: 14, name: "claudexor_run", arguments: { prompt: "go", reviewerEfforts: { opneai: "xhigh" } } },
+      { id: 15, name: "claudexor_run", arguments: { prompt: "go", effort: "turbo" } },
+      { id: 16, name: "claudexor_run", arguments: { prompt: "go", web: "internet" } },
     ];
     for (const call of invalidCalls) {
       c2s.write(JSON.stringify({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } }) + "\n");
@@ -111,5 +120,61 @@ describe("McpServer", () => {
     expect(calls).toBe(0);
     expect(responses).toHaveLength(invalidCalls.length);
     expect(responses.every((r) => r.error?.code === -32602)).toBe(true);
+  });
+
+  it("exposes advanced run controls and forwards them to the runner", async () => {
+    let received: any = null;
+    const tools = defaultClaudexorTools(async (p) => {
+      received = p;
+      return { summary: "ok" };
+    });
+    const runTool = tools.find((t) => t.name === "claudexor_run");
+    const schema = runTool?.inputSchema as any;
+    expect(schema?.additionalProperties).toBe(false);
+    expect(schema?.properties?.reviewerPanel?.type).toBe("array");
+    expect(schema?.properties?.reviewerPanel?.items?.properties?.authPreference).toBeUndefined();
+    expect(schema?.properties?.model?.type).toBe("string");
+    expect(schema?.properties?.effort?.enum).toContain("xhigh");
+    expect(schema?.properties?.web?.enum).toContain("live");
+    expect(schema?.properties?.externalContextPolicy?.enum).toContain("cached");
+    expect(schema?.properties?.reviewerModels?.type).toBe("object");
+    expect(schema?.properties?.reviewerModels?.additionalProperties).toBe(false);
+    expect(schema?.properties?.reviewerModels?.properties?.openai?.type).toBe("string");
+    expect(schema?.properties?.reviewerEfforts?.type).toBe("object");
+    expect(schema?.properties?.reviewerEfforts?.additionalProperties).toBe(false);
+    expect(schema?.properties?.reviewerEfforts?.properties?.openai?.enum).toContain("xhigh");
+    expect(schema?.properties?.tests?.type).toBe("array");
+    expect(schema?.properties?.maxUsd?.type).toBe("number");
+    expect(schema?.properties?.access?.enum).toContain("workspace_write");
+    expect(schema?.properties?.protectedPathApprovals?.items?.required).toEqual(["path"]);
+
+    await runTool?.handler({
+      prompt: "go",
+      reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
+      model: "gpt-5.5",
+      effort: "xhigh",
+      web: "live",
+      reviewerModels: { openai: "gpt-5.5" },
+      reviewerEfforts: { openai: "xhigh" },
+      tests: ["pnpm test"],
+      maxUsd: 3,
+      access: "workspace_write",
+      protectedPathApprovals: [{ path: "test/**" }],
+    });
+
+    expect(received).toMatchObject({
+      mode: "agent",
+      prompt: "go",
+      reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
+      model: "gpt-5.5",
+      effort: "xhigh",
+      web: "live",
+      reviewerModels: { openai: "gpt-5.5" },
+      reviewerEfforts: { openai: "xhigh" },
+      tests: ["pnpm test"],
+      maxUsd: 3,
+      access: "workspace_write",
+      protectedPathApprovals: [{ path: "test/**" }],
+    });
   });
 });

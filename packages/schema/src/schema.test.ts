@@ -5,6 +5,7 @@ import {
   ControlSetupJob,
   ControlSetupJobConfirmRequest,
   ControlSetupJobCreateRequest,
+  ControlSettingsSnapshot,
   ControlSpecFreezeRequest,
   ControlSpecQuestionsRequest,
   ControlThread,
@@ -13,6 +14,7 @@ import {
   OrchestrateContract,
   OrchestratePlan,
   OrchestratePlanProgress,
+  SpecPack,
   TOOL_RISK,
   toolRisk,
   ReviewFinding,
@@ -39,8 +41,47 @@ describe("TaskContract", () => {
     expect(tc.access.effective_profile).toBe("workspace_write");
     expect(tc.external_context.effective_mode).toBe("auto");
     expect(tc.budget.portfolio).toBe("subscription-first");
+    expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
     expect(tc.context_policy.no_silent_truncation).toBe(true);
+  });
+});
+
+describe("SpecPack", () => {
+  it("rejects per-run protected path approvals inside frozen spec constraints", () => {
+    expect(() =>
+      SpecPack.parse({
+        schema_version: 2,
+        id: "spec-1",
+        created_at: "2026-06-29T00:00:00Z",
+        version: 1,
+        frozen: true,
+        intent: { raw: "update tests" },
+        constraints: {
+          protected_paths: ["test/**"],
+          protected_path_approvals: [{ path: "test/**", reason: "self-authorized by spec" }],
+        },
+      }),
+    ).toThrow(/protected_path_approvals/);
+  });
+});
+
+describe("ControlSettingsSnapshot", () => {
+  it("carries daemon-effective runtime settings for CLI/IDE projections", () => {
+    const snapshot = ControlSettingsSnapshot.parse({
+      runtime: {
+        reviewerTimeoutMs: 2_400_000,
+        transientRetry: {
+          maxRetries: 3,
+          initialDelayMs: 2_000,
+          maxDelayMs: 20_000,
+        },
+      },
+    });
+    expect(snapshot.runtime.reviewerTimeoutMs).toBe(2_400_000);
+    expect(snapshot.runtime.transientRetry.maxRetries).toBe(3);
+    expect(snapshot.runtime.transientRetry.initialDelayMs).toBe(2_000);
+    expect(snapshot.runtime.transientRetry.maxDelayMs).toBe(20_000);
   });
 });
 
@@ -57,7 +98,10 @@ describe("ReviewFinding.isBlocking", () => {
 
   it("blocks when accepted + BLOCK + has evidence", () => {
     expect(
-      isBlocking({ ...base, evidence: { ...base.evidence, files: [{ path: "a.ts", lines: "1-2" }] } }),
+      isBlocking({
+        ...base,
+        evidence: { ...base.evidence, files: [{ path: "a.ts", lines: "1-2" }] },
+      }),
     ).toBe(true);
   });
 
@@ -66,7 +110,12 @@ describe("ReviewFinding.isBlocking", () => {
       isBlocking({
         severity: "BLOCK",
         status: "proposed",
-        evidence: { files: [{ path: "a.ts", lines: null }], diff_hunks: [], commands: [], logs: [] },
+        evidence: {
+          files: [{ path: "a.ts", lines: null }],
+          diff_hunks: [],
+          commands: [],
+          logs: [],
+        },
       }),
     ).toBe(false);
   });
@@ -116,11 +165,24 @@ describe("Control API schemas", () => {
       prompt: "review it",
       mode: "agent",
       scope: { kind: "project", root: "/repo" },
+      reviewerPanel: [
+        { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+        { harness: "cursor", model: "gemini-3.1-pro" },
+        { harness: "cursor", model: "gemini-3.5-flash" },
+      ],
       reviewerEfforts: { anthropic: "max", openai: "xhigh" },
+      reviewerModels: { anthropic: "claude-opus-4-8", openai: "gpt-4o" },
     });
     expect(req.scope).toEqual({ kind: "project", root: "/repo", context: "auto" });
+    expect(req.reviewerPanel).toEqual([
+      { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+      { harness: "cursor", model: "gemini-3.1-pro" },
+      { harness: "cursor", model: "gemini-3.5-flash" },
+    ]);
     expect(req.reviewerEfforts?.anthropic).toBe("max");
     expect(req.reviewerEfforts?.openai).toBe("xhigh");
+    expect(req.reviewerModels?.anthropic).toBe("claude-opus-4-8");
+    expect(req.reviewerModels?.openai).toBe("gpt-4o");
     expect(() =>
       ControlRunStartRequest.parse({
         prompt: "legacy",
@@ -142,12 +204,43 @@ describe("Control API schemas", () => {
         reviewerEfforts: { anthropic: "banana" },
       }),
     ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerModels: { opneai: "gpt-4o" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerModels: { openai: "" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerPanel: [{ harness: "", model: "gpt" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
+        reviewerPanel: [{ harness: "cursor", effort: "turbo" }],
+      }),
+    ).toThrow();
   });
 
   it("parses setup-job + spec contracts", () => {
     const jobReq = ControlSetupJobCreateRequest.parse({ harness: "cursor", action: "install" });
     expect(jobReq).toEqual({ harness: "cursor", action: "install" });
-    expect(ControlSetupJobCreateRequest.parse({ harness: "codex", action: "store_key" })).toEqual({ harness: "codex", action: "store_key" });
+    expect(ControlSetupJobCreateRequest.parse({ harness: "codex", action: "store_key" })).toEqual({
+      harness: "codex",
+      action: "store_key",
+    });
     const job = ControlSetupJob.parse({
       jobId: "setup-1",
       harness: "cursor",
@@ -162,17 +255,43 @@ describe("Control API schemas", () => {
     expect(job.finishedAt).toBeNull();
     expect(ControlSetupJobConfirmRequest.parse({}).confirmed).toBe(true);
 
-    const specReq = ControlSpecQuestionsRequest.parse({ prompt: "scope it", scope: { kind: "project", root: "/repo" } });
+    const specReq = ControlSpecQuestionsRequest.parse({
+      prompt: "scope it",
+      scope: { kind: "project", root: "/repo" },
+    });
     expect(specReq.scope.root).toBe("/repo");
     expect(specReq.scope.context).toBe("auto"); // defaulted
     // The macOS RunScope serializes `context` — the spec scope MUST accept it (a
     // strict scope without it 400'd /spec/questions before grounding ran).
-    const specWithCtx = ControlSpecQuestionsRequest.parse({ prompt: "x", scope: { kind: "project", root: "/repo", context: "deep" } });
+    const specWithCtx = ControlSpecQuestionsRequest.parse({
+      prompt: "x",
+      scope: { kind: "project", root: "/repo", context: "deep" },
+    });
     expect(specWithCtx.scope.context).toBe("deep");
-    expect(ControlSpecFreezeRequest.parse({ prompt: "x", scope: { kind: "project", root: "/repo", context: "deep" } }).scope.context).toBe("deep");
-    expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" })).toThrow();
-    expect(() => ControlSpecQuestionsRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, contextMode: "off" })).toThrow();
-    expect(() => ControlSpecFreezeRequest.parse({ prompt: "legacy", scope: { kind: "project", root: "/repo" }, inPlace: true, plan: "x" })).toThrow();
+    expect(
+      ControlSpecFreezeRequest.parse({
+        prompt: "x",
+        scope: { kind: "project", root: "/repo", context: "deep" },
+      }).scope.context,
+    ).toBe("deep");
+    expect(() =>
+      ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" }),
+    ).toThrow();
+    expect(() =>
+      ControlSpecQuestionsRequest.parse({
+        prompt: "legacy",
+        scope: { kind: "project", root: "/repo" },
+        contextMode: "off",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlSpecFreezeRequest.parse({
+        prompt: "legacy",
+        scope: { kind: "project", root: "/repo" },
+        inPlace: true,
+        plan: "x",
+      }),
+    ).toThrow();
   });
 });
 
@@ -218,9 +337,17 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
   });
 
   it("parses a ThreadTurn and a SessionReboundLineage", () => {
-    const turn = ThreadTurn.parse({ id: "tn-1", thread_id: "th-1", created_at: "2026-06-12T00:00:00Z" });
+    const turn = ThreadTurn.parse({
+      id: "tn-1",
+      thread_id: "th-1",
+      created_at: "2026-06-12T00:00:00Z",
+    });
     expect(turn.kind).toBe("followup");
-    const reb = SessionReboundLineage.parse({ thread_id: "th-1", harness_id: "claude", reason: "harness_error" });
+    const reb = SessionReboundLineage.parse({
+      thread_id: "th-1",
+      harness_id: "claude",
+      reason: "harness_error",
+    });
     expect(reb.reason).toBe("harness_error");
   });
 
@@ -257,7 +384,11 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
         { tool: "race", prompt: "two ways", n: 3 },
         { tool: "review", run_id: "run-1" },
         { tool: "status", run_id: "run-2" },
-        { tool: "answer_question", interaction_id: "int-1", answers: [{ question_id: "q1", selected_labels: ["yes"] }] },
+        {
+          tool: "answer_question",
+          interaction_id: "int-1",
+          answers: [{ question_id: "q1", selected_labels: ["yes"] }],
+        },
         { tool: "apply", run_id: "run-3" },
       ],
     });
@@ -271,9 +402,13 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
 
   it("rejects malformed per-tool args loudly (wrong/missing fields, n<2, unknown tool)", () => {
     // start_run requires a non-empty prompt.
-    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "start_run", prompt: "" }] })).toThrow();
+    expect(() =>
+      OrchestratePlan.parse({ tool_calls: [{ tool: "start_run", prompt: "" }] }),
+    ).toThrow();
     // race n must be >= 2.
-    expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "race", prompt: "x", n: 1 }] })).toThrow();
+    expect(() =>
+      OrchestratePlan.parse({ tool_calls: [{ tool: "race", prompt: "x", n: 1 }] }),
+    ).toThrow();
     // apply requires a run_id.
     expect(() => OrchestratePlan.parse({ tool_calls: [{ tool: "apply" }] })).toThrow();
     // an undeclared tool is not in the discriminated union.
@@ -297,7 +432,12 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
   });
 
   it("carries auth_preference + resume_session_id on a HarnessRunSpec", () => {
-    const spec = HarnessRunSpec.parse({ session_id: "se-1", intent: "implement", prompt: "go", cwd: "/repo" });
+    const spec = HarnessRunSpec.parse({
+      session_id: "se-1",
+      intent: "implement",
+      prompt: "go",
+      cwd: "/repo",
+    });
     expect(spec.auth_preference).toBe("auto");
     expect(spec.resume_session_id).toBeNull();
   });
@@ -310,17 +450,27 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
       parentRunId: "run-0",
       planRunId: "run-plan-1",
       authPreference: "subscription",
+      protectedPathApprovals: [
+        { path: "packages/**/*.test.ts", reason: "test authoring requested" },
+      ],
     });
     expect(req.threadId).toBe("th-1");
     expect(req.planRunId).toBe("run-plan-1");
     expect(req.authPreference).toBe("subscription");
+    expect(req.protectedPathApprovals?.[0]?.path).toBe("packages/**/*.test.ts");
     // `sessionId` was removed (it had no consumer — staged-field rule): the strict
     // DTO now rejects it LOUDLY instead of accepting a no-op field.
-    expect(() => ControlRunStartRequest.parse({ prompt: "x", mode: "agent", sessionId: "se-1" })).toThrow(/sessionId/);
+    expect(() =>
+      ControlRunStartRequest.parse({ prompt: "x", mode: "agent", sessionId: "se-1" }),
+    ).toThrow(/sessionId/);
   });
 
   it("validates a typed review decision (unblock) request, rejecting unknown keys", () => {
-    const d = ControlRunDecisionRequest.parse({ action: "accept_risk", findingIds: ["f-1"], acceptedRisks: ["protected path"] });
+    const d = ControlRunDecisionRequest.parse({
+      action: "accept_risk",
+      findingIds: ["f-1"],
+      acceptedRisks: ["protected path"],
+    });
     expect(d.action).toBe("accept_risk");
     expect(d.findingIds).toEqual(["f-1"]);
     expect(() => ControlRunDecisionRequest.parse({ action: "bogus" })).toThrow();
@@ -328,7 +478,12 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
   });
 
   it("projects a ControlThread with a needs-me flag", () => {
-    const ct = ControlThread.parse({ id: "th-1", createdAt: "x", updatedAt: "y", needsHuman: true });
+    const ct = ControlThread.parse({
+      id: "th-1",
+      createdAt: "x",
+      updatedAt: "y",
+      needsHuman: true,
+    });
     expect(ct.needsHuman).toBe(true);
     expect(ct.authPreference).toBe("auto");
     expect(ct.state).toBe("active");

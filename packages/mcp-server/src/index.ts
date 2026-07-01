@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { AccessProfile, EffortHint, ExternalContextPolicy, ProviderFamily } from "@claudexor/schema";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -125,6 +126,126 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
   const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
   if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN)) return `n must be an integer >= ${minN}`;
+  return validateRunControls(obj);
+}
+
+const EFFORTS: ReadonlySet<string> = new Set(EffortHint.options);
+const ACCESS_PROFILES: ReadonlySet<string> = new Set(AccessProfile.options);
+const PROVIDER_FAMILIES = ProviderFamily.options;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateStringArray(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
+    return `${name} must be an array of non-empty strings`;
+  }
+  return null;
+}
+
+function validateStringMap(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!isPlainRecord(value)) return `${name} must be an object`;
+  for (const [key, child] of Object.entries(value)) {
+    if (!ProviderFamily.safeParse(key).success) {
+      return `${name} has unknown provider family key: ${key}`;
+    }
+    if (typeof child !== "string" || child.trim() === "") {
+      return `${name} must map provider family keys to non-empty strings`;
+    }
+  }
+  return null;
+}
+
+function validateEffortMap(value: unknown, name: string): string | null {
+  if (value === undefined) return null;
+  if (!isPlainRecord(value)) return `${name} must be an object`;
+  for (const [key, child] of Object.entries(value)) {
+    if (!ProviderFamily.safeParse(key).success) {
+      return `${name} has unknown provider family key: ${key}`;
+    }
+    if (typeof child !== "string" || !EFFORTS.has(child)) {
+      return `${name} must map provider family keys to valid effort values`;
+    }
+  }
+  return null;
+}
+
+function validateRunControls(obj: Record<string, unknown>): string | null {
+  if (obj.primaryHarness !== undefined && typeof obj.primaryHarness !== "string") {
+    return "primaryHarness must be a string";
+  }
+  if (obj.web !== undefined && (typeof obj.web !== "string" || !ExternalContextPolicy.safeParse(obj.web).success)) {
+    return "web must be a valid external context policy";
+  }
+  if (
+    obj.externalContextPolicy !== undefined &&
+    (typeof obj.externalContextPolicy !== "string" || !ExternalContextPolicy.safeParse(obj.externalContextPolicy).success)
+  ) {
+    return "externalContextPolicy must be a valid external context policy";
+  }
+  if (
+    obj.web !== undefined &&
+    obj.externalContextPolicy !== undefined &&
+    obj.web !== obj.externalContextPolicy
+  ) {
+    return "web and externalContextPolicy must be equal when both are provided";
+  }
+  if (obj.model !== undefined && typeof obj.model !== "string") return "model must be a string";
+  if (obj.effort !== undefined && (typeof obj.effort !== "string" || !EffortHint.safeParse(obj.effort).success)) {
+    return "effort must be a valid effort value";
+  }
+  const testsError = validateStringArray(obj.tests, "tests");
+  if (testsError) return testsError;
+  if (obj.maxUsd !== undefined && (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)) {
+    return "maxUsd must be a non-negative number";
+  }
+  if (obj.access !== undefined && (typeof obj.access !== "string" || !ACCESS_PROFILES.has(obj.access))) {
+    return "access must be a valid access profile";
+  }
+  if (obj.reviewerPanel !== undefined) {
+    if (!Array.isArray(obj.reviewerPanel) || obj.reviewerPanel.length === 0) {
+      return "reviewerPanel must be a non-empty array";
+    }
+    for (const entry of obj.reviewerPanel) {
+      if (!isPlainRecord(entry)) return "reviewerPanel entries must be objects";
+      const keys = Object.keys(entry);
+      const allowed = new Set(["harness", "model", "effort"]);
+      for (const key of keys) if (!allowed.has(key)) return `unknown reviewerPanel field: ${key}`;
+      if (typeof entry.harness !== "string" || entry.harness.trim() === "") {
+        return "reviewerPanel[].harness must be a non-empty string";
+      }
+      if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model.trim() === "")) {
+        return "reviewerPanel[].model must be a non-empty string";
+      }
+      if (entry.effort !== undefined && (typeof entry.effort !== "string" || !EFFORTS.has(entry.effort))) {
+        return "reviewerPanel[].effort must be a valid effort value";
+      }
+    }
+  }
+  const modelsError = validateStringMap(obj.reviewerModels, "reviewerModels");
+  if (modelsError) return modelsError;
+  const effortsError = validateEffortMap(obj.reviewerEfforts, "reviewerEfforts");
+  if (effortsError) return effortsError;
+  if (obj.protectedPathApprovals !== undefined) {
+    if (!Array.isArray(obj.protectedPathApprovals)) {
+      return "protectedPathApprovals must be an array";
+    }
+    for (const entry of obj.protectedPathApprovals) {
+      if (!isPlainRecord(entry)) return "protectedPathApprovals entries must be objects";
+      const keys = Object.keys(entry);
+      const allowed = new Set(["path", "reason"]);
+      for (const key of keys) if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
+      if (typeof entry.path !== "string" || entry.path.trim() === "") {
+        return "protectedPathApprovals[].path must be a non-empty string";
+      }
+      if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) {
+        return "protectedPathApprovals[].reason must be a non-empty string";
+      }
+    }
+  }
   return null;
 }
 
@@ -152,14 +273,74 @@ function summarizeResult(result: unknown): string {
 
 /** Default Claudexor tool surface for MCP (v0.9: 5 canonical modes + strategy flags). */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
+  const reviewerModelProperties = Object.fromEntries(
+    PROVIDER_FAMILIES.map((family) => [family, { type: "string", minLength: 1 }]),
+  );
+  const reviewerEffortProperties = Object.fromEntries(
+    PROVIDER_FAMILIES.map((family) => [
+      family,
+      { type: "string", enum: EffortHint.options },
+    ]),
+  );
   const promptSchema = (minN = 1) => ({
     type: "object",
     additionalProperties: false,
     properties: {
       prompt: { type: "string", minLength: 1, pattern: "\\S", description: "The user task or question to run through Claudexor." },
       harness: { type: "string", description: "Optional harness id to force for this one-shot run." },
+      primaryHarness: { type: "string", description: "Optional primary harness id for this run." },
+      model: { type: "string", description: "Optional model override for the primary harness." },
+      effort: { type: "string", enum: EffortHint.options, description: "Optional effort override for the primary harness." },
+      web: { type: "string", enum: ExternalContextPolicy.options, description: "External context policy for this run." },
+      externalContextPolicy: { type: "string", enum: ExternalContextPolicy.options, description: "Alias of web for control-api parity." },
       n: { type: "integer", minimum: minN, description: "Optional race width for best-of-N routes." },
       repoPath: { type: "string", description: "Absolute path of the target project. Defaults to the MCP server cwd." },
+      tests: { type: "array", items: { type: "string", minLength: 1 }, description: "Deterministic gate commands for this run." },
+      maxUsd: { type: "number", minimum: 0, description: "Optional per-run budget ceiling." },
+      access: {
+        type: "string",
+        enum: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],
+        description: "Optional access profile for this run.",
+      },
+      reviewerPanel: {
+        type: "array",
+        description: "Explicit reviewer panel entries, preserving order and duplicates.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            harness: { type: "string", minLength: 1 },
+            model: { type: "string", minLength: 1 },
+            effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
+          },
+          required: ["harness"],
+        },
+      },
+      reviewerModels: {
+        type: "object",
+        additionalProperties: false,
+        properties: reviewerModelProperties,
+        description: "Per-provider reviewer model overrides.",
+      },
+      reviewerEfforts: {
+        type: "object",
+        additionalProperties: false,
+        properties: reviewerEffortProperties,
+        description: "Per-provider reviewer effort overrides.",
+      },
+      protectedPathApprovals: {
+        type: "array",
+        description: "Typed approvals for existing protected path edits.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: { type: "string", minLength: 1 },
+            reason: { type: "string", minLength: 1 },
+          },
+          required: ["path"],
+        },
+      },
     },
     required: ["prompt"],
   });

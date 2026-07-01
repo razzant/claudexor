@@ -1,5 +1,15 @@
 # @claudexor/harness-opencode
 
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/core@0.14.1
+  - @claudexor/schema@0.14.1
+  - @claudexor/secrets@0.14.1
+  - @claudexor/util@0.14.1
+
 ## 0.14.0
 
 ### Patch Changes

@@ -26,6 +26,8 @@ struct ThreadsScreen: View {
     /// access (codex's sandbox cancels navigation otherwise); turning it on forces
     /// access to full + is disclosed in the options panel. Not sticky across threads.
     @State private var browser = false
+    @State private var reviewerPanelText = ""
+    @State private var protectedApprovalsText = ""
     /// Per-turn model override for the primary harness. Empty = harness default
     /// (the global default stays in Settings → Harnesses). Not sticky across threads.
     @State private var composerModel = ""
@@ -75,7 +77,9 @@ struct ThreadsScreen: View {
             web: webPolicy == "auto" ? nil : webPolicy,
             untilClean: untilClean,
             maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
-            browser: browser
+            browser: browser,
+            reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
+            protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals
         )
     }
 
@@ -94,6 +98,96 @@ struct ThreadsScreen: View {
         guard !t.isEmpty else { return false }
         guard let v = Double(t) else { return true }
         return v <= 0
+    }
+
+    private var reviewerPanelTokens: [String] {
+        splitOptionTokens(reviewerPanelText)
+    }
+
+    private var reviewerPanelEntries: [ReviewerPanelEntry] {
+        reviewerPanelTokens.compactMap(parseReviewerPanelEntry)
+    }
+
+    private var reviewerPanelInvalid: Bool {
+        let tokens = reviewerPanelTokens
+        return !tokens.isEmpty && tokens.count != reviewerPanelEntries.count
+    }
+
+    private var protectedApprovalTokens: [String] {
+        splitOptionTokens(protectedApprovalsText)
+    }
+
+    private var protectedPathApprovals: [ProtectedPathApproval] {
+        protectedApprovalTokens.compactMap(parseProtectedPathApproval)
+    }
+
+    private var protectedApprovalsInvalid: Bool {
+        let tokens = protectedApprovalTokens
+        return !tokens.isEmpty && tokens.count != protectedPathApprovals.count
+    }
+
+    private var composerOptionsInvalid: Bool {
+        capUsdInvalid || reviewerPanelInvalid || protectedApprovalsInvalid
+    }
+
+    private var composerBlockHelp: String {
+        if capUsdInvalid { return "Fix the budget cap in ⋯ options to send" }
+        if reviewerPanelInvalid { return "Fix the reviewer panel in ⋯ options to send" }
+        if protectedApprovalsInvalid { return "Fix protected path approvals in ⋯ options to send" }
+        return "Send (⌘↩)"
+    }
+
+    private func splitOptionTokens(_ text: String) -> [String] {
+        text
+            .split { $0 == "," || $0 == "\n" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func parseReviewerPanelEntry(_ raw: String) -> ReviewerPanelEntry? {
+        let efforts = ["low", "medium", "high", "xhigh", "max"]
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let eq = trimmed.firstIndex(of: "=")
+        var effort: String?
+        var harness = (eq == nil ? trimmed : String(trimmed[..<eq!]))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var rest = ""
+        if let eq {
+            rest = String(trimmed[trimmed.index(after: eq)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rest.isEmpty else { return nil }
+        } else if let colon = harness.lastIndex(of: ":") {
+            let suffix = String(harness[harness.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard efforts.contains(suffix) else { return nil }
+            effort = suffix
+            harness = String(harness[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !harness.isEmpty else { return nil }
+
+        var model = rest.isEmpty ? nil : rest
+        if let currentModel = model, let colon = currentModel.lastIndex(of: ":") {
+            let suffix = String(currentModel[currentModel.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if efforts.contains(suffix) {
+                effort = suffix
+                let stripped = String(currentModel[..<colon])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !stripped.isEmpty else { return nil }
+                model = stripped
+            }
+        }
+        return ReviewerPanelEntry(harness: harness, model: model, effort: effort)
+    }
+
+    private func parseProtectedPathApproval(_ raw: String) -> ProtectedPathApproval? {
+        let parts = raw
+            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard let path = parts.first, !path.isEmpty else { return nil }
+        let reason = parts.count == 2 && !parts[1].isEmpty ? parts[1] : nil
+        return ProtectedPathApproval(path: path, reason: reason)
     }
 
     var body: some View {
@@ -408,6 +502,7 @@ struct ThreadsScreen: View {
                     // cap / access / web / repair flags / model into the next thread.
                     capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
                     untilClean = false; maxAttempts = 3; showOptions = false; browser = false
+                    reviewerPanelText = ""; protectedApprovalsText = ""
                     composerModel = ""
                 }
                 // The no-project gate also fires when the project changes under a draft
@@ -454,10 +549,10 @@ struct ThreadsScreen: View {
                         Button("Send", action: send)
                             .buttonStyle(AccentButtonStyle())
                             .keyboardShortcut(.return, modifiers: .command)
-                            // Blocked on empty text OR an invalid budget cap — never send a
-                            // turn whose typed cap was silently dropped (typed-money contract).
-                            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || capUsdInvalid)
-                            .help(capUsdInvalid ? "Fix the budget cap in ⋯ options to send" : "Send (⌘↩)")
+                            // Blocked on empty text OR invalid option fields — never send a
+                            // turn whose typed controls would be silently dropped.
+                            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || composerOptionsInvalid)
+                            .help(composerBlockHelp)
                     }
                 }
             }
@@ -551,6 +646,34 @@ struct ThreadsScreen: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("External-context policy for this turn")
+            }
+            OptionSection(title: "Review controls") {
+                OptionRow(label: "Reviewers") {
+                    HStack(spacing: Theme.Spacing.xs) {
+                        TextField("claude=opus:max", text: $reviewerPanelText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.caption, design: .monospaced))
+                            .help("Comma or newline entries: harness[=model[:effort]] or harness[:effort]")
+                        if reviewerPanelInvalid {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange).font(.caption)
+                                .help("Reviewer entries need harness[=model[:effort]] or harness[:effort], effort low|medium|high|xhigh|max")
+                        }
+                    }
+                }
+                OptionRow(label: "Approvals") {
+                    HStack(spacing: Theme.Spacing.xs) {
+                        TextField("test/**:test update", text: $protectedApprovalsText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.caption, design: .monospaced))
+                            .help("Comma or newline entries: path[:reason]")
+                        if protectedApprovalsInvalid {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange).font(.caption)
+                                .help("Protected path approvals need a non-empty path")
+                        }
+                    }
+                }
             }
             // Agent-driven browser (Playwright MCP). Offered only where a pooled
             // harness can inject it. Arming it forces Full access (codex's sandbox
@@ -704,10 +827,10 @@ struct ThreadsScreen: View {
         if model.selectedThreadBusy { stop(); return }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        // Guard the cap HERE too, not only on the Send button: ⌘↩ / Return submit
+        // Guard options HERE too, not only on the Send button: ⌘↩ / Return submit
         // through GlassField.onSubmit calls send() directly, bypassing the disabled
-        // button. Never send a turn whose typed cap was silently dropped to nil.
-        guard !capUsdInvalid else { return }
+        // button. Never send a turn whose typed controls would be silently dropped.
+        guard !composerOptionsInvalid else { return }
         let mode = composerMode
         let options = currentOptions
         let chosenModel = composerModel

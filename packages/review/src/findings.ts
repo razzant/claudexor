@@ -7,31 +7,123 @@ import { newId } from "@claudexor/util";
 /** Extract JSON payloads from a reviewer's free-text output (fenced or bare). */
 export function extractJsonBlocks(text: string): unknown[] {
   const results: unknown[] = [];
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === "object" && !Array.isArray(value);
+  const isSingleFindingObject = (value: Record<string, unknown>): boolean =>
+    "severity" in value && ("claim" in value || "message" in value || "evidence" in value);
+  const isReviewPayload = (value: unknown, allowSingleObject: boolean): boolean => {
+    if (Array.isArray(value)) return true;
+    if (!isRecord(value)) return false;
+    if (Array.isArray(value.findings)) return true;
+    return allowSingleObject && isSingleFindingObject(value);
+  };
+  const tryParse = (candidate: string, allowSingleObject = false): boolean => {
+    const trimmed = candidate.trim();
+    if (!trimmed) return false;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!isReviewPayload(parsed, allowSingleObject)) return false;
+      results.push(parsed);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const findBalancedJsonEnd = (source: string, start: number): number | null => {
+    const open = source[start];
+    if (open !== "[" && open !== "{") return null;
+    const stack: string[] = [open];
+    let inString = false;
+    let escaped = false;
+    for (let i = start + 1; i < source.length; i += 1) {
+      const ch = source[i] ?? "";
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "[" || ch === "{") {
+        stack.push(ch);
+        continue;
+      }
+      if (ch === "]" || ch === "}") {
+        const expected = ch === "]" ? "[" : "{";
+        if (stack.pop() !== expected) return null;
+        if (stack.length === 0) return i + 1;
+      }
+    }
+    return null;
+  };
+  const isWhitespaceOnly = (source: string, start: number): boolean => {
+    for (let i = start; i < source.length; i += 1) {
+      const ch = source[i] ?? "";
+      if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") return false;
+    }
+    return true;
+  };
+  const jsonLineStarts = (source: string, open: "[" | "{"): number[] => {
+    const starts: number[] = [];
+    let lineStart = 0;
+    for (let i = 0; i <= source.length; i += 1) {
+      if (i < source.length && source[i] !== "\n") continue;
+      const lineEnd = i > lineStart && source[i - 1] === "\r" ? i - 1 : i;
+      let first = lineStart;
+      while (first < lineEnd) {
+        const ch = source[first] ?? "";
+        if (ch !== " " && ch !== "\t") break;
+        first += 1;
+      }
+      const ch = source[first] ?? "";
+      if (first < lineEnd && ch === open) starts.push(first);
+      lineStart = i + 1;
+    }
+    return starts;
+  };
   const fence = /```(?:json)?\s*([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   let found = false;
   while ((m = fence.exec(text)) !== null) {
-    try {
-      results.push(JSON.parse(m[1] ?? ""));
-      found = true;
-    } catch {
-      /* skip */
-    }
+    found = tryParse(m[1] ?? "", true) || found;
   }
   if (!found) {
     const trimmed = text.trim();
-    const candidates = [trimmed];
-    const lines = trimmed.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      const candidate = lines.slice(i).join("\n").trim();
-      if (candidate.startsWith("[") || candidate.startsWith("{")) candidates.push(candidate);
+    if (!tryParse(trimmed, true)) {
+      const arrayStarts = jsonLineStarts(trimmed, "[");
+      const starts = arrayStarts.length > 0 ? arrayStarts : jsonLineStarts(trimmed, "{");
+      for (let i = starts.length - 1; i >= 0; i -= 1) {
+        const start = starts[i] ?? 0;
+        const end = findBalancedJsonEnd(trimmed, start);
+        if (end === null) continue;
+        const candidate = trimmed.slice(start, end);
+        if (isWhitespaceOnly(trimmed, end)) {
+          if (tryParse(candidate, true)) break;
+          continue;
+        }
+        // Some native transcripts duplicate status text after the model's final
+        // JSON block. Prefer the last complete line-start JSON block over
+        // discarding an otherwise valid reviewer response.
+        if (tryParse(candidate, true)) break;
+      }
     }
-    for (const candidate of candidates) {
-      try {
-        results.push(JSON.parse(candidate));
-        break;
-      } catch {
-        /* try the next JSON-looking suffix */
+    const lines = trimmed.split(/\r?\n/);
+    if (results.length === 0) {
+      for (const line of lines) {
+        const candidate = line.trim();
+        if (
+          (candidate.startsWith("[") && candidate.endsWith("]")) ||
+          (candidate.startsWith("{") && candidate.endsWith("}"))
+        ) {
+          if (tryParse(candidate, true)) break;
+        }
       }
     }
   }
@@ -46,14 +138,17 @@ export interface ReviewerInfo {
   route_proof_status?: RouteProofStatus;
 }
 
-export function parseFindingsDetailed(text: string, reviewer: ReviewerInfo): { findings: ReviewFinding[]; malformed: number } {
+export function parseFindingsDetailed(
+  text: string,
+  reviewer: ReviewerInfo,
+): { findings: ReviewFinding[]; malformed: number } {
   const raw: any[] = [];
   for (const block of extractJsonBlocks(text)) {
     if (Array.isArray(block)) raw.push(...block);
-    else if (block && typeof block === "object" && Array.isArray((block as any).findings)) {
-      raw.push(...(block as any).findings);
-    } else if (block && typeof block === "object") {
-      raw.push(block);
+    else if (block && typeof block === "object") {
+      const candidate = block as { findings?: unknown };
+      if (Array.isArray(candidate.findings)) raw.push(...candidate.findings);
+      else raw.push(block);
     }
   }
   const out: ReviewFinding[] = [];
@@ -113,17 +208,25 @@ function severityRank(s: Severity): number {
 export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
   const seen = new Map<string, ReviewFinding>();
   const humanGates: ReviewFinding[] = [];
+  const insufficientEvidence: ReviewFinding[] = [];
   for (const f of findings) {
     if (f.severity === "NEEDS_HUMAN") {
       humanGates.push(f);
       continue;
     }
-    const files = f.evidence.files.map((x) => x.path).sort().join(",");
+    if (f.severity === "INSUFFICIENT_EVIDENCE") {
+      insufficientEvidence.push(f);
+      continue;
+    }
+    const files = f.evidence.files
+      .map((x) => x.path)
+      .sort()
+      .join(",");
     const key = `${f.category}|${f.claim.toLowerCase().slice(0, 120)}|${files}`;
     const existing = seen.get(key);
     if (!existing || severityRank(f.severity) > severityRank(existing.severity)) {
       seen.set(key, f);
     }
   }
-  return [...seen.values(), ...humanGates];
+  return [...seen.values(), ...humanGates, ...insufficientEvidence];
 }

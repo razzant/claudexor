@@ -9,6 +9,7 @@ import {
   loadFrozenSpec,
   persistSpec,
   readAnswers,
+  resolveRunTestCommands,
   validateAnswers,
 } from "./spec.js";
 
@@ -306,6 +307,20 @@ Review blocked on evidence.
     expect(loaded.spec.id).toBe(spec.id);
     expect(loaded.specPath).toBe(realpathSync(specPath));
     expect(loaded.specHash).toBe(persisted.specHash);
+  });
+
+  it("uses frozen SpecPack tests when run has no explicit --test flags", async () => {
+    const spec = await freezeSpecFromGrounding("fix auth", PLAN, {
+      answers: [
+        { question_id: "q1", option_ids: [], text: "single-use" },
+        { question_id: "q2", option_ids: [], text: "sessions" },
+      ],
+      tests: ["node test.js", "pnpm verify"],
+    });
+
+    expect(resolveRunTestCommands([], spec)).toEqual(["node test.js", "pnpm verify"]);
+    expect(resolveRunTestCommands(["pnpm explicit"], spec)).toEqual(["pnpm explicit"]);
+    expect(resolveRunTestCommands([], null)).toBeUndefined();
   });
 
   it("fails loudly when a run --spec file is missing, malformed, or schema-invalid", () => {

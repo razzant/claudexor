@@ -78,7 +78,7 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
     forbidden_approaches: spec.forbidden_approaches,
     decided_tradeoffs: spec.decided_tradeoffs,
     task_graph: buildTaskGraph(spec.tasks),
-    constraints: spec.constraints,
+    constraints: { protected_paths: spec.constraints.protected_paths, protected_path_approvals: [] },
     tests: { commands: spec.tests },
     budget: { max_usd: opts.maxUsd ?? null },
   });
