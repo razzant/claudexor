@@ -292,7 +292,7 @@
           "type": "string"
         },
         "specPath": {
-          "type": "string"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
         },
         "specId": {
           "type": "string"

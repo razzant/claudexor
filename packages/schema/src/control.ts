@@ -103,7 +103,7 @@ export const ControlRunStartRequest = z
      * does not bypass built-in critical/security path human gates. */
     protectedPathApprovals: z.array(ProtectedPathApproval).optional(),
     envProfile: z.string().optional(),
-    specPath: z.string().optional(),
+    specPath: NonBlankString.optional(),
     specId: z.string().optional(),
     specHash: ContentHash.optional(),
     /** Thread/session linkage (A2): a run is a turn inside a thread. */

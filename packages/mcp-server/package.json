@@ -15,7 +15,8 @@
     "dist"
   ],
   "dependencies": {
-    "@claudexor/schema": "workspace:*"
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   },
   "scripts": {
     "build": "tsc",

@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { AccessProfile, EffortHint, ExternalContextPolicy, ProviderFamily } from "@claudexor/schema";
+import { assertNoInlineSecretValues } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -127,7 +128,9 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
   const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
   if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN)) return `n must be an integer >= ${minN}`;
-  return validateRunControls(obj);
+  const runControlError = validateRunControls(obj);
+  if (runControlError) return runControlError;
+  return validateNoInlineSecrets(obj, "MCP tool arguments");
 }
 
 const EFFORTS: ReadonlySet<string> = new Set(EffortHint.options);
@@ -248,6 +251,15 @@ function validateRunControls(obj: Record<string, unknown>): string | null {
     }
   }
   return null;
+}
+
+function validateNoInlineSecrets(value: unknown, context: string): string | null {
+  try {
+    assertNoInlineSecretValues(value, "$", context);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 function validateOptionalNonEmptyString(value: unknown, name: string): string | null {

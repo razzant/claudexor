@@ -33,14 +33,23 @@ describe("normalizeRunStart prompt validation", () => {
     ).toThrowError(/prompt must not be empty/);
   });
   it("allows an empty prompt only when a frozen specPath supplies the intent", () => {
+    const req = normalizeRunStartRequest({
+      ...projectScope(),
+      prompt: "",
+      mode: "agent",
+      specPath: " /tmp/spec.yaml ",
+    });
+    expect(req.specPath).toBe("/tmp/spec.yaml");
+  });
+  it("rejects a whitespace-only specPath as an empty-prompt substitute", () => {
     expect(() =>
       normalizeRunStartRequest({
         ...projectScope(),
         prompt: "",
         mode: "agent",
-        specPath: "/tmp/spec.yaml",
+        specPath: "   ",
       }),
-    ).not.toThrow();
+    ).toThrow();
   });
   it("rejects an empty prompt with only a specId (no spec content loaded at enqueue)", () => {
     expect(() =>

@@ -92,6 +92,7 @@ describe("McpServer", () => {
       if (l.trim()) responses.push(JSON.parse(l));
     });
 
+    const secretLike = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
     const invalidCalls = [
       { id: 1, name: "claudexor_run", arguments: {} },
       { id: 2, name: "claudexor_run", arguments: { prompt: "" } },
@@ -112,6 +113,9 @@ describe("McpServer", () => {
       { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
       { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
       { id: 19, name: "claudexor_run", arguments: { prompt: "go", model: "" } },
+      { id: 20, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] } },
+      { id: 21, name: "claudexor_run", arguments: { prompt: "go", tests: [`echo ${secretLike}`] } },
+      { id: 22, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] } },
     ];
     for (const call of invalidCalls) {
       c2s.write(JSON.stringify({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } }) + "\n");
@@ -123,6 +127,9 @@ describe("McpServer", () => {
     expect(calls).toBe(0);
     expect(responses).toHaveLength(invalidCalls.length);
     expect(responses.every((r) => r.error?.code === -32602)).toBe(true);
+    expect(responses.find((r) => r.id === 20)?.error?.message).toContain("secret-like value is not accepted");
+    expect(responses.find((r) => r.id === 21)?.error?.message).toContain("secret-like value is not accepted");
+    expect(responses.find((r) => r.id === 22)?.error?.message).toContain("secret-like value is not accepted");
   });
 
   it("exposes advanced run controls and forwards them to the runner", async () => {

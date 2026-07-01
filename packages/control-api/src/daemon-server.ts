@@ -1446,15 +1446,17 @@ function validateDirectRunAttachments<T extends ControlRunStartRequest & { turnI
 }
 
 function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
+  const specPath = parsed.specPath?.trim();
   const mode = parsed.mode ?? "agent";
   // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
   // engine boundary unless a frozen spec FILE (specPath) supplies the intent.
   // A bare specId does not load spec content at enqueue time, so it is not a
   // valid substitute for the prompt. Fail loud (400) rather than enqueue a
   // doomed run that produces nothing.
-  if (parsed.prompt.trim().length === 0 && !parsed.specPath) {
+  if (parsed.prompt.trim().length === 0 && !specPath) {
     throw Object.assign(new Error("prompt must not be empty (provide a prompt or a frozen specPath)"), { status: 400 });
   }
+  if (specPath && specPath !== parsed.specPath) parsed = { ...parsed, specPath };
   // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must
   // 400 here, not persist a doomed job for the orchestrator to reject later.
   if (parsed.web && parsed.externalContextPolicy && parsed.web !== parsed.externalContextPolicy) {

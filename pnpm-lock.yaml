@@ -50,6 +50,9 @@ importers:
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudexor/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/arbitration:
     dependencies:
@@ -335,6 +338,9 @@ importers:
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudexor/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/orchestrator:
     dependencies:

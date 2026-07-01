@@ -9,6 +9,7 @@ import {
   ModeKind,
   ProviderFamily,
 } from "@claudexor/schema";
+import { assertNoInlineSecretValues } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -552,6 +553,9 @@ function validateRunControls(params: unknown): string | null {
       return `${name} must be a boolean`;
     }
   }
+  if (params.race === true && params.n !== undefined && (params.n as number) < 2) {
+    return "race n must be an integer >= 2";
+  }
   if (params.tests !== undefined) {
     const testsError = validateStringArray(params.tests, "tests");
     if (testsError) return testsError;
@@ -589,11 +593,20 @@ function validateRunControls(params: unknown): string | null {
       if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) return "protectedPathApprovals[].reason must be a non-empty string";
     }
   }
-  return null;
+  return validateNoInlineSecrets(params, "ACP session/prompt");
 }
 
 function validateOptionalNonEmptyString(value: unknown, name: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string" || value.trim() === "") return `${name} must be a non-empty string`;
   return null;
+}
+
+function validateNoInlineSecrets(value: unknown, context: string): string | null {
+  try {
+    assertNoInlineSecretValues(value, "$", context);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }

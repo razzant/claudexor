@@ -299,6 +299,13 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
+        specPath: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({
+        prompt: "bad",
+        mode: "ask",
         protectedPathApprovals: [{ path: "   " }],
       }),
     ).toThrow();

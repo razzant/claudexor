@@ -224,6 +224,7 @@ describe("AcpServer", () => {
     await sleep(20);
     const sid = messages.find((m) => m.id === 100)?.result?.sessionId;
     const withSession = (params: Record<string, unknown>) => ({ sessionId: sid, ...params });
+    const secretLike = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
 
     c2s.write(
       JSON.stringify({
@@ -329,6 +330,38 @@ describe("AcpServer", () => {
         params: withSession({ prompt: "go", reviewerPannel: [{ harness: "claude" }] }),
       }) + "\n",
     );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 14,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", race: true, n: 1 }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 15,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 16,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", tests: [`echo ${secretLike}`] }),
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 17,
+        method: "session/prompt",
+        params: withSession({ prompt: "go", protectedPathApprovals: [{ path: secretLike }] }),
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
@@ -347,6 +380,10 @@ describe("AcpServer", () => {
     expect(messages.find((m) => m.id === 11)?.error?.message).toContain("primaryHarness must be a non-empty string");
     expect(messages.find((m) => m.id === 12)?.error?.message).toContain("model must be a non-empty string");
     expect(messages.find((m) => m.id === 13)?.error?.message).toContain("unknown session/prompt field: reviewerPannel");
+    expect(messages.find((m) => m.id === 14)?.error?.message).toContain("race n must be an integer >= 2");
+    expect(messages.find((m) => m.id === 15)?.error?.message).toContain("secret-like value is not accepted");
+    expect(messages.find((m) => m.id === 16)?.error?.message).toContain("secret-like value is not accepted");
+    expect(messages.find((m) => m.id === 17)?.error?.message).toContain("secret-like value is not accepted");
   });
 
   it("answers session/request_permission WHILE the prompt is still running (read loop never blocks)", async () => {
