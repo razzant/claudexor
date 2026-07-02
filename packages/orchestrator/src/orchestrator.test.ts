@@ -1509,6 +1509,46 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: success_with_warnings");
   });
 
+  it("budget-degraded race keeps envelope isolation + adoption (requested semantics stick, T2#6)", async () => {
+    const repo = await initRepo();
+    // Cap sized so the DD-27 wave guard denies the SECOND slot: requested
+    // n=2, granted 1. The surviving candidate must still run in an isolated
+    // envelope (never silently in-place) and its work be ADOPTED after.
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-degraded-race-"));
+    writeFileSync(join(configDir, "config.yaml"), "budget:\n  estimate_usd_floor: 5\n");
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({
+        registry: new Map([
+          ["a", diffImplementer("a", "local")],
+          ["b", diffImplementer("b", "openai")],
+        ]),
+        reviewers: reviewers(),
+      });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["a", "b"],
+        n: 2,
+        inPlace: true,
+        maxUsd: 5, // floor 5: slot 1 holds nothing, slot 2's estimate (5) >= headroom (5) -> denied
+      });
+      expect(res.candidates.length).toBe(1); // wave guard trimmed the wave
+      const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+      // The surviving slot ran ISOLATED: its work reached the live tree via
+      // ADOPTION (work_product.adopted event), not direct in-place mutation.
+      expect(events).toContain("work_product.adopted");
+      expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+      const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+      expect(wp).toContain("adopted: true");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
+  });
+
   it("FinalVerifier (D12): a winner whose gates fail on a FRESH verify tree is blocked, not shipped", async () => {
     const repo = await initRepo();
     // fake-implement writes IMPLEMENTED.md into its worktree -> real patch.

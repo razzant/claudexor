@@ -174,6 +174,7 @@ async function main(): Promise<void> {
         synthesis: p.synthesis,
         // Policy from the GUI composer / API client (applied, not just displayed).
         maxUsd: p.maxUsd ?? null,
+        maxToolCalls: p.maxToolCalls ?? null,
         access: p.access,
         web: p.web ?? p.externalContextPolicy,
         externalContextPolicy: p.externalContextPolicy ?? p.web,

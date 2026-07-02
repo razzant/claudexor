@@ -355,6 +355,10 @@
             "auto_safe",
             "auto_full"
           ]
+        },
+        "maxToolCalls": {
+          "type": "integer",
+          "exclusiveMinimum": 0
         }
       },
       "additionalProperties": false

@@ -188,6 +188,8 @@ export interface RunInput {
   protectedPathApprovals?: ProtectedPathApproval[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
+  /** Orchestrate executor: cap on plan tool calls (D9). */
+  maxToolCalls?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
   access?: AccessProfile;
   /** External/web context policy. Separate from shell/network sandboxing. */
@@ -302,6 +304,9 @@ export interface OrchestratorResult {
   candidates: { attemptId: string; harnessId: string; status: string }[];
   decisionPath?: string;
   reviewVerified?: boolean;
+  /** Settled ledger spend for this run (USD); null when no ledger tracked it.
+   * Consumer: the orchestrate executor's aggregate budget across sub-runs. */
+  spendUsd?: number | null;
 }
 
 interface CandidateRun {
@@ -2152,6 +2157,8 @@ export class Orchestrator {
     }
     let budgetStopped = false;
     let softWarned = false;
+    // The USER-requested race width, before any budget trimming.
+    const requestedSingleCandidate = adapters.length === 1;
     const slots: CandidateSlot[] = [];
     for (let i = 0; i < adapters.length; i++) {
       const routed = adapters[i] as RoutedAdapter;
@@ -2267,7 +2274,10 @@ export class Orchestrator {
           // runs directly in the execution tree so the next turn sees its work
           // and the native session resumes. Race candidates (n>1) always stay in
           // isolated envelopes; the winner is auto-adopted into the tree after.
-          inPlace: input.inPlace === true && slots.length === 1,
+          // REQUESTED width decides (T2#6): a budget-degraded race whose wave
+          // guard trimmed it to one slot still runs enveloped + adoption —
+          // never a silent switch to direct live-tree mutation.
+          inPlace: input.inPlace === true && requestedSingleCandidate,
         });
         const run = await this.runCandidateInEnvelope(
           slot.routed,
@@ -2375,7 +2385,7 @@ export class Orchestrator {
     // arbitration (as the race-adoption path does) would fold those user edits
     // into the revert target and let a later revert clobber them.
     let earlyPostTurnSha: string | null = null;
-    if (input.inPlace === true && slots.length === 1) {
+    if (input.inPlace === true && requestedSingleCandidate) {
       try {
         earlyPostTurnSha = await snapshotTree(execRoot);
       } catch {
@@ -2577,7 +2587,10 @@ export class Orchestrator {
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
       const synthRouted = adapters[0] as RoutedAdapter;
-      const lease = ledger.reserve({
+      // Per-harness child ledger (T3#10): synthesis spend counts against the
+      // synthesizer harness's own cap, not only the run cap.
+      const synthLedger = this.harnessLedger(harnessLedgers, ledger, synthRouted);
+      const lease = synthLedger.reserve({
         taskId,
         attemptId: "synth",
         intent: "synthesize",
@@ -2618,7 +2631,7 @@ export class Orchestrator {
             store,
             paths,
             wsm,
-            ledger,
+            synthLedger,
             candidateAccess,
             (ev) => {
               const safeEv = redactHarnessEvent(ev);
@@ -2635,7 +2648,7 @@ export class Orchestrator {
             undefined,
             input,
           );
-          ledger.settle(lease.lease?.lease_id ?? "", run.cost);
+          synthLedger.settle(lease.lease?.lease_id ?? "", run.cost);
           reviewEnvelopes.push(envelope);
           envelope = undefined;
           try {
@@ -2674,7 +2687,7 @@ export class Orchestrator {
           runs.push(run);
           workingRuns.push(run);
         } catch (err) {
-          ledger.settle(lease.lease?.lease_id ?? "", 0);
+          synthLedger.settle(lease.lease?.lease_id ?? "", 0);
           log.emit("harness.completed", {
             attempt_id: "synth",
             status: "failed",
@@ -2700,7 +2713,6 @@ export class Orchestrator {
       );
     }
 
-    const actualReviewVerified = evidences.length > 0 && evidences.every((e) => e.reviewVerified);
     let result: ReturnType<typeof arbitrate>;
     try {
       result = arbitrate(evidences, {
@@ -2724,6 +2736,12 @@ export class Orchestrator {
     const needsHuman = evidences.some((e) =>
       e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)),
     );
+    // Run-level review_verified is the WINNER's verification (T2#8): an
+    // empty-diff loser's unverified route must not drag the shipped result's
+    // flag false. No winner -> fall back to the all-candidates view.
+    const actualReviewVerified = winnerRun
+      ? (evidences.find((e) => e.attemptId === winnerRun.attemptId)?.reviewVerified ?? false)
+      : evidences.length > 0 && evidences.every((e) => e.reviewVerified);
     let status: RunStatus =
       needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
 
@@ -2789,7 +2807,7 @@ export class Orchestrator {
         "not_applied";
       let postTurnSha: string | null = null;
       if (input.inPlace === true && hasDiff) {
-        if (slots.length === 1) {
+        if (requestedSingleCandidate) {
           // Already live: the candidate ran in-place and wrote the tree itself.
           adopted = true;
           applyState = adoptable ? "applied" : "applied_review_blocked";
@@ -2965,6 +2983,7 @@ export class Orchestrator {
       })),
       decisionPath,
       reviewVerified: actualReviewVerified,
+      spendUsd: ledger.spend(),
     };
   }
 
@@ -4768,7 +4787,7 @@ export class Orchestrator {
     const orchestrateContract = OrchestrateContractSchema.parse({
       thread_id: input.threadId ?? newId("th"),
       goal,
-      budget: { max_usd: input.maxUsd ?? null, max_tool_calls: null },
+      budget: { max_usd: input.maxUsd ?? null, max_tool_calls: input.maxToolCalls ?? null },
       autonomy,
     });
     const brainPrompt = buildOrchestrateBrainPrompt(goal, pool, crossFamily, orchestrateContract);
@@ -5760,6 +5779,10 @@ export class Orchestrator {
     log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
 
     let executed = 0;
+    // Aggregate budget (D9): sub-runs share ONE cap. Each sequential sub-run
+    // gets the REMAINING headroom (cap minus settled spend of prior steps) —
+    // never the full cap again per step (the N-times-overspend bug).
+    let aggregateSpentUsd = 0;
     for (let i = 0; i < plan.tool_calls.length; i++) {
       const call = plan.tool_calls[i]!;
       const step = steps[i]!;
@@ -5769,6 +5792,15 @@ export class Orchestrator {
         step.detail = "run cancelled before this step";
         stoppedReason = "cancelled";
         terminal = "cancelled";
+        persist();
+        break;
+      }
+      // Aggregate USD cap: stop before a step that has no headroom left.
+      if (input.maxUsd !== null && input.maxUsd !== undefined && aggregateSpentUsd >= input.maxUsd) {
+        step.status = "skipped";
+        step.detail = `aggregate budget exhausted (${aggregateSpentUsd.toFixed(2)} of ${input.maxUsd} USD spent)`;
+        stoppedReason = `aggregate budget exhausted after ${executed} step(s)`;
+        terminal = "exhausted";
         persist();
         break;
       }
@@ -5833,7 +5865,12 @@ export class Orchestrator {
       persist();
       executed++;
       try {
-        const r = await this.executeSafeStep(input, call, log, store, paths);
+        const remainingUsd =
+          input.maxUsd === null || input.maxUsd === undefined
+            ? null
+            : Math.max(0, input.maxUsd - aggregateSpentUsd);
+        const r = await this.executeSafeStep(input, call, log, store, paths, remainingUsd);
+        aggregateSpentUsd += r.spendUsd ?? 0;
         step.status = r.status;
         step.run_id = r.runId;
         step.detail = r.detail;
@@ -5883,7 +5920,8 @@ export class Orchestrator {
     log: EventLog,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
-  ): Promise<{ status: OrchestrateStepStatus; runId: string | null; detail: string | null }> {
+    remainingUsd: number | null,
+  ): Promise<{ status: OrchestrateStepStatus; runId: string | null; detail: string | null; spendUsd?: number | null }> {
     switch (call.tool) {
       case "start_run":
       case "race": {
@@ -5897,7 +5935,8 @@ export class Orchestrator {
           n: call.tool === "race" ? call.n : undefined,
           harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
           portfolio: input.portfolio,
-          maxUsd: input.maxUsd ?? null,
+          // Aggregate budget (D9): the sub-run gets only the REMAINING headroom.
+          maxUsd: remainingUsd,
           web: input.web,
           externalContextPolicy: input.externalContextPolicy,
           signal: input.signal,
@@ -5922,6 +5961,7 @@ export class Orchestrator {
         return {
           status: res.status === "failed" || res.status === "cancelled" ? "failed" : "done",
           runId: res.runId,
+          spendUsd: res.spendUsd ?? null,
           detail: `${call.tool} sub-run ${res.runId} -> ${res.status}`,
         };
       }
@@ -6328,10 +6368,14 @@ function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
     }
     return;
   }
-  // status === "ok": a later success of the SAME tool is the verified recovery
-  // for that tool's earlier errors within this attempt (CLAUDEXOR_BIBLE §5).
+  // status === "ok": a later success of the SAME tool against the SAME target
+  // is the verified recovery for that call's earlier errors within this
+  // attempt (T2#10 keying fix: `bash echo done` must NOT launder an earlier
+  // `bash npm test` failure — the name alone proved nothing).
   for (const err of t.toolErrors) {
-    if (!err.recovered && err.tool === tool.name) err.recovered = true;
+    if (!err.recovered && err.tool === tool.name && err.target === (tool.target ?? null)) {
+      err.recovered = true;
+    }
   }
   if (tool.kind === "web") {
     t.web.attempted = true;

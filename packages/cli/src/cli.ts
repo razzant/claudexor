@@ -226,6 +226,7 @@ Options:
   --test "<cmd>"           Deterministic gate command(s); repeat flag or separate with ';;'
   --allow-protected-path <glob[,glob...]>  Explicitly approve protected gate/test path changes for this run
   --max-usd <amount>       Hard per-run spend cap (USD)
+  --max-tool-calls <n>     Orchestrate executor: cap on plan tool calls
   --reviewer-panel <list>  Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
@@ -483,6 +484,7 @@ async function orchestrate(
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
   let maxUsd: number | undefined;
+  let maxToolCalls: number | undefined;
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
   let autonomy: OrchestrateAutonomy | undefined;
@@ -504,6 +506,7 @@ async function orchestrate(
     resolvedPrimaryHarness = flagStr(args, "primary-harness");
     resolvedModel = flagStr(args, "model");
     maxUsd = floatFlag(args, "max-usd");
+    maxToolCalls = intFlag(args, "max-tool-calls");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
     autonomy = parseAutonomy(flagStr(args, "autonomy"));
@@ -572,6 +575,7 @@ async function orchestrate(
       tests,
       portfolio: portfolio?.success ? portfolio.data : undefined,
       maxUsd,
+      maxToolCalls,
       reviewerPanel: resolvedReviewerPanel,
       reviewerModels: resolvedReviewerModels,
       reviewerEfforts: reviewerEffortOverrides,
@@ -635,6 +639,7 @@ async function orchestrate(
       tests,
       protectedPathApprovals: resolvedProtectedPathApprovals,
       maxUsd: maxUsd ?? null,
+      maxToolCalls: maxToolCalls ?? null,
       access: resolvedAccess,
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
@@ -700,6 +705,7 @@ interface DaemonRunParams {
   tests: string[] | undefined;
   portfolio: ReturnType<typeof Portfolio.parse> | undefined;
   maxUsd: number | undefined;
+  maxToolCalls?: number;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
   reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   reviewerEfforts: Partial<Record<ProviderFamily, EffortHint>> | undefined;
@@ -757,6 +763,7 @@ async function daemonAgentRun(
     ...(p.tests ? { tests: p.tests } : {}),
     ...(p.protectedPathApprovals ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
     ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
+    ...(p.mode === "orchestrate" && p.maxToolCalls !== undefined ? { maxToolCalls: p.maxToolCalls } : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
     ...(flagStr(args, "model") ? { model: flagStr(args, "model") } : {}),
@@ -1384,6 +1391,7 @@ const KNOWN_FLAGS = new Set([
   "test",
   "allow-protected-path",
   "max-usd",
+  "max-tool-calls",
   "reviewer-panel",
   "reviewer-model",
   "reviewer-effort",
@@ -1427,6 +1435,7 @@ const VALUE_FLAGS = [
   "test",
   "allow-protected-path",
   "max-usd",
+  "max-tool-calls",
   "reviewer-panel",
   "reviewer-model",
   "reviewer-effort",

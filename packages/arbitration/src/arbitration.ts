@@ -37,7 +37,11 @@ function acceptanceFraction(c: CandidateEvidence): number {
   return c.acceptanceTotal > 0 ? c.acceptanceCovered.length / c.acceptanceTotal : 0;
 }
 
-/** Human label for acceptance evidence: honest "n/a" when no criteria exist. */
+/** Human label for gate-derived criteria coverage: honest "n/a" when no
+ * criteria exist. Named gates_coverage in decision strings (T3#8): the
+ * number is a PROXY derived from the deterministic gates (all criteria
+ * count as covered only when gates pass), not independent per-criterion
+ * acceptance evidence. */
 function acceptanceLabel(c: CandidateEvidence): string {
   return c.acceptanceTotal > 0 ? `${(acceptanceFraction(c) * 100).toFixed(0)}%` : "n/a";
 }
@@ -122,7 +126,7 @@ const CRITERIA: { key: string; better: (a: CandidateEvidence, b: CandidateEviden
       requiredGatesPassed(a) === requiredGatesPassed(b) ? "tie" : requiredGatesPassed(a) ? "a" : "b",
   },
   {
-    key: "acceptance",
+    key: "gates_coverage",
     better: (a, b) =>
       acceptanceFraction(a) === acceptanceFraction(b) ? "tie" : acceptanceFraction(a) > acceptanceFraction(b) ? "a" : "b",
   },
@@ -239,7 +243,7 @@ export function arbitrate(
     const reasons: string[] = [];
     if (!requiredGatesPassed(c)) reasons.push("required gates not all passing");
     if (openBlockerCount(c) > 0) reasons.push(`${openBlockerCount(c)} open blocker(s)`);
-    if (acceptanceFraction(c) < acceptanceFraction(winner)) reasons.push("lower acceptance coverage");
+    if (acceptanceFraction(c) < acceptanceFraction(winner)) reasons.push("lower gates-derived criteria coverage");
     if (effectiveTestFraction(c) < effectiveTestFraction(winner)) reasons.push("weaker test evidence");
     if (!c.finalReviewClean) reasons.push("no clean final review");
     whyNot[c.label] = reasons.length > 0 ? reasons.join("; ") : "narrowly behind on tie-breakers";
@@ -253,7 +257,7 @@ export function arbitrate(
     winner: winner.attemptId,
     status,
     outcome,
-    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, acceptance=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
+    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
     final_checks: [

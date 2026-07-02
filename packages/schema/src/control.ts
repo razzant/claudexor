@@ -134,6 +134,9 @@ export const ControlRunStartRequest = z
      * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;
      * consumed by the executor in runOrchestrate. */
     autonomy: OrchestrateAutonomy.optional(),
+    /** Orchestrate executor: cap on plan tool calls (D9). Only meaningful for
+     * mode=orchestrate; consumed by executeOrchestratePlan. */
+    maxToolCalls: z.number().int().positive().optional(),
   })
   .strict();
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
