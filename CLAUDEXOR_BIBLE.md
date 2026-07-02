@@ -129,7 +129,8 @@ process below. Never paper over the conflict.
   what the engine records as the work product must `git apply` cleanly to
   the base it was captured against (no silent corruption — CRLF, quoted
   paths, binary — between capture and delivery). verify: workspace diff
-  tests; CRLF/binary integration tests (land in the v0.15 program, Phase 3).
+  tests incl. the CRLF and binary round-trip cases (byte-faithful raw
+  capture; `git diff --binary`; landed in the v0.15 program).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
   route proof is observed (stream- or transcript-observed model, never an
   argv echo), reviewer telemetry is persisted, and the reviewer read the
@@ -139,8 +140,9 @@ process below. Never paper over the conflict.
   true` is a hard warning that blocks a green verified claim unless later
   verified recovery exists, but it does not by itself discard a produced
   deliverable. Recovery must be attributable to the failed operation, not
-  merely a later call of the same-named tool. verify: telemetry tests;
-  recovery-keying fix lands v0.15 Phase 3.
+  merely a later call of the same-named tool — the engine keys recovery by
+  tool AND target. verify: attemptTelemetry recovery-keying tests (landed
+  in the v0.15 program).
 - **INV-044** The engine separates terminal state from tool hygiene: a
   completed answer/report/patch may succeed with warnings, while failed web
   evidence, terminal harness errors, failed apply/verify steps, or required
@@ -172,8 +174,9 @@ process below. Never paper over the conflict.
   globs through a typed run field (`--allow-protected-path`), which narrows
   only the gate/test-path policy and never bypasses built-in
   critical/security human gates. Path parsing for these gates must handle
-  every path git can emit (quoted, non-ASCII). verify: policy tests;
-  quoted-path fix lands v0.15 Phase 3.
+  every path git can emit (quoted, non-ASCII) — the shared quote-aware
+  diff parser is the one owner. verify: policy tests; core diff parser
+  tests (landed in the v0.15 program).
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under `.claudexor/runs/<id>/` is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
@@ -260,7 +263,7 @@ process below. Never paper over the conflict.
 - **INV-081** A frozen SpecPack is a content-hashed contract: the engine
   verifies the hash when a run consumes a spec, and a tampered spec fails
   loudly instead of silently running against altered criteria. verify:
-  spec-hash fence test (lands v0.15 Phase 3).
+  spec tamper fence test (landed in the v0.15 program).
 - **INV-082** Frozen SpecPacks and repo config cannot carry protected-path
   approvals; operator approval is always supplied on the current run.
   verify: schema strictness test (SpecConstraints).
@@ -365,24 +368,27 @@ process below. Never paper over the conflict.
   divergence-fenced; thread apply requires the thread's HEAD run to be
   non-blocked/non-failed or covered by a typed operator decision. An
   unlisted mutation path is a release blocker. verify: mutation-path
-  inventory in ARCHITECTURE; thread-apply gate test (lands v0.15 Phase 3;
-  locked D4).
+  inventory in ARCHITECTURE; thread-apply head-run gate test (landed in
+  the v0.15 program; locked D4).
 - **INV-114** A failed apply/adoption leaves the target tree restored, or —
   when restoration itself fails — reports the mutation honestly;
   `adopted:false`/`not_applied` must mean the tree is unchanged. verify:
-  conflict-residue integration tests (lands v0.15 Phase 3).
+  protected-apply conflict tests (byte-identical restore; landed in the
+  v0.15 program).
 - **INV-115** Before a winner's patch is applied or adopted, it is
   re-verified in a fresh envelope (`git apply` to a clean base + configured
   deterministic gates there); the result is recorded in the decision. A
   patch that cannot survive a clean base does not touch the live tree.
-  verify: FinalVerifier tests (lands v0.15 Phase 3; locked D12).
+  verify: FinalVerifier tests + the final_verify apply-gate consumer tests
+  (landed in the v0.15 program; locked D12).
 - **INV-116** Terminal run state and output readiness are separate
   (`succeeded|blocked|failed|not_converged` vs
   `pending|finalizing|ready|diagnostic`), and every announced run reaches a
   terminal event on every path — crash, cancel, pre-loop failure — so no
-  observer waits forever. CLI and UI show the distinction. verify: canary
-  `[INV-116:output-ready-before-terminal]`; terminal-guarantee tests (gap fixes
-  land v0.15 Phase 3).
+  observer waits forever. CLI and UI show the distinction. verify: canaries
+  `[INV-116:output-ready-before-terminal]`, `[INV-116:cancel-fast]`,
+  `[INV-116:stream-watchdog]`; the whole-strategy terminal net and
+  interrupt-stamping tests (landed in the v0.15 program).
 
 ## 12. Keep The Codebase Small And Direct
 
