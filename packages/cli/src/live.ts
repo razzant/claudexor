@@ -149,7 +149,11 @@ export function controlApiAddress(): ControlApiAddress {
 
 /**
  * `claudexor follow <run_id>`: live SSE tail of a daemon-backed run with full
- * replay (persisted seq) and interactive TTY answering of harness questions.
+ * replay (persisted seq), bounded reconnects via Last-Event-ID, and
+ * interactive TTY answering of harness questions. Exit honesty (T3.1#7): a
+ * stream that ends WITHOUT a terminal event is a LOSS (exit 1, "stream
+ * lost"), never a silent success — success requires an observed terminal or
+ * an `end` frame the server sent after one.
  */
 export async function followRun(runId: string, json: boolean): Promise<number> {
   let addr: ControlApiAddress;
@@ -159,19 +163,10 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     process.stderr.write(`claudexor follow: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
-  const headers = { Authorization: `Bearer ${addr.token}` };
-  const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
-    headers: { ...headers, Accept: "text/event-stream" },
-  });
-  if (!res.ok || !res.body) {
-    process.stderr.write(`claudexor follow: events stream failed (${res.status})\n`);
-    return 1;
-  }
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let dataLines: string[] = [];
-  let eventName = "message";
   let exitCode = 0;
+  let sawTerminal = false;
+  let lastSeq = 0;
+  const maxReconnects = 5;
 
   const handleFrame = async (name: string, data: string): Promise<"continue" | "end"> => {
     if (name === "end") return "end";
@@ -182,6 +177,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     } catch {
       return "continue";
     }
+    if (typeof ev["seq"] === "number" && Number.isFinite(ev["seq"])) lastSeq = ev["seq"] as number;
     if (json) {
       print(JSON.stringify(ev));
     } else {
@@ -189,6 +185,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
       if (line) print(line);
     }
     const type = String(ev["type"] ?? "");
+    if (type === "run.completed" || type === "run.failed" || type === "run.blocked") sawTerminal = true;
     if (type === "run.failed" || type === "run.blocked") exitCode = 1;
     if (type === "interaction.requested" && !json) {
       await answerInteractionFromTty(addr, runId, ev);
@@ -196,25 +193,66 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     return "continue";
   };
 
-  for await (const chunk of res.body) {
-    buffer += decoder.decode(chunk as Uint8Array, { stream: true });
-    let nl: number;
-    while ((nl = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, nl).replace(/\r$/, "");
-      buffer = buffer.slice(nl + 1);
-      if (line === "") {
-        const outcome = await handleFrame(eventName, dataLines.join("\n"));
-        dataLines = [];
-        eventName = "message";
-        if (outcome === "end") return exitCode;
-        continue;
-      }
-      if (line.startsWith(":")) continue;
-      if (line.startsWith("event:")) eventName = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  for (let attempt = 0; attempt <= maxReconnects; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, Math.min(500 * attempt, 3_000)));
+      if (!json) process.stderr.write(`claudexor follow: reconnecting (${attempt}/${maxReconnects}, resume from seq ${lastSeq})...\n`);
     }
+    let res: Response;
+    try {
+      res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
+        headers: {
+          Authorization: `Bearer ${addr.token}`,
+          Accept: "text/event-stream",
+          ...(lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
+        },
+      });
+    } catch {
+      continue; // transport refusal (daemon restarting) — retry with backoff
+    }
+    if (res.status === 404) {
+      process.stderr.write(`claudexor follow: no such run '${runId}'\n`);
+      return 1;
+    }
+    if (!res.ok || !res.body) {
+      continue;
+    }
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let dataLines: string[] = [];
+    let eventName = "message";
+    try {
+      for await (const chunk of res.body) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, nl).replace(/\r$/, "");
+          buffer = buffer.slice(nl + 1);
+          if (line === "") {
+            const outcome = await handleFrame(eventName, dataLines.join("\n"));
+            dataLines = [];
+            eventName = "message";
+            if (outcome === "end") {
+              if (sawTerminal) return exitCode;
+              // Server-side end WITHOUT a terminal event (interrupted run,
+              // never-materialized job): the run did not finish cleanly.
+              process.stderr.write("claudexor follow: stream ended without a terminal event\n");
+              return 1;
+            }
+            continue;
+          }
+          if (line.startsWith(":")) continue;
+          if (line.startsWith("event:")) eventName = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+      }
+    } catch {
+      /* mid-stream transport drop — fall through to reconnect */
+    }
+    if (sawTerminal) return exitCode;
   }
-  return exitCode;
+  process.stderr.write(`claudexor follow: stream lost after ${maxReconnects} reconnects (no terminal event observed)\n`);
+  return 1;
 }
 
 async function answerInteractionFromTty(addr: ControlApiAddress, runId: string, ev: Record<string, unknown>): Promise<void> {

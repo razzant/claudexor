@@ -1196,8 +1196,12 @@ export class DaemonControlApiServer {
 
   private async streamEvents(id: string, lastEventId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rec = await this.findRun(id);
-    if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-    const eventsPath = join(rec.runDir, "events.jsonl");
+    if (!rec) return this.json(res, 404, { error: "no such run" });
+    // A QUEUED job has no runDir yet — that is a wait, not a 404 (T3.1#6):
+    // the stream opens with heartbeats and binds the events file once the
+    // run starts, so `follow <jobId>` works from enqueue time. 404 stays for
+    // truly unknown ids only.
+    let eventsPath = rec.runDir ? join(rec.runDir, "events.jsonl") : null;
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache, no-transform",
@@ -1226,7 +1230,24 @@ export class DaemonControlApiServer {
     heartbeat.unref?.();
     let draining = false;
     const writeAvailable = async () => {
-      if (closed || draining || !existsSync(eventsPath)) return;
+      if (closed || draining) return;
+      if (!eventsPath) {
+        // Still queued: poll the job until the run binds its dir (then tail
+        // it) or the job goes terminal without one (validation failure — a
+        // run that never materialized ends the stream honestly).
+        const latest = await this.opts.daemon.status(rec.id).catch(() => rec);
+        if (latest.runDir) {
+          eventsPath = join(latest.runDir, "events.jsonl");
+        } else if (TERMINAL_STATES.has(latest.state)) {
+          res.write("event: end\ndata: {}\n\n");
+          res.end();
+          cleanup();
+          return;
+        } else {
+          return;
+        }
+      }
+      if (!existsSync(eventsPath)) return;
       draining = true;
       try {
         const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);

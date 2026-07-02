@@ -1729,6 +1729,61 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("streams events for a QUEUED job (SSE waits with heartbeats, binds the run dir when it appears)", async () => {
+    // T3.1#6: GET /runs/:id/events on a queued job must open the stream and
+    // wait, not 404 — `follow <jobId>` works from enqueue time.
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-queued-sse-"));
+    const runDir = join(dir, "run-q1");
+    const { mkdirSync: mkd } = await import("node:fs");
+    mkd(runDir, { recursive: true });
+    let phase: "queued" | "running" = "queued";
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-q1", state: "queued" };
+      },
+      async status() {
+        return phase === "queued"
+          ? { id: "job-q1", state: "queued" }
+          : { id: "job-q1", state: "running", runId: "run-q1", runDir };
+      },
+      async list() {
+        return [await this.status("job-q1")];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5 });
+    const { host, port } = await server.start();
+    try {
+      const res = await fetch(`http://${host}:${port}/runs/job-q1/events`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(200); // stream OPEN while queued (was a 404)
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      // Flip to running with a terminal event already in the log.
+      writeFileSync(
+        join(runDir, "events.jsonl"),
+        `${JSON.stringify({ seq: 1, ts: new Date().toISOString(), run_id: "run-q1", task_id: "t", type: "run.created", payload: {} })}\n` +
+          `${JSON.stringify({ seq: 2, ts: new Date().toISOString(), run_id: "run-q1", task_id: "t", type: "run.completed", payload: { status: "success" } })}\n`,
+      );
+      phase = "running";
+      let text = "";
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !text.includes("event: end")) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += new TextDecoder().decode(value);
+      }
+      expect(text).toContain("run.created");
+      expect(text).toContain("run.completed");
+      expect(text).toContain("event: end");
+    } finally {
+      await server.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("direct POST /runs with a bare threadId pre-creates the turn BEFORE enqueue (202-queued lineage race)", async () => {
     const { record } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-race-"));
