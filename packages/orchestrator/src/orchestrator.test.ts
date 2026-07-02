@@ -4491,7 +4491,7 @@ describe("web evidence recovery keying (INV-043)", () => {
     } as never);
     observeAttemptTelemetry(t, {
       type: "tool_result", session_id: "s", ts,
-      tool: { name: "fetch", kind: "exec", status: "ok", target: "https://a" },
+      tool: { name: "fetch", kind: "command", status: "ok", target: "https://a" },
     } as never);
     expect(t.toolErrors.filter((e) => !e.recovered).length).toBe(1); // web error NOT laundered
   });
