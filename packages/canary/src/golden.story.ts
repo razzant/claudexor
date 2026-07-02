@@ -6,9 +6,11 @@
  * product, never the story, unless the owner approved a CONCEPT-CHANGE for
  * that invariant.
  */
-import { realpathSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Sandbox, cli, makeSandbox, readEvents, readRunFile, runFileExists } from "./support.js";
+import { CLI, type Sandbox, cli, makeSandbox, readEvents, readRunFile, runFileExists } from "./support.js";
 
 let sb: Sandbox;
 beforeEach(() => {
@@ -104,9 +106,49 @@ describe("canary golden stories", () => {
     expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
   });
 
-  // [INV-116:cancel-fast] cancel latency story is a Phase 3 deliverable (watchdog +
-  // abort-before-gates); pinned here as an explicit todo so the gap stays loud.
-  it.todo("[INV-116:cancel-fast] cancelling a run acknowledges within seconds even when gates are configured");
+  it("[INV-116:cancel-fast] cancelling a run acknowledges within seconds even when gates are configured", async () => {
+    // A run with a 60s deterministic gate: Ctrl-C during the GATE phase must
+    // end the run within seconds (SIGINT -> typed daemon cancel -> abort
+    // kills the in-flight gate and skips the rest), not wait out the suite.
+    // The terminal is a typed cancelled run.failed and telemetry still lands.
+    const child = spawn(process.execPath, [CLI, "run", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"], {
+      cwd: sb.repo,
+      env: sb.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (c: Buffer) => {
+      stdout += String(c);
+    });
+    const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    // Wait until the 60s gate is RUNNING (gate.started in events), then interrupt.
+    const runsDir = join(sb.repo, ".claudexor", "runs");
+    const deadline = Date.now() + 60_000;
+    let runDir: string | null = null;
+    let gateRunning = false;
+    while (Date.now() < deadline && !gateRunning) {
+      if (!runDir && existsSync(runsDir)) {
+        const found = readdirSync(runsDir).find((e) => existsSync(join(runsDir, e, "events.jsonl")));
+        if (found) runDir = join(runsDir, found);
+      }
+      if (runDir) {
+        gateRunning = readEvents(runDir).some((e) => e["type"] === "gate.started");
+      }
+      if (!gateRunning) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(gateRunning).toBe(true);
+    const cancelledAt = Date.now();
+    child.kill("SIGINT");
+    const code = await exited;
+    const ackMs = Date.now() - cancelledAt;
+    expect(ackMs).toBeLessThan(15_000); // far under the 60s gate
+    expect(code).not.toBe(0);
+    const events = readEvents(runDir as string);
+    expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
+    const out = JSON.parse(stdout.slice(stdout.indexOf("{"))) as { status: string };
+    expect(out.status).toBe("cancelled");
+    expect(runFileExists(runDir as string, "final/telemetry.yaml")).toBe(true);
+  }, 90_000);
 
   // [INV-111:blocked-needs-decision] requires a deterministic NEEDS_HUMAN fake or a
   // protected-path fixture; lands with the Phase 1 canary expansion.

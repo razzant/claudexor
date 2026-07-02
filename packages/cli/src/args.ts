@@ -3,6 +3,32 @@ export interface ParsedArgs {
   flags: Record<string, string | boolean | Array<string | boolean>>;
 }
 
+/**
+ * Flags that never take a value: `--flag token` must leave `token` a
+ * positional instead of eating it (`audit --json x` used to silently drop
+ * BOTH the prompt and the json request). `--flag=value` still works for
+ * explicit `true`/`false`.
+ */
+export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  "until-clean",
+  "swarm",
+  "create",
+  "in-place",
+  "json",
+  "all",
+  "dry-run",
+  "force",
+  "help",
+  "version",
+  "allow-full-access",
+  "revoke-full-access",
+  "accept-risk",
+  "override",
+  "revert",
+  "accept-clean-patch",
+  "rerun",
+]);
+
 /** Minimal, dependency-free arg parser: supports `--k v`, `--k=v`, and boolean `--k`. */
 export function parseArgs(argv: string[]): ParsedArgs {
   const _: string[] = [];
@@ -29,7 +55,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       } else {
         const key = a.slice(2);
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith("--")) {
+        if (next !== undefined && !next.startsWith("--") && !BOOLEAN_FLAGS.has(key)) {
           setFlag(key, next);
           i++;
         } else {

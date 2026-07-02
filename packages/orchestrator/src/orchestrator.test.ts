@@ -1503,6 +1503,53 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: success_with_warnings");
   });
 
+  it("terminal net: a throw escaping an ANNOUNCED strategy still ends the run with failure.yaml + run.failed", async () => {
+    const repo = await initRepo();
+    const { guardAnnouncedRun } = await import("./runTerminals.js");
+    const guard = guardAnnouncedRun as unknown as (
+      signal: AbortSignal | undefined,
+      body: (announce: (a: unknown) => void) => Promise<unknown>,
+    ) => Promise<{ status: string; summary: string; runDir: string }>;
+    const { ArtifactStore } = await import("@claudexor/artifact-store");
+    const { EventLog } = await import("@claudexor/event-log");
+
+    // Pre-announce throws keep the loud-request contract (no run dir → rethrow).
+    await expect(
+      guard(undefined, async () => {
+        throw new Error("pre-announce boom");
+      }),
+    ).rejects.toThrow("pre-announce boom");
+
+    // Post-announce throws stamp terminal artifacts instead of orphaning the run.
+    const store = new ArtifactStore(repo);
+    const runId = "run-netted";
+    const paths = store.createRun(runId);
+    const log = new EventLog(paths.eventsPath, runId, "task-netted");
+    const res = await guard(undefined, async (announce) => {
+      log.emit("run.created", { mode: "agent", prompt: "x" });
+      announce({ log, store, paths, runId, taskId: "task-netted", mode: "agent", phase: "race" });
+      throw new Error("escaped mid-strategy");
+    });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toContain("escaped mid-strategy");
+    const events = readFileSync(paths.eventsPath, "utf8");
+    expect(events).toContain("run.failed");
+    expect(readFileSync(join(paths.root, "final", "failure.yaml"), "utf8")).toContain("escaped mid-strategy");
+
+    // An abort mid-strategy is a CANCELLED terminal, not an internal failure.
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const paths2 = store.createRun("run-net-cancel");
+    const log2 = new EventLog(paths2.eventsPath, "run-net-cancel", "task-nc");
+    const res2 = await guard(ctrl.signal, async (announce) => {
+      log2.emit("run.created", { mode: "agent", prompt: "x" });
+      announce({ log: log2, store, paths: paths2, runId: "run-net-cancel", taskId: "task-nc", mode: "agent", phase: "race" });
+      throw new Error("abort surfaced as throw");
+    });
+    expect(res2.status).toBe("cancelled");
+    expect(readFileSync(paths2.eventsPath, "utf8")).toContain('"status":"cancelled"');
+  });
+
   it("discloses a requested effort on a harness with no declared ladder via ignored_settings (INV-105)", async () => {
     const repo = await initRepo();
     // realLikeAdapter declares NO effort_levels — a configured per-harness
@@ -3757,6 +3804,30 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "orchestration_progress.yaml"))).toBe(false);
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("emits a failure-shaped terminal (run.failed{not_converged} + failure.yaml) when the brain yields no typed plan", async () => {
+    const repo = await initRepo();
+    // A brain that talks prose without a fenced JSON plan: the typed-plan
+    // contract fails, so the terminal must be failure-shaped, never
+    // run.completed (T3.1#3 — jobs.json and events.jsonl must agree).
+    const proseBrain: HarnessAdapter = {
+      ...brainAdapter("brain", {}),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: "I would suggest refactoring things." };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([["brain", proseBrain]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "goal", mode: "orchestrate", harnesses: ["brain"] });
+    expect(res.status).toBe("not_converged");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain('"run.failed"');
+    expect(events).not.toContain('"run.completed"');
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("no valid typed plan");
   });
 
   it("forbids orchestrate-within-orchestrate (recursion guard)", async () => {

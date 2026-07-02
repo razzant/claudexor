@@ -1,6 +1,6 @@
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
@@ -26,20 +26,51 @@ export interface DaemonOptions {
   maxHistory?: number;
 }
 
-export type JobState =
-  | "queued"
-  | "running"
-  | "blocked"
-  | "succeeded"
-  | "no_op"
-  | "ungated"
-  | "review_not_run"
-  | "failed"
-  | "cancelled"
-  | "interrupted"
-  | "exhausted"
-  | "not_converged"
-  | "stuck_no_progress";
+export const JOB_STATES = [
+  "queued",
+  "running",
+  "blocked",
+  "succeeded",
+  "no_op",
+  "ungated",
+  "review_not_run",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "exhausted",
+  "not_converged",
+  "stuck_no_progress",
+] as const;
+
+export type JobState = (typeof JOB_STATES)[number];
+
+/**
+ * Per-record validation for the persisted registry: one hand-edited or
+ * version-skewed record must not wipe the whole run history, and a record
+ * with a state outside the enum must never reach the strict control-api
+ * DTOs (where it would 500 the entire GET /runs list).
+ */
+function salvageJobRecord(raw: unknown): JobRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec["id"] !== "string" || rec["id"].length === 0) return null;
+  if (typeof rec["state"] !== "string" || !(JOB_STATES as readonly string[]).includes(rec["state"])) return null;
+  if (typeof rec["createdAt"] !== "string") return null;
+  const optionalString = (key: string): string | undefined =>
+    typeof rec[key] === "string" ? (rec[key] as string) : undefined;
+  return {
+    id: rec["id"],
+    state: rec["state"] as JobState,
+    params: rec["params"],
+    error: optionalString("error"),
+    createdAt: rec["createdAt"],
+    runId: optionalString("runId"),
+    taskId: optionalString("taskId"),
+    runDir: optionalString("runDir"),
+    startedAt: optionalString("startedAt"),
+    finishedAt: optionalString("finishedAt"),
+  };
+}
 
 export interface JobRecord {
   id: string;
@@ -257,10 +288,23 @@ export class DaemonServer {
 
   /** Reload the registry on startup; a fresh process cannot resume in-memory runs. */
   private load(): void {
-    if (!this.opts.persistPath || !pathExists(this.opts.persistPath)) return;
-    const saved = readJsonSafe<JobRecord[]>(this.opts.persistPath);
-    if (!saved) return;
-    for (const rec of saved) {
+    const path = this.opts.persistPath;
+    if (!path || !pathExists(path)) return;
+    const saved = readJsonSafe<unknown>(path);
+    if (saved === null || !Array.isArray(saved)) {
+      // A corrupt registry must not be silently wiped: the run history includes
+      // the blocked needs-human inbox. Back the raw bytes up, start empty, and
+      // say so loudly (ThreadStore discipline).
+      this.backupCorruptRegistry(path, "registry file is not a JSON array");
+      return;
+    }
+    let dropped = 0;
+    for (const raw of saved) {
+      const rec = salvageJobRecord(raw);
+      if (!rec) {
+        dropped += 1;
+        continue;
+      }
       // A fresh process cannot resume an in-memory RUN, so a `running` job becomes
       // interrupted (honest). `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web
       // policy) the review queue must keep across restarts.
@@ -270,6 +314,19 @@ export class DaemonServer {
       // on restart (drain() runs after start()) instead of silently dropping
       // pending work to interrupted.
       if (rec.state === "queued") this.queue.push(rec.id);
+    }
+    if (dropped > 0) {
+      this.backupCorruptRegistry(path, `${dropped} unparseable job record(s) dropped`);
+    }
+  }
+
+  /** Preserve the raw bytes of a damaged registry and report the loss loudly. */
+  private backupCorruptRegistry(path: string, reason: string): void {
+    try {
+      copyFileSync(path, `${path}.bak`);
+      console.error(`[claudexor] jobs store: ${reason}; original backed up to ${path}.bak`);
+    } catch {
+      console.error(`[claudexor] jobs store: ${reason}; backup to ${path}.bak FAILED`);
     }
   }
 

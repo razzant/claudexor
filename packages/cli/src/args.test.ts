@@ -113,3 +113,23 @@ describe("cli args", () => {
     expect(commandAllowedFlagError(parseArgs(["run", "fix it", "--harness", "codex"]), "plugin", ["json", "dry-run", "force"])).toBeNull();
   });
 });
+
+describe("boolean flags never eat positionals", () => {
+  it("--json before a positional keeps both (audit --json x)", () => {
+    const a = parseArgs(["audit", "--json", "x"]);
+    expect(a._).toEqual(["audit", "x"]);
+    expect(flagBool(a, "json")).toBe(true);
+  });
+
+  it("value flags still consume their argument", () => {
+    const a = parseArgs(["run", "--model", "gpt-5.5", "--json"]);
+    expect(a.flags["model"]).toBe("gpt-5.5");
+    expect(flagBool(a, "json")).toBe(true);
+  });
+
+  it("boolean flag with explicit =false stays honest", () => {
+    const a = parseArgs(["run", "--json=false", "task"]);
+    expect(flagBool(a, "json")).toBe(false);
+    expect(a._).toEqual(["run", "task"]);
+  });
+});

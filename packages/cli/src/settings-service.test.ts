@@ -34,12 +34,20 @@ describe("assertSettingsPatchValid", () => {
   });
 
   it("refuses an effort outside the declared ladder", async () => {
-    // raw-api discovers without a vendor binary and declares NO effort ladder.
-    await expect(
-      assertSettingsPatchValid(
-        ControlSettingsUpdateRequest.parse({ harnesses: { "raw-api": { effort: "high" } } }),
-      ),
-    ).rejects.toThrow(/declares no effort ladder/);
+    // raw-api discovers without a vendor binary and declares NO effort ladder;
+    // its discover() only checks key PRESENCE, so a dummy keeps this hermetic.
+    const prev = process.env["OPENAI_API_KEY"];
+    process.env["OPENAI_API_KEY"] = "sk-test-canary-dummy";
+    try {
+      await expect(
+        assertSettingsPatchValid(
+          ControlSettingsUpdateRequest.parse({ harnesses: { "raw-api": { effort: "high" } } }),
+        ),
+      ).rejects.toThrow(/declares no effort ladder/);
+    } finally {
+      if (prev === undefined) delete process.env["OPENAI_API_KEY"];
+      else process.env["OPENAI_API_KEY"] = prev;
+    }
   });
 });
 

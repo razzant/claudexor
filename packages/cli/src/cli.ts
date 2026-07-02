@@ -598,12 +598,28 @@ async function orchestrate(
     reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
   });
+  // Ctrl-C on a direct (in-process) run cancels GRACEFULLY: abort the run
+  // signal so harness children die via the process-group kill plumbing, gates
+  // are skipped, and the run ends with a typed cancelled terminal — instead
+  // of the node process dying and orphaning children + a terminal-less
+  // events.jsonl (T3.1#8). A second Ctrl-C force-exits.
+  const cancelController = new AbortController();
+  let sigints = 0;
+  const onSigint = (): void => {
+    sigints += 1;
+    if (sigints >= 2) process.exit(130);
+    process.stderr.write("\ncancelling run (Ctrl-C again to force-quit)...\n");
+    cancelController.abort();
+  };
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigint);
   try {
     const res = await orch.run({
       repoRoot: process.cwd(),
       prompt: prompt || "audit this repository",
       attachments,
       mode,
+      signal: cancelController.signal,
       // Only `suggest` (or unset) reaches the in-process path; auto_safe/auto_full
       // are routed to the daemon above. Forward it so an explicit --autonomy
       // suggest is honoured rather than silently dropped.
@@ -669,6 +685,9 @@ async function orchestrate(
       });
     else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigint);
   }
 }
 
@@ -1125,7 +1144,9 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   }
   const token = readToken();
   if (!token) {
-    print("daemon not initialized — run: claudexor daemon start");
+    // --json purity: exactly one JSON object on stdout in json mode.
+    if (json) printJson({ ok: false, error: "daemon not initialized — run: claudexor daemon start" });
+    else print("daemon not initialized — run: claudexor daemon start");
     return 1;
   }
   const client = new DaemonClient(defaultSocketPath(), token);
@@ -1138,17 +1159,23 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
     }
     if (sub === "stop") {
       await client.shutdown();
-      print("claudexord shutting down");
+      if (json) printJson({ ok: true, stopping: true });
+      else print("claudexord shutting down");
       return 0;
     }
     if (sub === "logs") {
-      print(readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n"));
+      const tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
+      if (json) printJson({ ok: true, log_tail: tail });
+      else print(tail);
       return 0;
     }
-    print("usage: claudexor daemon start|status|stop|logs");
+    if (json) printJson({ ok: false, exitCode: 2, error: "usage: claudexor daemon start|status|stop|logs" });
+    else print("usage: claudexor daemon start|status|stop|logs");
     return 2;
   } catch (err) {
-    print(`claudexord not reachable (${err instanceof Error ? err.message : String(err)})`);
+    const message = `claudexord not reachable (${err instanceof Error ? err.message : String(err)})`;
+    if (json) printJson({ ok: false, error: message });
+    else print(message);
     return 1;
   }
 }
@@ -1240,8 +1267,7 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
   }
   if (sub === "login") {
     if (!harness) {
-      print("usage: claudexor auth login <codex|claude|cursor|opencode>");
-      return 2;
+      return printUsageError(json, "usage: claudexor auth login <codex|claude|cursor|opencode>");
     }
     const hints: Record<string, string> = {
       codex:
@@ -1251,14 +1277,13 @@ async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
       cursor: "Sign in through Cursor, then let Claudexor mirror the native session.",
       opencode: "Run the native OpenCode auth flow, or store the provider key as a secret ref.",
     };
-    print(
-      hints[harness] ??
-        `Run the native ${harness} auth flow, then retry: claudexor auth status ${harness}`,
-    );
+    const hint =
+      hints[harness] ?? `Run the native ${harness} auth flow, then retry: claudexor auth status ${harness}`;
+    if (json) printJson({ ok: true, harness, hint });
+    else print(hint);
     return 0;
   }
-  print("usage: claudexor auth status|login");
-  return 2;
+  return printUsageError(json, "usage: claudexor auth status|login");
 }
 
 async function stdinText(): Promise<string> {
@@ -1278,9 +1303,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
     backendFlag !== "keychain" &&
     backendFlag !== "file"
   ) {
-    if (json) printJson({ error: "--backend must be auto|keychain|file" });
-    else print("--backend must be auto|keychain|file");
-    return 2;
+    return printUsageError(json, "--backend must be auto|keychain|file");
   }
   let store: SecretStore;
   try {
@@ -1306,20 +1329,18 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   if (sub === "set") {
     const name = args._[2];
     if (!name) {
-      print("usage: claudexor secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin");
-      return 2;
+      return printUsageError(json, "usage: claudexor secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin");
     }
     if (!isManagedSecretName(name)) {
-      print(`secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
-      return 2;
+      return printUsageError(json, `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
     }
     const envVar = flagStr(args, "from-env");
     const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
     if (!value) {
-      print(
+      return printUsageError(
+        json,
         "secret value required via --from-env or stdin; values are not accepted as positional args",
       );
-      return 2;
     }
     const backend = store.set(name, value);
     const warning = store.lastFallbackReason;
@@ -1333,20 +1354,17 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   if (sub === "delete" || sub === "rm") {
     const name = args._[2];
     if (!name) {
-      print("usage: claudexor secrets delete <name>");
-      return 2;
+      return printUsageError(json, "usage: claudexor secrets delete <name>");
     }
     if (!isManagedSecretName(name)) {
-      print(`secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
-      return 2;
+      return printUsageError(json, `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
     }
     store.delete(name);
     if (json) printJson({ name, deleted: true });
     else print(`deleted ${name}`);
     return 0;
   }
-  print("usage: claudexor secrets list|set|delete");
-  return 2;
+  return printUsageError(json, "usage: claudexor secrets list|set|delete");
 }
 
 
@@ -1637,8 +1655,7 @@ async function main(): Promise<number> {
         }).serve();
         return 0;
       }
-      print("usage: claudexor mcp serve");
-      return 2;
+      return printUsageError(json, "usage: claudexor mcp serve");
     }
 
     case "acp": {
@@ -1650,15 +1667,13 @@ async function main(): Promise<number> {
         }).serve();
         return 0;
       }
-      print("usage: claudexor acp serve");
-      return 2;
+      return printUsageError(json, "usage: claudexor acp serve");
     }
 
     case "follow": {
       const runId = args._[1];
       if (!runId) {
-        print("usage: claudexor follow <run_id>");
-        return 2;
+        return printUsageError(json, "usage: claudexor follow <run_id>");
       }
       return followRun(runId, json);
     }
@@ -1953,8 +1968,7 @@ async function main(): Promise<number> {
         }
         return 0;
       }
-      print("usage: claudexor release check-name <name>");
-      return 2;
+      return printUsageError(json, "usage: claudexor release check-name <name>");
     }
 
     case "plugin": {
@@ -2016,14 +2030,18 @@ async function main(): Promise<number> {
         else ids.forEach((id) => print(id));
         return 0;
       }
-      print("usage: claudexor harness list [--all]");
-      return 2;
+      return printUsageError(json, "usage: claudexor harness list [--all]");
     }
 
     case "help":
-    default:
       print(HELP);
       return 0;
+
+    default:
+      // Unknown command is an ERROR (exit 2), not a silent help print with
+      // exit 0 — scripts must not mistake a typo'd verb for success.
+      process.stderr.write(`claudexor: unknown command '${cmd}'\n\n${HELP}\n`);
+      return 2;
   }
 }
 

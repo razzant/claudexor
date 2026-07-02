@@ -57,6 +57,13 @@ import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
+import {
+  type AnnouncedRunContext,
+  cancelledResult,
+  failTerminally,
+  guardAnnouncedRun,
+  writeFailure,
+} from "./runTerminals.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { interactionChannelFor } from "./interaction.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -536,34 +543,39 @@ export class Orchestrator {
     // (failure.yaml naming the refusal) instead of a bare pre-run throw.
     // ask/audit never spawn reviewers, so a panel there never spends doctor/
     // model probes and never fails a run that would not use it (T2#12).
-    switch (mode) {
-      case "ask":
-        return this.runAsk(resolved);
-      case "audit":
-        // `--swarm` selects the bounded read-only research swarm (old `explore`).
-        return resolved.swarm ? this.runExplore(resolved) : this.runAudit(resolved);
-      case "agent":
-        // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
-        // and `--attempts` select the convergence loop; `--n` selects the race
-        // width; `--create` switches the candidate intent to create_from_scratch.
-        if (resolved.untilClean) return this.runConvergence(resolved, mode, null);
-        if (resolved.attempts !== undefined && resolved.attempts !== null) {
-          return this.runConvergence(resolved, mode, resolved.attempts);
-        }
-        return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode);
-      case "plan":
-        return this.runPlan(resolved);
-      case "orchestrate":
-        // Recursion guard: a sub-run spawned by the orchestrate executor carries
-        // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
-        // recursion). Fail loudly rather than silently degrade.
-        if ((resolved.orchestrateDepth ?? 0) > 0) {
-          throw new Error(
-            "orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate",
-          );
-        }
-        return this.runOrchestrate(resolved);
-    }
+    // Whole-strategy terminal net (T3.1#2): once a strategy ANNOUNCES its
+    // run, any escaped throw still stamps failure.yaml + summary + run.failed
+    // instead of orphaning events.jsonl.
+    return guardAnnouncedRun(resolved.signal, (announce) => {
+      switch (mode) {
+        case "ask":
+          return this.runAsk(resolved, announce);
+        case "audit":
+          // `--swarm` selects the bounded read-only research swarm (old `explore`).
+          return resolved.swarm ? this.runExplore(resolved, announce) : this.runAudit(resolved, announce);
+        case "agent":
+          // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
+          // and `--attempts` select the convergence loop; `--n` selects the race
+          // width; `--create` switches the candidate intent to create_from_scratch.
+          if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announce);
+          if (resolved.attempts !== undefined && resolved.attempts !== null) {
+            return this.runConvergence(resolved, mode, resolved.attempts, announce);
+          }
+          return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
+        case "plan":
+          return this.runPlan(resolved, announce);
+        case "orchestrate":
+          // Recursion guard: a sub-run spawned by the orchestrate executor carries
+          // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
+          // recursion). Fail loudly rather than silently degrade.
+          if ((resolved.orchestrateDepth ?? 0) > 0) {
+            throw new Error(
+              "orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate",
+            );
+          }
+          return this.runOrchestrate(resolved, announce);
+      }
+    });
   }
 
   private async resolveReviewers(
@@ -1509,76 +1521,6 @@ export class Orchestrator {
     writeText(join(evidenceDir, "TESTS.txt"), this.testsEvidence(contract, gates).trim() + "\n");
   }
 
-  /** Terminal result for a cancelled run: emits run.failed with status "cancelled" so every mode ends consistently. */
-  private cancelledResult(
-    log: EventLog,
-    runId: string,
-    taskId: string,
-    mode: ModeKind,
-    runDir: string,
-    candidates: { attemptId: string; harnessId: string; status: string }[],
-  ): OrchestratorResult {
-    log.emit("run.failed", { status: "cancelled" });
-    return {
-      runId,
-      taskId,
-      mode,
-      status: "cancelled",
-      winner: null,
-      runDir,
-      summary: "run cancelled",
-      candidates,
-    };
-  }
-
-  /**
-   * Terminal safety net for an unexpected throw in a post-execution phase
-   * (review preflight / revalidation / arbitration). Every run must end with
-   * failure.yaml + summary + a terminal run.failed event — an escaped throw
-   * previously orphaned the run dir with no terminal artifacts, leaving raw
-   * event tailers waiting forever.
-   */
-  private failTerminally(
-    log: EventLog,
-    store: ArtifactStore,
-    paths: ReturnType<ArtifactStore["runPaths"]>,
-    runId: string,
-    taskId: string,
-    mode: ModeKind,
-    phase: string,
-    err: unknown,
-  ): OrchestratorResult {
-    const message = safeErrorMessage(err);
-    store.writeText(
-      join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: ${phase}\n\n${message}\n`,
-    );
-    writeFailure(store, paths, {
-      phase,
-      category: "internal",
-      safeMessage: message,
-      runDir: paths.root,
-      nextActions: ["Open diagnostics", "Retry the run"],
-    });
-    log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-    log.emit("run.failed", {
-      status: "failed",
-      phase,
-      error: message,
-      failure_ref: "final/failure.yaml",
-    });
-    return {
-      runId,
-      taskId,
-      mode,
-      status: "failed",
-      winner: null,
-      runDir: paths.root,
-      summary: message,
-      candidates: [],
-    };
-  }
-
   /**
    * Per-harness settings applied to one route's run spec (model/effort/web
    * defaults, max_turns, tool lists). Knobs the manifest does not support are
@@ -1886,24 +1828,36 @@ export class Orchestrator {
     const diff = await wsm.diff(envelope);
     const answerText = messageParts.join("\n").trim() || undefined;
     const deliverablePresent = diff.trim().length > 0 || Boolean(answerText);
-    log?.emit("gate.started", { attempt_id: attemptId, gates: this.gateSpecs(contract).length });
-    const gates = await runGates(this.gateSpecs(contract), {
-      cwd: envelope.worktree_path,
-      env: wsm.envFor(envelope),
-    });
-    log?.emit("gate.completed", {
-      attempt_id: attemptId,
-      gates: gates.map((g) => ({
-        id: g.id,
-        status: g.status,
-        exit_code: g.exit_code,
-        duration_ms: g.duration_ms,
-        stdout_tail: g.stdout_tail,
-        stderr_tail: g.stderr_tail,
-        output_truncated: g.output_truncated,
-      })),
-      passed: gatesPassed(gates),
-    });
+    // Cancelled attempts skip gates entirely (T3.1#8): the operator asked to
+    // stop NOW; running a 600s-per-gate suite after the abort delays the ack
+    // and burns compute on a result nobody will adopt. Diff/attempt.yaml
+    // still land, so partial work stays inspectable.
+    const gateSignalAborted = signal?.aborted === true;
+    if (!gateSignalAborted) {
+      log?.emit("gate.started", { attempt_id: attemptId, gates: this.gateSpecs(contract).length });
+    }
+    const gates = gateSignalAborted
+      ? []
+      : await runGates(this.gateSpecs(contract), {
+          cwd: envelope.worktree_path,
+          env: wsm.envFor(envelope),
+          signal,
+        });
+    if (!gateSignalAborted) {
+      log?.emit("gate.completed", {
+        attempt_id: attemptId,
+        gates: gates.map((g) => ({
+          id: g.id,
+          status: g.status,
+          exit_code: g.exit_code,
+          duration_ms: g.duration_ms,
+          stdout_tail: g.stdout_tail,
+          stderr_tail: g.stderr_tail,
+          output_truncated: g.output_truncated,
+        })),
+        passed: gatesPassed(gates),
+      });
+    }
     const webBlocked = webUnsatisfied(telemetry);
     const errored = harnessErrored || webBlocked;
     setAttemptOutcome(telemetry, {
@@ -2081,6 +2035,7 @@ export class Orchestrator {
   private async runRace(
     input: RunInput,
     mode: ModeKind,
+    announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -2100,6 +2055,7 @@ export class Orchestrator {
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
+    announce?.({ log, store, paths, runId, taskId, mode, phase: "race" });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -2447,7 +2403,18 @@ export class Orchestrator {
 
     if (input.signal?.aborted) {
       await disposeReviewEnvelopes();
-      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
+      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
+        this.writeRunTelemetry(
+          store,
+          paths,
+          contract,
+          runId,
+          taskId,
+          mode,
+          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+          null,
+        ),
+      );
     }
 
     if (runs.length === 0) {
@@ -2602,13 +2569,24 @@ export class Orchestrator {
     } catch (err) {
       // Review preflight/evidence failures end TERMINALLY with artifacts —
       // never as an escaped throw that orphans the run dir (#5).
-      return this.failTerminally(log, store, paths, runId, taskId, mode, "review", err);
+      return failTerminally(log, store, paths, runId, taskId, mode, "review", err);
     } finally {
       // Review preflight failures must not leak candidate worktrees.
       await disposeReviewEnvelopes();
     }
     if (input.signal?.aborted) {
-      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
+      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
+        this.writeRunTelemetry(
+          store,
+          paths,
+          contract,
+          runId,
+          taskId,
+          mode,
+          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+          null,
+        ),
+      );
     }
 
     // Synthesis: if worthwhile, run a synthesizer as a NEW, re-checked candidate.
@@ -2695,13 +2673,17 @@ export class Orchestrator {
             );
             evidences.push(...synthEvidence);
             if (input.signal?.aborted) {
-              return this.cancelledResult(
-                log,
-                runId,
-                taskId,
-                mode,
-                paths.root,
-                cancelledCandidates(),
+              return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
+                this.writeRunTelemetry(
+                  store,
+                  paths,
+                  contract,
+                  runId,
+                  taskId,
+                  mode,
+                  runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+                  null,
+                ),
               );
             }
           } finally {
@@ -2722,7 +2704,18 @@ export class Orchestrator {
       }
     }
     if (input.signal?.aborted) {
-      return this.cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates());
+      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
+        this.writeRunTelemetry(
+          store,
+          paths,
+          contract,
+          runId,
+          taskId,
+          mode,
+          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+          null,
+        ),
+      );
     }
 
     const actualReviewVerified = evidences.length > 0 && evidences.every((e) => e.reviewVerified);
@@ -2734,7 +2727,7 @@ export class Orchestrator {
       });
     } catch (err) {
       // Arbitration throws end terminally with artifacts, never as an orphan (#5).
-      return this.failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err);
+      return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err);
     }
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
@@ -3368,6 +3361,7 @@ export class Orchestrator {
     input: RunInput,
     mode: ModeKind,
     maxAttempts: number | null,
+    announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -3388,6 +3382,7 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
+    announce?.({ log, store, paths, runId, taskId, mode, phase: "convergence" });
 
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
@@ -3857,7 +3852,7 @@ export class Orchestrator {
             }
           })();
         } catch (err) {
-          return this.failTerminally(log, store, paths, runId, taskId, mode, "review", err);
+          return failTerminally(log, store, paths, runId, taskId, mode, "review", err);
         }
 
         if (conv.converged) {
@@ -4155,6 +4150,7 @@ export class Orchestrator {
 
   private async runPlan(
     input: RunInput,
+    announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -4166,6 +4162,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
+    announce?.({ log, store, paths, runId, taskId, mode: "plan", phase: "plan" });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -4431,7 +4428,7 @@ export class Orchestrator {
     }
 
     if (input.signal?.aborted) {
-      return this.cancelledResult(
+      return cancelledResult(
         log,
         runId,
         taskId,
@@ -4442,6 +4439,7 @@ export class Orchestrator {
           harnessId: p.harnessId,
           status: p.status,
         })),
+        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
       );
     }
 
@@ -4572,7 +4570,7 @@ export class Orchestrator {
     }
 
     if (input.signal?.aborted) {
-      return this.cancelledResult(
+      return cancelledResult(
         log,
         runId,
         taskId,
@@ -4583,6 +4581,7 @@ export class Orchestrator {
           harnessId: p.harnessId,
           status: p.status,
         })),
+        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
       );
     }
 
@@ -4680,7 +4679,7 @@ export class Orchestrator {
   }
 
   /** ask: one selected harness answers read-only questions; no patch/apply controls. */
-  private async runAsk(input: RunInput): Promise<OrchestratorResult> {
+  private async runAsk(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     return this.runReadOnlyReport(input, {
       mode: "ask",
       swarm: false,
@@ -4688,11 +4687,11 @@ export class Orchestrator {
       title: "Answer",
       artifactName: "answer.md",
       defaultPrompt: "Answer the user's question.",
-    });
+    }, announce);
   }
 
   /** audit --swarm: bounded read-only research swarm (the old `explore` mode). */
-  private async runExplore(input: RunInput): Promise<OrchestratorResult> {
+  private async runExplore(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     return this.runReadOnlyReport(input, {
       mode: "audit",
       swarm: true,
@@ -4701,11 +4700,11 @@ export class Orchestrator {
       artifactName: "explore.md",
       defaultPrompt:
         "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
-    });
+    }, announce);
   }
 
   /** audit: single read-only audit/map report. */
-  private async runAudit(input: RunInput): Promise<OrchestratorResult> {
+  private async runAudit(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     return this.runReadOnlyReport(input, {
       mode: "audit",
       swarm: false,
@@ -4713,7 +4712,7 @@ export class Orchestrator {
       title: "Audit report",
       artifactName: "report.md",
       defaultPrompt: "audit this repository",
-    });
+    }, announce);
   }
 
   /**
@@ -4725,7 +4724,7 @@ export class Orchestrator {
    * turns. Degradation contract: any 1 harness works (single-route plan); 2+
    * harnesses unlock cross-family race/review in the plan space.
    */
-  private async runOrchestrate(input: RunInput): Promise<OrchestratorResult> {
+  private async runOrchestrate(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     // "Doctor-verified" must mean status ok — degraded key-present routes are
     // excluded from the pool the brain plans over (readiness honesty).
     const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
@@ -4792,6 +4791,7 @@ export class Orchestrator {
         contractIntent: goal,
         orchestrateContract,
       },
+      announce,
     );
   }
 
@@ -4807,6 +4807,7 @@ export class Orchestrator {
       contractIntent?: string;
       orchestrateContract?: OrchestrateContractT;
     },
+    announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -4824,6 +4825,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
+    announce?.({ log, store, paths, runId, taskId, mode: opts.mode, phase: "report" });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -5309,13 +5311,19 @@ export class Orchestrator {
     }
 
     if (input.signal?.aborted) {
-      return this.cancelledResult(log, runId, taskId, opts.mode, paths.root, [
-        ...attempts.map((a) => ({
+      return cancelledResult(
+        log,
+        runId,
+        taskId,
+        opts.mode,
+        paths.root,
+        attempts.map((a) => ({
           attemptId: a.attemptId,
           harnessId: a.harnessId,
           status: a.status,
         })),
-      ]);
+        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null),
+      );
     }
 
     const succeededReadonly = attempts.filter((a) => a.status === "success");
@@ -5651,6 +5659,32 @@ export class Orchestrator {
         phase: "executor",
         failure_ref: "final/failure.yaml",
       });
+    } else if (terminal === "not_converged") {
+      // Orchestrate's typed-plan contract failed (the brain produced no valid
+      // plan): a failure-shaped terminal with artifacts, never run.completed —
+      // jobs.json and events.jsonl must agree the run did not converge (T3.1#3).
+      writeFailure(store, paths, {
+        phase: "plan",
+        category: "harness_error",
+        safeMessage:
+          "orchestrate brain produced no valid typed plan (see final/orchestration_parse_error.md); the markdown report is diagnostic only",
+        runDir: paths.root,
+        nextActions: [
+          "Inspect final/orchestration_parse_error.md",
+          "Re-run orchestrate",
+          "Check the brain harness doctor status",
+        ],
+      });
+      log.emit("run.failed", {
+        status: terminal,
+        phase: "plan",
+        failure_ref: "final/failure.yaml",
+      });
+    } else if (terminal === "cancelled") {
+      // Cancel is failure-shaped (parity with every other mode's cancel
+      // terminal): tailers waiting for run.completed-as-success must not
+      // mistake an operator abort for a clean report.
+      log.emit("run.failed", { status: terminal });
     } else {
       log.emit("run.completed", { status: terminal });
     }
@@ -6096,35 +6130,6 @@ function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null
   }
 }
 
-function writeFailure(
-  store: ArtifactStore,
-  paths: ReturnType<ArtifactStore["runPaths"]>,
-  failure: {
-    phase: string;
-    category: string;
-    safeMessage: string;
-    harnessId?: string;
-    attemptId?: string;
-    rawDetailRef?: string;
-    logRefs?: string[];
-    eventRefs?: string[];
-    runDir?: string;
-    nextActions?: string[];
-  },
-): void {
-  store.writeYaml(join(paths.finalDir, "failure.yaml"), {
-    phase: failure.phase,
-    category: failure.category,
-    harnessId: failure.harnessId ?? null,
-    attemptId: failure.attemptId ?? null,
-    safeMessage: redactSecrets(failure.safeMessage),
-    rawDetailRef: failure.rawDetailRef ?? null,
-    logRefs: failure.logRefs ?? [],
-    eventRefs: failure.eventRefs ?? [],
-    runDir: failure.runDir ?? paths.root,
-    nextActions: failure.nextActions ?? [],
-  });
-}
 
 function createAttemptTelemetry(
   policy: ExternalContextPolicy,

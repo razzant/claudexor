@@ -332,7 +332,20 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
       return this.json(res, 200, {
-        runs: runs.map((r) => this.summarizeRunLive(r)),
+        // One unprojectable record degrades to a diagnostic row; it must not
+        // 500 the whole list (the app's main screen and the blocked inbox).
+        runs: runs.map((r) => {
+          try {
+            return this.summarizeRunLive(r);
+          } catch (err) {
+            return ControlRunSummary.parse({
+              jobId: r.id,
+              runId: r.runId ?? r.id,
+              state: "failed",
+              error: `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        }),
       });
     }
 

@@ -181,40 +181,75 @@ export async function enqueueAndAwait(
   let runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
   let runDir = typeof start["runDir"] === "string" ? (start["runDir"] as string) : "";
 
-  // A 202 (queued) response carries only the jobId; poll the daemon socket
-  // until the run binds its id/dir (single canonical state source).
-  const startDeadline = Date.now() + (opts.startTimeoutMs ?? 30_000);
-  while ((!runId || !runDir) && Date.now() < startDeadline) {
-    if (!jobId) break;
-    const rec = await client.status(jobId);
-    if (rec.runId && rec.runDir) {
-      runId = rec.runId;
-      runDir = rec.runDir;
-      break;
-    }
-    if (TERMINAL_STATES.has(rec.state) && !rec.runDir) {
-      // Terminal with no runDir = the run never materialized (e.g. validation
-      // failure pre-run-dir). Surface it honestly.
-      return { runId: rec.runId ?? "", runDir: "", status: rec.state, jobId, error: rec.error };
-    }
-    await sleep(120);
-  }
-  if (!runId || !runDir) {
-    throw new Error(`run did not start within the timeout (jobId ${jobId})`);
-  }
+  // Ctrl-C while the CLI waits on a daemon run must CANCEL THE RUN, not just
+  // kill the waiting CLI (which would leave the daemon mutating the tree with
+  // nobody watching — the orphan the audit called out). First signal posts the
+  // typed cancel and keeps waiting for the honest terminal; a second signal
+  // force-quits the CLI (the daemon still owns the cancel).
+  let sigCount = 0;
+  const onSignal = (): void => {
+    sigCount += 1;
+    if (sigCount >= 2) process.exit(130);
+    process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
+    void fetch(`${addr.baseUrl}/runs/${encodeURIComponent(jobId)}/control`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ control: { kind: "cancel", reason: "ctrl-c on the waiting CLI" } }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        process.stderr.write(`cancel request failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}\n`);
+      }
+    }).catch((err: unknown) => {
+      process.stderr.write(`cancel request failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  const removeSignalHandlers = (): void => {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  };
 
-  if (!opts.waitForTerminal) {
-    const rec = jobId ? await client.status(jobId) : null;
-    return { runId, runDir, status: rec?.state ?? "running", jobId };
-  }
-
-  // Poll the daemon socket for the terminal job state (the canonical outcome).
-  for (;;) {
-    const rec = await client.status(jobId);
-    if (TERMINAL_STATES.has(rec.state)) {
-      return { runId: rec.runId ?? runId, runDir: rec.runDir ?? runDir, status: rec.state, jobId, error: rec.error };
+  try {
+    // A 202 (queued) response carries only the jobId; poll the daemon socket
+    // until the run binds its id/dir (single canonical state source).
+    const startDeadline = Date.now() + (opts.startTimeoutMs ?? 30_000);
+    while ((!runId || !runDir) && Date.now() < startDeadline) {
+      if (!jobId) break;
+      const rec = await client.status(jobId);
+      if (rec.runId && rec.runDir) {
+        runId = rec.runId;
+        runDir = rec.runDir;
+        break;
+      }
+      if (TERMINAL_STATES.has(rec.state) && !rec.runDir) {
+        // Terminal with no runDir = the run never materialized (e.g. validation
+        // failure pre-run-dir). Surface it honestly.
+        return { runId: rec.runId ?? "", runDir: "", status: rec.state, jobId, error: rec.error };
+      }
+      await sleep(120);
     }
-    await sleep(250);
+    if (!runId || !runDir) {
+      throw new Error(`run did not start within the timeout (jobId ${jobId})`);
+    }
+
+    if (!opts.waitForTerminal) {
+      // The caller keeps watching this run (text mode streams it); hand the
+      // signal responsibility back with the outcome.
+      const rec = jobId ? await client.status(jobId) : null;
+      return { runId, runDir, status: rec?.state ?? "running", jobId };
+    }
+
+    // Poll the daemon socket for the terminal job state (the canonical outcome).
+    for (;;) {
+      const rec = await client.status(jobId);
+      if (TERMINAL_STATES.has(rec.state)) {
+        return { runId: rec.runId ?? runId, runDir: rec.runDir ?? runDir, status: rec.state, jobId, error: rec.error };
+      }
+      await sleep(250);
+    }
+  } finally {
+    removeSignalHandlers();
   }
 }
 

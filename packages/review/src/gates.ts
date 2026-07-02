@@ -15,6 +15,9 @@ export interface RunGatesOptions {
   cwd: string;
   env?: Record<string, string>;
   timeoutMs?: number;
+  /** Cancellation: checked between gates AND passed into each gate's process
+   * (a cancel must not wait out a 600s gate before acknowledging — T3.1#8). */
+  signal?: AbortSignal;
 }
 
 /** Run one deterministic gate. Outcome is decided by exit code, never by parsing text. */
@@ -29,6 +32,7 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
       cwd: opts.cwd,
       env: opts.env,
       timeoutMs: opts.timeoutMs ?? 600_000,
+      abortSignal: opts.signal,
     });
     code = r.code;
     stdout = r.stdout;
@@ -56,7 +60,12 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
 
 export async function runGates(specs: GateSpec[], opts: RunGatesOptions): Promise<GateResult[]> {
   const out: GateResult[] = [];
-  for (const spec of specs) out.push(await runGate(spec, opts));
+  for (const spec of specs) {
+    // Abort between gates: remaining gates are simply not run (the attempt is
+    // being cancelled; burning their full timeouts would delay the ack).
+    if (opts.signal?.aborted) break;
+    out.push(await runGate(spec, opts));
+  }
   return out;
 }
 

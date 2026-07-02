@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -323,4 +323,53 @@ describe("InteractionRegistry", () => {
     expect(other.status).toBe("delivered");
     await expect(first).resolves.toMatchObject({ interaction_id: "int-1" });
   });
+});
+
+describe("jobs.json robustness", () => {
+  it("backs up a corrupt registry, starts empty, and does not crash", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    writeFileSync(persistPath, "{ this is not json");
+    const server = new DaemonServer({
+      socketPath,
+      token: "tkn-corrupt",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "tkn-corrupt");
+      const list = (await client.list()) as JobRecord[];
+      expect(list).toEqual([]);
+      expect(existsSync(`${persistPath}.bak`)).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
+
+  it("salvages good records around a bad one and rejects out-of-enum states", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const good = { id: "job-good", state: "succeeded", params: {}, createdAt: new Date().toISOString() };
+    const badState = { id: "job-bad-state", state: "totally-new-state", params: {}, createdAt: new Date().toISOString() };
+    const notObject = "garbage";
+    writeFileSync(persistPath, JSON.stringify([good, badState, notObject]));
+    const server = new DaemonServer({
+      socketPath,
+      token: "tkn-salvage",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "tkn-salvage");
+      const list = (await client.list()) as JobRecord[];
+      expect(list.map((r) => r.id)).toEqual(["job-good"]);
+      expect(existsSync(`${persistPath}.bak`)).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
 });
