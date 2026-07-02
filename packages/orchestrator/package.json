@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/orchestrator",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "Hub that composes all subsystems and implements the execution modes (ask, agent, best-of-N, convergence, plan, create, audit).",
   "type": "module",
   "main": "./dist/index.js",

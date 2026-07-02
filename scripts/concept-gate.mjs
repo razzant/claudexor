@@ -23,6 +23,12 @@
  *   node scripts/concept-gate.mjs --range A..B       # every commit in range
  *   node scripts/concept-gate.mjs --since-last-tag   # every commit since the
  *                                                    # previous v* tag (release)
+ *
+ * Assumptions: linear history is the norm (merge commits are inspected via
+ * diff-tree -m against each parent). On a SHALLOW clone, a commit whose
+ * parent is outside the clone boundary skips the before/after comparison
+ * (the `show sha~1` failure path) — CI fetches depth=100 to keep realistic
+ * ranges fully comparable; deepen the fetch if a range ever exceeds that.
  */
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";

@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/mcp-server",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "Minimal MCP server (stdio JSON-RPC) exposing Claudexor tools. Runner injected.",
   "type": "module",
   "main": "./dist/index.js",

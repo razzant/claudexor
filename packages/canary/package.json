@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/canary",
   "version": "0.14.1",
+  "license": "MIT",
   "private": true,
   "description": "Canary golden stories: user-level E2E smokes over the PUBLIC surfaces (built CLI + fake harnesses), pinned to Bible invariants. Run via `pnpm canary`.",
   "type": "module"

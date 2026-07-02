@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/gateway",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "HarnessGateway: discovery, conformance role-gating, and harness selection.",
   "type": "module",
   "main": "./dist/index.js",

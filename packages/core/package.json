@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/core",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "HarnessAdapter contract, process helpers, typed errors, and low-level execution utilities.",
   "type": "module",
   "main": "./dist/index.js",

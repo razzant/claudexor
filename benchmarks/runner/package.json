@@ -1,6 +1,7 @@
 {
   "name": "claudexor-benchmark-runner",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "SWE-bench Verified prediction runner (claudexor-bench): exported tasks -> claudexor run per instance -> official-shape predictions.",
   "private": true,
   "type": "module",

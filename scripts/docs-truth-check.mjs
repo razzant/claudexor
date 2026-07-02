@@ -345,6 +345,23 @@ function collectSourceHaystack() {
   for (const m of integrations.matchAll(/`(claudexor_[a-z_]+)`/g)) {
     if (!tools.has(m[1])) failures.push(`docs/INTEGRATIONS.md documents MCP tool '${m[1]}' which the server does not expose`);
   }
+
+  // CLI verb parity (one-directional, toward the help): every user-facing verb
+  // the CLI's Usage block advertises must appear in the INTEGRATIONS surface
+  // matrix text, so the hand-written verb list cannot silently rot when
+  // commands are added. (Internal/unlisted verbs are not force-documented.)
+  const helpMatch2 = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
+  if (helpMatch2) {
+    const verbs = new Set();
+    for (const m of helpMatch2[1].matchAll(/^\s{2}claudexor ([a-z][a-z-]*)/gm)) {
+      if (m[1] !== "help") verbs.add(m[1]);
+    }
+    for (const verb of verbs) {
+      if (!new RegExp(`\\b${verb}\\b`).test(integrations)) {
+        failures.push(`docs/INTEGRATIONS.md surface matrix does not mention CLI verb '${verb}' (advertised in cli.ts help)`);
+      }
+    }
+  }
 }
 
 // --------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/artifact-store",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "Files-first canonical artifact store (repo-local .claudexor/runs layout).",
   "type": "module",
   "main": "./dist/index.js",

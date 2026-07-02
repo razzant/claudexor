@@ -1,6 +1,7 @@
 {
   "name": "claudexor-monorepo",
   "version": "0.14.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.2",

@@ -1,6 +1,7 @@
 {
   "name": "@claudexor/harness-codex",
   "version": "0.14.1",
+  "license": "MIT",
   "description": "Codex CLI adapter (codex exec --json).",
   "type": "module",
   "main": "./dist/index.js",

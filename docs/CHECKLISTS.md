@@ -22,6 +22,8 @@ Use this before committing documentation changes.
   not explain private review rituals.
 - Local operator notes and temporary review packet directories remain local-only
   and gitignored.
+- `docs/FEATURES.md` rows for any feature the change touches are updated or
+  deleted in the same commit (a feature that became solid loses its row).
 - Before release, search public docs for stale deleted-doc links, private review
   packet names, local absolute paths, raw planning prompts, transcript-style
   review verdicts, and token-like values.

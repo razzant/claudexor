@@ -25,7 +25,7 @@ process below. Never paper over the conflict.
   disguise — forbidden without an explicit owner-approved retirement. An
   invariant whose content moves elsewhere keeps its id as an absorbed pointer.
 - Canary golden stories (`packages/canary`) pin a growing subset of these
-  invariants as executable user stories tagged `[INV:…]`. When a canary
+  invariants as executable user stories tagged `[INV-NNN:…]`. When a canary
   fails, the product regressed: fix the product, never the story, unless the
   owner approved a `CONCEPT-CHANGE` for that invariant.
 - Some invariants below encode owner decisions locked in the v0.15 program
@@ -78,8 +78,8 @@ process below. Never paper over the conflict.
   output, or docs. verify: schema:gen diff gate; docs-truth; review.
 - **INV-021** Unknown modes, unknown portfolios, invalid access profiles,
   malformed artifacts, stale reviews, and unavailable harnesses fail loudly
-  at every wire boundary. verify: canary `[INV:modes-canonical]` and
-  `[INV:fail-loud-flags]`; control-api DTO tests.
+  at every wire boundary. verify: canary `[INV-032:modes-canonical]` and
+  `[INV-021:fail-loud-flags]`; control-api DTO tests.
 - **INV-022** A schema field ships only WITH a real producer AND a real
   consumer in the same change (staged-field rule); otherwise it is deleted —
   never left as a dead or fake knob. Comments are not consumers. verify:
@@ -100,7 +100,7 @@ process below. Never paper over the conflict.
   (`agent --create`). verify: CLI help + docs-truth flag check.
 - **INV-032** Old mode ids are not compatibility aliases; they hard-error at
   every wire boundary unless explicitly reintroduced in schema and docs.
-  verify: canary `[INV:modes-canonical]`; CLI mode validation tests.
+  verify: canary `[INV-032:modes-canonical]`; CLI mode validation tests.
 - **INV-033** `Agent` is the default composer/`claudexor run` route on a
   project thread; a no-project thread falls back to read-only `Ask`.
   `Orchestrate` is the brain — an intent routed like reviewers, never a
@@ -222,7 +222,7 @@ process below. Never paper over the conflict.
   Claudexor store. Project-aware modes require an explicit project and
   never silently fall back to a process cwd in the app; the CLI's contract
   is that the invoking directory IS the project scope. verify: canary
-  `[INV:project-context-explicit]`; app no-project tests.
+  `[INV-071:project-context-explicit]`; app no-project tests.
 - **INV-072** Ordinary project runs (and Race candidates) execute in
   isolated envelopes under `.claudexor/workspaces/.../tree`, with the
   harness cwd at the envelope worktree. verify: workspace manager tests.
@@ -278,7 +278,7 @@ process below. Never paper over the conflict.
   the adopted winner; a terminal failure with no output renders an inline
   failure card with the engine's reason. Working progress (reasoning + tool
   calls) streams into the turn as it happens. verify: canary
-  `[INV:plan-honest-no-op]`; turn-card UI review.
+  `[INV-093:plan-honest-no-op]`; turn-card UI review.
 - **INV-094** The window is matte glass (behind-window material; Reduce
   Transparency falls back to solid). There is NO always-animating backdrop
   and NO perpetual pulsing: idle means zero animation. Liquid Glass belongs
@@ -335,7 +335,7 @@ process below. Never paper over the conflict.
   persists an auditable, patch-hash-bound record that unblocks apply for a
   `blocked` run; a mutated patch invalidates the override. The human
   decision is never client-faked state. verify: apply-gate tests; canary
-  `[INV:apply-needs-verified-review]`.
+  `[INV-112:apply-needs-verified-review]`.
 - **INV-112** A clean CROSS-FAMILY VERIFIED review is sufficient
   verification even without a deterministic test gate;
   `DecisionRecord.verification_basis` discloses what backed an applyable
@@ -365,7 +365,7 @@ process below. Never paper over the conflict.
   `pending|finalizing|ready|diagnostic`), and every announced run reaches a
   terminal event on every path — crash, cancel, pre-loop failure — so no
   observer waits forever. CLI and UI show the distinction. verify: canary
-  `[INV:output-ready-before-terminal]`; terminal-guarantee tests (gap fixes
+  `[INV-116:output-ready-before-terminal]`; terminal-guarantee tests (gap fixes
   land v0.15 Phase 3).
 
 ## 12. Keep The Codebase Small And Direct
