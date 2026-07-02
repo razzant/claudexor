@@ -29,12 +29,16 @@
  * are checked individually by the range walk, so a CLEAN merge needs no
  * marker of its own. Only a merge that itself introduces Bible content
  * beyond its parents (an "evil merge" / conflict resolution — detected via
- * `diff-tree --cc`) must carry a covering marker.
+ * `diff-tree --cc`) must carry a marker, and that marker gets the SAME
+ * coverage + id-hygiene treatment as a normal commit: it must name every
+ * invariant block whose merged text matches NO parent's version, and no
+ * parent's invariant id may disappear in the result.
  *
- * Assumptions: on a SHALLOW clone, a commit whose parent is outside the
- * clone boundary skips the before/after comparison (the `show sha~1`
- * failure path) — CI fetches depth=100 to keep realistic ranges fully
- * comparable; deepen the fetch if a range ever exceeds that.
+ * Shallow clones fail LOUDLY: if a commit in the range has a parent whose
+ * object is outside the clone boundary, the gate errors and tells the
+ * caller to deepen the fetch — it never silently skips the comparison
+ * (CI checks out with fetch-depth: 0, so this only triggers on local
+ * shallow experiments).
  */
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -82,8 +86,30 @@ function invBlocks(text) {
   return blocks;
 }
 
+/** Bible text at a commit; "" when the file does not exist in that tree. */
+function bibleAt(sha) {
+  try {
+    return git(["show", `${sha}:${BIBLE}`]);
+  } catch {
+    return "";
+  }
+}
+
+/** Fail loudly (throw) when a parent object is outside a shallow clone. */
+function assertParentReachable(sha, parent) {
+  try {
+    git(["rev-parse", "--verify", "--quiet", `${parent}^{commit}`]);
+  } catch {
+    throw new Error(
+      `concept-gate: parent ${parent.slice(0, 10)} of ${sha.slice(0, 10)} is outside this (shallow) clone — ` +
+        `cannot compare the ${BIBLE} before/after. Deepen the fetch (fetch-depth: 0) and rerun.`,
+    );
+  }
+}
+
 function checkCommit(sha) {
   const parents = git(["rev-list", "--parents", "-n", "1", sha]).trim().split(/\s+/).slice(1);
+
   if (parents.length > 1) {
     // Merge commit. Its constituent commits are range-walked individually, so
     // requiring a marker HERE would deterministically fail every synthetic PR
@@ -92,16 +118,43 @@ function checkCommit(sha) {
     // resolution) is constitutional surface: --cc prints exactly that.
     const ccDiff = git(["diff-tree", "--cc", "--name-only", "-r", sha]).split("\n");
     if (!ccDiff.includes(BIBLE)) return null;
-    const msg = git(["log", "-1", "--format=%B", sha]);
-    const marker = msg.match(MARKER_RE);
-    if (!marker) {
+    for (const p of parents) assertParentReachable(sha, p);
+
+    const after = bibleAt(sha);
+    const parentTexts = parents.map(bibleAt);
+
+    // Id hygiene across the merge: an id present in ANY parent must survive.
+    const afterIds = invIds(after);
+    const gone = [...new Set(parentTexts.flatMap((t) => [...invIds(t)]))].filter((id) => !afterIds.has(id));
+    if (gone.length > 0) {
       return (
-        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} beyond its parents (conflict resolution / evil merge)\n` +
-        `  without a CONCEPT-CHANGE(INV-…) marker. Resolve Bible conflicts in a marked non-merge commit,\n` +
-        `  or mark the merge itself if the owner approved the resolution.`
+        `merge commit ${sha.slice(0, 10)} REMOVES invariant id(s) ${gone.join(", ")} from ${BIBLE}.\n` +
+        `  Ids are stable and never reused: mark the invariant RETIRED (keeping its id) instead of deleting it.`
       );
     }
-    console.log(`concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}`);
+
+    // Touched-by-the-merge-itself = blocks whose merged text matches NO parent.
+    const parentBlocks = parentTexts.map(invBlocks);
+    const touched = new Set();
+    for (const [id, text] of invBlocks(after)) {
+      if (!parentBlocks.some((pb) => pb.get(id) === text)) touched.add(id);
+    }
+    if (touched.size === 0) return null; // clean content-level merge (e.g. union of marked parents)
+
+    const msg = git(["log", "-1", "--format=%B", sha]);
+    const marker = msg.match(MARKER_RE);
+    const markedIds = new Set(marker ? marker[1].split(",").map((s) => s.trim()) : []);
+    const uncovered = [...touched].filter((id) => !markedIds.has(id));
+    if (uncovered.length > 0) {
+      return (
+        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} invariant(s) ${uncovered.sort().join(", ")} beyond its parents\n` +
+        `  (conflict resolution / evil merge) without a covering CONCEPT-CHANGE marker.\n` +
+        `  Resolve Bible conflicts in a marked non-merge commit, or mark the merge itself if the owner approved the resolution.`
+      );
+    }
+    console.log(
+      `concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}; touched invariant blocks: ${[...touched].sort().join(", ")}`,
+    );
     return null;
   }
 
@@ -120,10 +173,9 @@ function checkCommit(sha) {
   const markedIds = new Set(marker[1].split(",").map((s) => s.trim()));
 
   let before = "";
-  try {
-    before = git(["show", `${sha}~1:${BIBLE}`]);
-  } catch {
-    return null; // first commit introducing the file
+  if (parents.length === 1) {
+    assertParentReachable(sha, parents[0]);
+    before = bibleAt(parents[0]); // "" when this commit introduces the file
   }
   const after = git(["show", `${sha}:${BIBLE}`]);
 
@@ -202,8 +254,12 @@ function resolveShas() {
 
 const failures = [];
 for (const sha of resolveShas()) {
-  const err = checkCommit(sha);
-  if (err) failures.push(err);
+  try {
+    const err = checkCommit(sha);
+    if (err) failures.push(err);
+  } catch (e) {
+    failures.push(e.message);
+  }
 }
 const dupErr = checkDuplicateIds();
 if (dupErr) failures.push(dupErr);

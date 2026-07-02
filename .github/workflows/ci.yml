@@ -15,6 +15,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # Full history: the concept gate range-walks the PR's constituent
+          # commits (a shallow synthetic-merge checkout would hide them, and
+          # the gate fails loudly on unreachable parents rather than skip).
+          fetch-depth: 0
 
       # Secret scan runs FIRST — before any toolchain/lifecycle step can read
       # or echo repository contents. The patterns cannot self-match their own
@@ -69,11 +73,13 @@ jobs:
 
       - name: Concept gate (Bible edits need CONCEPT-CHANGE markers)
         run: |
+          # Checkout is fetch-depth: 0, so ranges walk real constituent
+          # commits (synthetic PR merges are exempt unless they change the
+          # Bible beyond their parents; the gate handles that itself).
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=100 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             node scripts/concept-gate.mjs --range "origin/${{ github.base_ref }}..HEAD"
           elif [ "${{ github.event.before }}" != "" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            git fetch --no-tags --depth=100 origin
             node scripts/concept-gate.mjs --range "${{ github.event.before }}..HEAD"
           else
             node scripts/concept-gate.mjs --since-last-tag

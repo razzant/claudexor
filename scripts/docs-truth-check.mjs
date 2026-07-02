@@ -366,18 +366,23 @@ function collectSourceHaystack() {
   }
 
   // CLI verb parity (one-directional, toward the help): every user-facing verb
-  // the CLI's Usage block advertises must appear in the INTEGRATIONS surface
-  // matrix text, so the hand-written verb list cannot silently rot when
-  // commands are added. (Internal/unlisted verbs are not force-documented.)
+  // the CLI's Usage block advertises must appear in the "## Surface Matrix"
+  // SECTION of INTEGRATIONS (not just anywhere in the doc — a verb mentioned
+  // only in a later example would not keep the matrix honest), so the
+  // hand-written verb list cannot silently rot when commands are added.
+  // (Internal/unlisted verbs are not force-documented.)
   const helpMatch2 = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
-  if (helpMatch2) {
+  const matrixMatch = /## Surface Matrix\n([\s\S]*?)(?=\n## )/.exec(integrations);
+  if (!matrixMatch) {
+    failures.push("docs/INTEGRATIONS.md no longer has a '## Surface Matrix' section (CLI verb parity check needs it)");
+  } else if (helpMatch2) {
     const verbs = new Set();
     for (const m of helpMatch2[1].matchAll(/^\s{2}claudexor ([a-z][a-z-]*)/gm)) {
       if (m[1] !== "help") verbs.add(m[1]);
     }
     for (const verb of verbs) {
-      if (!new RegExp(`\\b${verb}\\b`).test(integrations)) {
-        failures.push(`docs/INTEGRATIONS.md surface matrix does not mention CLI verb '${verb}' (advertised in cli.ts help)`);
+      if (!new RegExp(`\\b${verb}\\b`, "i").test(matrixMatch[1])) {
+        failures.push(`docs/INTEGRATIONS.md Surface Matrix does not mention CLI verb '${verb}' (advertised in cli.ts help)`);
       }
     }
   }
@@ -408,6 +413,44 @@ function collectSourceHaystack() {
         `${docPath}:${i + 1} anchors current behavior to a version ('${line.trim().slice(0, 80)}…') — describe the present era-neutrally or phrase it as history (INV-133)`,
       );
     });
+  }
+}
+
+// --------------------------------------------------------------------------
+// 10. FEATURES ledger self-consistency: the "Rows: **N** (status: n, …)"
+//     header claim must match the actual table (the ledger's shrink-toward-
+//     empty contract is meaningless if the count can silently drift).
+// --------------------------------------------------------------------------
+
+{
+  const ledger = readFileSync("docs/FEATURES.md", "utf8");
+  const header = /Rows: \*\*(\d+)\*\* \(([^)]*)\)/.exec(ledger);
+  const rows = ledger
+    .split("\n")
+    .filter((l) => /^\|/.test(l) && !/^\|\s*Area\s*\|/.test(l) && !/^\|[-\s|]*$/.test(l));
+  if (!header) {
+    failures.push("docs/FEATURES.md is missing the 'Rows: **N** (…)' count header");
+  } else {
+    if (Number(header[1]) !== rows.length) {
+      failures.push(`docs/FEATURES.md claims ${header[1]} rows but the table has ${rows.length}`);
+    }
+    const claimed = {};
+    for (const part of header[2].split(",")) {
+      const m = /([a-z-]+):\s*(\d+)/.exec(part.trim());
+      if (m) claimed[m[1]] = Number(m[2]);
+    }
+    const actual = {};
+    for (const row of rows) {
+      const status = row.split("|").map((c) => c.trim())[3];
+      if (status) actual[status] = (actual[status] ?? 0) + 1;
+    }
+    for (const status of new Set([...Object.keys(claimed), ...Object.keys(actual)])) {
+      if ((claimed[status] ?? 0) !== (actual[status] ?? 0)) {
+        failures.push(
+          `docs/FEATURES.md header claims ${claimed[status] ?? 0} '${status}' rows but the table has ${actual[status] ?? 0}`,
+        );
+      }
+    }
   }
 }
 
