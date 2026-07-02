@@ -52,8 +52,11 @@ function invBlocks(text) {
   const lines = text.split("\n");
   let current = null;
   let buf = [];
+  // Trailing whitespace is trimmed so inserting a NEW invariant after an
+  // existing one does not "touch" the neighbor merely by absorbing the blank
+  // line that used to close its block.
   const flush = () => {
-    if (current) blocks.set(current, buf.join("\n"));
+    if (current) blocks.set(current, buf.join("\n").replace(/\s+$/, ""));
     buf = [];
   };
   for (const line of lines) {
