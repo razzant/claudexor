@@ -3,7 +3,7 @@
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/DomainModels.swift": 770,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 668,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ThreadsScreen.swift": 1583,
-  "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 1312,
+  "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 1040,
   "packages/acp-server/src/index.ts": 613,
   "packages/cli/src/claudexord.ts": 620,
   "packages/cli/src/cli.ts": 2036,
