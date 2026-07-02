@@ -57,6 +57,7 @@ import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
+import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { interactionChannelFor } from "./interaction.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
@@ -411,7 +412,6 @@ const REVIEW_EVIDENCE_DIRNAME = ".claudexor-review-evidence";
 const MAX_PARALLEL_CANDIDATES = 4;
 /** Default wait for one interactive answer before a benign decline. */
 const DEFAULT_INTERACTION_TIMEOUT_MS = 900_000;
-const REVIEWER_MODEL_INVENTORY_RETRY_DELAY_MS = 250;
 
 /**
  * SAFETY INVARIANT 1 (asserted, not convention): a sub-run spawned by the
@@ -702,182 +702,14 @@ export class Orchestrator {
     panel: ControlReviewerPanelEntry[],
     runAuthPreference?: AuthPreference,
   ): Promise<ReviewerSpec[]> {
-    const known = [...this.deps.registry.keys()].sort().join(", ");
-    const harnessSettings = this.config(cwd)?.global.harnesses ?? {};
-    const modelInventory = new Map<string, Set<string>>();
-    const statusByRoute = new Map<
-      string,
+    return resolveExplicitReviewerPanel(
       {
-        manifest: Awaited<ReturnType<HarnessAdapter["discover"]>> | null;
-        status: "ok" | "degraded" | "unavailable";
-        enabledIntents: Intent[];
-        reasons: string[];
-      }
-    >();
-    const specs: ReviewerSpec[] = [];
-    const reviewModelHome: {
-      current: { env: Record<string, string>; dispose: () => void } | null;
-    } = { current: null };
-    try {
-      const reviewModelEnv = (): Record<string, string> => {
-        reviewModelHome.current ??= new WorkspaceManager(cwd).readOnlyHomeEnv();
-        return reviewModelHome.current.env;
-      };
-      for (const entry of panel) {
-        const adapter = this.deps.registry.get(entry.harness);
-        if (!adapter) {
-          throw new HarnessUnavailableError(
-            `unknown reviewer harness '${entry.harness}' (registered: ${known}); run \`claudexor harness list --all\``,
-          );
-        }
-        if (harnessSettings[entry.harness]?.enabled === false) {
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' is disabled in settings (harnesses.${entry.harness}.enabled=false)`,
-          );
-        }
-        const authPreference = this.authPreferenceForHarness(cwd, entry.harness, runAuthPreference);
-        const routeKey = `${entry.harness}\0${authPreference}`;
-        if (!statusByRoute.has(routeKey)) {
-          let manifest: Awaited<ReturnType<HarnessAdapter["discover"]>> | null = null;
-          try {
-            manifest = await adapter.discover();
-          } catch {
-            manifest = null;
-          }
-          try {
-            const report = await adapter.doctor({ cwd, env: reviewModelEnv(), authPreference });
-            statusByRoute.set(routeKey, {
-              manifest,
-              status: report.status,
-              enabledIntents: report.enabled_intents,
-              reasons: report.reasons ?? [],
-            });
-          } catch (err) {
-            statusByRoute.set(routeKey, {
-              manifest,
-              status: "unavailable",
-              enabledIntents: [],
-              reasons: [safeErrorMessage(err)],
-            });
-          }
-        }
-        const status = statusByRoute.get(routeKey);
-        const manifest = status?.manifest;
-        if (!status || !manifest) {
-          throw new HarnessUnavailableError(`reviewer harness '${entry.harness}' is unavailable`);
-        }
-        if (manifest.kind === "fake") {
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
-          );
-        }
-        if (status.status !== "ok") {
-          const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' is not doctor-ok${reason}`,
-          );
-        }
-        if (
-          !status.enabledIntents.includes("review") ||
-          !manifest.capabilities.review ||
-          !manifest.access_profiles_supported.includes("readonly")
-        ) {
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' cannot perform readonly review`,
-          );
-        }
-        const requestedModel = entry.model ?? harnessSettings[entry.harness]?.default_model ?? null;
-        if (requestedModel) {
-          if (typeof adapter.models !== "function") {
-            // STRICT (D3): the manifest list is the truth source here; an empty
-            // list means the harness cannot verify models and the explicit
-            // model is refused (validateModel phrases both refusals).
-            const check = validateModel(
-              requestedModel,
-              manifest.capabilities.known_models,
-              "manifest",
-            );
-            if (check.status !== "ok") {
-              throw new HarnessUnavailableError(
-                `reviewer harness '${entry.harness}' refused requested model '${requestedModel}': ${check.message}; run \`claudexor models --harness ${entry.harness}\``,
-              );
-            }
-          } else {
-            const inventoryKey = `${entry.harness}\0${authPreference}`;
-            if (!modelInventory.has(inventoryKey)) {
-              modelInventory.set(
-                inventoryKey,
-                await this.listReviewerModelIdsWithRetry(adapter.models.bind(adapter), {
-                  cwd,
-                  authPreference,
-                  env: reviewModelEnv,
-                  harnessId: entry.harness,
-                  requestedModel,
-                }),
-              );
-            }
-            const models = modelInventory.get(inventoryKey);
-            if (models && !models.has(requestedModel)) {
-              const available = [...models].slice(0, 80).join(", ");
-              const suffix = models.size > 80 ? `, ... (${models.size} total)` : "";
-              throw new HarnessUnavailableError(
-                `reviewer harness '${entry.harness}' does not support requested model '${requestedModel}' on the review route (available: ${available}${suffix}); run \`claudexor models --harness ${entry.harness}\``,
-              );
-            }
-          }
-        }
-        const requestedEffort = entry.effort ?? null;
-        if (requestedEffort && !manifest.capabilities.effort_levels.includes(requestedEffort)) {
-          const supported = manifest.capabilities.effort_levels.join(", ");
-          const suffix = supported ? ` (supported: ${supported})` : " (harness declares no effort controls)";
-          throw new HarnessUnavailableError(
-            `reviewer harness '${entry.harness}' does not support requested effort '${requestedEffort}'${suffix}`,
-          );
-        }
-        specs.push({
-          adapter,
-          providerFamily: manifest.provider_family,
-          requestedModel,
-          requestedEffort,
-          authPreference,
-        });
-      }
-    } finally {
-      reviewModelHome.current?.dispose();
-    }
-    return specs;
-  }
-
-  private async listReviewerModelIdsWithRetry(
-    listModels: NonNullable<HarnessAdapter["models"]>,
-    input: {
-      cwd: string;
-      authPreference: AuthPreference;
-      env: () => Record<string, string>;
-      harnessId: string;
-      requestedModel: string;
-    },
-  ): Promise<Set<string>> {
-    let lastError: unknown = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const models = await listModels({
-          cwd: input.cwd,
-          env: input.env(),
-          authPreference: input.authPreference,
-        });
-        if (models.length === 0) {
-          throw new Error("model inventory was empty");
-        }
-        return new Set(models.map((m) => m.id));
-      } catch (err) {
-        lastError = err;
-        if (attempt === 0) await sleep(REVIEWER_MODEL_INVENTORY_RETRY_DELAY_MS);
-      }
-    }
-    const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
-    throw new HarnessUnavailableError(
-      `reviewer harness '${input.harnessId}' could not verify requested model '${input.requestedModel}' because its model inventory call failed after retry: ${detail}; run \`claudexor models --harness ${input.harnessId}\``,
+        cwd,
+        registry: this.deps.registry,
+        harnessSettings: this.config(cwd)?.global.harnesses ?? {},
+        authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
+      },
+      panel,
     );
   }
 

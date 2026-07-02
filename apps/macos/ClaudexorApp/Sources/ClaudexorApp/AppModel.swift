@@ -173,7 +173,7 @@ final class AppModel {
     var defaultPortfolio: String { settingsSnapshot?.defaultPortfolio ?? "subscription-first" }
     var defaultMaxUsdPerRun: Double? { settingsSnapshot?.budget.maxUsdPerRun }
 
-    private var client: GatewayClient?
+    private(set) var client: GatewayClient?
     private var streamTasks: [String: Task<Void, Never>] = [:]
     /// Global live-only multiplex subscription (list liveness).
     private var globalStreamTask: Task<Void, Never>?
@@ -1057,36 +1057,6 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
-    /// Rename a thread (B3): server-owned title via the existing PATCH.
-    func renameThread(_ id: String, title: String) async {
-        guard let client else { threadStatus = "Engine offline — reconnect to rename."; return }
-        do {
-            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(title: title))
-            applyThreadUpdate(updated)
-            await refreshThreads()
-        } catch { threadStatus = userMessage(for: error) }
-    }
-
-    /// Archive (close) a thread; it stays inspectable, out of the active list.
-    func archiveThread(_ id: String) async {
-        await setThreadState(id, state: "closed")
-    }
-
-    /// Reopen a previously archived thread. The server ThreadState enum is
-    /// `active | closed` — "open" is NOT a member and 400s.
-    func reopenThread(_ id: String) async {
-        await setThreadState(id, state: "active")
-    }
-
-    private func setThreadState(_ id: String, state: String) async {
-        guard let client else { threadStatus = "Engine offline — reconnect to change thread state."; return }
-        do {
-            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(state: state))
-            applyThreadUpdate(updated)
-            await refreshThreads()
-        } catch { threadStatus = userMessage(for: error) }
-    }
-
     /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
     func setEligiblePool(_ pool: [String]) async {
         guard let id = selectedThreadId else {
@@ -1109,7 +1079,7 @@ final class AppModel {
     /// open detail in place from the returned `ThreadSummary` — no heavy
     /// `refreshThreads()` + `openThread()` re-fetch (which re-hydrated everything,
     /// flickered, and conflated a later GET's error with the PATCH).
-    private func applyThreadUpdate(_ updated: ThreadSummary) {
+    func applyThreadUpdate(_ updated: ThreadSummary) {
         threadStatus = nil
         if let i = threads.firstIndex(where: { $0.id == updated.id }) { threads[i] = updated }
         if selectedThreadId == updated.id, let detail = selectedThreadDetail {
