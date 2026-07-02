@@ -55,7 +55,7 @@ import {
 import { loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, validateModel, withInactivityWatchdog } from "@claudexor/core";
+import { HarnessUnavailableError, parseUnifiedDiff, validateModel, withInactivityWatchdog } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
 import {
   type AnnouncedRunContext,
@@ -449,50 +449,33 @@ function diffStats(diff: string): {
   additions: number;
   deletions: number;
 } {
+  // Shared quote-aware parser (T3.2#2): git-quoted headers (non-ASCII,
+  // spaces, quotes) used to fail the old regex and silently DROP the file
+  // from protected-path/NEEDS_HUMAN/risk gating.
+  const parsed = parseUnifiedDiff(diff);
   const paths: string[] = [];
   const addedPaths: string[] = [];
   const modifiedPaths: string[] = [];
   const existingPaths: string[] = [];
-  let additions = 0;
-  let deletions = 0;
-  let currentPath: string | null = null;
-  let currentOldPath: string | null = null;
-  let currentAdded = false;
-  const flush = () => {
-    if (!currentPath) return;
-    paths.push(currentPath);
-    if (currentAdded) {
-      addedPaths.push(currentPath);
+  for (const f of parsed.files) {
+    const path = f.newPath ?? f.oldPath;
+    if (!path) continue;
+    paths.push(path);
+    if (f.added) {
+      addedPaths.push(path);
     } else {
-      modifiedPaths.push(currentPath);
-      if (currentOldPath) existingPaths.push(currentOldPath);
-      existingPaths.push(currentPath);
+      modifiedPaths.push(path);
+      if (f.oldPath) existingPaths.push(f.oldPath);
+      existingPaths.push(path);
     }
-  };
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      flush();
-      const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-      currentOldPath = m?.[1] ?? null;
-      currentPath = m?.[2] ?? null;
-      currentAdded = false;
-    } else if (line.startsWith("rename from ")) {
-      currentOldPath = line.slice("rename from ".length).trim() || currentOldPath;
-    } else if (line.startsWith("rename to ")) {
-      currentPath = line.slice("rename to ".length).trim() || currentPath;
-    } else if (line.startsWith("new file mode ") || line === "--- /dev/null") {
-      currentAdded = true;
-    } else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-    else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
   }
-  flush();
   return {
     paths,
     addedPaths,
     modifiedPaths,
     existingPaths: [...new Set(existingPaths)],
-    additions,
-    deletions,
+    additions: parsed.additions,
+    deletions: parsed.deletions,
   };
 }
 

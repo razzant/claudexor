@@ -228,3 +228,91 @@ export async function runCapture(
   return { code, signal, stdout, stderr };
 }
 
+/**
+ * BYTE-FAITHFUL capture (T3.2#1): `runCapture` rides readline, which splits
+ * on lone `\r` too and rejoins with `\n` — destroying CR bytes in CRLF file
+ * content and fabricating trailing newlines. Diff-carrying git output MUST
+ * come through here, or `final/patch.diff` is corrupted at the source and
+ * fails `git apply` downstream. Raw buffers, no line splitting, no
+ * fabrication; the same spawn machinery (process group, abort, timeout).
+ */
+export async function runCaptureRaw(
+  cmd: string,
+  args: string[],
+  opts: SpawnOptions = {},
+): Promise<CaptureResult> {
+  const env: NodeJS.ProcessEnv = composeBaseEnv(opts.inheritEnv ?? "mirror_native");
+  for (const [key, value] of Object.entries(opts.env ?? {})) {
+    if (value === undefined || value === null) delete env[key];
+    else env[key] = value;
+  }
+  const child = spawn(cmd, args, {
+    cwd: opts.cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+  });
+  if (typeof child.pid === "number") registerChildProcess(child.pid, cmd);
+  const killTree = (signal: NodeJS.Signals): void => {
+    try {
+      if (typeof child.pid === "number") process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      try {
+        child.kill(signal);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+  child.stdin.on("error", () => {});
+  if (opts.input !== undefined) child.stdin.write(opts.input);
+  child.stdin.end();
+
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  child.stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
+  child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
+
+  let killTimer: NodeJS.Timeout | undefined;
+  const requestCancel = (): void => {
+    killTree(opts.cancelSignal ?? "SIGINT");
+    const killDelay = opts.cancelKillDelayMs ?? 1_000;
+    if (killDelay >= 0 && !killTimer) {
+      killTimer = setTimeout(() => killTree("SIGKILL"), killDelay);
+      killTimer.unref?.();
+    }
+  };
+  let timer: NodeJS.Timeout | undefined;
+  if (opts.timeoutMs && opts.timeoutMs > 0) {
+    timer = setTimeout(() => killTree("SIGKILL"), opts.timeoutMs);
+  }
+  const abortSignal = opts.abortSignal;
+  if (abortSignal) {
+    if (abortSignal.aborted) requestCancel();
+    else abortSignal.addEventListener("abort", requestCancel, { once: true });
+  }
+  try {
+    const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
+      child.on("error", (err) => {
+        if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+        reject(err);
+      });
+      child.on("close", (c, s) => {
+        if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+        resolve([c, s]);
+      });
+    });
+    return {
+      code,
+      signal,
+      stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+      stderr: Buffer.concat(stderrChunks).toString("utf8"),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+    abortSignal?.removeEventListener("abort", requestCancel);
+  }
+}
+

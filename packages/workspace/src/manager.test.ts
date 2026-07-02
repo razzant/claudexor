@@ -349,3 +349,46 @@ describe("disposeOrphan (crash GC)", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 });
+
+describe("diff fidelity (T3.2#1/#2)", () => {
+  it("round-trips CRLF content: captured diff applies cleanly to a fresh clone of base", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-crlf-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, "win.txt"), "line one\r\nline two\r\nline three\r\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    const wsm = new WorkspaceManager(repo);
+    const env = await wsm.create({ taskId: "task-crlf", attemptId: "a01" });
+    // Harness edit inside the worktree keeps CRLF endings.
+    writeFileSync(join(env.worktree_path, "win.txt"), "line one\r\nCHANGED two\r\nline three\r\n");
+    const diff = await wsm.diff(env);
+    expect(diff).toContain("\r"); // CR bytes SURVIVE capture (readline used to strip them)
+    // The patch must apply cleanly onto the base tree.
+    const clone = mkdtempSync(join(tmpdir(), "claudexor-crlf-clone-"));
+    execFileSync("git", ["clone", "-q", repo, clone]);
+    execFileSync("git", ["apply", "--check", "-"], { cwd: clone, input: diff });
+    await wsm.dispose(env);
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(clone, { recursive: true, force: true });
+  });
+
+  it("captures binary changes with an applyable payload (--binary), never a stub", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-bin-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, "a.txt"), "x\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    const wsm = new WorkspaceManager(repo);
+    const env = await wsm.create({ taskId: "task-bin", attemptId: "a01" });
+    writeFileSync(join(env.worktree_path, "img.bin"), Buffer.from([0, 1, 2, 3, 255, 254, 0, 10, 13, 7]));
+    const diff = await wsm.diff(env);
+    expect(diff).toContain("GIT binary patch");
+    expect(diff).not.toContain("img.bin differ");
+    const clone = mkdtempSync(join(tmpdir(), "claudexor-bin-clone-"));
+    execFileSync("git", ["clone", "-q", repo, clone]);
+    execFileSync("git", ["apply", "--check", "-"], { cwd: clone, input: diff });
+    await wsm.dispose(env);
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(clone, { recursive: true, force: true });
+  });
+});

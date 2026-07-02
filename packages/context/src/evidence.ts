@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { parseUnifiedDiff } from "@claudexor/core";
 import { containsSecretLikeToken, readTextSafe, redactSecrets, sha256, writeText } from "@claudexor/util";
 
 /**
@@ -128,41 +129,11 @@ function summarizeDiff(diff: string, displayDiff = diff): string {
 }
 
 function parseDiffGitHeader(line: string): string | null {
-  const rest = line.slice("diff --git ".length);
-  const tokens: string[] = [];
-  let i = 0;
-  while (i < rest.length && tokens.length < 2) {
-    while (rest[i] === " ") i += 1;
-    if (i >= rest.length) break;
-    if (rest[i] === '"') {
-      i += 1;
-      let token = "";
-      while (i < rest.length) {
-        const ch = rest[i] ?? "";
-        if (ch === '"') {
-          i += 1;
-          break;
-        }
-        if (ch === "\\" && i + 1 < rest.length) {
-          token += rest[i + 1] ?? "";
-          i += 2;
-          continue;
-        }
-        token += ch;
-        i += 1;
-      }
-      tokens.push(token);
-    } else {
-      const start = i;
-      while (i < rest.length && rest[i] !== " ") i += 1;
-      tokens.push(rest.slice(start, i));
-    }
-  }
-  const [from, to] = tokens;
-  if (!from || !to) return null;
-  const stripPrefix = (value: string, prefix: string): string =>
-    value.startsWith(prefix) ? value.slice(prefix.length) : value;
-  return `${stripPrefix(from, "a/")} -> ${stripPrefix(to, "b/")}`;
+  // Shared quote-aware parser (T3.2#2): octal escapes now decode to the real
+  // utf8 path (the old local tokenizer stripped backslashes but left bytes).
+  const file = parseUnifiedDiff(line + "\n").files[0];
+  if (!file || (!file.oldPath && !file.newPath)) return null;
+  return `${file.oldPath ?? "/dev/null"} -> ${file.newPath ?? "/dev/null"}`;
 }
 
 export interface PreflightResult {

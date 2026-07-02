@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import type { DecisionRecord, WorkProduct } from "@claudexor/schema";
+import { parseUnifiedDiff } from "@claudexor/core";
 import { pathGuard } from "@claudexor/policy";
 import { sha256 } from "@claudexor/util";
 
@@ -87,21 +88,14 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
 
 /** Paths touched by a unified git diff (both old and new sides, excluding /dev/null). */
 function patchPaths(patch: string): string[] {
+  // Shared structural parser (T3.2#2): header lines are honored only in
+  // header position, so removed CONTENT starting with `-- ` (SQL comments)
+  // can never masquerade as a path and false-refuse the apply; quoted
+  // non-ASCII paths are C-unquoted to their real on-disk form.
   const paths = new Set<string>();
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("+++ ") || line.startsWith("--- ")) {
-      const raw = line.slice(4).trim();
-      if (raw === "/dev/null") continue;
-      paths.add(raw.startsWith("a/") || raw.startsWith("b/") ? raw.slice(2) : raw);
-      continue;
-    }
-    // Pure rename/copy hunks carry no +++/--- lines; their targets must be
-    // confined too (git apply re-checks, this is defense-in-depth).
-    if (line.startsWith("rename to ") || line.startsWith("copy to ")) {
-      paths.add(line.slice(line.indexOf(" to ") + 4).trim());
-    } else if (line.startsWith("rename from ") || line.startsWith("copy from ")) {
-      paths.add(line.slice(line.indexOf(" from ") + 6).trim());
-    }
+  for (const f of parseUnifiedDiff(patch).files) {
+    if (f.oldPath) paths.add(f.oldPath);
+    if (f.newPath) paths.add(f.newPath);
   }
   return [...paths];
 }

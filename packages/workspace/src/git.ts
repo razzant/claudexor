@@ -1,10 +1,14 @@
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCapture, WorkspaceError } from "@claudexor/core";
+import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 
+/** BYTE-FAITHFUL git capture (T3.2#1): raw buffers, never readline — CR
+ * bytes in CRLF diff content survive, and no trailing newline is fabricated
+ * (trim-based consumers like revParse are unaffected: git ends its own
+ * output with \n). */
 export async function git(repo: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const r = await runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000 });
+  const r = await runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000 });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -14,7 +18,7 @@ async function gitEnv(
   args: string[],
   env: Record<string, string>,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const r = await runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, env });
+  const r = await runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000, env });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -188,13 +192,29 @@ export async function snapshotTree(repo: string): Promise<string> {
   return snap ?? (await revParse(repo, "HEAD"));
 }
 
-/** Net diff between two tree-ish shas (used for in-place per-turn diffs). */
+/** Net diff between two tree-ish shas (used for in-place per-turn diffs).
+ * `--binary` (T3.2#2): binary changes carry an APPLYABLE payload instead of
+ * degrading to a "Binary files differ" stub that silently loses the work. */
 export async function diffTrees(repo: string, baseSha: string, endSha: string): Promise<string> {
-  const r = await git(repo, ["diff", baseSha, endSha]);
+  const r = await git(repo, ["diff", "--binary", baseSha, endSha]);
   if (r.code !== 0) {
     throw new WorkspaceError(`git diff ${baseSha} ${endSha} failed: ${r.stderr.trim()}`);
   }
+  assertNoBinaryStubs(r.stdout, `git diff ${baseSha} ${endSha}`);
   return r.stdout;
+}
+
+/** Capture-time honesty: with --binary a payload-less "Binary files differ"
+ * stub should be impossible; if one appears anyway, fail AT CAPTURE with a
+ * typed error instead of shipping a patch that cannot apply. */
+function assertNoBinaryStubs(diff: string, label: string): void {
+  const stubs = parseUnifiedDiff(diff).files.filter((f) => f.binaryStub);
+  if (stubs.length > 0) {
+    const names = stubs.map((f) => f.newPath ?? f.oldPath ?? "(unknown)").join(", ");
+    throw new WorkspaceError(
+      `${label} produced undeliverable binary stub(s) for: ${names}; the work product cannot be applied`,
+    );
+  }
 }
 
 /** Resolve the TREE object sha for a commit-ish. snapshotTree returns COMMIT
@@ -310,15 +330,16 @@ export async function branchDelete(repo: string, branch: string): Promise<void> 
  * commits. Git op failures throw loudly instead of masquerading as "no changes".
  */
 export async function diffStaged(worktreePath: string, baseSha?: string): Promise<string> {
-  await runCapture("rm", ["-rf", ".claudexor-review-evidence"], { cwd: worktreePath, timeoutMs: 10_000 }).catch(() => null);
+  await runCaptureRaw("rm", ["-rf", ".claudexor-review-evidence"], { cwd: worktreePath, timeoutMs: 10_000 }).catch(() => null);
   const add = await git(worktreePath, ["add", "-A"]);
   if (add.code !== 0) {
     throw new WorkspaceError(`git add -A failed during diff capture: ${add.stderr.trim()}`);
   }
   const target = baseSha && baseSha.length > 0 ? baseSha : "HEAD";
-  const diff = await git(worktreePath, ["diff", "--cached", target]);
+  const diff = await git(worktreePath, ["diff", "--binary", "--cached", target]);
   if (diff.code !== 0) {
     throw new WorkspaceError(`git diff --cached ${target} failed during diff capture: ${diff.stderr.trim()}`);
   }
+  assertNoBinaryStubs(diff.stdout, `git diff --cached ${target}`);
   return diff.stdout;
 }

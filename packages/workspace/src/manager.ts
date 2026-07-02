@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
-import { runCapture, WorkspaceError } from "@claudexor/core";
+import { runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso } from "@claudexor/util";
 import {
   branchDelete,
@@ -270,7 +270,7 @@ export class WorkspaceManager {
       const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
       if (!existsSync(baseline)) return "";
       try {
-        const r = await runCapture(
+        const r = await runCaptureRaw(
           "diff",
           ["-ruN", "-x", ".git", "-x", ".claudexor", "-x", ".claudexor-review-evidence", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
           { timeoutMs: 120_000 },

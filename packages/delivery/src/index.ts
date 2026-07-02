@@ -1,4 +1,4 @@
-import { runCapture } from "@claudexor/core";
+import { runCapture, runCaptureRaw } from "@claudexor/core";
 import { newId } from "@claudexor/util";
 
 export * from "./gate.js";
@@ -9,7 +9,8 @@ export * from "./gate.js";
 export { revertWorkingTreeTo as revertInPlace, type RevertResult } from "@claudexor/workspace";
 
 async function git(repo: string, args: string[], input?: string) {
-  return runCapture("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
+  // Raw capture: the patch rides stdin already; stdout may carry diffs too.
+  return runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
 }
 
 export interface ApplyResult {
