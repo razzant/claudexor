@@ -15,7 +15,7 @@ export interface ToolErrorRecord {
   target: string | null;
   summary: string;
   toolUseId: string | null;
-  /** True when a later successful result of the same tool exists in the same attempt. */
+  /** True when a later successful result of the SAME tool against the SAME target exists in this attempt (INV-043). */
   recovered: boolean;
 }
 
@@ -39,8 +39,6 @@ export interface WebEvidenceState {
   failed: boolean;
   tool: string | null;
   target: string | null;
-  /** Target of the UNRECOVERED failed web call (INV-043 recovery key). */
-  failedTarget: string | null;
   errorSummary: string | null;
 }
 
@@ -80,7 +78,6 @@ export function createAttemptTelemetry(
       failed: false,
       tool: null,
       target: null,
-      failedTarget: null,
       errorSummary: null,
     },
     observedModel: null,
@@ -157,7 +154,6 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       t.web.attempted = true;
       t.web.tool = tool.name;
       t.web.target = tool.target ?? t.web.target;
-      t.web.failedTarget = tool.target ?? null;
       t.web.errorSummary = redactSecrets(
         tool.error_summary ?? "web tool result marked error",
       ).slice(0, 1000);
@@ -184,10 +180,11 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // failed call's target (INV-043 keying), so telemetry.yaml keeps the
     // unrecovered failure + errorSummary visible even on satisfied runs.
     t.web.satisfied = true;
-    if (t.web.failedTarget === null || t.web.failedTarget === (tool.target ?? null)) {
-      t.web.failed = false;
-      t.web.failedTarget = null;
-    }
+    // Derived rollup, single source of truth: the tool+target-keyed
+    // toolErrors store (the recovery loop above already marked matching
+    // errors recovered). Multiple failed targets stay disclosed until EACH
+    // recovers; a missing target never wildcards (exact null==null match).
+    t.web.failed = t.toolErrors.some((e) => e.kind === "web" && !e.recovered);
     t.web.tool = tool.name;
     t.web.target = tool.target ?? t.web.target;
   }
@@ -201,8 +198,12 @@ export function unrecoveredToolErrors(t: AttemptTelemetry): ToolErrorRecord[] {
 
 export function toolWarnings(t: AttemptTelemetry): ToolErrorRecord[] {
   // Non-web tool errors are warnings once the attempt produced its contracted
-  // deliverable. Web evidence has separate hard-gate semantics below.
-  return unrecoveredToolErrors(t).filter((e) => e.kind !== "web");
+  // deliverable. Unrecovered WEB errors count as warnings too WHEN the
+  // evidence gate is satisfied by an alternative route (INV-043: the failure
+  // stays attributable and disclosed; a green claim becomes
+  // success_with_warnings, never a silent clean success). Unsatisfied web
+  // errors flow through the hard gate (webUnsatisfied) instead.
+  return unrecoveredToolErrors(t).filter((e) => e.kind !== "web" || t.web.satisfied);
 }
 
 export function setAttemptOutcome(

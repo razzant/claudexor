@@ -12,11 +12,10 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **98** (half-baked: 8, suspicious: 6, works-with-caveats: 84)
+Rows: **97** (half-baked: 7, suspicious: 6, works-with-caveats: 84)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|
-| cli/daemon/api | CLI-auth-login | half-baked | Prints a static hint string per harness; no action; ignores `--json` | packages/cli/src/cli.ts:1377-1395 | backlog |
 | engine/orchestrator | F15 orchestrate answer_question | half-baked | (documented) | orchestrator.ts:6038-6072; schema/orchestrate.ts:28-38 | backlog |
 | engine/schema | BUD-PORTFOLIO | half-baked | (planned: v0.15 P4, D7 quotas fill RouterCandidate) | packages/schema/src/budget.ts:8-19; packages/budget/src/router.ts:30-65; packages/orchestrator/src/orchestrator.ts:1190-1201 (only harnessId/family/authMode set) | v0.15 P4 |
 | engine/workspace+delivery | AR-PAIRWISE | half-baked | (reasons carry no information) | `packages/arbitration/src/arbitration.ts:132-166,303-308` | backlog |
@@ -40,10 +39,10 @@ Rows: **98** (half-baked: 8, suspicious: 6, works-with-caveats: 84)
 | cli/daemon/api | API-setup-jobs-events | works-with-caveats | Poll-driven status stream, terminal `end`; per-connection seq (no Last-Event-ID resume) | packages/control-api/src/daemon-server.ts:1045-1114 | v0.15 P3 |
 | cli/daemon/api | API-spec-questions/freeze | works-with-caveats | Strict scope DTO; secret scan incl. serialized body; grounding plan run + `## Open Questions` parser; freeze validates answers, folds prior tiers into decided_tradeoffs, persists SpecPack + returns specPath | packages/control-api/src/daemon-server.ts:953-974, 2322-2328; packages/cli/src/claudexord.ts:530-631; packages/cli/src/spec.ts:191-242, 386-425; caveat: inline engine runs invisible to job registry | backlog |
 | cli/daemon/api | CLI-REPL | works-with-caveats | Daemon-backed thread REPL (lazy thread creation, follow pipeline, stdin handover); read-only local fallback refuses write turns | packages/cli/src/repl.ts:98-211, 260-266; caveat: `/thread` prints dead `t.state` | v0.15 P2 |
-| cli/daemon/api | CLI-daemon-logs | works-with-caveats | Last 40 lines of claudexord.log; missing file → "not reachable" misdiagnosis; ignores `--json` (verified live) | packages/cli/src/cli.ts:1138-1141, 1144-1147 | backlog |
+| cli/daemon/api | CLI-auth-login | works-with-caveats | Prints a per-harness hint (native flow / secrets set); honors --json ({ok, harness, hint}). Caveat: hints only, no action taken. | packages/cli/src/ops-commands.ts authCommand | backlog |
+| cli/daemon/api | CLI-daemon-logs | works-with-caveats | Last 40 lines of claudexord.log; honors --json ({ok, log_tail}). Caveat: a missing log file surfaces as "not reachable" misdiagnosis. | packages/cli/src/ops-commands.ts daemonCommand | backlog |
 | cli/daemon/api | CLI-daemon-start | works-with-caveats | Spawns detached, waits ≤15s for socket+control-api; exit 1 if not ready | packages/cli/src/cli.ts:1097-1118; caveats: duplicate-start pid lie, stdio discarded | backlog |
 | cli/daemon/api | CLI-daemon-status | works-with-caveats | JSON-RPC health over socket; exit 1 unreachable | packages/cli/src/cli.ts:1127-1132; caveat: no RPC timeout → can hang | backlog |
-| cli/daemon/api | CLI-daemon-stop | works-with-caveats | RPC shutdown; prints text even with `--json` | packages/cli/src/cli.ts:1133-1137 | backlog |
 | cli/daemon/api | CLI-exit-codes | works-with-caveats | 0 success terminals (succeeded/no_op/ungated/review_not_run), 1 failures/blocked, 2 usage | packages/cli/src/daemon-run.ts:221-224 | v0.15 P3 |
 | cli/daemon/api | CLI-json-mode | works-with-caveats | Daemon run path prints exactly one JSON object incl. `{runId,runDir,status}` bench keys; in-process path mirrors `error` key | packages/cli/src/cli.ts:747-767, 643-655; caveat: usage/daemon/auth paths leak plain text | v0.15 P5 |
 | cli/daemon/api | CLI-run | works-with-caveats | `--mode` validated against 5 canonical ids; `--spec` requires gated strategy (race/attempts/until-clean) except ask/audit reject; agent → daemon-tracked enqueue; read-only modes in-process | packages/cli/src/cli.ts run dispatch; boolean-flag swallow FIXED (BOOLEAN_FLAGS) | v0.15 P3 |

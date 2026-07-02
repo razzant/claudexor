@@ -4458,6 +4458,21 @@ describe("web evidence recovery keying (INV-043)", () => {
     expect(t.web.failed).toBe(true); // disclosure survives
     expect(t.web.errorSummary).toContain("search A failed");
     expect(webUnsatisfied(t)).toBe(false); // evidence gate: satisfied
+    // The unrecovered web failure counts as a WARNING on a satisfied route
+    // (green becomes success_with_warnings, never a silent clean success).
+    const { toolWarnings } = await import("./attemptTelemetry.js");
+    expect(toolWarnings(t).some((e) => e.kind === "web" && e.target === "query-A")).toBe(true);
+    // A second failure on another target: BOTH stay disclosed until each
+    // recovers (the rollup derives from the tool+target-keyed store).
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebFetch", kind: "web", status: "error", target: "https://c", error_summary: "fetch C failed" },
+    } as never);
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebFetch", kind: "web", status: "ok", target: "https://c" },
+    } as never);
+    expect(t.web.failed).toBe(true); // query-A is STILL unrecovered
     // Success on the SAME target is the attributable recovery that clears it.
     observeAttemptTelemetry(t, {
       type: "tool_result", session_id: "s", ts,
