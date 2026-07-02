@@ -130,6 +130,11 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "default": 600000
+            },
+            "harness_inactivity_timeout_ms": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 1200000
             }
           },
           "additionalProperties": false,

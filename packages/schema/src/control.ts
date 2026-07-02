@@ -846,6 +846,7 @@ export const ControlSettingsSnapshot = z.object({
   runtime: z
     .object({
       reviewerTimeoutMs: z.number().int().positive().default(600_000),
+      harnessInactivityTimeoutMs: z.number().int().positive().default(1_200_000),
       transientRetry: z
         .object({
           maxRetries: z.number().int().nonnegative().default(2),

@@ -1174,6 +1174,8 @@ public struct BudgetSettings: Codable, Sendable, Equatable {
 
 public struct RuntimeSettings: Codable, Sendable, Equatable {
     public let reviewerTimeoutMs: Int
+    /// Optional: daemons older than the watchdog omit it.
+    public let harnessInactivityTimeoutMs: Int?
     public let transientRetry: RuntimeTransientRetrySettings
 }
 

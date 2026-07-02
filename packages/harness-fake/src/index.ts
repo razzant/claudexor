@@ -17,6 +17,7 @@ export type FakeKind =
   | "fake-fail-tests"
   | "fake-invalid-json"
   | "fake-timeout"
+  | "fake-hang"
   | "fake-rate-limit"
   | "fake-same-model-fallback"
   | "fake-reviewer-without-evidence";
@@ -27,6 +28,7 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-fail-tests",
   "fake-invalid-json",
   "fake-timeout",
+  "fake-hang",
   "fake-rate-limit",
   "fake-same-model-fallback",
   "fake-reviewer-without-evidence",
@@ -179,6 +181,19 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
       yield ev(s, "error", { error: "timeout after 0ms (simulated)" });
       yield ev(s, "completed", { observed_model: observedModel });
       return;
+    case "fake-hang": {
+      // Conformance fixture for the INACTIVITY WATCHDOG (T3.1#1): one event,
+      // then silence forever (until aborted). The deliberate exception to the
+      // fakes' always-completed rule — a wedged CLI emits no terminal either.
+      yield ev(s, "thinking", { text: "working... (and now silently wedged)" });
+      const abort = spec.extra?.["abortSignal"] as AbortSignal | undefined;
+      await new Promise<void>((resolve) => {
+        if (abort?.aborted) return resolve();
+        abort?.addEventListener("abort", () => resolve(), { once: true });
+        // No timer: without an abort this hangs forever, like the real bug.
+      });
+      return;
+    }
     case "fake-rate-limit": {
       // Positive conformance fixture for the budget cooldown path: a TYPED
       // rate_limit signal (not just prose) so the budget layer can read

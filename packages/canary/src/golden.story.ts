@@ -106,6 +106,19 @@ describe("canary golden stories", () => {
     expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
   });
 
+  it("[INV-116:stream-watchdog] a wedged harness stream is killed by the inactivity watchdog with a typed failure", () => {
+    // fake-hang emits one event then goes silent forever; with a 1.5s window
+    // the run must end as a typed failure instead of parking in `running`.
+    const r = cli(sb, ["ask", "please wedge", "--harness", "fake-hang", "--json"], {
+      env: { CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS: "1500" },
+    });
+    const out = r.json() as { runDir: string; status: string; summary?: string };
+    expect(out.status).toBe("failed");
+    expect(out.summary ?? "").toContain("inactivity watchdog");
+    const events = readEvents(out.runDir);
+    expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
+  });
+
   it("[INV-116:cancel-fast] cancelling a run acknowledges within seconds even when gates are configured", async () => {
     // A run with a 60s deterministic gate: Ctrl-C during the GATE phase must
     // end the run within seconds (SIGINT -> typed daemon cancel -> abort

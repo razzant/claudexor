@@ -662,7 +662,14 @@ into typed `transient` `HarnessEvent`s; the orchestrator may retry only within t
 global `runtime.transient_retry` policy and only when the failed attempt produced
 no deliverable. Reviewer panels use `runtime.reviewer_timeout_ms` (default 10
 minutes). A timed-out reviewer still records any observed model/route proof that
-streamed before timeout.
+streamed before timeout. Candidate/planner/read-only harness streams carry an
+INACTIVITY watchdog (`runtime.harness_inactivity_timeout_ms`, default 20
+minutes; env `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS`): no events for the
+window means the vendor CLI is wedged — the stream is aborted (process-group
+kill) and the attempt fails with a typed message instead of parking the run in
+`running` forever. The timer resets on every harness event, so long runs are
+fine as long as they keep talking; a tool call that streams nothing for the
+whole window is indistinguishable from a hang and is killed.
 
 Run detail includes terminal state and output-ready state. `summary.state` is the
 daemon terminal/lifecycle state. `summary.outputReadyState` is

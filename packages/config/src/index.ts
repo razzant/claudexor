@@ -158,15 +158,24 @@ function nonnegativeIntEnv(name: string): number | null {
 
 function applyEnvOverrides(global: GlobalConfig): GlobalConfig {
   const reviewerTimeout = positiveIntEnv("CLAUDEXOR_REVIEWER_TIMEOUT_MS");
+  const inactivityTimeout = positiveIntEnv("CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS");
   const maxRetries = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_MAX");
   const initialDelay = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS");
   const maxDelay = nonnegativeIntEnv("CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS");
-  if (reviewerTimeout === null && maxRetries === null && initialDelay === null && maxDelay === null) return global;
+  if (
+    reviewerTimeout === null &&
+    inactivityTimeout === null &&
+    maxRetries === null &&
+    initialDelay === null &&
+    maxDelay === null
+  )
+    return global;
   return GlobalConfig.parse({
     ...global,
     runtime: {
       ...global.runtime,
       ...(reviewerTimeout !== null ? { reviewer_timeout_ms: reviewerTimeout } : {}),
+      ...(inactivityTimeout !== null ? { harness_inactivity_timeout_ms: inactivityTimeout } : {}),
       transient_retry: {
         ...global.runtime.transient_retry,
         ...(maxRetries !== null ? { max_retries: maxRetries } : {}),

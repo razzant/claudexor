@@ -419,6 +419,7 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         },
         runtime: {
           reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
+          harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
           transientRetry: {
             maxRetries: cfg.global.runtime.transient_retry.max_retries,
             initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,

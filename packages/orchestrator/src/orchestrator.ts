@@ -55,7 +55,7 @@ import {
 import { loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, validateModel } from "@claudexor/core";
+import { HarnessUnavailableError, validateModel, withInactivityWatchdog } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
 import {
   type AnnouncedRunContext,
@@ -65,6 +65,7 @@ import {
   writeFailure,
 } from "./runTerminals.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
+import { buildOrchestrateBrainPrompt } from "./orchestrateBrain.js";
 import { interactionChannelFor } from "./interaction.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
@@ -1329,6 +1330,10 @@ export class Orchestrator {
     return this.config(repoRoot).global.runtime.reviewer_timeout_ms;
   }
 
+  private harnessInactivityTimeoutMs(repoRoot: string): number {
+    return this.config(repoRoot).global.runtime.harness_inactivity_timeout_ms;
+  }
+
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
@@ -1677,8 +1682,14 @@ export class Orchestrator {
         }) as unknown as Record<string, unknown>,
       );
     }
-    if (signal) spec.extra["abortSignal"] = signal;
+    // Per-attempt abort controller: the inactivity watchdog aborts THIS
+    // attempt's stream (killing the process group through the existing abort
+    // plumbing) without touching the run-level cancel signal, so a timeout
+    // and a user cancel stay distinguishable (T3.1#1).
+    const attemptAbort = new AbortController();
+    spec.extra["abortSignal"] = signal ? AbortSignal.any([signal, attemptAbort.signal]) : attemptAbort.signal;
     if (interaction) spec.extra["interactionChannel"] = interaction;
+    const inactivityMs = this.harnessInactivityTimeoutMs(contract.repo.root);
 
     let cost = 0;
     let costEstimated = false;
@@ -1710,7 +1721,14 @@ export class Orchestrator {
         activeSessionId = runSpec.session_id;
         const transientStart = telemetry.transientFailures.length;
         try {
-          for await (const ev of adapter.run(runSpec)) {
+          const watched = withInactivityWatchdog(adapter.run(runSpec), {
+            timeoutMs: inactivityMs,
+            onTimeout: () => {
+              attemptAbort.abort();
+              void adapter.cancel?.(activeSessionId)?.catch(() => {});
+            },
+          });
+          for await (const ev of watched) {
             if (signal?.aborted) break;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(onHarnessEvent, safeEv);
@@ -4304,7 +4322,10 @@ export class Orchestrator {
           env_inheritance: this.envInheritance(input.repoRoot),
           env: roHome.env,
         });
-        if (input.signal) spec.extra["abortSignal"] = input.signal;
+        const plannerAbort = new AbortController();
+        spec.extra["abortSignal"] = input.signal
+          ? AbortSignal.any([input.signal, plannerAbort.signal])
+          : plannerAbort.signal;
         const planInteraction = this.interactionChannelFor(
           input,
           log,
@@ -4341,7 +4362,14 @@ export class Orchestrator {
             ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
           });
           if (!input.signal?.aborted) {
-            for await (const ev of adapter.run(spec)) {
+            const watchedPlan = withInactivityWatchdog(adapter.run(spec), {
+              timeoutMs: this.harnessInactivityTimeoutMs(input.repoRoot),
+              onTimeout: () => {
+                plannerAbort.abort();
+                void adapter.cancel?.(spec.session_id)?.catch(() => {});
+              },
+            });
+            for await (const ev of watchedPlan) {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
@@ -4742,33 +4770,7 @@ export class Orchestrator {
       budget: { max_usd: input.maxUsd ?? null, max_tool_calls: null },
       autonomy,
     });
-    const brainPrompt = [
-      `You are the Claudexor orchestration brain. Plan — do not implement.`,
-      ``,
-      `## Goal`,
-      goal,
-      ``,
-      `## Available harness pool (doctor-verified)`,
-      pool.length > 0
-        ? pool.map((id) => `- ${id}`).join("\n")
-        : "- (none verified; plan must say what setup is needed)",
-      crossFamily
-        ? `Cross-family race and cross-family review ARE available (2+ harnesses).`
-        : `Only single-route execution is available (fewer than 2 verified harnesses).`,
-      ``,
-      `## Tool belt (the ONLY actions your plan may use)`,
-      ...orchestrateContract.tool_belt.map((t) => `- ${t}`),
-      ``,
-      `## Required output`,
-      `1. A concise markdown orchestration plan (numbered steps; each step names ONE tool and its arguments).`,
-      '2. A fenced ```json block: {"tool_calls": [ … ]}. Each call puts the tool name AND its arguments at the TOP LEVEL — there is NO nested "args" object. Per-tool shapes (use only belt tools):',
-      '   - start_run: {"tool":"start_run","prompt":"…","mode":"agent","harness":"<optional id>","why":"…"}',
-      '   - race:      {"tool":"race","prompt":"…","n":2,"why":"…"}',
-      '   - review:    {"tool":"review","run_id":"<id>","why":"…"}',
-      '   - status:    {"tool":"status","run_id":"<id>","why":"…"}',
-      '   - apply:     {"tool":"apply","run_id":"<id>","mode":"apply","why":"…"}',
-      `Keep the plan minimal and budget-aware. Do not propose tools outside the belt.`,
-    ].join("\n");
+    const brainPrompt = buildOrchestrateBrainPrompt(goal, pool, crossFamily, orchestrateContract);
     return this.runReadOnlyReport(
       // The executed pool is pinned to the PLANNED pool (no double doctor
       // resolution drift between the prompt's claims and the actual route).
@@ -5019,7 +5021,10 @@ export class Orchestrator {
         env_inheritance: this.envInheritance(input.repoRoot),
         env: roHome.env,
       });
-      if (input.signal) spec.extra["abortSignal"] = input.signal;
+      const reportAbort = new AbortController();
+      spec.extra["abortSignal"] = input.signal
+        ? AbortSignal.any([input.signal, reportAbort.signal])
+        : reportAbort.signal;
       const reportInteraction = this.interactionChannelFor(
         input,
         log,
@@ -5072,7 +5077,14 @@ export class Orchestrator {
             ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
           });
           try {
-            for await (const ev of adapter.run(runSpec)) {
+            const watchedReport = withInactivityWatchdog(adapter.run(runSpec), {
+              timeoutMs: this.harnessInactivityTimeoutMs(input.repoRoot),
+              onTimeout: () => {
+                reportAbort.abort();
+                void adapter.cancel?.(activeSessionId)?.catch(() => {});
+              },
+            });
+            for await (const ev of watchedReport) {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);

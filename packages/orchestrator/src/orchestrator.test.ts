@@ -1503,6 +1503,40 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: success_with_warnings");
   });
 
+  it("inactivity watchdog: a wedged harness stream ends as a typed failure, never a forever-running run (INV-116)", async () => {
+    const repo = await initRepo();
+    // One event, then silence with no exit: only the abort the watchdog
+    // fires can end this stream (mirrors a wedged vendor CLI).
+    const hangingAdapter: HarnessAdapter = {
+      ...askAdapter("wedged", function* () {
+        /* unused */
+      }),
+      async *run(spec) {
+        yield { type: "started", session_id: spec.session_id, ts: new Date().toISOString() };
+        const abort = spec.extra?.["abortSignal"] as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (abort?.aborted) return resolve();
+          abort?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const prev = process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"];
+    process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"] = "400";
+    try {
+      const orch = new Orchestrator({ registry: new Map([["wedged", hangingAdapter]]), reviewers: [] });
+      const started = Date.now();
+      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "ask", harnesses: ["wedged"] });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(res.status).toBe("failed");
+      expect(res.summary).toContain("inactivity watchdog");
+      const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+      expect(events).toContain('"run.failed"');
+    } finally {
+      if (prev === undefined) delete process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"];
+      else process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"] = prev;
+    }
+  });
+
   it("terminal net: a throw escaping an ANNOUNCED strategy still ends the run with failure.yaml + run.failed", async () => {
     const repo = await initRepo();
     const { guardAnnouncedRun } = await import("./runTerminals.js");

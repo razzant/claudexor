@@ -94,10 +94,10 @@ export interface CliResult {
   json: () => unknown;
 }
 
-export function cli(sb: Sandbox, args: string[], opts: { cwd?: string } = {}): CliResult {
+export function cli(sb: Sandbox, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): CliResult {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd: opts.cwd ?? sb.repo,
-    env: sb.env,
+    env: { ...sb.env, ...opts.env },
     encoding: "utf8",
     timeout: 110_000,
   });

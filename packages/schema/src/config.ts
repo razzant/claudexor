@@ -98,6 +98,17 @@ export const GlobalConfig = z
           .strict()
           .default({}),
         reviewer_timeout_ms: z.number().int().positive().default(600_000),
+        /**
+         * Inactivity watchdog for candidate/planner/read-only harness streams:
+         * NO events for this window means the CLI is wedged — the stream is
+         * aborted (process-group kill) and the attempt fails with a typed
+         * timeout instead of parking the run in `running` forever. Distinct
+         * from the reviewer wall-clock timeout: long runs are fine as long as
+         * they keep emitting. Note the timer resets on HARNESS events — a tool
+         * call that streams nothing for the whole window is indistinguishable
+         * from a hang and will be killed.
+         */
+        harness_inactivity_timeout_ms: z.number().int().positive().default(1_200_000),
       })
       .strict()
       .default({}),
