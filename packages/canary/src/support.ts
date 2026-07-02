@@ -25,6 +25,11 @@ export interface Sandbox {
 }
 
 export function makeSandbox(): Sandbox {
+  // NOTE: the sandbox config dir feeds the daemon's AF_UNIX socket path, and
+  // macOS caps socket paths at 104 bytes ($TMPDIR alone is ~49). The current
+  // layout sits near that cap — do NOT lengthen this prefix or nest the
+  // config dir deeper, or canaries will fail with an obscure bind error on
+  // macOS runners only.
   const base = mkdtempSync(join(tmpdir(), "claudexor-canary-"));
   const home = join(base, "home");
   const configDir = join(base, "config");

@@ -755,6 +755,11 @@ async function main() {
     round: Number(round),
     base,
     generated_at: new Date().toISOString(),
+    // Explicit audit marker: true only when the operator overrode the
+    // owner-locked reviewer panel via TRIAD_ALLOW_OVERRIDE (see the guard at
+    // the top of this file). Absence of the ack with substituted models is
+    // impossible — the guard hard-errors first.
+    panel_override_acknowledged: process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
   };

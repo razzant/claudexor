@@ -52,6 +52,17 @@ for (const f of tracked) {
 }
 
 if (!existsSync(baselinePath)) {
+  // Fail-loudly: a missing baseline must never silently re-seed in CI —
+  // deleting the committed baseline would otherwise reset every bar and let
+  // grown files pass. Seeding is an explicit, reviewed act.
+  if (!process.argv.includes("--seed")) {
+    console.error(
+      `complexity-ratchet FAILED: baseline file missing at ${baselinePath}.\n` +
+        "The committed baseline is the ratchet's memory; restore it from git. " +
+        "To deliberately re-seed (reviewed change), run with --seed.",
+    );
+    process.exit(1);
+  }
   const baseline = {};
   for (const [f, n] of [...counts].sort()) if (n >= TRACK_THRESHOLD) baseline[f] = n;
   writeFileSync(baselinePath, JSON.stringify(baseline, null, 2) + "\n");
@@ -83,14 +94,28 @@ for (const [f, n] of counts) {
   }
 }
 
-if (update && improvements.length > 0) {
+// Adoption: a file that has grown INTO the tracked band (>= TRACK_THRESHOLD)
+// since seeding is adopted into the baseline on --update at its current size,
+// so it stops being governed only by the loose NEW_FILE_CAP and starts
+// ratcheting like every other tracked file.
+const adoptions = [];
+if (update) {
+  for (const [f, n] of counts) {
+    if (!(f in baseline) && n >= TRACK_THRESHOLD && n <= NEW_FILE_CAP) adoptions.push([f, n]);
+  }
+}
+
+if (update && (improvements.length > 0 || adoptions.length > 0)) {
   for (const [f, n] of improvements) {
     if (n === null) delete baseline[f];
     else baseline[f] = n;
   }
+  for (const [f, n] of adoptions) baseline[f] = n;
   const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
   writeFileSync(baselinePath, JSON.stringify(sorted, null, 2) + "\n");
-  console.log(`complexity-ratchet: baseline tightened for ${improvements.length} file(s)`);
+  console.log(
+    `complexity-ratchet: baseline tightened for ${improvements.length} file(s), adopted ${adoptions.length} newly-tracked file(s)`,
+  );
 }
 
 if (failures.length > 0) {
