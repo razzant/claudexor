@@ -46,9 +46,12 @@ import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/in
 const LOCKED_TRIAD = "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8";
 const LOCKED_SCOPE = "openai/gpt-5.5";
 const OVERRIDE_ACK = "I_UNDERSTAND_THIS_VIOLATES_THE_LOCKED_PANEL";
+// Order-insensitive: reordering the same three locked models is not a panel
+// violation (the panel is a SET; sequence carries no meaning here).
+const normalizePanel = (s) => s.split(",").map((m) => m.trim()).sort().join(",");
 for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL", LOCKED_SCOPE]]) {
   const v = process.env[envName];
-  if (v && v !== locked && process.env.TRIAD_ALLOW_OVERRIDE !== OVERRIDE_ACK) {
+  if (v && normalizePanel(v) !== normalizePanel(locked) && process.env.TRIAD_ALLOW_OVERRIDE !== OVERRIDE_ACK) {
     console.error(
       `${envName} override ('${v}') conflicts with the locked reviewer panel ('${locked}').\n` +
         `The panel is an owner-locked release gate. If this override is a deliberate, disclosed decision,\n` +
@@ -56,7 +59,7 @@ for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL",
     );
     process.exit(1);
   }
-  if (v && v !== locked) {
+  if (v && normalizePanel(v) !== normalizePanel(locked)) {
     console.error(`WARNING: ${envName} override active (${v}) — acknowledged panel violation; recording it.`);
   }
 }
@@ -760,7 +763,8 @@ async function main() {
     // impossible — the guard at the top hard-errors first). The ack alone with
     // a locked panel is a no-op and must not read as a violation.
     panel_override_active:
-      TRIAD_MODELS.join(",") !== LOCKED_TRIAD || SCOPE_MODEL !== LOCKED_SCOPE,
+      normalizePanel(TRIAD_MODELS.join(",")) !== normalizePanel(LOCKED_TRIAD) ||
+      SCOPE_MODEL !== LOCKED_SCOPE,
     panel_override_acknowledged: process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
