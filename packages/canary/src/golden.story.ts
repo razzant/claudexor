@@ -92,7 +92,7 @@ describe("canary golden stories", () => {
     expect(readRunFile(out.runDir, "final/patch.diff").length).toBeGreaterThan(0);
     const check = cli(sb, ["apply", out.runId, "--dry-run"]);
     expect(check.code).toBe(1);
-    expect(check.stdout + check.stderr).toMatch(/refusing apply/);
+    expect(check.stdout + check.stderr).toMatch(/refusing apply|not applyable/);
     expect(check.stdout + check.stderr).toMatch(/cross-family review/);
   });
 
@@ -191,7 +191,7 @@ describe("canary golden stories", () => {
     // Apply REFUSES while no typed operator decision exists, naming the remedy.
     const refused = cli(sb, ["apply", out.runId, "--dry-run"]);
     expect(refused.code).toBe(1);
-    expect(refused.stdout + refused.stderr).toMatch(/refusing apply/);
+    expect(refused.stdout + refused.stderr).toMatch(/refusing apply|not applyable/);
     expect(refused.stdout + refused.stderr).toMatch(/decision/i);
     // The typed operator decision (public surface: claudexor decision --override)
     // unblocks apply for THIS patch.

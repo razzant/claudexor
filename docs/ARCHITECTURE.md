@@ -606,7 +606,12 @@ and the deterministic gates re-run there, recorded as
 A failure BLOCKS the run with a typed `verification` failure; the apply gate
 refuses a patch that failed to apply on the verify tree outright (no override
 can make an unappliable patch deliverable), while failed verify GATES can be
-overridden through the same accept_risk path as any blocked run.
+overridden through the same accept_risk path as any blocked run. The verifier
+FAILS CLOSED on its own infrastructure errors (`applied_cleanly: null` after
+an attempt — worktree add failure, git timeout, unwritable tmp): the run
+blocks exactly like a proven failure, and because it is an infra failure
+rather than a proven conflict, accept_risk on the blocked run may override
+it. Risk overrides are honored ONLY on blocked runs, everywhere.
 Deterministic-first: the verifier spends no model tokens. Cross-family verification requires each
 reviewer family's route proof to be OBSERVED, not an argv echo: claude reports
 its model in the stream, and codex (whose `--json` stream omits the model)

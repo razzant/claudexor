@@ -114,16 +114,22 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
 /** The live owner pid recorded in the envelope's owner.json, or null when the
  * marker is missing, the pid is dead, or the pid was RECYCLED (the live
  * process's kernel start time no longer matches the recorded one — command
- * names/titles mutate, start times never do). */
+ * names/titles mutate, start times never do). FAIL-SAFE: when start-time
+ * evidence is unavailable on either side (`ps` missing/sandboxed), a LIVE pid
+ * alone keeps the envelope — the guard errs toward keeping possibly-live
+ * work, never toward deleting it. */
 function envelopeOwner(envelopeBase: string): number | null {
   try {
     const raw = JSON.parse(readFileSync(join(envelopeBase, "owner.json"), "utf8")) as {
       pid?: unknown;
       started?: unknown;
     };
-    if (typeof raw.pid !== "number" || typeof raw.started !== "string") return null;
+    if (typeof raw.pid !== "number") return null;
+    process.kill(raw.pid, 0); // throws when the pid is dead -> swept
+    const recorded = typeof raw.started === "string" ? raw.started : null;
     const live = processStartTime(raw.pid);
-    if (live === null || live !== raw.started) return null;
+    // Recycling proof requires BOTH sides; with both present they must match.
+    if (recorded !== null && live !== null && live !== recorded) return null;
     return raw.pid;
   } catch {
     return null;

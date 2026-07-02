@@ -251,7 +251,14 @@ reports the mutation honestly when restoration itself fails — and an
 otherwise-adoptable race winner must additionally survive a FINAL VERIFY:
 its patch is applied onto a fresh tree at its own recorded base and the
 deterministic gates re-run there before adoption or apply eligibility. A
-patch that cannot survive a clean base does not touch the live tree.
+patch that cannot survive a clean base does not touch the live tree — and
+the verifier FAILS CLOSED: when the verifier itself errors (a worktree or
+tmp-dir problem), "could not check" blocks exactly like a proven failure,
+with a typed operator risk decision as the only way past the infra failure.
+
+Orchestrate sub-runs share ONE budget: sequential steps draw from the same
+cap (each step gets only the remaining headroom, and exhausting it ends the
+run `exhausted`) — a plan of N steps can never spend N times the cap.
 
 Runs cannot hang silently, and crashes do not leak. Every announced run ends
 with a terminal event on every path (throw, cancel, daemon restart); a

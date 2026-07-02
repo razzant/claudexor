@@ -2759,17 +2759,21 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
-      // The persisted decision must AGREE with the terminal: a verify failure
-      // blocks the run, so a stale success/apply recommendation would let the
-      // gate read a contradiction (arbitration said ship, verifier said no).
-      ...(finalVerifyFailed
+      // The persisted decision must AGREE with the terminal: a BLOCKED run
+      // (verify failure OR reviewer NEEDS_HUMAN escalation) must not persist
+      // a stale success/review_not_run verdict — the apply gate and operator
+      // read decision.yaml as the run's verdict, and a contradiction would
+      // either wave an unverified patch through or hide the unblock path.
+      ...(status === "blocked"
         ? {
             status: "blocked" as const,
             outcome: "blocked" as const,
             apply_recommendation: "human_review" as const,
             evidence_facts: [
               ...result.decision.evidence_facts,
-              `final verify failed: ${finalVerify?.reason ?? "deterministic gates failed on the fresh verify tree"}`,
+              finalVerifyFailed
+                ? `final verify failed: ${finalVerify?.reason ?? "deterministic gates failed on the fresh verify tree"}`
+                : "reviewer escalated blocking NEEDS_HUMAN findings; a typed operator decision is required",
             ],
           }
         : {}),
@@ -2861,6 +2865,10 @@ export class Orchestrator {
           harness_id: winnerRun.harnessId,
           synthesis: synth,
           mode,
+          // Terminal run status rides the artifact so the artifact-only CLI
+          // apply path enforces the same state bar as the daemon gate (a
+          // blocked race must read as blocked from the run dir alone).
+          status,
           review_verified: actualReviewVerified,
           budget_stopped: budgetStopped,
           patch_sha256: patchSha256,

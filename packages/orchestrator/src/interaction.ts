@@ -44,21 +44,28 @@ export function interactionChannelFor(
       const requestedAt = nowIso();
       const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
       pending += 1;
+      try {
       // Invoke the answer surface BEFORE announcing the event: handlers
       // register the pending question synchronously (daemon
       // InteractionRegistry), so any subscriber that reacts to
       // interaction.requested — `claudexor follow` checks pendingInteractions
       // before prompting — finds the registry already populated. The reverse
       // order would make that guarantee depend on event-loop timing.
-      const answersPromise = handler({
-        runId,
-        taskId,
-        attemptId,
-        harnessId,
-        request,
-        requestedAt,
-        timeoutAt,
-      }).catch(() => null);
+      // Promise.resolve().then(...) normalizes a SYNCHRONOUS handler throw
+      // into the same rejected-promise path as an async failure.
+      const answersPromise = Promise.resolve()
+        .then(() =>
+          handler({
+            runId,
+            taskId,
+            attemptId,
+            harnessId,
+            request,
+            requestedAt,
+            timeoutAt,
+          }),
+        )
+        .catch(() => null);
       log.emit("interaction.requested", {
         interaction_id: request.interaction_id,
         attempt_id: attemptId,
@@ -89,7 +96,6 @@ export function interactionChannelFor(
       ]);
       if (timer) clearTimeout(timer);
       if (onAbort) input.signal?.removeEventListener("abort", onAbort);
-      pending -= 1;
       if (answers && answers.answers.length > 0) {
         log.emit("interaction.answered", {
           interaction_id: request.interaction_id,
@@ -121,6 +127,11 @@ export function interactionChannelFor(
         }
       });
       return null;
+      } finally {
+        // ALWAYS release the suspension: a synchronous handler throw or a
+        // log.emit failure must not leave the watchdog suspended forever.
+        pending -= 1;
+      }
     },
   };
 }

@@ -52,12 +52,22 @@ function applyHint(state: string): string {
 }
 
 export function validateApplyGate(input: ApplyGateInput): string | null {
+  // An operator risk override is meaningful ONLY on a BLOCKED run (INV-111,
+  // Bible §11): the decision endpoint records decisions exclusively for
+  // blocked runs, so a succeeded-state override is an unreachable combination
+  // this gate must not honor either. Blocked evidence: the caller-known run
+  // state, or — on the artifact-only CLI path where live state is unknown —
+  // the persisted decision verdict (the orchestrator overrides decision.yaml
+  // to `blocked` whenever the run terminal is blocked).
+  const blockedEvidence =
+    input.state === "blocked" || (input.state == null && input.decision?.status === "blocked");
   const override =
+    blockedEvidence &&
     input.operatorDecision &&
     (input.operatorDecision.action === "accept_risk" || input.operatorDecision.action === "override_needs_human") &&
     typeof input.operatorDecision.patch_sha256 === "string" &&
     input.operatorDecision.patch_sha256 === sha256(input.patch);
-  if (input.state && input.state !== "succeeded" && !(override && input.state === "blocked")) {
+  if (input.state && input.state !== "succeeded" && !override) {
     return `run is not applyable while state is ${input.state}; ${applyHint(input.state)}`;
   }
   if (!input.decision) return "decision record is required before apply";
