@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartTime } from "@claudexor/workspace";
@@ -56,6 +56,28 @@ describe("crash-GC live-owner guard", () => {
       expect(existsSync(legacy)).toBe(false);
       expect(actions.some((a) => a.includes("kept envelope task-live/a01") && a.includes("live owner"))).toBe(true);
       expect(actions.some((a) => a.includes("disposed orphan envelope task-dead/a01"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("without start-time proof: a live pid keeps only a FRESH envelope; a stale one is swept (bounded credential retention)", async () => {
+    const root = initRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "claudexor-sweep-state-"));
+    try {
+      // Live pid, NO recorded start time (legacy/ps-less marker), fresh dir -> kept.
+      const fresh = envelope(root, "task-fresh", "a01", { pid: process.pid, started: null });
+      // Same marker shape but the envelope is OLD -> swept (a recycled pid
+      // must not pin a seeded-credential home forever).
+      const stale = envelope(root, "task-stale", "a01", { pid: process.pid, started: null });
+      const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      utimesSync(join(root, ".claudexor", "workspaces", "task-stale", "a01"), old, old);
+      const jobsPath = join(stateDir, "jobs.json");
+      writeFileSync(jobsPath, JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n");
+      await sweepOrphanWorkspaces({ jobsPath, threadsPath: join(stateDir, "threads.json") });
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(stale)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(stateDir, { recursive: true, force: true });

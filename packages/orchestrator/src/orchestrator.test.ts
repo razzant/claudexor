@@ -4437,6 +4437,67 @@ describe("interaction late-answer honesty (T2#23)", () => {
   });
 });
 
+describe("interaction channel registration order", () => {
+  it("invokes the answer handler SYNCHRONOUSLY before emitting interaction.requested (registry-population contract)", async () => {
+    const { interactionChannelFor } = await import("./interaction.js");
+    const order: string[] = [];
+    const log = {
+      emit: (type: string) => {
+        order.push(type);
+      },
+    } as never;
+    const channel = interactionChannelFor(
+      {
+        onInteraction: () => {
+          order.push("handler");
+          return new Promise(() => undefined); // never answers
+        },
+        interactionTimeoutMs: 30,
+      },
+      log,
+      "run-x",
+      "task-x",
+      "a01",
+      "h1",
+      true,
+      30,
+    );
+    await channel!.request({
+      interaction_id: "int-1",
+      source_tool: "AskUserQuestion",
+      questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
+    } as never);
+    expect(order[0]).toBe("handler"); // BEFORE interaction.requested
+    expect(order).toContain("interaction.requested");
+  });
+
+  it("releases the watchdog suspension even when the handler throws synchronously", async () => {
+    const { interactionChannelFor } = await import("./interaction.js");
+    const channel = interactionChannelFor(
+      {
+        onInteraction: () => {
+          throw new Error("sync boom");
+        },
+        interactionTimeoutMs: 20,
+      },
+      { emit: () => undefined } as never,
+      "run-x",
+      "task-x",
+      "a01",
+      "h1",
+      true,
+      20,
+    );
+    const res = await channel!.request({
+      interaction_id: "int-2",
+      source_tool: "AskUserQuestion",
+      questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
+    } as never);
+    expect(res).toBeNull();
+    expect(channel!.pendingCount!()).toBe(0); // suspension released
+  });
+});
+
 describe("web evidence recovery keying (INV-043)", () => {
   it("keeps the failure DISCLOSED when an unrelated-target web success satisfies the evidence gate", async () => {
     const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");

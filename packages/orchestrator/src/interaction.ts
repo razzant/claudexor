@@ -51,10 +51,12 @@ export function interactionChannelFor(
       // interaction.requested — `claudexor follow` checks pendingInteractions
       // before prompting — finds the registry already populated. The reverse
       // order would make that guarantee depend on event-loop timing.
-      // Promise.resolve().then(...) normalizes a SYNCHRONOUS handler throw
-      // into the same rejected-promise path as an async failure.
-      const answersPromise = Promise.resolve()
-        .then(() =>
+      // The handler is invoked SYNCHRONOUSLY (the registry-population contract
+      // below depends on it); only its failure handling is normalized — a
+      // synchronous throw becomes the same null-answer path as an async one.
+      let answersPromise: Promise<InteractionAnswerSet | null>;
+      try {
+        answersPromise = Promise.resolve(
           handler({
             runId,
             taskId,
@@ -64,8 +66,10 @@ export function interactionChannelFor(
             requestedAt,
             timeoutAt,
           }),
-        )
-        .catch(() => null);
+        ).catch(() => null);
+      } catch {
+        answersPromise = Promise.resolve(null);
+      }
       log.emit("interaction.requested", {
         interaction_id: request.interaction_id,
         attempt_id: attemptId,

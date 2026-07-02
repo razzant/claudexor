@@ -111,26 +111,43 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
   return actions;
 }
 
+/** How long an envelope may be KEPT on live-pid evidence alone when
+ * start-time recycling proof is unavailable on either side. Bounds credential
+ * retention: a recycled pid cannot pin a seeded-credential home forever. */
+const OWNERLESS_PROOF_KEEP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** The live owner pid recorded in the envelope's owner.json, or null when the
  * marker is missing, the pid is dead, or the pid was RECYCLED (the live
  * process's kernel start time no longer matches the recorded one — command
- * names/titles mutate, start times never do). FAIL-SAFE: when start-time
- * evidence is unavailable on either side (`ps` missing/sandboxed), a LIVE pid
- * alone keeps the envelope — the guard errs toward keeping possibly-live
- * work, never toward deleting it. */
+ * names/titles mutate, start times never do). FAIL-SAFE, bounded: when
+ * start-time evidence is unavailable on either side (`ps` missing/sandboxed,
+ * legacy marker), a LIVE pid keeps the envelope only while it is FRESH —
+ * in-flight work survives, but a recycled pid cannot retain credential-bearing
+ * homes indefinitely. A pid alive under another uid (EPERM) counts as alive. */
 function envelopeOwner(envelopeBase: string): number | null {
   try {
     const raw = JSON.parse(readFileSync(join(envelopeBase, "owner.json"), "utf8")) as {
       pid?: unknown;
       started?: unknown;
     };
-    if (typeof raw.pid !== "number") return null;
-    process.kill(raw.pid, 0); // throws when the pid is dead -> swept
+    if (typeof raw.pid !== "number" || !Number.isInteger(raw.pid) || raw.pid <= 0) return null;
+    let alive = false;
+    try {
+      process.kill(raw.pid, 0);
+      alive = true;
+    } catch (err) {
+      // EPERM = the pid EXISTS but belongs to another security boundary —
+      // that is a live process, not a dead one.
+      alive = (err as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+    if (!alive) return null;
     const recorded = typeof raw.started === "string" ? raw.started : null;
     const live = processStartTime(raw.pid);
     // Recycling proof requires BOTH sides; with both present they must match.
-    if (recorded !== null && live !== null && live !== recorded) return null;
-    return raw.pid;
+    if (recorded !== null && live !== null) return live === recorded ? raw.pid : null;
+    // No recycling proof available: bounded keep on freshness.
+    const ageMs = Date.now() - statSync(envelopeBase).mtimeMs;
+    return ageMs < OWNERLESS_PROOF_KEEP_MAX_AGE_MS ? raw.pid : null;
   } catch {
     return null;
   }
