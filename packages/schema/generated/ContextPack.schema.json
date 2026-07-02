@@ -131,8 +131,7 @@
           "properties": {
             "limit": {
               "type": "integer",
-              "exclusiveMinimum": true,
-              "minimum": 0
+              "exclusiveMinimum": 0
             },
             "estimated_used": {
               "type": "integer",
@@ -153,5 +152,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

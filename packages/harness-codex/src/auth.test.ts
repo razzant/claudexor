@@ -96,13 +96,13 @@ describe("ensureCodexApiAuth", () => {
   });
 
   it("emits `exec resume <id>` args when resuming a native session", () => {
-    const args = codexExecArgs({ access: "workspace_write", model_hint: null, effort_hint: null, prompt: "follow up", resume_session_id: "th-123" });
+    const args = codexExecArgs({ access: "workspace_write", model_hint: null, effort_hint: null, external_context_policy: "auto", attachments: [], browser: null, prompt: "follow up", resume_session_id: "th-123" });
     expect(args.slice(0, 4)).toEqual(["exec", "resume", "th-123", "--json"]);
     expect(args[args.length - 1]).toBe("follow up");
   });
 
   it("forwards model and reasoning effort as separate Codex config", () => {
-    expect(codexExecArgs({ access: "readonly", model_hint: "gpt-5.5", effort_hint: "xhigh", prompt: "review" })).toEqual([
+    expect(codexExecArgs({ access: "readonly", model_hint: "gpt-5.5", effort_hint: "xhigh", external_context_policy: "cached", attachments: [], browser: null, prompt: "review" })).toEqual([
       "exec",
       "--json",
       "--sandbox",

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "composite": false,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "packages/*/src/**/*.test.ts",
+    "benchmarks/runner/src/**/*.test.ts",
+    "packages/schema/scripts/**/*.ts",
+    "packages/canary/src/**/*.ts"
+  ]
+}

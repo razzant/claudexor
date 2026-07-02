@@ -351,7 +351,7 @@ describe("DaemonControlApiServer", () => {
         // Simulate the daemon runner binding the started run to its pre-created
         // turn (single-writer: control-api creates the turn, runner binds it).
         const turnId = (params as { turnId?: string }).turnId;
-        if (turnId) {
+        if (turnId && record.runId) {
           const turn = turns.find((t) => t["id"] === turnId);
           if (turn) turn["run_id"] = record.runId;
           (threadObj["run_ids"] as string[]).push(record.runId);

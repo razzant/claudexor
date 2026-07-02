@@ -66,13 +66,6 @@ export const ReviewFinding = z.object({
   claim: z.string(),
   linked_acceptance_criteria: z.array(Id).default([]),
   evidence: FindingEvidence.default({}),
-  repro: z
-    .object({
-      command: z.string().nullable().default(null),
-      expected: z.string().nullable().default(null),
-      actual: z.string().nullable().default(null),
-    })
-    .optional(),
   proposed_fix: z.string().nullable().default(null),
   reviewer: z.object({
     harness_id: Id,

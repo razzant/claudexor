@@ -39,8 +39,29 @@ import { join, resolve } from "node:path";
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 
-const TRIAD_MODELS = (process.env.TRIAD_MODELS || "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8").split(",");
-const SCOPE_MODEL = process.env.SCOPE_MODEL || "openai/gpt-5.5";
+// The reviewer panel is LOCKED (owner directive): never downgrade, substitute,
+// or "nearest available" these exact models. Overriding via env is a hard error
+// unless the operator explicitly acknowledges the violation — a silent
+// TRIAD_MODELS swap would let a weaker panel impersonate the release gate.
+const LOCKED_TRIAD = "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8";
+const LOCKED_SCOPE = "openai/gpt-5.5";
+const OVERRIDE_ACK = "I_UNDERSTAND_THIS_VIOLATES_THE_LOCKED_PANEL";
+for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL", LOCKED_SCOPE]]) {
+  const v = process.env[envName];
+  if (v && v !== locked && process.env.TRIAD_ALLOW_OVERRIDE !== OVERRIDE_ACK) {
+    console.error(
+      `${envName} override ('${v}') conflicts with the locked reviewer panel ('${locked}').\n` +
+        `The panel is an owner-locked release gate. If this override is a deliberate, disclosed decision,\n` +
+        `set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK} — the override will be recorded in the review summary.`,
+    );
+    process.exit(1);
+  }
+  if (v && v !== locked) {
+    console.error(`WARNING: ${envName} override active (${v}) — acknowledged panel violation; recording it.`);
+  }
+}
+const TRIAD_MODELS = (process.env.TRIAD_MODELS || LOCKED_TRIAD).split(",");
+const SCOPE_MODEL = process.env.SCOPE_MODEL || LOCKED_SCOPE;
 const SCOPE_ITEMS = [
   "intent_alignment",
   "forgotten_touchpoints",

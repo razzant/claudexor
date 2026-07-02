@@ -10,6 +10,8 @@
   "scripts": {
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "canary": "vitest run --config vitest.canary.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "schema:gen": "tsx packages/schema/scripts/gen-jsonschema.ts",
@@ -24,7 +26,7 @@
     "format:check": "prettier --check .",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release:verify:node": "pnpm typecheck && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && test -z \"$(git ls-files --others --exclude-standard packages/schema/generated)\" && pnpm docs:check && pnpm staged:check && pnpm knip && pnpm build",
+    "release:verify:node": "pnpm typecheck && pnpm typecheck:tests && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && test -z \"$(git ls-files --others --exclude-standard packages/schema/generated)\" && node scripts/validate-generated-schemas.mjs && pnpm docs:check && pnpm staged:check && pnpm knip && node scripts/complexity-ratchet.mjs && pnpm canary && pnpm build",
     "release:verify:swift": "(cd apps/macos/ClaudexorKit && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test) && (cd apps/macos/ClaudexorApp && PATH=\"$HOME/.swiftly/bin:$PATH\" swift build)",
     "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudex/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
     "release:verify": "pnpm release:verify:node && pnpm release:verify:swift && pnpm release:verify:app",
@@ -34,6 +36,8 @@
   "devDependencies": {
     "@changesets/cli": "^2.27.10",
     "@types/node": "^22.10.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "esbuild": "^0.27.0",
     "knip": "^6.16.1",
     "prettier": "^3.4.2",

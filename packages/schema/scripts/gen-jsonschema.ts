@@ -152,7 +152,12 @@ const schemas = {
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {
-  const json = zodToJsonSchema(schema, { name, target: "jsonSchema2020-12" });
+  // Draft-07 is the newest dialect zod-to-json-schema 3.x actually supports;
+  // the previously requested "jsonSchema2020-12" was silently ignored and
+  // produced an invalid draft-4/7 hybrid (boolean exclusiveMinimum).
+  // CI compiles every generated file with ajv (validate-generated-schemas.mjs).
+  const json = zodToJsonSchema(schema, { name, target: "jsonSchema7" }) as Record<string, unknown>;
+  json.$schema = "http://json-schema.org/draft-07/schema#";
   writeFileSync(join(outDir, `${name}.schema.json`), JSON.stringify(json, null, 2) + "\n");
 }
 

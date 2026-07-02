@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // adapter module loads.
 vi.mock("@claudexor/secrets", () => ({ resolveSecret: () => null }));
 
+import { HarnessRunSpec } from "@claudexor/schema";
 import { createRawApiAdapter } from "./index.js";
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -48,7 +49,7 @@ describe("raw-api models() — enumeration producer", () => {
     const models = await adapter.models!();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.openai.com/v1/models");
     expect(init.method).toBe("GET");
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-test");
@@ -86,7 +87,7 @@ describe("raw-api models() — enumeration producer", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     vi.stubGlobal("fetch", vi.fn(async () => new Response("try later", { status: 503 })));
     const adapter = createRawApiAdapter();
-    const events = await collect(adapter.run({
+    const events = await collect(adapter.run(HarnessRunSpec.parse({
       session_id: "s1",
       intent: "review",
       prompt: "x",
@@ -94,7 +95,7 @@ describe("raw-api models() — enumeration producer", () => {
       access: "readonly",
       external_context_policy: "auto",
       tool_permission_policy: { web: "auto", allow: [], deny: [] },
-    }));
+    })));
     const error = events.find((e) => e.type === "error");
     expect(error?.transient?.kind).toBe("service_unavailable");
   });

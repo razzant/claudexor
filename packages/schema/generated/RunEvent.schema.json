@@ -6,8 +6,7 @@
       "properties": {
         "seq": {
           "type": "integer",
-          "exclusiveMinimum": true,
-          "minimum": 0
+          "exclusiveMinimum": 0
         },
         "ts": {
           "type": "string"
@@ -86,5 +85,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

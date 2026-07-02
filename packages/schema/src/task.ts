@@ -144,7 +144,6 @@ export const TaskContract = z.object({
     .object({
       portfolio: Portfolio.default("subscription-first"),
       max_usd: z.number().nullable().default(null),
-      max_attempts: z.number().int().nullable().default(null),
     })
     .default({}),
   convergence: ConvergencePredicate.default({}),

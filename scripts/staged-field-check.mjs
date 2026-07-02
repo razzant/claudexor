@@ -35,6 +35,10 @@ const schemaSrc = join(root, "packages", "schema", "src");
  */
 const ALLOWLIST = new Map([
   // (field name) => reason. Add ONLY with a concrete justification.
+  [
+    "output_schema",
+    "structured-output wiring lands in v0.15 Phase 4 (locked decision D10); remove this entry with that change",
+  ],
 ]);
 
 function walk(dir, acc, filter) {
@@ -81,9 +85,24 @@ for (const r of consumerRoots) {
   }
 }
 const schemaSrcPrefix = schemaSrc + sep;
+
+/**
+ * Strip `//` line comments and `/* … *​/` block comments so a field mentioned
+ * ONLY in prose never counts as consumed (a comment is not a producer or a
+ * consumer). String literals are kept: `payload["field"]` and event-key
+ * strings are legitimate runtime references. The stripper is line-pragmatic,
+ * not a full lexer — a `//` inside a string is rare in this codebase and only
+ * risks a false NEGATIVE reference (over-stripping), never a false pass.
+ */
+function stripComments(src) {
+  let out = src.replace(/\/\*[\s\S]*?\*\//g, "");
+  out = out.replace(/(^|[^:])\/\/.*$/gm, (m, pre) => pre);
+  return out;
+}
+
 const haystack = consumerFiles
   .filter((p) => !p.startsWith(schemaSrcPrefix))
-  .map((p) => readFileSync(p, "utf8"))
+  .map((p) => stripComments(readFileSync(p, "utf8")))
   .join("\n\n");
 
 // 3. A field is referenced if its identifier appears as a real token anywhere in

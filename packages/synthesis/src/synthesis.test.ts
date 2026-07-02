@@ -6,7 +6,7 @@ function cand(label: string, over: Partial<CandidateEvidence> = {}): CandidateEv
   return {
     attemptId: label,
     label,
-    gates: [{ id: "t", command: "t", exit_code: 0, status: "passed", duration_ms: 1, required: true }],
+    gates: [{ id: "t", command: "t", exit_code: 0, status: "passed", duration_ms: 1, required: true, stdout_tail: null, stderr_tail: null, output_truncated: false }],
     acceptanceCovered: ["AC-1"],
     acceptanceTotal: 1,
     findings: [],
@@ -57,7 +57,7 @@ describe("decideSynthesis", () => {
     // A wins overall (required gate passes), but B has stronger tests despite a failing gate.
     const a = cand("A", { testsPassed: 8, testsTotal: 10 });
     const b = cand("B", {
-      gates: [{ id: "t", command: "t", exit_code: 1, status: "failed", duration_ms: 1, required: true }],
+      gates: [{ id: "t", command: "t", exit_code: 1, status: "failed", duration_ms: 1, required: true, stdout_tail: null, stderr_tail: null, output_truncated: false }],
       testsPassed: 10,
       testsTotal: 10,
     });

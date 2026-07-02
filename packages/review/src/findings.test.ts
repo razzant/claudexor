@@ -87,7 +87,7 @@ describe("dedupeFindings", () => {
       severity: "INSUFFICIENT_EVIDENCE",
       category: "correctness",
       claim: "Reviewer produced no parseable JSON findings.",
-      evidence: { files: [] },
+      evidence: { files: [], logs: [], commands: [], diff_hunks: [] },
       status: "insufficient_evidence",
     } satisfies Partial<ReviewFinding>;
     const findings = [

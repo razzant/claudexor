@@ -373,17 +373,6 @@
                 "null"
               ],
               "default": null
-            },
-            "max_attempts": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
             }
           },
           "additionalProperties": false,
@@ -444,5 +433,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

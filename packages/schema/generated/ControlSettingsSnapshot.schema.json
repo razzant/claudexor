@@ -28,8 +28,7 @@
         },
         "interactionTimeoutMs": {
           "type": "integer",
-          "exclusiveMinimum": true,
-          "minimum": 0,
+          "exclusiveMinimum": 0,
           "default": 900000
         },
         "routing": {
@@ -105,8 +104,7 @@
           "properties": {
             "reviewerTimeoutMs": {
               "type": "integer",
-              "exclusiveMinimum": true,
-              "minimum": 0,
+              "exclusiveMinimum": 0,
               "default": 600000
             },
             "transientRetry": {
@@ -173,8 +171,7 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "exclusiveMinimum": 0
                   },
                   {
                     "type": "null"
@@ -186,8 +183,7 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "exclusiveMinimum": 0
                   },
                   {
                     "type": "null"
@@ -255,5 +251,6 @@
       },
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

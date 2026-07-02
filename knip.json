@@ -2,19 +2,19 @@
   "$schema": "https://unpkg.com/knip@latest/schema.json",
   "workspaces": {
     "packages/cli": {
-      "entry": ["src/cli.ts", "src/claudexord.ts"],
       "project": ["src/**/*.ts"]
     },
     "packages/schema": {
-      "entry": ["src/index.ts", "scripts/gen-jsonschema.ts"],
       "project": ["src/**/*.ts", "scripts/**/*.ts"]
     },
+    "packages/canary": {
+      "entry": ["src/**/*.story.ts"],
+      "project": ["src/**/*.ts"]
+    },
     "packages/*": {
-      "entry": ["src/index.ts"],
       "project": ["src/**/*.ts"]
     },
     "benchmarks/runner": {
-      "entry": ["src/cli.ts"],
       "project": ["src/**/*.ts"]
     },
     ".": {
@@ -28,7 +28,7 @@
     "types": "error",
     "files": "error",
     "dependencies": "error",
-    "devDependencies": "off",
+    "devDependencies": "error",
     "optionalPeerDependencies": "off",
     "unlisted": "warn",
     "binaries": "off",

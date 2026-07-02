@@ -10,6 +10,9 @@ function gate(passed: boolean): GateResult {
     status: passed ? "passed" : "failed",
     duration_ms: 1,
     required: true,
+    stdout_tail: null,
+    stderr_tail: null,
+    output_truncated: false,
   };
 }
 
@@ -98,7 +101,7 @@ describe("arbitrate", () => {
       candidate("A", {
         diffBytes: 0,
         diffSize: 0,
-        gates: [{ id: "harness", status: "failed", required: true, command: "codex", exit_code: 1, duration_ms: 1 }],
+        gates: [{ id: "harness", status: "failed", required: true, command: "codex", exit_code: 1, duration_ms: 1, stdout_tail: null, stderr_tail: null, output_truncated: false }],
         testsPassed: 0,
         testsTotal: 1,
         finalReviewClean: false,
@@ -126,7 +129,7 @@ describe("arbitrate", () => {
       candidate("A", {
         testsPassed: 0,
         testsTotal: 0,
-        gates: [{ id: "lint", command: "lint", exit_code: 0, status: "passed", duration_ms: 1, required: false }],
+        gates: [{ id: "lint", command: "lint", exit_code: 0, status: "passed", duration_ms: 1, required: false, stdout_tail: null, stderr_tail: null, output_truncated: false }],
       }),
     ]);
     expect(res.decision.status).toBe("success");

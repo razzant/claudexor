@@ -26,8 +26,7 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "exclusiveMinimum": 0
                   },
                   {
                     "type": "null"
@@ -58,5 +57,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

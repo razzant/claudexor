@@ -154,7 +154,7 @@ describe("cursor API-key smoke parsing", () => {
         makeBaseDir: () => base,
         cleanupBase: async () => {},
         runCapture: async (_cmd, _args, opts) => {
-          smokeEnv = opts.env;
+          smokeEnv = opts?.env;
           return {
             code: 0,
             signal: null,

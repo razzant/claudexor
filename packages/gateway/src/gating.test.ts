@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ConformanceReport, HarnessManifest } from "@claudexor/schema";
+import { type ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { allowedIntents } from "./gating.js";
 
+// Built through the Zod SSOT so schema defaults apply and the fixture cannot
+// silently drift from the manifest contract.
 function manifest(): HarnessManifest {
-  return {
+  return HarnessManifest.parse({
     id: "x",
     display_name: "X",
     kind: "local_cli",
@@ -35,7 +37,7 @@ function manifest(): HarnessManifest {
     },
     auth_modes: ["local_session"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],
-  };
+  });
 }
 
 function report(status: ConformanceReport["status"], extra: Partial<ConformanceReport> = {}): ConformanceReport {

@@ -26,8 +26,7 @@
         },
         "interaction_timeout_ms": {
           "type": "integer",
-          "exclusiveMinimum": true,
-          "minimum": 0,
+          "exclusiveMinimum": 0,
           "default": 900000
         },
         "routing": {
@@ -131,8 +130,7 @@
             },
             "reviewer_timeout_ms": {
               "type": "integer",
-              "exclusiveMinimum": true,
-              "minimum": 0,
+              "exclusiveMinimum": 0,
               "default": 600000
             }
           },
@@ -177,8 +175,7 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "exclusiveMinimum": 0
                   },
                   {
                     "type": "null"
@@ -190,8 +187,7 @@
                 "anyOf": [
                   {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "exclusiveMinimum": 0
                   },
                   {
                     "type": "null"
@@ -259,5 +255,6 @@
       },
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

@@ -1104,33 +1104,6 @@
                 "additionalProperties": false,
                 "default": {}
               },
-              "repro": {
-                "type": "object",
-                "properties": {
-                  "command": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null
-                  },
-                  "expected": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null
-                  },
-                  "actual": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null
-                  }
-                },
-                "additionalProperties": false
-              },
               "proposed_fix": {
                 "type": [
                   "string",
@@ -1429,5 +1402,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }

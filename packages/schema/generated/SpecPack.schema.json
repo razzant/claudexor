@@ -18,8 +18,7 @@
         },
         "version": {
           "type": "integer",
-          "exclusiveMinimum": true,
-          "minimum": 0,
+          "exclusiveMinimum": 0,
           "default": 1
         },
         "frozen": {
@@ -304,5 +303,6 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
 }
