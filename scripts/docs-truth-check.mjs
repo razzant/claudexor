@@ -1,19 +1,32 @@
 #!/usr/bin/env node
 /**
- * Docs-truth gate: public docs must describe the implemented surface, no more,
- * no less. Deterministic source-vs-docs set comparison — no LLM, no regex
+ * Docs-truth gate v2: public docs must describe the implemented surface, no
+ * more, no less. Deterministic source-vs-docs comparison — no LLM, no regex
  * governance of behavior (this checks documentation claims only).
  *
  * Checks:
- *  1. Control API endpoints implemented in daemon-server.ts vs documented in
- *     docs/ARCHITECTURE.md and docs/INTEGRATIONS.md.
- *  2. Canonical mode ids in the schema vs README.md / docs.
+ *  1. Control API endpoints: docs/ARCHITECTURE.md carries the CANONICAL
+ *     generated inventory (markers + freshness + bidirectional completeness);
+ *     other docs may mention endpoints but every mention must be real.
+ *  2. Canonical mode ids in the schema vs README.md / CLI help.
  *  3. CLI flags accepted by cli.ts (KNOWN_FLAGS) vs flags shown in its help.
+ *  4. Version parity across the generated constant and every manifest.
+ *  5. macOS debug-route parity (AppModel.swift vs apps/macos/README.md).
+ *  6. Deleted-screen guard (chat-first collapse must not silently revert).
+ *  7. Dead-symbol check: code-shaped backticked identifiers in public docs
+ *     must exist in the source tree (catches NavigationSplitView/glowHi-class
+ *     staleness).
+ *  8. Enum parity: inspector tabs vs DESIGN_SYSTEM; MCP tool names vs
+ *     INTEGRATIONS.
+ *  9. Version-anchor lint: descriptions of current behavior must not carry
+ *     `v0.N` anchors (history phrasing is allowed) — Bible INV-133.
  *
  * Exit 1 with an explicit list on any mismatch.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { GEN_BEGIN, GEN_END, implementedEndpoints, renderEndpointBlock } from "./endpoints-lib.mjs";
 
 const failures = [];
 
@@ -21,46 +34,11 @@ const failures = [];
 // 1. Control API endpoints
 // --------------------------------------------------------------------------
 
-function implementedEndpoints(src) {
-  const out = new Set();
-  // Literal routes: method === "GET" && path === "/runs". Multi-method routes
-  // are implemented as separate `if` blocks in daemon-server, so this single
-  // pattern is the complete literal-route extractor.
-  const litRe = /method === "(GET|POST|DELETE|PUT|PATCH)"\s*&&\s*path === "([^"]+)"/g;
-  for (let m = litRe.exec(src); m; m = litRe.exec(src)) out.add(`${m[1]} ${m[2]}`);
-  // Regex routes, matched in TWO independent passes so intervening lines
-  // between the declaration and its `if (method === ... && xMatch)` use can
-  // never silently drop an endpoint from the implemented set.
-  const regexByName = new Map();
-  const declRe = /const (\w+Match) = (\/\^[^;]+\/)\.exec\(path\);/g;
-  for (let m = declRe.exec(src); m; m = declRe.exec(src)) regexByName.set(m[1], m[2]);
-  const useRe = /method === "(\w+)" && (\w+Match)\b/g;
-  for (let m = useRe.exec(src); m; m = useRe.exec(src)) {
-    const pattern = regexByName.get(m[2]);
-    if (!pattern) continue;
-    const template = pattern
-      .replace(/^\/\^/, "")
-      .replace(/\$\/$/, "")
-      .replaceAll("\\/", "/")
-      .replace(/\(\[\^\/\]\+\)/g, ":id")
-      .replace(/\(\.\+\)/g, "<path>");
-    out.add(`${m[1]} ${template}`);
-  }
-  // Self-check: every declared regex route must have been bound to a method.
-  for (const [name] of regexByName) {
-    if (!src.includes(`&& ${name}`)) {
-      throw new Error(`docs-truth extractor: regex route '${name}' is declared but never used with a method guard`);
-    }
-  }
-  return out;
-}
-
 function documentedEndpoints(docText) {
   const out = new Set();
   const re = /`((?:GET|POST|DELETE|PUT|PATCH)(?:\|(?:GET|POST|DELETE|PUT|PATCH))*) ([^`]+)`/g;
   for (let m = re.exec(docText); m; m = re.exec(docText)) {
     for (const method of m[1].split("|")) {
-      // Normalize :name placeholders to :id for comparison.
       const path = m[2].trim().replace(/:[A-Za-z_]+/g, ":id");
       out.add(`${method} ${path}`);
     }
@@ -68,18 +46,39 @@ function documentedEndpoints(docText) {
   return out;
 }
 
-const serverSrc = readFileSync("packages/control-api/src/daemon-server.ts", "utf8");
-const implemented = implementedEndpoints(serverSrc);
-implemented.add("GET /healthz"); // declared before auth with hostIsLoopback guard
+const implemented = implementedEndpoints();
 
-for (const docPath of ["docs/ARCHITECTURE.md", "docs/INTEGRATIONS.md", "README.md"]) {
+// 1a. ARCHITECTURE holds the canonical generated block: present, fresh, and
+// its documented set matches the implemented set in both directions.
+{
+  const arch = readFileSync("docs/ARCHITECTURE.md", "utf8");
+  const begin = arch.indexOf(GEN_BEGIN);
+  const end = arch.indexOf(GEN_END);
+  if (begin === -1 || end === -1) {
+    failures.push("docs/ARCHITECTURE.md is missing the GENERATED ENDPOINTS markers (run node scripts/gen-endpoints-doc.mjs)");
+  } else {
+    const current = arch.slice(begin, end + GEN_END.length);
+    const expected = renderEndpointBlock(implemented);
+    if (current !== expected) {
+      failures.push("docs/ARCHITECTURE.md endpoint inventory is stale; run node scripts/gen-endpoints-doc.mjs and commit");
+    }
+    const documented = documentedEndpoints(arch);
+    for (const ep of documented) {
+      if (!implemented.has(ep)) failures.push(`docs/ARCHITECTURE.md documents '${ep}' but daemon-server.ts does not implement it`);
+    }
+    for (const ep of implemented) {
+      if (ep === "GET /healthz") continue; // internal liveness; optional in docs
+      if (!documented.has(ep)) failures.push(`docs/ARCHITECTURE.md is missing implemented endpoint '${ep}'`);
+    }
+  }
+}
+
+// 1b. Other public docs: every endpoint they mention must exist (they are no
+// longer required to be complete — the canonical inventory lives in ARCH).
+for (const docPath of ["docs/INTEGRATIONS.md", "README.md"]) {
   const documented = documentedEndpoints(readFileSync(docPath, "utf8"));
   for (const ep of documented) {
     if (!implemented.has(ep)) failures.push(`${docPath} documents '${ep}' but daemon-server.ts does not implement it`);
-  }
-  for (const ep of implemented) {
-    if (ep === "GET /healthz") continue; // internal liveness; optional in docs
-    if (!documented.has(ep)) failures.push(`${docPath} is missing implemented endpoint '${ep}'`);
   }
 }
 
@@ -113,8 +112,6 @@ if (!knownMatch) {
   const flags = [...knownMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
   const helpMatch = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
   const help = helpMatch ? helpMatch[1] : "";
-  // Flags that are subcommand-scoped and documented next to their command, not
-  // in the global Options block.
   const subcommandScoped = new Set(["all", "dry-run", "deep", "from-env", "json"]);
   for (const flag of flags) {
     if (subcommandScoped.has(flag)) continue;
@@ -126,9 +123,7 @@ if (!knownMatch) {
 }
 
 // --------------------------------------------------------------------------
-// 4. Version parity (DV3): the generated CLAUDEXOR_VERSION constant, the root
-//    package.json, and EVERY workspace manifest must agree. This makes the
-//    single-version SSOT (DV1) enforceable so versions can never drift again.
+// 4. Version parity: generated constant, root package.json, every manifest.
 // --------------------------------------------------------------------------
 
 const versionTs = readFileSync("packages/util/src/version.ts", "utf8");
@@ -141,7 +136,6 @@ if (!constMatch) {
   if (constant !== rootVersion) {
     failures.push(`CLAUDEXOR_VERSION (${constant}) != root package.json version (${rootVersion}); run \`pnpm gen:version\``);
   }
-  // Every workspace manifest must match (changesets `fixed` keeps them in lockstep).
   const manifests = [];
   for (const pkg of readdirSync("packages")) {
     const path = `packages/${pkg}/package.json`;
@@ -164,15 +158,10 @@ if (!constMatch) {
 }
 
 // --------------------------------------------------------------------------
-// 5. Debug-route parity (DV3): the CLAUDEXOR_DEBUG_ROUTE values the macOS app
-//    actually handles (the `switch` cases in AppModel.swift) MUST equal the set
-//    documented in apps/macos/README.md. A route the code handles but doesn't
-//    document — or a documented route the code dropped — is a docs lie.
+// 5. Debug-route parity (AppModel.swift vs apps/macos/README.md).
 // --------------------------------------------------------------------------
 
 const appModelSrc = readFileSync("apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift", "utf8");
-// Isolate the `switch …CLAUDEXOR_DEBUG_ROUTE… { … }` block, then collect its
-// non-default `case "x":` labels.
 const switchMatch = /switch ProcessInfo\.processInfo\.environment\["CLAUDEXOR_DEBUG_ROUTE"\]\s*\{([\s\S]*?)\n\s*\}/.exec(
   appModelSrc,
 );
@@ -181,9 +170,6 @@ if (!switchMatch) {
 } else {
   const handledRoutes = new Set([...switchMatch[1].matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]));
   const macReadme = readFileSync("apps/macos/README.md", "utf8");
-  // The documented set is the backticked tokens on the README lines describing
-  // what `CLAUDEXOR_DEBUG_ROUTE` handles: take the bullet plus its continuation
-  // up to the next bullet, and read `code` spans that aren't the env-var name.
   const bulletMatch = /- `CLAUDEXOR_DEBUG_ROUTE`:[\s\S]*?(?=\n- `|\n\n)/.exec(macReadme);
   const documentedRoutes = new Set();
   if (bulletMatch) {
@@ -202,11 +188,7 @@ if (!switchMatch) {
 }
 
 // --------------------------------------------------------------------------
-// 6. Deleted-screen guard (DV3): the v0.9 screens removed in the v0.10
-//    chat-first collapse must not reappear as SCREENS in the design/arch docs.
-//    Conservative: we flag only the specific affirmative deleted-screen
-//    phrasings, and explicitly allow honest negations ("no separate Review
-//    Queue screen") so the docs can still SAY a screen was removed.
+// 6. Deleted-screen guard: removed screens must not reappear as current.
 // --------------------------------------------------------------------------
 
 const DELETED_SCREEN_PHRASES = [
@@ -217,8 +199,6 @@ const DELETED_SCREEN_PHRASES = [
   "Task list screen",
   "Review Queue screen",
 ];
-// Negation cues that, immediately before a phrase, mark an honest "this screen
-// is gone" statement rather than a reintroduction.
 const NEGATION_BEFORE = /\b(no|not|never|without|removed|deleted|dropped|former|old|legacy|previous|no longer|instead of)\b[^.]*$/i;
 
 for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
@@ -226,20 +206,172 @@ for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
   for (const phrase of DELETED_SCREEN_PHRASES) {
     let idx = text.indexOf(phrase);
     while (idx !== -1) {
-      // Look back to the start of the SENTENCE (markdown soft-wraps sentences
-      // across single newlines, so the boundary is "." or a paragraph break,
-      // not a lone "\n"); newlines within the sentence collapse to spaces so a
-      // negation cue on the previous wrapped line is still seen.
       const paraStart = text.lastIndexOf("\n\n", idx);
       const dotStart = text.lastIndexOf(".", idx);
       const sentenceStart = Math.max(paraStart, dotStart) + 1;
       const before = text.slice(sentenceStart, idx).replace(/\s+/g, " ");
       if (!NEGATION_BEFORE.test(before)) {
         const line = text.slice(0, idx).split("\n").length;
-        failures.push(`${docPath}:${line} reintroduces deleted v0.10 screen '${phrase}' as a current screen (use a negation if describing its removal)`);
+        failures.push(`${docPath}:${line} reintroduces deleted screen '${phrase}' as a current screen (use a negation if describing its removal)`);
       }
       idx = text.indexOf(phrase, idx + phrase.length);
     }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 7. Dead-symbol check: code-shaped backticked identifiers in public docs must
+//    exist somewhere in the source tree. Catches NavigationSplitView / glowHi /
+//    MeshGradient-class staleness where docs legislate about deleted code.
+// --------------------------------------------------------------------------
+
+// docs/FEATURES.md is deliberately absent: the ledger's rows describe MISSING
+// or broken surface (protocol fields the server lacks, dead knobs slated for
+// deletion), so "symbol not in source" is often exactly the documented fact.
+const PUBLIC_DOCS = [
+  "README.md",
+  "CLAUDEXOR_BIBLE.md",
+  "CONTRIBUTING.md",
+  "docs/ARCHITECTURE.md",
+  "docs/INTEGRATIONS.md",
+  "docs/DESIGN_SYSTEM.md",
+  "docs/WHITEPAPER.md",
+  "docs/DEVELOPMENT.md",
+  "docs/CHECKLISTS.md",
+  "apps/macos/README.md",
+];
+
+function collectSourceHaystack() {
+  const roots = ["packages", "apps", "scripts", "benchmarks"];
+  const chunks = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (name === "node_modules" || name === "dist" || name === ".build" || name === "generated") continue;
+      const p = join(dir, name);
+      let st;
+      try {
+        st = statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(p);
+      else if (/\.(ts|swift|mjs|js|py|sh|json|ya?ml|plist)$/.test(name)) {
+        try {
+          chunks.push(readFileSync(p, "utf8"));
+        } catch {
+          /* unreadable */
+        }
+      }
+    }
+  };
+  for (const r of roots) walk(r);
+  chunks.push(readFileSync("package.json", "utf8"));
+  return chunks.join("\n");
+}
+
+{
+  const haystack = collectSourceHaystack();
+  // Code-shaped: CamelCase with an interior capital, snake_case with an
+  // underscore, or dotted identifiers. Plain words, flags, paths, and
+  // env-style ALLCAPS with dashes are skipped (flags/env are covered by
+  // their own checks).
+  const codeShaped = /^(?:[A-Za-z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)$/;
+  // Terms that are conceptual vocabulary, wire values, or external names —
+  // not identifiers this repo's source must contain.
+  const allow = new Set([
+    // wire/status/config VALUES documented as data, not symbols
+    "in_place", "workspace_write", "external_sandbox_full", "inherit_native",
+    "best_of_n", "max_attempts", "until_clean", "readonly_audit", "daily",
+    "until_convergence", "readonly_swarm", "create_from_scratch", "auto_safe",
+    "auto_full", "not_converged", "stuck_no_progress", "no_op", "new_repo",
+    "accept_risk", "override_needs_human", "accept_clean_patch",
+    "rerun_with_feedback", "revert_run", "waiting_on_user", "api_key",
+    "local_session", "native_session", "api_key_env", "provider_auth_file",
+    "os_keychain", "http_header", "config_file", "env_var", "oauth_token_env",
+    "subscription-first", "claude_oauth", "browser_tool", "image_input",
+    "web_policy", "effort_levels", "known_models", "models_authoritative",
+    "web_search", "node_repl", "review_not_run", "cross_family_review",
+    "applied_review_blocked", "not_applied", "user.name", "user.email",
+    // external tools / ecosystem names
+    "swift.org", "cursor.com", "opencode.ai", "modelcontextprotocol.io",
+    "openrouter.ai", "claude.ai", "openai.com",
+  ]);
+  for (const docPath of PUBLIC_DOCS) {
+    const text = readFileSync(docPath, "utf8");
+    const seen = new Set();
+    for (const m of text.matchAll(/`([^`\n]{2,60})`/g)) {
+      const token = m[1].trim();
+      if (seen.has(token)) continue;
+      seen.add(token);
+      if (!codeShaped.test(token)) continue;
+      if (allow.has(token)) continue;
+      if (token.endsWith(".md") || token.endsWith(".json") || token.endsWith(".yaml") || token.endsWith(".yml")) continue;
+      if (haystack.includes(token)) continue;
+      const line = text.slice(0, m.index).split("\n").length;
+      failures.push(`${docPath}:${line} references \`${token}\` which does not exist in the source tree (stale symbol?)`);
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 8. Enum parity: inspector tabs vs DESIGN_SYSTEM; MCP tools vs INTEGRATIONS.
+// --------------------------------------------------------------------------
+
+{
+  const taskDetail = readFileSync("apps/macos/ClaudexorApp/Sources/ClaudexorApp/TaskDetailView.swift", "utf8");
+  const tabEnum = /enum Tab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
+  if (!tabEnum) {
+    failures.push("could not locate the inspector Tab enum in TaskDetailView.swift");
+  } else {
+    const tabs = [...tabEnum[1].matchAll(/case (\w+)/g)].map((m) => m[1].toLowerCase());
+    const design = readFileSync("docs/DESIGN_SYSTEM.md", "utf8").toLowerCase();
+    for (const tab of tabs) {
+      if (!design.includes(tab)) failures.push(`docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}' (TaskDetailView.swift Tab enum)`);
+    }
+  }
+
+  const mcpSrc = readFileSync("packages/mcp-server/src/index.ts", "utf8");
+  const tools = new Set([...mcpSrc.matchAll(/"(claudexor_[a-z_]+)"/g)].map((m) => m[1]));
+  const integrations = readFileSync("docs/INTEGRATIONS.md", "utf8");
+  for (const tool of tools) {
+    if (!integrations.includes(tool)) failures.push(`docs/INTEGRATIONS.md does not document MCP tool '${tool}'`);
+  }
+  for (const m of integrations.matchAll(/`(claudexor_[a-z_]+)`/g)) {
+    if (!tools.has(m[1])) failures.push(`docs/INTEGRATIONS.md documents MCP tool '${m[1]}' which the server does not expose`);
+  }
+}
+
+// --------------------------------------------------------------------------
+// 9. Version-anchor lint (INV-133): current-behavior descriptions must be
+//    era-neutral. `v0.N` is allowed only on lines that read as history
+//    (introduced/removed/since/legacy/…) or inside explicit history docs.
+// --------------------------------------------------------------------------
+
+{
+  const HISTORY_CUE =
+    /\b(introduced|added|removed|deleted|dropped|replaced|superseded|collapsed|renamed|since|until|was|were|had|history|changelog|release[sd]?|legacy|former|old|pre-|migration|lands?|shipped|arrives?|program|scheduled)\b/i;
+  const ANCHOR_DOCS = [
+    "CLAUDEXOR_BIBLE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DESIGN_SYSTEM.md",
+    "docs/WHITEPAPER.md",
+    "docs/INTEGRATIONS.md",
+  ];
+  for (const docPath of ANCHOR_DOCS) {
+    const lines = readFileSync(docPath, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      if (!/\bv0\.\d/.test(line)) return;
+      if (HISTORY_CUE.test(line)) return;
+      failures.push(
+        `${docPath}:${i + 1} anchors current behavior to a version ('${line.trim().slice(0, 80)}…') — describe the present era-neutrally or phrase it as history (INV-133)`,
+      );
+    });
   }
 }
 
