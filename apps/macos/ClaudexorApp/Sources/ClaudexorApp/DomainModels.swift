@@ -760,6 +760,9 @@ struct HarnessInfo: Identifiable, Hashable {
     /// drives the composer's agent-browser toggle (honest: only offered where the
     /// adapter can inject Playwright MCP).
     var acceptsBrowser: Bool = false
+    /// The doctor's strict verdict on the user's configured default model
+    /// (nil = no model configured or check ok): the actionable refusal text.
+    var configuredModelIssue: String? = nil
     var id: String { family.rawValue }
 }
 

@@ -48,8 +48,12 @@ describe("BudgetLedger", () => {
   it("rolls child holds up to the parent and clears them on cancel", () => {
     const parent = new BudgetLedger({ maxUsd: 1.0 });
     const child = parent.child({ maxUsd: 10 });
-    const r = child.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 1.0 });
-    expect(parent.tier()).toBe("hard"); // the hold is visible at the parent cap
+    // 0.95 fits under the parent cap (the wave guard denies estimates that
+    // would consume headroom to the boundary), and its hold is visible at the
+    // parent tier (0.95/1.0 ≥ downgrade threshold).
+    const r = child.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 0.95 });
+    expect(r.granted).toBe(true);
+    expect(parent.tier()).toBe("downgrade");
     child.cancel(r.lease?.lease_id ?? "");
     expect(parent.tier()).toBe("ok");
     expect(parent.spend()).toBe(0);
@@ -143,7 +147,7 @@ describe("DD-27 wave guard (estimate holds)", () => {
     const ledger = new BudgetLedger({ maxUsd: 0.1 });
     const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
     expect(first.granted).toBe(true);
-    // Second slot holds the floor and fits (0.05 <= 0.1 remaining).
+    // Second slot holds the floor and fits (0.05 < 0.1 remaining).
     const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.05 });
     expect(second.granted).toBe(true);
     // Third slot would need 0.06 but only 0.05 remains -> typed wave denial.
@@ -154,10 +158,27 @@ describe("DD-27 wave guard (estimate holds)", () => {
     expect(ledger.tier()).not.toBe("hard");
   });
 
+  it("denies an estimate that EXACTLY consumes remaining headroom (boundary must not trip the breaker)", () => {
+    // The GPT-critic live repro: floor 0.05, cap 0.05 — granting the equality
+    // case pushed holds to exactly the hard threshold and cancelled EVERY
+    // in-flight candidate with $0 real spend.
+    const ledger = new BudgetLedger({ maxUsd: 0.05 });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    expect(first.granted).toBe(true);
+    const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.05 });
+    expect(second.granted).toBe(false);
+    expect(second.denied).toBe("estimate_headroom");
+    // Granted work is unaffected: the tier never went hard on estimates alone.
+    expect(ledger.tier()).not.toBe("hard");
+  });
+
   it("keeps hard-cap denials typed as hard_cap", () => {
     const ledger = new BudgetLedger({ maxUsd: 0.01 });
-    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.01 });
+    // Real streamed usage (not an estimate) trips the hard tier...
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
     expect(first.granted).toBe(true);
+    ledger.updateHold(first.lease?.lease_id ?? "", 0.01);
+    // ...and the NEXT reservation is a hard_cap denial, not a wave denial.
     const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
     expect(second.granted).toBe(false);
     expect(second.denied).toBe("hard_cap");

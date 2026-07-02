@@ -244,15 +244,17 @@ export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConf
       if (Date.now() > deadline) {
         throw new Error(`config lock at ${lockPath} is held by another writer; retry in a moment`);
       }
-      // Busy-wait briefly (config writes are rare and take milliseconds).
-      const until = Date.now() + 25;
-      while (Date.now() < until) {
-        /* spin */
-      }
+      // Sleep 25ms without spinning the event loop (Atomics.wait is the
+      // standard synchronous sleep; config writes are rare and brief).
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
   try {
-    const current = GlobalConfig.parse(stripRetiredKeys(readYaml(path), RETIRED_CONFIG_KEYS) ?? {});
+    const current = parseStrict(
+      GlobalConfig,
+      stripRetiredKeys(readYaml(path), RETIRED_CONFIG_KEYS) ?? {},
+      path,
+    );
     const next = GlobalConfig.parse(mutator(current));
     const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
     writeText(tmp, yamlStringify(next));

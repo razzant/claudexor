@@ -276,6 +276,14 @@ struct SettingsScreen: View {
                     .padding(.vertical, Theme.Spacing.xxs)
                     .background(health.color.opacity(0.14), in: Capsule())
             }
+            // The doctor's strict model verdict (T2#6c): a green harness must
+            // never hide a doomed configured default model.
+            if let issue = info?.configuredModelIssue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .lineLimit(3)
+                    .help("The configured default model fails this harness's model truth source; runs would be refused at preflight. Fix it in the Model override above.")
+            }
             FlowLayout(spacing: Theme.Spacing.sm) {
                 Button { model.authSheetHarness = family } label: {
                     Label(health == .ok ? "Manage" : "Setup", systemImage: health == .ok ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
@@ -545,6 +553,20 @@ private struct HarnessDefaultsRow: View {
             }
             .labelsHidden()
             .help(modelPickerHelp(models))
+        } else if !modelDraft.isEmpty {
+            // A stored legacy override on a truth-less harness: strict
+            // governance refuses it at preflight, so SHOW it and offer the
+            // only meaningful action — clearing it (explicit null on save).
+            LabeledContent("Model") {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text("\(modelDraft) — refused (no truth source)")
+                        .font(.caption).foregroundStyle(.orange)
+                    Button("Clear") { modelDraft = "" }
+                        .controlSize(.small)
+                        .help("Removes the stored override so this harness runs its default model.")
+                }
+            }
+            .help(modelFallbackHelp)
         } else {
             LabeledContent("Model") {
                 Text("Harness default only")
@@ -672,7 +694,11 @@ private struct HarnessDefaultsRow: View {
                 maxUsdDraft: maxUsdDraft,
                 toolsAllowDraft: toolsAllowDraft,
                 toolsDenyDraft: toolsDenyDraft,
-                fallbackDraft: fallbackDraft
+                fallbackDraft: fallbackDraft,
+                // Truth-less harness: the model field is read-only ("default
+                // only"), so a stored legacy value must not ride along with
+                // other saves (it would 400 the whole patch); clears still go.
+                modelEditable: models?.canEnumerate == true
             )
             let ok = await model.saveSettings(SettingsUpdateRequest(harnesses: [family.rawValue: patch]))
             if !ok {

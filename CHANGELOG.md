@@ -3,6 +3,19 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **Unreleased (v0.15 program)** — BREAKING config strictness: YAML configs
+  (`~/.claudexor/config.yaml`, project `.claudexor/config.yaml`, trust files)
+  are now parsed against STRICT schemas — an unknown/typo'd key is a loud
+  `ConfigParseError` naming it, never a silent no-op. Keys that OLDER
+  Claudexor versions legitimately wrote (`secrets`, `budget.max_usd_per_day`,
+  `routing.default_model`, `harnesses.*.auth_ref`, `harnesses.*.native_options`,
+  project `project/delivery/review` blocks and retired context flags) are
+  auto-stripped by a migration registry and disappear on the next config
+  write; any OTHER unknown key must be removed by hand. Model choice is now
+  harness-scoped end-to-end (`routing.default_model` is gone — use
+  `harnesses.<id>.default_model`), and every explicit model must pass the
+  harness's model truth source. The intents `compare`/`arbitrate` and the
+  `scope.context: deep` tier were retired.
 - **v0.14.1** — checkpoint hardening for explicit reviewer panels, mandatory
   review evidence preflight, scoped Cursor reviewer readiness, frozen SpecPack
   gate merging, protected-path approvals, and thin control/macOS projection

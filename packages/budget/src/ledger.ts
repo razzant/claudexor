@@ -107,16 +107,20 @@ export class BudgetLedger {
     if (tier === "hard") {
       return { granted: false, tier, reason: "budget exhausted (hard cap reached)", denied: "hard_cap" };
     }
-    // DD-27 wave guard: an estimate-bearing reservation must FIT the remaining
-    // headroom, or it is DENIED without recording the hold — a denied slot
-    // must never poison the tier for candidates that were already granted.
+    // DD-27 wave guard: an estimate-bearing reservation must FIT UNDER the
+    // remaining headroom, or it is DENIED without recording the hold — a
+    // denied slot must never poison the tier for candidates that were already
+    // granted. `>=` on purpose: an estimate that exactly consumes headroom
+    // would trip the hard tier the instant its hold lands, cancelling every
+    // in-flight candidate with $0 real spend (the equality case is common —
+    // caps and the floor are both round nickels).
     if (typeof input.estimateUsd === "number" && input.estimateUsd > 0) {
       const headroom = this.remainingHeadroomUsd();
-      if (headroom !== null && input.estimateUsd > headroom) {
+      if (headroom !== null && input.estimateUsd >= headroom) {
         return {
           granted: false,
           tier,
-          reason: `insufficient headroom for estimated cost (${input.estimateUsd.toFixed(2)} USD > ${Math.max(headroom, 0).toFixed(2)} USD remaining)`,
+          reason: `insufficient headroom for estimated cost (${input.estimateUsd.toFixed(2)} USD >= ${Math.max(headroom, 0).toFixed(2)} USD remaining)`,
           denied: "estimate_headroom",
         };
       }

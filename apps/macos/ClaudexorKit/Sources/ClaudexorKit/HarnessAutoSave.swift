@@ -9,9 +9,14 @@ import Foundation
 ///
 /// Staged-field rule: an empty/whitespace draft encodes an EXPLICIT clear
 /// (`.some(nil)` → JSON null = "drop the override"), a non-empty draft sets the
-/// value, and `.none` (never produced here) would mean "leave unchanged". CSV,
-/// number and the effort "use default" sentinel are parsed here so the mapping is
-/// fixed and testable.
+/// value, and `.none` means "leave unchanged". CSV, number and the effort
+/// "use default" sentinel are parsed here so the mapping is fixed and testable.
+///
+/// `modelEditable`: when the row's model field is NOT an editable control
+/// (truth-less harness — strict governance shows "default only"), the patch
+/// OMITS `defaultModel` unless the draft is an explicit clear (empty). Without
+/// this, a stored legacy model that the truth source refuses would ride along
+/// with EVERY other field's save and 400 the whole patch — a dead-end row.
 public func buildHarnessPatch(
     enabled: Bool,
     modelDraft: String,
@@ -21,7 +26,8 @@ public func buildHarnessPatch(
     toolsAllowDraft: String,
     toolsDenyDraft: String,
     fallbackDraft: String,
-    effortSentinel: String = "__default"
+    effortSentinel: String = "__default",
+    modelEditable: Bool = true
 ) -> HarnessSettingsPatch {
     func trimmedOrNil(_ s: String) -> String? {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,9 +37,11 @@ public func buildHarnessPatch(
         s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
     let capText = maxUsdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let model = trimmedOrNil(modelDraft)
+    let modelField: String?? = modelEditable || model == nil ? .some(model) : .none
     return HarnessSettingsPatch(
         enabled: enabled,
-        defaultModel: .some(trimmedOrNil(modelDraft)),
+        defaultModel: modelField,
         effort: .some(effort == effortSentinel ? nil : effort),
         web: web,
         maxUsd: .some(capText.isEmpty ? nil : Double(capText)),

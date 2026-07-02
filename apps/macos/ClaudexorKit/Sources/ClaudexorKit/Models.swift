@@ -282,7 +282,7 @@ public struct CreateThreadRequest: Codable, Sendable {
     }
 }
 
-/// Body for PATCH /threads/:id — rename, archive (open|closed), or switch the
+/// Body for PATCH /threads/:id — rename, archive (state: active|closed), or switch the
 /// sticky primary harness / eligible pool. Encoded only (request body).
 public struct UpdateThreadRequest: Encodable, Sendable {
     public var title: String?

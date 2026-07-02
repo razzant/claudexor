@@ -1025,6 +1025,18 @@ export class Orchestrator {
     // never the whole pool (the old global fallback poisoned every pool
     // member with one vendor's model id). Specific beats general: an explicit
     // per-harness map entry wins over the scalar.
+    //
+    // Map KEYS fail loudly (INV-021): a typo'd harness id ("claud") must
+    // never silently no-op into "the run used defaults and nothing said why".
+    const knownHarnessIds = new Set(this.deps.registry.keys());
+    for (const key of Object.keys(input.models ?? {})) {
+      if (!knownHarnessIds.has(key)) {
+        throw new Error(
+          `models map names unknown harness '${key}' (registered: ${[...knownHarnessIds].sort().join(", ")}); ` +
+            `run \`claudexor harness list --all\``,
+        );
+      }
+    }
     const models: Record<string, string> = { ...input.models };
     if (input.model) {
       const scalarTarget =
@@ -2113,7 +2125,9 @@ export class Orchestrator {
     taskId: string,
     attemptId: string,
     harnessId: string,
-    supportsInteractive = true,
+    // REQUIRED (no default): every call site must state the routed manifest's
+    // `interactive` capability, or a future site would silently bypass the gate.
+    supportsInteractive: boolean,
   ): InteractionChannel | undefined {
     // Thin delegate — the channel mechanics live in interaction.ts.
     return interactionChannelFor(

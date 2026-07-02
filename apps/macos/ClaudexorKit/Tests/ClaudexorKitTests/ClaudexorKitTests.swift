@@ -657,6 +657,17 @@ import Testing
         #expect(untouchedObj?["primaryHarness"] == nil)
     }
 
+    @Test func updateThreadEncodesArchiveAndReopenStates() throws {
+        // The server ThreadState enum is active|closed — reopen must send
+        // "active" ("open" 400s against the strict DTO; the B2 regression).
+        let archive = UpdateThreadRequest(state: "closed")
+        let archiveObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(archive)) as? [String: Any]
+        #expect(archiveObj?["state"] as? String == "closed")
+        let reopen = UpdateThreadRequest(state: "active")
+        let reopenObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(reopen)) as? [String: Any]
+        #expect(reopenObj?["state"] as? String == "active")
+    }
+
     @Test func harnessStatusDecodesConfiguredModelCheck() throws {
         let json = """
         {"id":"codex","status":"ok","enabledIntents":[],"disabledIntents":[],"checks":[],

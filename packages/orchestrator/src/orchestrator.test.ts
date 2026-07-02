@@ -496,6 +496,28 @@ describe("Orchestrator", () => {
     expect(events).toMatch(/hard cap/);
   });
 
+  it("wave-guard boundary: cap = 2×floor runs TWO candidates (never zero) and denies the rest as estimate_headroom", async () => {
+    // GPT-critic live repro (Phase 2): with the default 0.05 floor, a race
+    // whose cap is an exact multiple of the floor granted an estimate that
+    // consumed headroom to the boundary, tripped the hard tier with $0 spent,
+    // and cancelled EVERY candidate ("exhausted", zero candidates).
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.1 });
+    const res = await withScopedConfigDir(async () =>
+      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 4 }),
+    );
+    const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+    // Slot 1 holds nothing; slot 2 holds 0.05 (< 0.10 remaining); slot 3 would
+    // need 0.05 with exactly 0.05 remaining -> typed estimate_headroom denial.
+    expect(primary.length).toBe(2);
+    expect(res.status).not.toBe("exhausted");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain("insufficient headroom for estimated cost");
+  });
+
   it("capability-gates candidates: a non-implementing harness is dropped from an implement race", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

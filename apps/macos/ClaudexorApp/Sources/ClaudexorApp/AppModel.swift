@@ -385,9 +385,17 @@ final class AppModel {
                 let checks = status.checks.map { "\($0.id): \($0.status)" }
                 let acceptsImages = (status.manifest?["capability_profile"]?["image_input"]?.stringValue ?? "none") != "none"
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
+                // T2#6c: the doctor's configured-model verdict rides the DTO —
+                // surface a rejection so a doomed default is visible in Settings.
+                let modelIssue: String? = {
+                    guard let check = status.configuredModelCheck, check.status == "rejected" else { return nil }
+                    let model = status.configuredModel ?? "configured model"
+                    return "\(model): \(check.message ?? "refused by the model truth source")"
+                }()
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
                                    intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks,
-                                   acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser)
+                                   acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
+                                   configuredModelIssue: modelIssue)
             }
         } catch {
             // Keep last-known harness rows.
@@ -1064,9 +1072,10 @@ final class AppModel {
         await setThreadState(id, state: "closed")
     }
 
-    /// Reopen a previously archived thread.
+    /// Reopen a previously archived thread. The server ThreadState enum is
+    /// `active | closed` — "open" is NOT a member and 400s.
     func reopenThread(_ id: String) async {
-        await setThreadState(id, state: "open")
+        await setThreadState(id, state: "active")
     }
 
     private func setThreadState(_ id: String, state: String) async {

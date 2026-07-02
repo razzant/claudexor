@@ -98,7 +98,7 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
     const value = args._[3];
     if (!key || value === undefined) {
       print(
-        "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|harness.<id>.default_model|harness.<id>.effort|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
+        "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|harness.<id>.default_model|harness.<id>.fallback_model|harness.<id>.effort|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
       );
       return 2;
     }

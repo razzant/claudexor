@@ -466,7 +466,7 @@ export class DaemonControlApiServer {
       }
     }
 
-    // PATCH /threads/:id — rename / archive (open|closed).
+    // PATCH /threads/:id — rename / archive; ThreadState is active|closed.
     if (method === "PATCH" && threadDetailMatch) {
       const svc = this.opts.services?.updateThread;
       if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
