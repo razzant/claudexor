@@ -17,8 +17,10 @@ not build it as part of normal package tasks.
 
 ## Toolchain
 
-The app targets macOS 26 SDK features such as Liquid Glass APIs,
-`NavigationSplitView`, and `.inspector`. Use one of these setups:
+The app targets macOS 26 SDK features such as the Liquid Glass APIs
+(`glassEffect`, `GlassEffectContainer`) and `.inspector`. (The shell is a
+custom chat cockpit, not `NavigationSplitView` — see
+`docs/DESIGN_SYSTEM.md` §3.) Use one of these setups:
 
 1. Full Xcode 26 for distribution builds and notarization.
 2. Swiftly + swift.org Swift 6.3+ for local SwiftPM build/test work.
@@ -90,11 +92,12 @@ enabled for that local control-plane model.
 
 ## Runtime Bridge
 
-The app connects to the loopback control API for health, run list/detail,
-primary output, timeline, budget snapshot, artifacts, harness doctor, settings,
-secrets metadata, start/cancel, apply check, and SSE events. Ask can run without
-a Current Project and writes user-level artifacts; project-aware modes are gated
-until Current Project is selected.
+The app connects to the loopback control API for health, threads/turns, run
+list/detail, primary output, timeline, budget snapshot, artifacts, harness
+doctor, settings, secrets metadata, start/cancel, apply check, and SSE events.
+Ask can run without a project and writes user-level artifacts; project-aware
+modes are gated until a project is picked in the composer's `ProjectChip` (the
+only place project selection lives — there is no Current Project setting).
 
 Run detail uses the server-projected `primaryOutput` first, then artifact
 fallbacks. Active runs default to Timeline, completed runs to Outcome, and
@@ -102,14 +105,26 @@ failures without output to Diagnostics. Cancel/interrupt uses the server control
 endpoint; live input forwarding is not part of the control surface (the former
 input stub was removed in v0.7.0), so the app shows no input UI for active runs.
 
+The trailing Workbench bridges two artifact planes: Run Detail reads the run's
+internal tree via the artifacts endpoints, while the Canvas gallery and
+mini-browser read the project's PRODUCED outputs via `GET /runs/:id/produced`
+(bytes/text fetched per path through the same client). The composer sends
+attachments (file picker + the `screencapture`-backed Capture button) as
+attachment DTOs on turn creation, gated by an available vision-capable route;
+the per-turn browser toggle arms the engine's agent-driven browser (offered
+only when a pooled harness reports `browser_tool`); and the Spec intent drives
+the server-owned interview endpoints (`POST /spec/questions` →
+`POST /spec/freeze`) and then sends a normal agent turn carrying the returned
+`specPath`.
+
 Sample data is off by default behind Settings. Surfaces the engine does not
 fully expose yet use honest empty states instead of pretending to be live.
 
 The Per-Harness Defaults editor saves enable/disable, model override, effort,
 web policy, per-harness budget cap (`maxUsd` per run), tool allow/deny lists,
-and fallback model via the `HarnessSettingsPatch` DTO. The remaining engine
-knobs (per-harness turn/round caps) stay config-file/settings-API surfaces this
-editor does not yet expose.
+and fallback model via the `HarnessSettingsPatch` DTO (which also carries
+`maxTurns`/`maxRounds`); the per-harness turn/round caps remain
+config-file/settings-API surfaces the editor UI does not yet expose.
 
 ## Design And Contributor Docs
 

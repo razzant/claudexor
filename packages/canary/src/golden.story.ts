@@ -1,10 +1,10 @@
 /**
  * Canary golden stories — user-level contracts over the public CLI surface.
  *
- * Each story name carries the Bible invariant it pins (INV ids assigned in the
- * v0.15 Phase 1 Bible rewrite; until then the tag names the section). If a
- * story fails, the named invariant regressed — fix the product, never the
- * story, unless Anton approved a CONCEPT-CHANGE for that invariant.
+ * Each story name carries the Bible invariant it pins (CLAUDEXOR_BIBLE.md
+ * INV-NNN). If a story fails, the named invariant regressed — fix the
+ * product, never the story, unless the owner approved a CONCEPT-CHANGE for
+ * that invariant.
  */
 import { realpathSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,19 +19,19 @@ afterEach(() => {
 });
 
 describe("canary golden stories", () => {
-  it("[INV:modes-canonical] an unknown mode id hard-errors and never silently runs another mode", () => {
+  it("[INV-032:modes-canonical] an unknown mode id hard-errors and never silently runs another mode", () => {
     const r = cli(sb, ["run", "do things", "--mode", "daily", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/mode/i);
   });
 
-  it("[INV:fail-loud-flags] an unknown flag fails loudly with exit 2, never runs with defaults", () => {
+  it("[INV-021:fail-loud-flags] an unknown flag fails loudly with exit 2, never runs with defaults", () => {
     const r = cli(sb, ["ask", "2+2?", "--frobnicate", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
   });
 
-  it("[INV:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
+  it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
     const r = cli(sb, ["plan", "make add() add instead of subtract", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json() as { runDir: string; status: string };
@@ -41,7 +41,7 @@ describe("canary golden stories", () => {
     expect(runFileExists(out.runDir, "final/patch.diff")).toBe(false);
   });
 
-  it("[INV:output-ready-before-terminal] output.ready precedes the terminal run event in the canonical event log", () => {
+  it("[INV-116:output-ready-before-terminal] output.ready precedes the terminal run event in the canonical event log", () => {
     const r = cli(sb, ["ask", "what is 2+2?", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json() as { runDir: string };
@@ -56,7 +56,7 @@ describe("canary golden stories", () => {
     for (let i = 1; i < seqs.length; i++) expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
   });
 
-  it("[INV:project-context-explicit] CLI Ask anchors artifacts to the invoking directory — never some other repo's store", () => {
+  it("[INV-071:project-context-explicit] CLI Ask anchors artifacts to the invoking directory — never some other repo's store", () => {
     // The CLI contract: the process cwd IS the project scope, even for a plain
     // non-git folder on a read-only ask. (The app's no-project Ask with the
     // user-level store is a control-api thread story — Phase 1 expansion.)
@@ -68,7 +68,7 @@ describe("canary golden stories", () => {
     expect(readRunFile(out.runDir, "final/answer.md").length).toBeGreaterThan(0);
   });
 
-  it("[INV:apply-needs-verified-review] a race with no available reviewers is honest (review_not_run) and apply refuses, naming the remedy", () => {
+  it("[INV-112:apply-needs-verified-review] a race with no available reviewers is honest (review_not_run) and apply refuses, naming the remedy", () => {
     const r = cli(sb, [
       "race",
       "fix add() so it adds",
@@ -94,7 +94,7 @@ describe("canary golden stories", () => {
     expect(check.stdout + check.stderr).toMatch(/cross-family review/);
   });
 
-  it("[INV:evidence-beats-summaries] a failed harness run writes inspectable failure artifacts, never a silent green", () => {
+  it("[INV-040:evidence-beats-summaries] a failed harness run writes inspectable failure artifacts, never a silent green", () => {
     const r = cli(sb, ["ask", "please explode", "--harness", "fake-invalid-json", "--json"]);
     const out = r.json() as { runDir: string; status: string };
     expect(out.status).not.toBe("succeeded");
@@ -104,11 +104,11 @@ describe("canary golden stories", () => {
     expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
   });
 
-  // [INV:cancel-fast] cancel latency story is a Phase 3 deliverable (watchdog +
+  // [INV-116:cancel-fast] cancel latency story is a Phase 3 deliverable (watchdog +
   // abort-before-gates); pinned here as an explicit todo so the gap stays loud.
-  it.todo("[INV:cancel-fast] cancelling a run acknowledges within seconds even when gates are configured");
+  it.todo("[INV-116:cancel-fast] cancelling a run acknowledges within seconds even when gates are configured");
 
-  // [INV:blocked-needs-decision] requires a deterministic NEEDS_HUMAN fake or a
+  // [INV-111:blocked-needs-decision] requires a deterministic NEEDS_HUMAN fake or a
   // protected-path fixture; lands with the Phase 1 canary expansion.
-  it.todo("[INV:blocked-needs-decision] a blocked run refuses apply until a typed operator decision exists");
+  it.todo("[INV-111:blocked-needs-decision] a blocked run refuses apply until a typed operator decision exists");
 });

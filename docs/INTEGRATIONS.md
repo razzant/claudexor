@@ -8,7 +8,7 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint for ask/run/race/plan/inspect/apply/daemon/auth/secrets/settings flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint for ask/explore/run/race/plan/spec/create/audit/orchestrate/inspect/follow/apply/decision/models/doctor/plugin/daemon/auth/secrets/settings flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
@@ -45,28 +45,9 @@ from `inspect`.
 The daemon owns local durable scheduling. The loopback control API is the live
 surface used by the macOS app.
 
-Core endpoints:
-
-- `POST /runs`
-- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
-- `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
-- `PATCH /threads/:id` (rename / archive a thread)
-- `POST /threads/:id/turns` (follow-up turn; turns run in-place — project or thread worktree — so the native session resumes and the next turn sees the work; a race runs isolated candidates and auto-applies the winner)
-- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
-- `POST /runs/:id/decision` (typed operator decision: `accept_clean_patch` / `accept_risk` / `override_needs_human` / `rerun_with_feedback` / `revert_run` — `revert_run` restores the live in-place tree to the turn's pre-turn snapshot and refuses if the tree has diverged from the recorded post-turn state)
-- `GET /events` (global live-only run-event multiplex, no replay)
-- `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
-- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
-- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
-- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`
-- `GET /harnesses`, `GET /harnesses/:id/models`
-- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
-  `POST /setup/jobs/:id/cancel`
-- `GET|POST /settings`
-- `GET|POST /secrets`, `DELETE /secrets/:name`
-- `POST /spec/questions`, `POST /spec/freeze`
+The canonical endpoint inventory lives in
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) §7 and is generated from source; this
+document does not duplicate it.
 
 The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
 unauthenticated, loopback-host-guarded liveness route). Artifact files remain
@@ -118,10 +99,27 @@ The MCP server is a thin surface over the same engine and run artifacts. Keep MC
 clients honest: read-only modes stay read-only, unavailable harnesses fail
 loudly, and apply/delivery state comes from server-owned artifacts.
 
-MCP is one-shot in this release. A host receives the final Claudexor output from
-tools such as `claudexor_ask`, `claudexor_plan`, `claudexor_run`,
-`claudexor_race`, and `claudexor_status`; it does not gain live Claudexor
-thread parity through MCP.
+MCP is one-shot in this release. A host receives the final Claudexor output
+from the eight implemented tools — `claudexor_ask`, `claudexor_explore`,
+`claudexor_run`, `claudexor_race`, `claudexor_plan`, `claudexor_create`,
+`claudexor_orchestrate`, and `claudexor_status` — and does not gain live
+Claudexor thread parity through MCP.
+
+Honest operational caveats of the current MCP surface (fixes for all of
+these are scheduled in the v0.15 MCP upgrade):
+
+- Requests are handled strictly sequentially: a long tool call (a race can run
+  for many minutes) blocks subsequent requests, including pings, so hosts with
+  aggressive timeouts may drop the call.
+- Tool results carry the final output text but no run id — MCP is launch-only;
+  correlate artifacts through the CLI (`claudexor inspect`) or the run
+  directory if you need the run's evidence.
+- There is no interaction/elicitation channel: a mid-run harness question
+  cannot reach the MCP host and declines benignly after the configurable
+  `interaction_timeout_ms`.
+- MCP runs execute in-process in the MCP server, not through the daemon:
+  `GET /runs` does not list them. Artifacts still land under
+  `.claudexor/runs/` as usual.
 
 ## Host Plugins
 

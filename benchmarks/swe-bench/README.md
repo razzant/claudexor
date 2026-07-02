@@ -49,7 +49,7 @@ Pipeline (engine: `scripts/run-dataset.sh`):
 
 1. `export_tasks.py` dumps the HF split to `tasks.jsonl` (BenchTask shape).
 2. `scripts/prepare-repos.sh` clones each repo at its `base_commit` into `<out>/repos/<instance_id>`.
-3. `make-predictions.sh` invokes the external benchmark runner adapter to write `predictions.jsonl`.
+3. `make-predictions.sh` runs the shipped in-repo `claudexor-benchmark-runner` (`benchmarks/runner`; `CLAUDEXOR_BENCHMARK_RUNNER` overrides it with a path to any compatible runner CLI) to write `predictions.jsonl`.
 4. `swebench.harness.run_evaluation` scores predictions in Docker.
 
 Artifacts default to `~/.claudexor/cache/bench-experiments/swe-bench/` (`CLAUDEXOR_SWE_RUNS_ROOT`).

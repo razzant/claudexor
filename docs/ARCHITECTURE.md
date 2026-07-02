@@ -29,9 +29,9 @@ packages, never in macOS or CLI-specific state.
 
 ## 2. Canonical Modes
 
-`ModeKind` lives in `packages/schema` and is the single source of truth. v0.9
-collapsed the nine v0.8 ids into FIVE intents-on-a-thread; engine strategies
-became flags, not modes:
+`ModeKind` lives in `packages/schema` and is the single source of truth. In
+v0.9 the nine v0.8 ids were collapsed into FIVE intents-on-a-thread; engine
+strategies became flags, not modes:
 
 - `ask` - one selected read-only `explain` route; writes `final/answer.md`.
 - `plan` - read-only multi-harness planning; writes `final/plan.md`.
@@ -46,8 +46,11 @@ became flags, not modes:
   cancellation, or no-progress stall), `--create` (create-from-scratch intent).
 - `orchestrate` - the autonomous brain: routed like reviewers (doctor-ok +
   `orchestrate` capability + quota headroom), it produces a typed orchestration
-  plan over the six-tool belt (`start_run`, `race`, `status`, `answer_question`,
-  `apply`, `review`) and writes `final/orchestration.md`. With one verified
+  plan over the six-tool vocabulary (`start_run`, `race`, `status`,
+  `answer_question`, `apply`, `review`) — the DEFAULT tool belt is five:
+  `answer_question` is deliberately not offered by default (safe sub-runs are
+  non-interactive; a caller can add it to a custom `tool_belt`) — and writes
+  `final/orchestration.md`. With one verified
   harness it plans single-route; with two or more it may plan cross-family
   race/review. `--autonomy suggest|auto_safe|auto_full` controls how much of
   that plan the executor runs without confirmation. Risk is data-driven (the
@@ -131,8 +134,8 @@ Routing is `Pool + Primary + Portfolio`:
 
 - selected harness ids are the eligible pool;
 - `primaryHarness` is a bias/ordering hint, not a privileged semantic role;
-- `portfolio` is recorded in `TaskContract.budget.portfolio`, default
-  `subscription-first`.
+- `portfolio` is recorded in the `TaskContract` budget (its `portfolio`
+  field), default `subscription-first`.
 
 Single-route read-only modes (`ask`, `audit`) choose one route from the
 eligible pool, primary first. `Agent` is a one-candidate envelope run. `audit
@@ -156,7 +159,8 @@ never route.
 
 Harness availability is determined by discovery + doctor + capabilities:
 `available` alone is not enough. A harness must be `ok`, expose the required
-intent for the selected mode (`explain` for Ask, `audit` for Explore/Audit,
+intent for the selected mode (`explain` for Ask, `audit` for Audit and its
+swarm,
 `implement` for Agent/repair paths, `plan`, etc.), and support read-only when
 the mode requires it. Surfaces show unavailable/degraded harnesses with reasons,
 but gate them out of launch and routing.
@@ -259,7 +263,7 @@ cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
 Creates a run directory, writes a `TaskContract`, runs one adapter with
 `intent: explain`, `access: readonly`, writes `final/answer.md`,
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
-In the macOS app, Ask may run with no Current Project. The harness cwd is an
+In the macOS app, Ask may run with no project selected. The harness cwd is an
 empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
 in the user-level store `~/.claudexor/runs/<run_id>/`. If routing or the harness
 fails, the run still writes inspectable failure artifacts
@@ -274,18 +278,15 @@ read-only route exists, Ask falls back before terminal failure. If no fallback
 can satisfy the policy, the run is `blocked` with a partial unverified output
 artifact when one exists.
 
-### Explore
+### Audit --swarm (research swarm)
 
-Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8). Each
-explorer writes a per-attempt event stream and a findings markdown artifact.
-Orchestrate runs write `final/orchestration.md` (the brain's markdown plan)
-plus `final/orchestration.yaml` — the TYPED `OrchestratePlan` artifact extracted
-from the report's fenced JSON block and validated against the tool belt; a
-missing/invalid block writes `final/orchestration_parse_error.md` and is
-disclosed in the summary. Explore final artifacts include `final/explore.md`, `final/explore-findings.yaml`,
-and `final/omissions.md`. Partial explorer failures are recorded as omissions
-when at least one explorer succeeds; if all explorers fail, the run emits
-`run.failed` with `final/failure.yaml`.
+Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8; the
+CLI verb `claudexor explore` maps here). Each explorer writes a per-attempt
+event stream and a findings markdown artifact. Swarm final artifacts include
+`final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
+Partial explorer failures are recorded as omissions when at least one explorer
+succeeds; if all explorers fail, the run emits `run.failed` with
+`final/failure.yaml`.
 
 ### Agent
 
@@ -315,9 +316,10 @@ is reserved for explicit stateful external adapters, such as Terminal-Bench
 containers where runtime state is the deliverable and cannot be merged from a
 patch. It is not surfaced in the macOS app and is not the default mutation path.
 
-Thread turns (v0.10) run IN-PLACE: an agent turn executes directly in the
+Chat thread turns run IN-PLACE: an agent turn executes directly in the
 execution tree (the live project for an `in_place` thread, or the thread's
-persistent worktree for an `isolated` thread; `RunInput.executionRoot`), so the
+persistent worktree for an `isolated` thread — the orchestrator's internal
+run-input carries this as `executionRoot`), so the
 routed harness resumes its own native CLI session and the next turn sees the
 work — no `session.rebound` for these. A best-of-N race still runs candidates in
 throwaway envelopes from the tree's current state and AUTO-ADOPTS the winner's
@@ -327,17 +329,18 @@ apply, never losing work. Blockers (NEEDS_HUMAN / non-clean terminal) stop
 adoption. An isolated thread's accumulated worktree diff is delivered to the
 project on demand via `POST /threads/:id/apply`.
 
-### Best-of-N / Create
+### Agent --n (race) / --create
 
 Each candidate gets its own `WorkspaceEnvelope`. The orchestrator reserves
 budget, runs the harness, captures diff from git, runs deterministic gates,
 reviews/revalidates findings, optionally synthesizes a new checked candidate,
-and arbitrates.
+and arbitrates. `--create` runs the same envelope pipeline with the
+create-from-scratch intent (the CLI verb `claudexor create` maps here).
 
-### Max Attempts / Until Clean
+### Agent --attempts / --until-clean
 
-One envelope is carried forward across repair attempts. `max_attempts` stops at
-the explicit cap. `until_clean` has no fixed iteration cap and stops on
+One envelope is carried forward across repair attempts. `--attempts` stops at
+the explicit cap. `--until-clean` has no fixed iteration cap and stops on
 convergence, cancellation, budget/quota exhaustion, or no-progress stall after
 eligible harness rotation.
 
@@ -348,7 +351,10 @@ instruction wrapped around the goal (so the model produces a plan instead of
 trying to build it and dumping code when writes are blocked), stores per-harness
 plans, cross-reviews when reviewers are available, and writes `final/plan.md` —
 an honest `# Plan` document (goal, per-planner plans, ALL review findings with
-severity so a BLOCK like "feature not delivered" is visible, open questions). It
+severity so a BLOCK like "feature not delivered" is visible, open questions).
+The multi-harness relay cross-shares each earlier planner's plan into the next
+planner's prompt, so planners converge on one aligned plan instead of planning
+blind. It
 also writes `final/work_product.yaml` with `result_kind: plan` and a null
 diffstat, so a surface reports "plan only — no files changed" rather than a green
 "succeeded" over nothing. A follow-up turn implements it via the `planRunId`
@@ -356,7 +362,7 @@ field (the engine prefixes the approved plan into the next agent turn's prompt).
 The spec interview is Plan/draft-owned, not a permanent top-level app sidebar
 concept.
 
-### Read-only Audit
+### Audit (single report)
 
 Runs one selected compatible harness read-only with `intent: audit` and writes
 `final/report.md`.
@@ -364,50 +370,82 @@ Runs one selected compatible harness read-only with `intent: audit` and writes
 ## 7. Control API
 
 The daemon is the durable scheduler. The HTTP control API is a live viewport and
-artifact/delivery facade:
+artifact/delivery facade. The canonical endpoint inventory below is generated
+from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
+README and INTEGRATIONS link here instead of maintaining duplicates.
 
+<!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
+- `GET /events`
+- `GET /harnesses`
+- `GET /harnesses/:id/models`
+- `GET /healthz`
+- `GET /runs`
 - `POST /runs`
-- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
-- `GET /events` (global live-only run-event multiplex)
-- `POST /threads`, `GET /threads`, `GET /threads/:id` (the chat/session-first
-  conversation SSOT; threads carry run lineage + native harness sessions). A
-  thread declares a `workspace.mode`: `in_place` (default) mutates the live
-  project tree; `isolated` keeps a persistent git worktree per thread. It also
-  carries sticky routing — `primaryHarness` and `eligibleHarnesses` — that its
-  turns inherit.
-- `PATCH /threads/:id` (rename / archive a thread: title + open/closed state;
-  switch the sticky `primaryHarness` / `eligibleHarnesses`)
-- `POST /threads/:id/turns` (a follow-up turn: enqueues a run anchored to the
-  thread. Agent turns run IN-PLACE in the execution tree — the live project for
-  an in-place thread, or the thread's worktree for an isolated thread — so the
+- `GET /runs/:id`
+- `POST /runs/:id/apply`
+- `POST /runs/:id/apply/check`
+- `GET /runs/:id/artifacts`
+- `GET /runs/:id/artifacts/<path>`
+- `POST /runs/:id/control`
+- `POST /runs/:id/decision`
+- `GET /runs/:id/events`
+- `POST /runs/:id/interactions/:id/answer`
+- `GET /runs/:id/produced`
+- `GET /runs/:id/produced/<path>`
+- `GET /secrets`
+- `POST /secrets`
+- `DELETE /secrets/:id`
+- `GET /settings`
+- `POST /settings`
+- `GET /setup/jobs`
+- `POST /setup/jobs`
+- `GET /setup/jobs/:id`
+- `POST /setup/jobs/:id/cancel`
+- `POST /setup/jobs/:id/confirm`
+- `GET /setup/jobs/:id/events`
+- `POST /spec/freeze`
+- `POST /spec/questions`
+- `GET /threads`
+- `POST /threads`
+- `GET /threads/:id`
+- `PATCH /threads/:id`
+- `POST /threads/:id/apply`
+- `POST /threads/:id/turns`
+<!-- END GENERATED ENDPOINTS -->
+
+Endpoint semantics beyond the inventory:
+
+- Threads are the chat/session-first conversation SSOT (run lineage + native
+  harness sessions). A thread declares a `workspace.mode`: `in_place` (default)
+  mutates the live project tree; `isolated` keeps a persistent git worktree per
+  thread. It also carries sticky routing — `primaryHarness` and
+  `eligibleHarnesses` — that its turns inherit; `PATCH /threads/:id` renames /
+  archives a thread (title + open/closed state) and switches the sticky
+  routing.
+- `POST /threads/:id/turns` enqueues a follow-up run anchored to the thread.
+  Agent turns run IN-PLACE in the execution tree — the live project for an
+  in-place thread, or the thread's worktree for an isolated thread — so the
   routed harness resumes its own native CLI session and the next turn sees the
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
   the winner to the execution tree (a typed `session.rebound` disclosure covers
   those isolated candidates). A `planRunId` body field implements an approved
-  plan from an earlier turn; a `specPath` body field Implements against a frozen
-  SpecPack — the agent runs against that contract instead of a bare prompt)
-- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree
-  diff to the project; in-place threads write the project directly and never
-  need this)
-- `POST /runs/:id/decision` (typed operator decision on a blocked run:
+  plan from an earlier turn; a `specPath` body field Implements against a
+  frozen SpecPack — the agent runs against that contract instead of a bare
+  prompt. `POST /threads/:id/apply` delivers an isolated thread's accumulated
+  worktree diff to the project; in-place threads write the project directly and
+  never need it.
+- `POST /runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;
   `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
   `revert_run` restores the live in-place tree to the turn's pre-turn snapshot —
   a server-owned, tree-SHA divergence-fenced revert that refuses (fail loud) if
-  the tree has diverged from the recorded post-turn state)
-- `POST /runs/:id/interactions/:id/answer` (deliver a waiting_on_user answer)
-- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
-- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
-- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`
-- `GET /harnesses`, `GET /harnesses/:id/models`
-- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
-  `POST /setup/jobs/:id/cancel`
-- `GET|POST /settings`
-- `GET|POST /secrets`, `DELETE /secrets/:name`
-- `POST /spec/questions`, `POST /spec/freeze`
+  the tree has diverged from the recorded post-turn state.
+- `GET /runs/:id/produced` and `GET /runs/:id/produced/<path>` serve the
+  project's PRODUCED outputs — the repo `artifacts/` dir, the macOS Canvas
+  source — distinct from the run-internal `GET /runs/:id/artifacts` tree.
+- `GET /events` is the global live-only run-event multiplex (see the streaming
+  contract below).
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.
@@ -478,9 +516,9 @@ of local fake apply state.
 `POST /runs/:id/control` is capability-based. The implemented minimum is
 cancel/interrupt: daemon abort closes the active harness stream and the process
 helper sends a cooperative interrupt with hard-kill fallback. Live input
-forwarding into a running harness is not a v0.7 surface; the former
-`/runs/:id/input` endpoint and `RunInput` DTO were removed rather than left as
-an always-`unsupported` stub.
+forwarding into a running harness is not a supported control surface; the
+former `/runs/:id/input` endpoint and `RunInput` DTO were removed in v0.7
+rather than left as an always-`unsupported` stub.
 
 A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
 change, critical-risk diff) is a terminal `blocked` state whose findings surface
@@ -518,9 +556,53 @@ matching glob (CLI: `--allow-protected-path`). Those approvals are scoped only t
 built-in critical/security path gates such as `.github/workflows`. They are
 accepted only from the run request surface, not from frozen SpecPack constraints.
 
+### Live-tree mutation paths
+
+Every path that can mutate the live project tree is enumerated here with its
+fence (Bible INV-113); an unlisted mutation path is a release blocker:
+
+1. **Envelope delivery/apply** — `POST /runs/:id/apply` and CLI
+   `claudexor apply` both go through the single-owner apply gate
+   (`validateApplyGate` in `packages/delivery`): terminal success or a typed
+   patch-hash-bound operator decision, a patch WorkProduct, and the original
+   verified repo root are required before `deliver` touches the tree.
+2. **Orchestrate `auto_full` apply step** — the executor's only RISKY tool call
+   sends the referenced run's patch through the SAME `validateApplyGate` +
+   `deliver` path (plus a secret-like-token scan on the patch); the gate
+   refusing means no mutation.
+3. **In-place thread turns** — a write turn executes directly in the thread's
+   execution tree. Fences: a pre-turn snapshot is taken at turn start and a
+   post-turn snapshot at turn end (the per-turn diff base, so prior dirty state
+   is never attributed to the turn), and the server-owned `revert_run` decision
+   can restore the pre-turn state while the tree still matches the recorded
+   post-turn snapshot (divergence-fenced, below).
+4. **Race winner adoption** — a best-of-N thread race runs candidates in
+   isolated envelopes and applies the winner's patch to the execution tree ONLY
+   on a clean terminal (success or ungated); blockers stop adoption, and a
+   failed apply leaves `adopted:false` with the tree unchanged and offers a
+   manual apply. (Hardening of the honest-restore guarantee — conflict residue
+   can never linger behind an
+   `adopted:false` — lands in v0.15 Phase 3, INV-114.)
+5. **Thread apply** — `POST /threads/:id/apply` delivers an isolated thread's
+   accumulated worktree diff. Fences: a secret-like-token scan refuses the
+   patch, a project-HEAD-moved check is disclosed as an advisory (delivery
+   still merges via `git apply --3way` or fails loudly), and delivery reuses
+   the shared `deliver` path. A head-run state gate (the thread's HEAD run must
+   be non-blocked/non-failed or covered by a typed operator
+   decision) lands in v0.15 Phase 3 (locked decision D4).
+6. **Automatic git init** — a NON-GIT project folder is initialized before any
+   write candidate spawns (`.gitignore` seeded with `.claudexor/`, `git init`,
+   deterministic baseline commit). Fence: the mutation is announced via a typed
+   `project.git.initialized` run event — never silent.
+7. **`revert_run`** — the server-owned in-place revert restores a turn's
+   pre-turn snapshot ONLY when the current tree's content-stable tree SHA still
+   matches the recorded post-turn snapshot; a diverged tree is refused loudly
+   and left untouched.
+
 Reviewer selection is schema-owned. The automatic selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.
-For release and dogfood gates, `ControlRunStartRequest.reviewerPanel` carries an
+For release and dogfood gates, the `reviewerPanel` field on
+`ControlRunStartRequest` carries an
 ordered list of explicit `{ harness, model?, effort? }` entries. That panel is
 used verbatim: repeated harness ids are allowed for multi-model Cursor passes,
 no provider-family dedupe is applied, and unknown/unavailable/disabled/fake-only
@@ -546,7 +628,7 @@ quota/rate-limit signals, not a `$`/day ledger.
 
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)
-into `HarnessEvent.transient`; the orchestrator may retry only within the bounded
+into typed `transient` `HarnessEvent`s; the orchestrator may retry only within the bounded
 global `runtime.transient_retry` policy and only when the failed attempt produced
 no deliverable. Reviewer panels use `runtime.reviewer_timeout_ms` (default 10
 minutes). A timed-out reviewer still records any observed model/route proof that
@@ -598,10 +680,16 @@ final/report.md?
 final/plan.md?
 final/orchestration.md?            (orchestrate: human-readable orchestration summary)
 final/orchestration.yaml?          (orchestrate: the typed orchestration plan)
+final/orchestration_parse_error.md? (orchestrate: plan-block extraction failure detail)
 final/orchestration_progress.yaml? (orchestrate: per-step executor progress, auto_safe/auto_full)
 plans/<harness>.md?           (plan mode)
 attempts/aNN/events.jsonl?    (read-only modes)
 ```
+
+`final/orchestration.yaml` is the TYPED `OrchestratePlan` artifact: it is
+extracted from the fenced JSON block in the brain's report and validated
+against the tool belt. A missing or invalid block writes
+`final/orchestration_parse_error.md` and is disclosed in the summary.
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,
@@ -630,100 +718,47 @@ show fake zero spend/quota values.
 
 ## 9. macOS App
 
-The macOS app is a native control surface over the control API:
+The UI behavioral and visual contract — the one-screen chat shell, the
+composer, the Workbench (`Run Detail | Canvas`), Settings, and every
+interaction rule — lives in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md), the macOS
+UI/UX SSOT. This section keeps only the engine-facing facts.
 
-- the app is chat-first: ONE screen — the thread list (glass sidebar), the
-  conversation (turns), and the always-live floating composer — with the selected
-  run's detail in the trailing `.inspector`; there is no Home, Tasks, or
-  Review-Queue screen;
-- the default composer intent is `Agent` on a project thread; a no-project thread
-  is `Ask`-only (project-aware intents are hidden until a project is picked, and
-  Ask can run without one);
-- the composer's `ProjectChip` picks the working directory (MRU recents +
-  Browse…) and is the ONLY place project selection lives; the composer exposes
-  intent (`ask`/`plan`/`audit`/`agent`, plus Race as an agent strategy and
-  **Spec**; `orchestrate` is CLI-only), the eligible pool, the sticky primary
-  harness, a **per-turn model picker** for the primary harness (enumerated ids
-  when the harness can enumerate, else honest free-text; empty = harness/global
-  default), a per-turn budget cap, access profile, web policy, project-context
-  depth, isolated-workspace toggle, explicit reviewer panels, typed
-  protected-path approvals for auto-protected gate/test paths, and agent repair
-  strategies (until-clean / max-attempts). Portfolio and deterministic gate
-  commands are engine/Settings concerns, not per-turn composer controls;
-- **Spec** is a macOS UI intent, not a wire run mode: it drives the server-owned
-  spec flow client-side (`POST /spec/questions` → answers → `POST /spec/freeze`)
-  and then sends a normal agent turn carrying the returned `specPath` to
-  Implement against the frozen SpecPack. The read-only grounding plan uses ONLY the
-  composer's eligible pool (with each harness's default model); the per-turn
-  model/budget/access/web/repair options the user set do NOT affect grounding — they
-  are captured and applied to the write Implement turn. It maps to the engine's
-  read-only `plan`/spec endpoints, not a new `ModeKind`;
-- while a turn is running, the composer's **Send button swaps to Stop** (a
-  server-owned cancel of the running turn), since a new turn cannot start over a
-  live native session;
-- a terminal turn that FAILED with no answer/transcript renders an **inline
-  failure card** with the engine's honest failure reason, instead of reading as
-  idle next to a red status pill;
-- Settings is a real macOS `Settings` scene (`Cmd+,`) with grouped preferences;
-- Settings edits app preferences and engine defaults exposed by `/settings`,
-  including appearance/motion, routing/model defaults, budget, auth status, and
-  secret refs; per-harness defaults auto-save (no Save button). Settings does
-  NOT own project selection — there is no Current Project field; the working
-  directory is picked only in the chat composer's `ProjectChip`;
-- Budget and the Harness Doctor are Settings tabs (not a sidebar Operations
-  section); the chat-first main window is the thread list + conversation, with run
-  detail in the trailing inspector;
-- the trailing region is a **Workbench** with a `[Run Detail | Canvas]` switch.
-  Run Detail (a run's tabs) has explicit `Outcome`, `Timeline`, `Plan`,
-  `Candidates`, `Diff`, `Review`, `Artifacts`, and `Diagnostics` tabs; completed
-  runs open on Outcome, active runs on Timeline, and failures without output on
-  Diagnostics. **Canvas** hosts the artifacts gallery — the project's PRODUCED
-  outputs (the repo `artifacts/` dir) via `GET /runs/:id/produced`, images inline,
-  distinct from Run Detail's `/runs/:id/artifacts` orchestration tree — and a
-  user-driven mini-browser (`WKWebView` via `loadFileURL`: the project's
-  `index.html`, localhost dev-server previews, arbitrary URLs) on solid surfaces;
-- review/findings and diff/apply are INLINE per turn (on the turn that produced
-  them and in the inspector's Review/Diff tabs), not a separate Review-Queue
-  screen; their rows use stable solid metrics and must not force the app window to
-  a very wide minimum size;
-- budget cap editing uses validated currency text fields, never a money slider;
-- hover help is required on compact/non-obvious controls, modes, harness chips,
-  route proof, auth/setup actions, budget controls, and dangerous actions;
-- Settings uses flat grouped sections and avoids floating black cutout shadows;
-- onboarding is native-first auth plus optional API-key fallback and guided
-  install/login/smoke-test actions;
-- the composer accepts **attachments** via a paperclip picker: generic files are
-  available on non-Spec turns, while image files and the **Capture** button
-  (system `screencapture` region select) are gated by an available route whose
-  primary/pool harness declares `capability_profile.image_input` (Cursor/OpenCode
-  gate/skip images rather than silently swallow an image the model never sees).
-  Attachments forward to the
-  harness in its NATIVE shape (Codex `-i/--image`, Claude base64 image block on
-  the stream-json transport, raw-api `image_url` data URL) and persist in a scoped
-  dir OUTSIDE any worktree — bytes never enter `jobs.json` or `git add -A`;
-- direct non-thread `POST /runs` accepts only non-empty absolute existing file
-  paths for attachments. Inline base64 upload bytes are accepted only through
-  thread/composer turn creation, where the turn store resolves them to scoped
-  files before the daemon job is queued;
-- the **Spec** interview is multi-tier (`/spec/questions` carries accumulated
-  `priorDecisions`): each round goes DEEPER on prior answers ("Ask deeper") until
-  the model surfaces no further decisions, or the user freezes ("Enough — freeze").
-  The multi-harness `plan` relay cross-shares each planner's plan into the next
-  planner's prompt so they converge on one aligned plan instead of planning blind.
-- the composer can arm an **agent-driven browser** (a per-turn `browser` toggle,
-  offered only where a pooled harness reports the `browser_tool` capability). The
-  adapter injects Microsoft's Playwright MCP — codex via stateless `-c
-  mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON — so the
-  agent gets `browser_navigate` / `browser_take_screenshot` / `browser_snapshot`
-  tools. It is LIVE EGRESS: never injected under `external_context_policy:off`,
-  and it requires **full access** (codex's workspace-write sandbox cancels the
-  navigation — live-verified), which the toggle discloses and sets. The browser
-  runs HEADED so the user watches the real window; navigation snapshots land in the
-  run artifact tree. Cursor/OpenCode/raw-api report `browser_tool:false` (honest —
-  no injector wired) and the toggle is hidden for them.
-
-The app must not invent local accept/rebut/apply state. Delivery and artifact
-actions come from server endpoints.
+- The app is a thin native control surface over the control API (§7). It
+  consumes: threads and turns (`/threads`, `/threads/:id`, `/threads/:id/turns`,
+  `/threads/:id/apply`), runs and events (`/runs`, `/runs/:id`,
+  `/runs/:id/events`, `/events`), run-internal artifacts (`/runs/:id/artifacts`)
+  and produced project outputs (`/runs/:id/produced` — the Canvas source),
+  delivery, decisions, and control (`/runs/:id/apply/check`, `/runs/:id/apply`,
+  `/runs/:id/decision`, `/runs/:id/control`,
+  `/runs/:id/interactions/:id/answer`), harness status (`/harnesses`,
+  `/harnesses/:id/models`), setup jobs (`/setup/jobs`), settings and secrets
+  (`/settings`, `/secrets`), and the server-owned spec flow
+  (`/spec/questions`, `/spec/freeze`; the app's Spec intent is a thin driver
+  over these endpoints, not a new `ModeKind`).
+- The app must not invent server state: delivery, decisions, review verdicts,
+  routing readiness, setup progress, and budget truth are projections of
+  control-api DTOs and run artifacts, never app-local logic. Read-only modes
+  expose no patch/apply controls.
+- Attachments are an engine contract the composer merely feeds: upload bytes
+  are sunk to a scoped store OUTSIDE any worktree before a daemon job is queued
+  (bytes never enter `jobs.json` or `git add -A` scope), forwarded to the
+  harness in its NATIVE shape (codex `-i/--image`, claude base64 image block on
+  the stream-json transport, raw-api `image_url` data URL), and vision-gated:
+  an image-bearing run routes only to harnesses declaring
+  `capability_profile.image_input`, else it is refused pre-flight. Direct
+  non-thread `POST /runs` accepts only non-empty absolute existing file paths
+  for attachments; inline base64 is accepted only through thread/composer turn
+  creation.
+- The agent-driven browser is an engine capability the app merely arms: the
+  adapter injects Microsoft's Playwright MCP (codex via stateless
+  `-c mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON —
+  the agent gets the Playwright navigate / screenshot / snapshot browser
+  tools) only when the run opted in, the harness declares
+  `browser_tool`, web policy is not `off`, and the run has **full access**
+  (codex's workspace-write sandbox cancels the navigation — live-verified).
+  The injection is disclosed, the browser runs HEADED, and navigation
+  snapshots land in the run artifact tree. Cursor/OpenCode/raw-api report
+  `browser_tool: false` (honest — no injector wired).
 
 ## 10. Change Rules
 

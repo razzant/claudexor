@@ -22,7 +22,7 @@ enablement, and install health is tracked separately from harness readiness.
 Ownership state is local user setup state used for safe repair/uninstall, not a
 schema contract.
 
-## Chat/Session-First (v0.10)
+## Chat/Session-First
 
 The conversation is the primary object. A Thread is the Claudexor-owned
 conversation; runs are its turns; the vendor CLI session is a re-hostable cache.
@@ -78,6 +78,22 @@ step) and BLOCKS at the risky apply for a human decision; `auto_full` also
 applies through the single shared delivery gate and can mutate the live project.
 Orchestrate is therefore not purely read-only — only its default `suggest` level
 is.
+
+## Attachments And Vision
+
+A turn can carry attachments — files and images — and Claudexor treats them as
+typed run inputs, not prompt decoration. Attachment bytes persist only in a
+scoped store outside any worktree; they never enter the daemon's `jobs.json`,
+task contracts, or `git add -A` scope. Direct non-thread runs accept only
+absolute existing file paths, while inline base64 upload bytes are accepted
+only through thread/composer turns, where they are sunk to scoped files before
+a job is queued.
+
+Vision is capability-gated routing, not hope: an image-bearing run routes only
+to harnesses whose capability profile declares image input, and each adapter
+forwards images in its own native shape. A blind harness is refused pre-flight
+with an actionable reason — an attachment the model never saw must never look
+delivered.
 
 ## Harnesses Are Tools, Not Roles
 
@@ -180,6 +196,16 @@ eligible route if available and emits `route.fallback.*` events. If no fallback
 satisfies the policy, the run becomes `blocked` with partial output marked
 unverified.
 
+The agent-driven browser is a SECOND live-egress channel, and Claudexor treats
+it like one. A run can arm a real, headed browser for the agent (injected as a
+browser toolset into the harness); it is injected only when the run opted in,
+the harness declares the `browser_tool` capability, web policy is not `off`,
+and the access profile allows it — full access, because a write-sandboxed
+harness cancels the navigation. The injection is disclosed rather than silent,
+harnesses without a wired injector honestly declare `browser_tool: false`, and
+navigation evidence (snapshots) lands in the run artifact tree like any other
+evidence.
+
 Known gap (deferred to a future release): under `auto`, "the harness attempted
 web" is treated as the intent signal. Claudexor does not yet run a separate
 intent resolver that decides a task NEEDED web when the harness never tried;
@@ -187,9 +213,21 @@ a web-required outcome is only enforced for explicit `cached`/`live` policies.
 
 ## Workspace And Tmp Semantics
 
-Project runs do not execute directly in the live project by default. They run in
-isolated envelopes under `.claudexor/workspaces/.../tree`, and the harness `cwd`
-is the envelope worktree. Diffs come from git in that worktree.
+Claudexor has two honest execution locations, and each surface is explicit
+about which one it uses.
+
+Chat thread WRITE turns default to IN-PLACE execution on the live tree: a
+thread declares its workspace mode, `in_place` (the default — the flagship
+chat path mutates the live project directly, matching how Claude Code and
+Cursor work locally, with pre/post-turn snapshots and a server-owned
+divergence-fenced revert as the safety net) or `isolated` (the thread keeps a
+persistent git worktree; turns accumulate there and an explicit thread apply
+delivers the accumulated diff to the project).
+
+Direct non-thread runs and race candidates keep the envelope default: they run
+in isolated envelopes under `.claudexor/workspaces/.../tree`, and the harness
+`cwd` is the envelope worktree. Diffs come from git in the execution tree —
+envelope or in-place — never from model edit narration.
 
 Absolute `/tmp/...` writes are host side effects, not project diffs. A project
 prompt asking for a tmp file defaults to project-local `tmp/...` or a run
@@ -207,6 +245,15 @@ make diffs truthful from the very first run. The mutation is announced in the
 run timeline (`project.git.initialized`) — never silent.
 
 ## Observability
+
+Run artifacts live in two honest planes that are never conflated. The run tree
+under `.claudexor/runs/<id>/` is Claudexor's internal orchestration evidence —
+contracts, events, attempts, reviews, decisions. The project's produced
+outputs — the repo `artifacts/` directory a run actually delivered, served
+through the produced-outputs endpoint — are user deliverables. Surfaces label
+which plane they show (the macOS Canvas shows produced outputs; Run Detail
+shows the run tree), so orchestration evidence is never mistaken for the
+project's work product or vice versa.
 
 Runs are append-only event streams plus artifacts. `events.jsonl` is canonical;
 every event carries a monotonic per-run `seq` stamped at emit time. Live
@@ -250,10 +297,13 @@ Budget truth is part of trust. Claudexor distinguishes exact native cost from
 estimated token-derived cost and keeps unknown spend unknown. It does not render
 missing data as `$0`.
 
-Harness settings use a `Profiles + Advanced` model. Global config can carry
-per-harness model, effort, max turns/rounds, budget, tool allow/deny lists,
-fallback model, web policy, and native advanced options. Unsupported options
-must render disabled with reasons in UI and remain visible in CLI/API state.
+Harness settings are per-harness defaults records in the global config: each
+harness can carry enabled state, default model, effort, max turns/rounds,
+budget cap, tool allow/deny lists, fallback model, and web policy. The
+settings editor saves partial patches through the settings API — it changes
+only the fields the user touched, and an explicit empty value clears an
+override rather than freezing it. Knobs a harness manifest does not support
+are disclosed on the run (`ignored_settings`), never silently dropped.
 
 ## macOS Design
 

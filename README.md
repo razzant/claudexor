@@ -45,7 +45,8 @@ does not bypass built-in critical/security human gates.
 
 ## Modes
 
-Canonical mode ids (v0.9: five intents; engine strategies are FLAGS, not modes):
+Canonical mode ids (five intents since the v0.9 collapse; engine strategies are
+FLAGS, not modes):
 
 - `ask` - read-only answer/explanation route. The macOS composer's no-project
   fallback intent (Agent is the default on a project thread).
@@ -58,8 +59,10 @@ Canonical mode ids (v0.9: five intents; engine strategies are FLAGS, not modes):
   until gates/review converge, budget/quota exhausts, cancellation happens, or
   the run stalls), `--create` (create-from-scratch intent).
 - `orchestrate` - the brain: routed like reviewers, produces a typed
-  orchestration plan over the tool belt (start_run / race / status /
-  answer_question / apply / review). `--autonomy suggest|auto_safe|auto_full`
+  orchestration plan over the six-tool vocabulary (start_run / race / status /
+  answer_question / apply / review); the default tool belt is five —
+  `answer_question` is deliberately not offered by default.
+  `--autonomy suggest|auto_safe|auto_full`
   controls how much the executor runs: `suggest` (default) plans only;
   `auto_safe` runs the safe steps (isolated envelope sub-runs / pure reads) and
   blocks at the risky `apply` step for a human decision; `auto_full` also
@@ -69,6 +72,10 @@ Canonical mode ids (v0.9: five intents; engine strategies are FLAGS, not modes):
 Unknown modes fail loudly. The old strategy mode ids (`best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`) and the
 pre-v0.8 ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
+Note the wire-mode vs CLI-verb distinction: `claudexor explore` and
+`claudexor create` are CLI convenience VERBS that map onto `audit --swarm` and
+`agent --create`, while the old WIRE mode ids above still hard-error at every
+API/DTO boundary.
 
 Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
 thread. Read-only turns (ask/plan/audit, and orchestrate with the default
@@ -201,27 +208,10 @@ harness is actually routable.
 ## Daemon And Control API
 
 The optional daemon owns durable local job queueing over a Unix socket. The
-loopback HTTP/SSE control API is a thin viewport over the daemon and run files:
-
-- `POST /runs`
-- `POST /threads`, `GET /threads`, `GET /threads/:id` (chat/session-first threads)
-- `PATCH /threads/:id` (rename / archive a thread)
-- `POST /threads/:id/turns` (follow-up turn; turns run in-place in the project — or the thread's worktree for an isolated thread — so the native session resumes and the next turn sees the work; a best-of-N race runs isolated candidates and auto-applies the winner)
-- `POST /threads/:id/apply` (deliver an isolated thread's accumulated worktree diff to the project)
-- `POST /runs/:id/decision` (typed operator decision: `accept_clean_patch` / `accept_risk` / `override_needs_human` / `rerun_with_feedback` / `revert_run` — `revert_run` restores the live in-place tree to the turn's pre-turn snapshot and refuses if the tree has diverged from the recorded post-turn state)
-- `GET /runs`, `GET /runs/:id`, `GET /runs/:id/events`
-- `GET /events` (global live-only run-event multiplex)
-- `POST /runs/:id/interactions/:id/answer` (answer a waiting_on_user question)
-- `GET /runs/:id/artifacts`, `GET /runs/:id/artifacts/<path>`
-- `GET /runs/:id/produced`, `GET /runs/:id/produced/<path>` (project OUTPUTS — the repo `artifacts/` dir — for the Canvas, vs the run tree above)
-- `POST /runs/:id/apply/check`, `POST /runs/:id/apply`
-- `POST /runs/:id/control`
-- `GET /harnesses`, `GET /harnesses/:id/models`
-- `GET /setup/jobs`, `POST /setup/jobs`, `GET /setup/jobs/:id`,
-  `GET /setup/jobs/:id/events`, `POST /setup/jobs/:id/confirm`,
-  `POST /setup/jobs/:id/cancel`
-- `GET|POST /settings`, `GET|POST /secrets`, `DELETE /secrets/:name`
-- `POST /spec/questions`, `POST /spec/freeze`
+loopback HTTP/SSE control API is a thin viewport over the daemon and run files.
+The canonical endpoint inventory lives in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from source;
+this README does not duplicate it.
 
 Harness setup is server-owned. `/setup/jobs` (create / status / confirm /
 cancel) is the only supported setup surface: the execution lifecycle for
@@ -437,84 +427,8 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
-- **v0.14.1** — checkpoint hardening for explicit reviewer panels, mandatory
-  review evidence preflight, scoped Cursor reviewer readiness, frozen SpecPack
-  gate merging, protected-path approvals, and thin control/macOS projection
-  parity.
-- **v0.14.0** — battery-driven hardening: typed transient retry evidence,
-  configurable reviewer timeouts with stronger route-proof capture,
-  `stuck_no_progress` convergence diagnostics, deterministic protected-path
-  tamper blocking, and a stricter real-harness battery with ENV quarantine.
-- **v0.13.2** — Canvas + node_repl fix: the Canvas Artifacts panel now shows the
-  PROJECT's produced outputs (the repo `artifacts/` dir, served via
-  `GET /runs/:id/produced`, images inline, the Browser tab auto-renders the
-  project `index.html`) — distinct from Run Detail's run-internal artifact tree;
-  and Codex.app's inherited `node_repl` MCP, which can't run headless and failed
-  otherwise-clean runs, is now disabled config-aware (only when it is actually
-  defined in the config codex loads — never on a scoped home, which avoids an
-  "invalid transport" config-load break).
-- **v0.13.1** — attachment fix: user-attached images now reach the model
-  (orchestrator forwards attachments in every run path; the codex adapter
-  terminates the variadic `-i` with `--` so the prompt survives), an image-bearing
-  run only routes to vision-capable harnesses (or fails loudly), and large
-  agent-produced images render in the gallery.
-- **v0.13.0** — interactive workbench: composer attachments + in-app screenshots,
-  an artifacts gallery + mini-browser in a Canvas/Workbench, a deeper multi-tier
-  spec interview, a multi-harness planning relay, and an agent-driven browser
-  (Playwright MCP).
-- **v0.12.0** — restored the write/apply path (codex transcript route-proof,
-  scoped homes) and honesty fixes.
-- **v0.11.0** — host plugin lifecycle: `claudexor plugin` now manages
-  user-global Claude Code, Codex, Cursor, and OpenCode integrations with
-  generated skill/MCP artifacts plus command artifacts where the host supports
-  them, ownership state, dry-run/status/doctor/repair/uninstall flows, Codex
-  personal-marketplace registration, OpenCode skill/command/experimental
-  JS-plugin/MCP wiring, and install-health checks that keep host integration
-  readiness separate from harness doctor readiness.
-- **v0.10.0** — chat-first macOS beta: one-screen thread list, conversation,
-  and inspector; in-place thread turns; honest run outcomes; static
-  behind-window glass replacing the old animated mesh.
-- **v0.9.0** — chat/session-first + harness-agnostic truth: modes collapse 9→5
-  (`ask`/`plan`/`audit`/`agent`/`orchestrate`; strategies are flags); threads
-  with native session resume across read-only turns (codex `exec resume`,
-  claude `--resume`; write turns run fresh envelopes with a typed
-  `session.rebound` disclosure) plus a no-args CLI REPL; subscription auth pass-through into
-  envelopes (native codex/claude sessions work with NO API key) with both auth
-  routes and auto-fallback; typed operator decisions unblock NEEDS_HUMAN runs
-  through the apply gate (patch-hash-bound, audited); the `orchestrate` brain
-  intent (routed like reviewers, typed tool-belt plan); survival fixes (diff vs
-  base_sha so committed harness work is never lost, untracked-inclusive
-  snapshots, branch GC, process-group kills, mid-flight budget caps, reviewer
-  timeout spend, codex cached-token cost, honest acceptance/tie evidence,
-  expanded secret redaction); doctor probe TTL cache; MCP protocol bump with
-  doctor-honest status + repo-path input; ACP editor-cwd + free-text answers;
-  cursor/opencode resume + unified provider env scrub; OpenRouter raw-api
-  instance; macOS ThreadsScreen (chat-first) with decision/apply actions on
-  turns and a lifted dark card recipe.
-- **v0.8.0** — live truth pass: event-sourced streaming with a monotonic
-  per-run `seq` and snapshot-then-subscribe SSE (gap-free reconnects, byte-level
-  parser in the macOS app), interactive runs (`waiting_on_user`) with Claude's
-  bidirectional control protocol live-verified (`AskUserQuestion` answered from
-  the app, CLI `claudexor follow`, ACP), automatic git initialization for
-  write-mode runs on non-git folders (seeded `.gitignore` + announced baseline
-  commit), orchestrator honesty fixes (no corpse review/synthesis spend,
-  root-cause `failure.yaml`, `output.ready` before terminal events, no vacuous
-  `tests=100%`), in-process setup doctor (exit-127 class removed), observed-model
-  route proof, global `GET /events` multiplex, configurable interaction timeout,
-  and the frosted floating-card design doctrine across both themes.
-- **v0.7.0** — engine truth pass: typed `tool_call`/`tool_result` events with a
-  shared adapter run loop, engine-owned `final/telemetry.yaml` evidence, web
-  policy as a manifest capability with disclosed upgrades, parallel
-  race/explore, user-level trust gating for full access, per-harness settings
-  enforced engine-wide (enabled/model/effort/web in the macOS editor; budget,
-  turn/round caps, and tool lists via config and the settings API), typed
-  risk/protected-path review gates, honest control-api/daemon lifecycles,
-  macOS live streams + diff tab + per-harness settings editor,
-  knip/docs-truth/conformance CI gates,
-  dead subsystem deletions (ExecutionEngine, legacy in-proc control server,
-  `/runs/:id/input` stub).
-- **v0.6.0** — first public beta: canonical modes, daemon + control API, macOS
-  app, review/arbitration pipeline, secret store, release automation.
+The current version is **v0.14.1** (the root `package.json` is the version
+SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 

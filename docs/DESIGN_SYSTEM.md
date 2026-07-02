@@ -17,7 +17,8 @@ Claudexor is a native **chat-first cockpit** over multiple coding harnesses (Cod
 Claude Code, Cursor, OpenCode): ONE screen — a thread list, the conversation, and a
 persistent composer. You just type; the first message starts a thread; turns run
 in-place so the next turn sees the work; a run's detail opens in the trailing
-inspector. Its single real differentiator from a bare harness is multi-vendor
+Workbench (Run Detail, with Canvas for the project's produced outputs). Its
+single real differentiator from a bare harness is multi-vendor
 **race + review** with the winner adopted into the tree. It must feel instantly
 familiar to users of Claude Code / Cursor / Codex, with honest run outcomes and a
 calm, native, matte-glass surface (the desktop shows faintly through the window;
@@ -26,7 +27,7 @@ nothing animates when idle).
 Three design commitments:
 
 1. **Content-first; Liquid Glass on the navigation layer; frosted materials on
-   content cards (v0.8, user-locked).** `glassEffect` Liquid Glass lives on the
+   content cards (user-locked since v0.8).** `glassEffect` Liquid Glass lives on the
    chrome (sidebar, toolbars, inspector, floating composer/action controls,
    sheets, menus). Ordinary content cards use **frosted system materials with a
    tuned surface tint** so the ambient glow shows through in BOTH themes — one
@@ -49,13 +50,15 @@ Three design commitments:
 
 ### 2.1 Appearance
 
-- Support **Light, Dark, and system** following `NSApp.effectiveAppearance`.
+- Support **Light, Dark, and system** following the app's effective system
+  appearance.
 - **Signature default is a deep-graphite Dark** ("command center"), never pure black.
   Pure black + saturated text is the exact readability trap competitors fell into;
   we use layered graphite surfaces and desaturated accents. Dark cards use the
   **frosted floating** recipe (see 2.4): system material + graphite tint, a
   top-lit gradient hairline, and a VISIBLE separation shadow — never a flat
-  charcoal slab with a uniform white outline (the v0.7 "cheap dark card" trap).
+  charcoal slab with a uniform white outline (the "cheap dark card" trap,
+  a defect class removed in v0.8).
 - A user-facing **Appearance** control (Light / Dark / System) is required from day one.
   Do not ship a single forced theme with no toggle.
 
@@ -84,8 +87,6 @@ Brand + accent:
   **steel-blue** — neutral chrome so the harness identity hues pop). Used for primary
   actions, **selection/list tint** (the app tints controls with the brand, never the system
   blue), section-header icons, and inline links (`link` == `brand/accent`).
-- `brand/glowHi`, `brand/glowLo` — cool tonal companions (sky / indigo) used **only** in the
-  brand aurora backdrop (never on controls; not semantic).
 - Accent/tint conveys **meaning**, never decoration (Apple's Tahoe guidance).
 
 Harness-family palette (functional color-coding of candidates/findings/routes):
@@ -107,9 +108,10 @@ Status semantics (shared across badges, pipeline, lists):
 
 **Color discipline (the one rule that keeps it from looking "mixed").** Strong hues are
 *budgeted*: harness hues appear only in harness UI, status hues only on state, and
-everything that is "the app itself" (chrome, selection, the aurora, links, icons) uses the
-single brand steel-blue + neutral graphite. The aurora backdrop is brand-only — it must never
-pull in harness or status hues, or the whole window reads as a rainbow. Severity maps onto
+everything that is "the app itself" (chrome, selection, links, icons) uses the
+single brand steel-blue + neutral graphite. The window backdrop is the neutral
+behind-window material (§3.1) — it must never pull in harness or status hues, or the
+whole window reads as a rainbow. Severity maps onto
 the status scale (blocker→failed, major→blocked, minor→running, nit→neutral), not new hues.
 
 ### 2.3 Typography
@@ -127,9 +129,9 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   (`1,3,5,6` etc.).
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
   `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
-  metrics — do not hardcode control heights. (Concentric radii via `ConcentricRectangle` are
-  a tracked beta refinement.)
-- Elevation — the ONE card recipe (centralized in `cardSurface`, v0.8):
+  metrics — do not hardcode control heights. (Concentric radii via Apple's
+  ConcentricRectangle are a tracked beta refinement.)
+- Elevation — the ONE card recipe (centralized in `cardSurface` since v0.8):
   - **Fill:** system `.regularMaterial` + a tuned `surface/raised` tint veil
     (dark ≈ 40%, light ≈ 55%) so the ambient glow shows through without
     hurting text contrast. Reduce Transparency → solid `surface/raised`.
@@ -156,13 +158,18 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 ### 2.6 Motion
 
-- **Maximal-but-tasteful**: Liquid Glass morphs (`glassEffectID` + `@Namespace`),
-  fluid phase-pipeline transitions, lively interactive controls (`.interactive`),
-  and animated SF Symbols for state changes.
-- **Non-negotiable guardrails:** honor **Reduce Motion** (disable lensing/morph; cross-fade
-  instead) and **Reduce Transparency** (fall back to solid surfaces). The always-on
-  monitoring surfaces (live turn transcript + run-inspector telemetry) use calm, low-frequency motion so a multi-hour
-  window never becomes distracting; expressive motion is reserved for interactions/transitions.
+- **Static glass; idle means ZERO animation.** Glass surfaces use static
+  `.regular` — never `.interactive()` pointer lensing (a measured scroll/idle
+  FPS regression; see §3.1) — and there is no always-animating backdrop and no
+  perpetual pulsing anywhere. A window left open for hours must cost nothing
+  while nothing is happening.
+- Motion is reserved for **state changes and user interactions**: short, calm
+  transitions (tab indicator, popover expand, hover lift) and low-frequency
+  progress indication on the live surfaces (turn transcript, run-inspector
+  telemetry, the active phase node) — never continuous decoration.
+- **Non-negotiable guardrails:** honor **Reduce Motion** (state-toggle
+  animations degrade to instant/cross-fade) and **Reduce Transparency** (fall
+  back to solid surfaces).
 
 ### 2.7 Iconography
 
@@ -188,7 +195,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   keeps drag-resize). Reduce Transparency → solid `surface/raised` panel +
   hairline + a soft shadow so it still reads as floating. The conversation is
   content and stays off glass.
-- **Where frosted materials go (v0.8):** content cards and row-cards — the
+- **Where frosted materials go:** content cards and row-cards — the
   `cardSurface` recipe (`.regularMaterial` + tint veil, top-lit hairline,
   scheme-aware shadow). Materials are NOT `glassEffect`; cards never lens or
   morph.
@@ -196,7 +203,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   tables, or any dense small text. Those use `surface/code` solids.
 - Use standard structure (`NavigationSplitView` + `.inspector`, `Toolbar`, `Sheet`) to
   get the material for free; avoid custom backgrounds behind bars/sheets. EXCEPTION:
-  the v0.10 chat cockpit uses a custom `HStack` (floating `sidebarGlass` panel +
+  the chat cockpit uses a custom `HStack` (floating `sidebarGlass` panel +
   conversation) rather than `NavigationSplitView` — the window is custom-clear with a
   behind-window backdrop, the composer belongs to the detail (not the sidebar), and
   drag-resize is custom. This is intentional; do not "fix" it by reintroducing
@@ -209,15 +216,11 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   glow layers or repeated per-screen backgrounds. Custom background effects must
   be local, clipped to their owning surface, and visually QAed in dark/light,
   Reduce Transparency, and compact widths.
-- Animated `MeshGradient` background points must stay inside the legal `0...1`
-  mesh domain. Boundary points may move along their own edge only; moving them
-  outside the window can create hard diagonal black/white cutouts under hidden
-  titlebars and split views.
 - Do not stack glass on glass; do not "glass everything" — it fights legibility and battery.
 - Test every screen with Reduce Transparency, Reduce Motion, Increase Contrast, and the
   system Liquid Glass tint settings.
 
-### 3.1 macOS 26 Liquid Glass APIs (the v0.10 redesign — first-class, not availability-gated)
+### 3.1 macOS 26 Liquid Glass APIs (first-class, not availability-gated)
 
 The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`):
 
@@ -239,7 +242,7 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
   use `.glassProminent` — system glass-prominent can render near-white on the
   light-mode glass (invisible). Send uses `AccentButtonStyle`: a SOLID
   `accentSolid` capsule with white text, legible in BOTH themes (WCAG). See §5.1.
-- **Behind-window transparency (the desktop shows faintly through the window, Р5)** —
+- **Behind-window transparency (the desktop shows faintly through the window)** —
   three pieces, all required: (1) `GlassBackground` → `NSVisualEffectView`
   with `.behindWindow` blending and appearance-aware material (`.hudWindow` in
   dark mode, `.fullScreenUI` in light mode) as the window backdrop, at FULL
@@ -265,23 +268,34 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 - **Reduce Motion** — gate state-toggle animations (e.g. the "⋯" expand) on
   `accessibilityReduceMotion`; glass lensing/morph degrade to instant.
 - References: developer.apple.com — Adopting Liquid Glass, `glassEffect(_:in:)`,
-  `GlassEffectContainer`, `GlassButtonStyle`, Materials (HIG); WWDC25 #219/#323/#356.
+  `GlassEffectContainer`, the glass button styles, Materials (HIG); WWDC25
+  #219/#323/#356.
 
 ---
 
 ## 4. App shell & information architecture
 
-- Mental model (v0.10, chat-first): **Thread → Turns → (run) Outcome**. A thread is
+- Mental model (chat-first): **Thread → Turns → (run) Outcome**. A thread is
   the conversation; each turn is a run; the honest outcome (answer / plan / patch)
   lives on the turn.
+- **ONE screen.** The app is chat-first: the main window is the thread list, the
+  conversation, and the always-live composer, with the selected run's detail in
+  the trailing region. There is no Home, no Tasks list, and no separate
+  Review-Queue screen — review verdicts and diagnostics live on the turn and in
+  the run inspector.
 - Single window, **three regions**:
   - **Thread list (glass sidebar):** the conversations, with a needs-you marker;
     "New" enters the draft state (the first message materializes the thread).
   - **Conversation (frosted cards; code solid):** the turns — prompt, live
     transcript (reasoning + tool calls), honest outcome (plan badge / diffstat /
     winner adopted), decision/apply actions, and the always-live composer.
-  - **Run inspector (`.inspector`, glass):** the selected run's detail — diff,
-    timeline, review findings, candidates, diagnostics, budget.
+  - **Workbench (trailing region, glass chrome):** a two-plane switch,
+    `[Run Detail | Canvas]`. **Run Detail** (`.inspector`) is the selected run's
+    tabbed detail over Claudexor's internal run evidence (§5). **Canvas** is the
+    project's PRODUCED outputs and a user-driven mini-browser (§5). The two
+    planes are labeled so the user always knows whether they are looking at run
+    evidence or project deliverables. The Workbench is the sanctioned extension
+    of the one-screen doctrine — never a third top-level screen.
 - Budget, Harness Doctor, and preferences live in the Settings scene (⌘,), not in
   the main window. Detachable pop-out windows remain out of scope.
 
@@ -289,8 +303,8 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 
 ## 5. Signature surfaces & components
 
-Each component lists purpose + key tokens. Components are reusable SwiftUI views in a
-`DesignSystem` module; screens compose them.
+Each component lists purpose + key tokens. Components are reusable SwiftUI
+views in the shared design-system files; screens compose them.
 
 - **Turn card + run inspector (the signature surface).** A long run at a glance —
   not a separate dashboard screen, but the live turn in the conversation and its
@@ -299,9 +313,14 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
     node animates (calm). It rides the active turn's transcript and the inspector's
     Timeline, not a top-level pane.
-  - **Candidate cards**: per-harness chips colored by `harness/*`, showing gates, cost
-    (with estimated-vs-exact badge), review state. They live on a race turn and in the
-    inspector's Candidates tab.
+  - **Candidate cards — the Candidates-tab contract**: one card per race
+    candidate, colored by `harness/*`, showing that candidate's deterministic
+    gates, cost (with the estimated-vs-exact badge), and review state, with the
+    winner emphasized (`CandidateCard(strokeColor:)`). They live on a race turn
+    and in the Run Detail Candidates tab. Honest current state: live runs do
+    not yet project per-candidate data into this tab (it shows an honest empty
+    state; sample data demonstrates the contract) — the live
+    pipeline lands in v0.15 Phase 4.
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
     Money values are typed currency fields when editable; never use a slider for dollar input.
     The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
@@ -311,23 +330,47 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
     the live transcript on the turn and the inspector's Timeline tab.
   - **"What changed since this turn"** marker + an **attention state** (working /
     blocked / needs-permission / done) on the turn card and its thread row.
-- **Chat composer (v0.10 redesign).** ONE floating Liquid-Glass panel
+- **Chat composer.** ONE floating Liquid-Glass panel
   (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
   Two stacked zones, all with SOLID contents (no glass-on-glass):
   - a controls row — the intent `Menu` (Ask, Agent, Plan, Spec, Audit, plus
     Race as the best-of-N agent strategy),
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
-    thread's project, an open thread's repo is bound), the `PrimaryHarnessChip` (which
-    harness answers in chat; sticky on the thread), and the borderless options icon
-    button with an active accent capsule that opens the advanced options as a native
-    dismissible **`.popover`** — NOT an inline panel (the inline version read as
-    glass-on-glass and was cramped);
+    thread's project, an open thread's repo is bound; the ONLY place project
+    selection lives in the app), the `PrimaryHarnessChip` (which
+    harness answers in chat; sticky on the thread), the attachment controls
+    (paperclip picker + the **Capture** button, below), and the borderless options
+    icon button with an active accent capsule that opens the advanced options as a
+    native dismissible **`.popover`** — NOT an inline panel (the inline version read
+    as glass-on-glass and was cramped);
   - the input — `GlassField`: a `TextField(axis:.vertical)` on a SOLID `surfaceRaised`
     inset with a real focus ring (scheme-aware — heavier in light mode where a faint
     ring vanishes on white) and 1→6-line growth, with `Send` (`AccentButtonStyle` —
     solid `accentSolid` + white text, visible in BOTH themes, ⌘↩, dims when empty).
-  The "⋯" popover holds the harness pool chips, per-turn budget/access/web, and agent
-  repair strategies as clean SOLID `OptionSection`/`OptionRow` rows.
+    While the thread's head turn is running, **Send swaps to a Stop button** — a
+    server-owned cancel of the running turn (a new turn cannot start over the live
+    native session); ⌘↩ mirrors the swapped button.
+  The "⋯" popover holds the per-turn engine knobs as clean SOLID
+  `OptionSection`/`OptionRow` rows — every one a projection of a typed run/DTO
+  field, never UI-invented state:
+  - the **harness pool** multiselect chips (the eligible pool Race runs — one
+    candidate per harness; the primary answers in chat);
+  - the **per-turn model picker** for the primary harness — a `Picker` over
+    enumerated ids when the harness can enumerate models, otherwise an honest
+    free-text field; empty means the harness's configured default (model choice
+    is harness-scoped — there is no cross-harness model value);
+  - the **budget** field (typed per-turn USD cap; validated currency text, never
+    a slider), **access** profile, and **web** policy pickers;
+  - the **reviewer panel editor** (ordered explicit `harness[=model[:effort]]`
+    entries; invalid entries block Send with an inline reason) and typed
+    **protected-path approvals** for auto-protected gate/test paths;
+  - the **browser** toggle (see below) and the **context** depth picker;
+  - the **Workspace** section with the **isolated-workspace toggle** (a draft
+    thread can choose `isolated` — turns accumulate in a persistent thread
+    worktree — instead of the default in-place execution);
+  - **repair strategies** (until-clean / max-attempts) for agent turns.
+  Portfolio and deterministic gate commands are engine/Settings concerns, not
+  per-turn composer controls.
   Default intent is `Agent`; project intents need a project; a **no-project thread is
   `Ask`-only** — the `ProjectChip` remains visible as the choose-project CTA, the
   primary harness chip and project-scoped controls are hidden or disabled, the
@@ -341,6 +384,25 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   canonical mode `orchestrate` (and `explore` / `create`) are intentionally
   **CLI-only**: they are power-user / scripted flows, so the composer keeps the everyday
   surface small. race width / until-clean / attempts are engine strategy flags, not modes.
+- **Composer attachments + Capture.** The paperclip picker attaches files to a
+  turn; attached files render as removable chips above the input. Generic file
+  attachments ride any non-Spec turn; IMAGE attachments and the **Capture**
+  button (system `screencapture` region select, off the main thread; a
+  denied/cancelled grab yields no attachment — never a blank fake image) are
+  gated by an available route whose primary/pool harness declares
+  `capability_profile.image_input`. When images are attached but no
+  vision-capable route exists, Send is blocked with an inline honest reason
+  ("Images need an available vision-capable route") — an attachment the model
+  never saw must never look delivered. The Spec interview takes no attachments
+  and says so instead of silently dropping them.
+- **Agent-driven browser toggle.** A per-turn `Browser` toggle in the "⋯"
+  popover, offered ONLY when a pooled harness reports the `browser_tool`
+  capability (hidden otherwise — never a dead switch). It is live egress and is
+  disclosed as such: arming it forces Full access and lifts a `web: off` policy
+  to `auto` — never a silent escalation ("Agent browses in a real window · runs
+  at Full access" renders under the switch). The hover help explains that the
+  agent drives a real HEADED browser window (navigate / screenshot / read) and
+  that navigation snapshots are recorded in the run's artifacts.
 - **One minimal toolbar, no second header.** The thread title/subtitle live in the
   system window toolbar (`.navigationTitle`/`.navigationSubtitle`) — there is NO custom
   header strip below it. The toolbar holds ONLY the standard trailing icon cluster:
@@ -365,7 +427,8 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   warning treatment from a benign `attempted`; telemetry-unavailable runs say
   so instead of guessing. Engine-typed event severity (info/warning/error)
   tints timeline rows.
-- **Read-only report surfaces.** Ask/Explore/Audit primary output appears in
+- **Read-only report surfaces.** Ask/Audit (single report or research swarm)
+  primary output appears in
   Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
   stay in Diagnostics/artifact lists and must not be transformed into Plan rows.
 - **Setup job states.** Auth/setup sheets show queued/running/waiting/succeeded/
@@ -374,7 +437,9 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   Sheets POLL the job to its terminal state (or consume the job SSE stream) and
   then re-run the harness doctor; a job stuck on "running" forever in the UI is
   a defect, not a state.
-- **Race / candidates.** Live lanes per family; the best-of-N "attempts/re-roll" primitive.
+- **Race / candidates.** Per-family candidate lanes; the best-of-N
+  "attempts/re-roll" primitive. (See the Candidate cards contract above for the
+  honest live-data status of the Candidates tab.)
 - **Cross-family review (inline, per turn).** Review/findings are NOT a separate
   Review-Queue screen — they live on the turn that produced them and in the run
   inspector's Review tab: severity, finding, reviewer, evidence, and state, on solid
@@ -386,6 +451,37 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   `POST /runs/:id/apply` (an isolated thread delivers its accumulated diff via
   `POST /threads/:id/apply`). Do not present per-file or per-hunk apply controls until the
   backend exposes selected scope.
+- **Decision bar (blocked turns).** A turn whose run is `blocked`/needs-review
+  and has NO persisted operator decision renders a decision bar on the turn
+  card — typed server decisions via `POST /runs/:id/decision` ("Accept risk &
+  unblock" → `accept_risk`; "Rerun with feedback…" → `rerun_with_feedback`),
+  with apply offered through the server-gated apply bar once unblocked. The
+  unblocked state is server-derived (a persisted decision from ANY surface
+  collapses the bar) — never a local accept/unblock flag. The turn's
+  apply-state is shown honestly: `applied` is green, `applied_review_blocked`
+  is amber (never a green "succeeded"), `reverted` is neutral; while a mutation
+  is still safely revertable the turn offers Revert (server-owned `revert_run`;
+  it refuses when the tree diverged, and the refusal is surfaced verbatim).
+  Apply pre-flight runs when the apply bar appears, so a refusal reason shows
+  UP FRONT, not only on press.
+- **Thread apply bar (isolated threads).** An isolated thread with runs shows a
+  persistent apply affordance for delivering its accumulated worktree diff to
+  the project (`POST /threads/:id/apply`). In-place threads write the project
+  directly and never show it.
+- **Inline failure card.** A terminal turn that FAILED with no answer/transcript
+  renders an inline failure card with the engine's honest failure reason,
+  instead of reading as idle next to a red status pill.
+- **Spec interview cards.** The Spec intent runs the server-owned interview as
+  cards in the conversation: each round renders the structured multiple-choice
+  questions (single/multi/text with options), and the answer card ends with two
+  explicit continuations — **"Ask deeper"** (another `/spec/questions` round
+  carrying the accumulated `priorDecisions`) and **"Enough — freeze"**
+  (`/spec/freeze` → the frozen SpecPack, then Implement as a normal agent turn
+  carrying the returned `specPath`). Spec is a macOS UI intent over the
+  server-owned spec flow, not a wire run mode; the grounding plan uses the
+  composer's eligible pool with each harness's default model, while the
+  per-turn model/budget/access/web/repair options are captured and applied to
+  the write Implement turn.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the run inspector.
@@ -394,26 +490,47 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
   availability only; installed/session/key-present must not be rendered as ready unless
   doctor/smoke checks pass. Rows should separate Installed, Auth source, Smoke-ready, and
   Routable states.
-- **Run detail diagnostics.** Every live run detail (in the trailing inspector) has explicit
-  `Outcome`, `Timeline`, `Plan`, `Candidates`, `Diff`, `Review`, and `Diagnostics` tabs —
-  inline per-turn review and apply live here, not a separate screen. `Outcome` reads the
-  control API `primaryOutput` first and then
-  falls back to `final/answer.md`, `final/explore.md`, `final/report.md`, `final/plan.md`, or
-  `final/summary.md`. Active runs default to `Timeline`; completed runs default to
-  `Outcome`; failures without output default to `Diagnostics`. `Diagnostics` reads engine
-  error, `context/context_error.md`, `events.jsonl`, `arbitration/decision.yaml`,
-  `final/work_product.yaml`, and artifact paths. A failed run must never leave the user
-  hunting for invisible logs.
+- **Workbench: Run Detail | Canvas.** The trailing region is a Workbench with the
+  two labeled planes from §4.
+  - **Run Detail** — every run's detail has explicit `Outcome`, `Timeline`,
+    `Plan`, `Candidates`, `Diff`, `Review`, `Artifacts`, and `Diagnostics` tabs
+    (all eight, via the shared `SegmentedTabs` in a horizontal scroller; the
+    Swift `Tab` enum cases are `answer`, `plan`, `activity`, `candidates`,
+    `diff`, `review`, `artifacts`, `diagnostics`) —
+    inline per-turn review and apply live here, not a separate screen.
+    `Outcome` reads the control API `primaryOutput` first and then falls back to
+    `final/answer.md`, `final/explore.md`, `final/report.md`, `final/plan.md`, or
+    `final/summary.md`. Default tab: completed runs open on `Outcome`, active
+    runs on `Timeline`, and failures without output on `Diagnostics` (a blocked
+    run with findings opens on `Review` — its deliverable IS the findings that
+    need a human). `Artifacts` lists the run's internal orchestration tree
+    (`/runs/:id/artifacts`). `Diagnostics` reads engine error,
+    `context/context_error.md`, `events.jsonl`, `arbitration/decision.yaml`,
+    `final/work_product.yaml`, and artifact paths. A failed run must never leave
+    the user hunting for invisible logs.
+  - **Canvas** — the project's PRODUCED outputs, distinct from Run Detail's
+    run-internal tree and labeled as such. Two panes: the **artifacts gallery**
+    renders the repo `artifacts/` dir via `GET /runs/:id/produced` (images
+    inline, text/code readable), and the **mini-browser** (`WKWebView`, driven
+    by the user — `loadFileURL` for the project's `index.html`, localhost
+    dev-server previews, arbitrary URLs) sits on SOLID surfaces: web content is
+    dense content, never glass-backed.
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped tabs: General,
   Routing, Harnesses (per-harness defaults + doctor), Budget, Secrets, and
-  Appearance. (Review is inline per turn, not a Settings section; delivery is
-  server-owned via the run decision/apply endpoints.) Settings
-  groups are flat, solid, and shadowless. The Per-Harness Defaults editor
-  (enable/disable, model override, effort, web policy) saves PARTIAL patches to
-  the engine config via `/settings`; quick-launch and Retry honor saved engine
-  defaults instead of hardcoded portfolio/cap values.
+  Appearance. The editable budget cockpit and the Harness Doctor are Settings
+  tabs, not top-level screens. (Review is inline per turn, not a Settings
+  section; delivery is server-owned via the run decision/apply endpoints.)
+  Settings groups are flat, solid, and shadowless. Settings does NOT own
+  project selection — there is no Current Project field; the working directory
+  is picked only in the chat composer's `ProjectChip`. The Per-Harness Defaults
+  editor (enable/disable, model override, effort, web policy, per-harness
+  budget cap, tool allow/deny lists, fallback model) **auto-saves** PARTIAL
+  patches to the engine config via `/settings` — there is no Save button; an
+  empty field is an explicit "clear the override", and in-flight saves must not
+  clobber the user's typing. Quick-launch and Retry honor saved engine defaults
+  instead of hardcoded portfolio/cap values.
 - **Help and tooltips.** Every compact/non-obvious control gets `.help(...)` hover help.
   Mode menus and harness chips expose descriptions on hover directly; do not add a
   separate adjacent info button just to explain a normal mode. Use a richer click popover
@@ -438,8 +555,8 @@ Each component lists purpose + key tokens. Components are reusable SwiftUI views
 ### 5.1 Component contracts (SSOT for the smallest details)
 
 These are exact, non-negotiable recipes. Screens MUST compose these shared views rather than
-re-implement them, so every screen is pixel-consistent. (Swift: `Components.swift`,
-`DesignSystemComponents.swift`, `DesignTokens.swift`.)
+re-implement them, so every screen is pixel-consistent. (Swift: Components.swift,
+DesignSystemComponents.swift, DesignTokens.swift.)
 
 - **`GlassField`** — the composer input. `TextField(axis:.vertical)` on `surfaceRaised`
   (solid), `Radius.control`, a focus ring (`@FocusState` → `accent` stroke on focus,
@@ -483,13 +600,14 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
   `Radius.control` indicator via `matchedGeometryEffect`, optional per-tab count badge,
   `.isSelected` trait, Reduce-Motion-aware). Do not hand-roll a tab bar (TaskDetail wraps
   `SegmentedTabs` in a horizontal `ScrollView` so a long tab set never pins a wide minimum).
-- **Filter bar + chip.** Every filter row is `FilterBar { FilterChip(...) }`. `FilterChip` is
+- **Filter chip.** `FilterChip` is
   the only filter pill: label `.callout` (`.semibold` when active, `.regular` otherwise),
   optional leading SF Symbol `.imageScale(.small)`, optional trailing count `.caption2`
   semibold secondary; padding horizontal `Spacing.md` / vertical `Spacing.sm`; selected fill
   via `selectedChip(active:tint:)`. `tint` defaults to `accent`; pass a status/severity color
-  ONLY when the chip *is* that status/severity. `FilterBar` owns the gutter (horizontal
-  `Spacing.xxl`, vertical `Spacing.lg`). Never hand-roll a chip with a different font/padding.
+  ONLY when the chip *is* that status/severity. The row that hosts the chips
+  owns the gutter (token spacing, not per-chip margins). Never hand-roll a chip
+  with a different font/padding.
 - **Toolbar.** There is exactly ONE window toolbar, defined in `RootView`
   (`ToolbarItemGroup(.primaryAction)`): **appearance · inspector · settings · new**, all
   `.labelStyle(.iconOnly)` with a `.help()` tooltip. There is NO Refresh button (the engine
@@ -506,10 +624,10 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
 - **List rows.** A row is a full-width `Button(.plain)` whose action sets the route; row
   content uses the shared row/`FindingCard` views. Run/finding lists render
   each row as its OWN floating row-card — `cardSurface(hover: true)` with
-  `Spacing.sm` gaps — not one slab with inset dividers (v0.8 floating-rows
-  decision). The thread sidebar is the exception: it uses the native `.sidebar`
-  `List` inside the floating `sidebarGlass` panel per §3.
-- **Cards.** One recipe: `cardSurface()` (radius `cardRadius` 8): frosted
+  `Spacing.sm` gaps — not one slab with inset dividers (the floating-rows
+  doctrine, in force since v0.8). The thread sidebar is the exception: it uses
+  the native `.sidebar` `List` inside the floating `sidebarGlass` panel per §3.
+- **Cards.** One recipe: `cardSurface()` (radius `Radius.card`, 8pt): frosted
   `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one
   scheme-aware separation shadow cast by the shape, optional `hover` lift, and a
   Reduce Transparency solid fallback. `Panel`, `FindingCard` (`clip: true` for its leading
@@ -519,8 +637,9 @@ re-implement them, so every screen is pixel-consistent. (Swift: `Components.swif
 
 **Known gaps:** colors are a programmatic `Color(dark:light:)` projection rather than an asset
 catalog, and there is no Increased-Contrast variant yet (`§2.2`/`§6` aspiration); density is
-currently fixed compact; concentric radii (`ConcentricRectangle`, `§2.4`) are not adopted; a few
-tiny count/label pills still carry per-call padding pending a shared `CountBadge`.
+currently fixed compact; concentric radii (§2.4) are not adopted; a few
+tiny count/label pills still carry per-call padding pending a shared CountBadge
+component.
 
 ---
 
@@ -562,7 +681,8 @@ evidence, tool errors, budget, access, fallback, setup jobs, or artifacts.
 ## 9. References
 
 - Apple: Adopting Liquid Glass; "Build a SwiftUI app with the new design" (WWDC25);
-  macOS Tahoe HIG. APIs: `glassEffect(_:in:)`, `GlassEffectContainer`, `glassEffectID`,
-  `.interactive`, `NavigationSplitView`, `.inspector`, `ConcentricRectangle`,
-  `.backgroundExtensionEffect()`, `ToolbarSpacer`, glass button styles.
+  macOS Tahoe HIG. APIs: `glassEffect(_:in:)`, `GlassEffectContainer`,
+  glassEffectID, `.interactive`, `NavigationSplitView`, `.inspector`,
+  ConcentricRectangle, `.backgroundExtensionEffect()`, ToolbarSpacer, glass
+  button styles.
 - Data shapes the UI renders: `@claudexor/schema` (generated JSON Schema → Swift Codable).
