@@ -817,6 +817,22 @@ import Testing
         #expect(patch.web == "live")
     }
 
+    @Test func harnessPatchOmitsStoredModelWhenNotEditable() throws {
+        // H2 guard: on a truth-less harness (models catalog cannot enumerate)
+        // a stored legacy model must NOT ride along with other saves — the
+        // strict engine would 400 the whole patch. Explicit clears still go.
+        let stuck = buildHarnessPatch(enabled: true, modelDraft: "legacy-model", effort: "__default",
+                                      web: "off", maxUsdDraft: "", toolsAllowDraft: "",
+                                      toolsDenyDraft: "", fallbackDraft: "", modelEditable: false)
+        #expect(stuck.defaultModel == Optional<String?>.none)         // omitted entirely
+        let json = String(decoding: try JSONEncoder().encode(stuck), as: UTF8.self)
+        #expect(!json.contains("defaultModel"))                       // absent on the wire
+        let clear = buildHarnessPatch(enabled: true, modelDraft: "  ", effort: "__default",
+                                      web: "off", maxUsdDraft: "", toolsAllowDraft: "",
+                                      toolsDenyDraft: "", fallbackDraft: "", modelEditable: false)
+        #expect(clear.defaultModel == .some(Optional<String>.none))   // explicit null clear rides
+    }
+
     @Test func harnessSaveDoesNotSettleWhenNewerEditRacedIn() {
         // The field-revert bug: a typed value must SURVIVE a settings refresh until
         // its OWN save settles. An older in-flight save (captured an earlier gen)

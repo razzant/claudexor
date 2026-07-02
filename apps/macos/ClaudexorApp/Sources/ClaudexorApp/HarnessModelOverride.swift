@@ -7,6 +7,7 @@ import ClaudexorKit
 /// truth source runs its default only, and a model outside the source would
 /// be refused by the engine anyway. The view owns catalog loading so a
 /// transport failure is distinguishable from an ANSWERED "no truth source".
+@MainActor
 struct HarnessModelOverrideField: View {
     let family: HarnessFamily
     @Binding var modelDraft: String
@@ -18,6 +19,9 @@ struct HarnessModelOverrideField: View {
     @Binding var models: HarnessModelsResponse?
 
     @State private var loadingModels = false
+    /// True when the LAST fetch returned nil (offline/failed) — distinct from
+    /// "not yet loaded" and from an answered source:"none".
+    @State private var loadFailed = false
 
     var body: some View {
         content.task { await loadModels() }
@@ -67,6 +71,19 @@ struct HarnessModelOverrideField: View {
                 }
             }
             .help("Could not load the \(family.label) model catalog; the override stays as-is. Retry after reconnecting to verify it.")
+        } else if loadFailed {
+            // Catalog fetch failed with no stored override: offer Retry and do
+            // NOT claim the harness has no truth source — we don't know yet.
+            LabeledContent("Model") {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text("Model catalog unavailable")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Retry") { Task { await loadModels(force: true) } }
+                        .controlSize(.small)
+                        .help("Reload the \(family.label) model catalog.")
+                }
+            }
+            .help("Could not load the \(family.label) model catalog. Retry after reconnecting.")
         } else {
             LabeledContent("Model") {
                 Text("Harness default only")
@@ -98,5 +115,6 @@ struct HarnessModelOverrideField: View {
         loadingModels = true
         defer { loadingModels = false }
         models = await fetch(family)
+        loadFailed = models == nil
     }
 }
