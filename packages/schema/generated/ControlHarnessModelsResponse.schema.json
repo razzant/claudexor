@@ -49,6 +49,13 @@
             "manifest",
             "none"
           ]
+        },
+        "verifiedAgainst": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "required": [

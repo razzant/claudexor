@@ -111,4 +111,72 @@ describe("canary golden stories", () => {
   // [INV-111:blocked-needs-decision] requires a deterministic NEEDS_HUMAN fake or a
   // protected-path fixture; lands with the Phase 1 canary expansion.
   it.todo("[INV-111:blocked-needs-decision] a blocked run refuses apply until a typed operator decision exists");
+
+  it("[INV-104:model-truth-refusal] a model outside the harness truth source is a typed preflight refusal with artifacts — no CLI spawn, no opaque native error", () => {
+    const r = cli(sb, [
+      "ask",
+      "what is 2+2?",
+      "--harness",
+      "fake-success",
+      "--model",
+      "gpt-nonexistent-model",
+      "--json",
+    ]);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("failed");
+    const failure = readRunFile(out.runDir, "final/failure.yaml");
+    expect(failure).toContain("gpt-nonexistent-model");
+    expect(failure).toContain("fake-success");
+    expect(failure).toContain("truth source");
+  });
+
+  it("[INV-103:scalar-model-primary-only] a scalar model with a multi-harness pool and no primary is rejected, never poisons the pool", () => {
+    const r = cli(sb, [
+      "race",
+      "fix add()",
+      "--harness",
+      "fake-success,fake-implement",
+      "--n",
+      "2",
+      "--model",
+      "fake-model",
+      "--json",
+    ]);
+    expect(r.code).not.toBe(0);
+    expect(r.stdout + r.stderr).toMatch(/ambiguous without a primary harness/);
+  });
+
+  it("[INV-104:models-manifest-fallback] `claudexor models` reports manifest-sourced hints with the verification note, never a fake 'api' claim", () => {
+    const r = cli(sb, ["models", "--harness", "fake-success", "--all", "--json"]);
+    expect(r.code).toBe(0);
+    const out = r.json() as {
+      harnesses: Array<{ harnessId: string; source: string; models: Array<{ id: string }>; verifiedAgainst: string | null }>;
+    };
+    const fake = out.harnesses.find((h) => h.harnessId === "fake-success");
+    expect(fake?.source).toBe("manifest");
+    expect(fake?.models.map((m) => m.id)).toContain("fake-model");
+  });
+
+  it("[INV-104:settings-write-strict] `settings set harness.<id>.default_model` refuses a model outside the truth source and persists nothing", () => {
+    // codex's manifest known_models is the offline truth source here.
+    const bad = cli(sb, ["settings", "set", "harness.codex.default_model", "ghost-model-9000"]);
+    expect(bad.code).toBe(1);
+    expect(bad.stdout + bad.stderr).toMatch(/refused|not in the harness/i);
+    const show = cli(sb, ["settings", "show", "--json"]);
+    expect(show.stdout).not.toContain("ghost-model-9000");
+    const good = cli(sb, ["settings", "set", "harness.codex.default_model", "gpt-5.5"]);
+    expect(good.code).toBe(0);
+    const show2 = cli(sb, ["settings", "show", "--json"]);
+    expect(show2.stdout).toContain("gpt-5.5");
+    // Fakes are test fixtures, never persistable routing targets (T1#26).
+    const fake = cli(sb, ["settings", "set", "harness.fake-success.default_model", "fake-model"]);
+    expect(fake.code).toBe(1);
+    expect(fake.stdout + fake.stderr).toMatch(/unknown harness 'fake-success'/);
+  });
+
+  it("[INV-103:no-global-model] the retired global default_model setting hard-errors with the harness-scoped remedy", () => {
+    const r = cli(sb, ["settings", "set", "default_model", "gpt-5.5"]);
+    expect(r.code).toBe(1);
+    expect(r.stdout + r.stderr).toMatch(/harness-scoped|harness\.<id>\.default_model/);
+  });
 });

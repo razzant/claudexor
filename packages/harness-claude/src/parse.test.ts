@@ -194,7 +194,7 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.status).toBe("error");
   });
 
-  it("forwards model/effort/max-turns hints, clamping effort onto claude's ladder", () => {
+  it("forwards model/effort/max-turns hints on claude's declared ladder", () => {
     const spec = HarnessRunSpec.parse({
       session_id: "ses-test",
       intent: "review",
@@ -202,8 +202,8 @@ describe("parseClaudeEvent", () => {
       cwd: "/tmp",
       access: "readonly",
       model_hint: "opus",
-      // claude --effort does NOT accept max/xhigh -> the shared normalizer clamps
-      // it onto the supported ceiling (high) so no invalid level is ever passed.
+      // claude --effort accepts the full low..max ladder (verified v2.1.165),
+      // so `max` passes through unclamped.
       effort_hint: "max",
       max_turns: 12,
     });
@@ -216,7 +216,7 @@ describe("parseClaudeEvent", () => {
       "--model",
       "opus",
       "--effort",
-      "high",
+      "max",
       "--max-turns",
       "12",
       "--allowedTools",

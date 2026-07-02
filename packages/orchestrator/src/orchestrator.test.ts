@@ -57,6 +57,20 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
   return { adapter, providerFamily: family };
 }
 
+/** Run a block with CLAUDEXOR_CONFIG_DIR pointed at a fresh empty dir, so the
+ * developer's real ~/.claudexor config can never leak into fixtures. */
+async function withScopedConfigDir<T>(fn: () => Promise<T>): Promise<T> {
+  const configDir = mkdtempSync(join(tmpdir(), "claudexor-test-config-"));
+  const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+  process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+  }
+}
+
 /** A non-fake adapter that behaves like fake-success (for default-harness resolution). */
 function realLikeAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
@@ -67,7 +81,22 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { implement: true, review: true, structured_events: true },
+        capabilities: {
+          implement: true,
+          review: true,
+          structured_events: true,
+          // Manifest truth source for strict-D3 tests: explicit "model-x"
+          // requests validate; anything else gets a typed refusal. The
+          // *-cheap-model / *-review ids serve the reviewer-override tests.
+          known_models: [
+            "model-x",
+            "model-y",
+            "o-cheap-model",
+            "a-cheap-model",
+            "o-review",
+            "a-review",
+          ],
+        },
         access_profiles_supported: ["readonly", "workspace_write"],
       });
     },
@@ -496,7 +525,13 @@ describe("Orchestrator", () => {
       ["version: 1", "budget:", "  portfolio: balanced", ""].join("\n"),
     );
     const seen: { id: string; model: string | null }[] = [];
-    const adapterA = realLikeAdapter("codex", "openai");
+    const adapterA: HarnessAdapter = {
+      ...realLikeAdapter("codex", "openai"),
+      async *run(spec) {
+        seen.push({ id: "codex", model: spec.model_hint });
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
     const adapterB: HarnessAdapter = {
       ...realLikeAdapter("claude", "anthropic"),
       async *run(spec) {
@@ -508,20 +543,83 @@ describe("Orchestrator", () => {
       ["codex", adapterA],
       ["claude", adapterB],
     ]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["codex", "claude"],
-      primaryHarness: "claude",
-      model: "model-x",
-      n: 1,
+    // Scope the global config away from the developer's real ~/.claudexor:
+    // strict model preflight now judges per-harness settings defaults, so an
+    // operator's own `harnesses.codex.default_model` would leak into fixtures.
+    const res = await withScopedConfigDir(async () => {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      return orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex", "claude"],
+        primaryHarness: "claude",
+        model: "model-x",
+        n: 2,
+      });
     });
+    expect(res.status).not.toBe("failed");
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
-    expect(res.candidates[0]?.harnessId).toBe("claude");
-    expect(seen[0]?.model).toBe("model-x");
+    // D2/INV-103: the scalar model expands to the RESOLVED PRIMARY only. The
+    // other pool member must NOT be poisoned by the primary's model id (the
+    // old crash class: one vendor's model forwarded to every harness).
+    expect(seen.find((s) => s.id === "claude")?.model).toBe("model-x");
+    expect(seen.find((s) => s.id === "codex")?.model).toBeNull();
     expect(taskYaml).toContain("portfolio: balanced");
+    // The contract records the resolved harness-scoped map.
+    expect(taskYaml).toContain("routing_models");
+    expect(taskYaml).toContain("claude: model-x");
+  });
+
+  it("REFUSES a run whose resolved model fails the harness truth source (typed preflight, no CLI spawn)", async () => {
+    const repo = await initRepo();
+    let spawned = false;
+    const adapter: HarnessAdapter = {
+      ...realLikeAdapter("codex", "openai"),
+      async *run(spec) {
+        spawned = true;
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["codex", adapter]]);
+    const res = await withScopedConfigDir(async () => {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      return orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex"],
+        model: "gpt-nonexistent",
+        n: 1,
+      });
+    });
+    expect(res.status).toBe("failed");
+    expect(spawned).toBe(false);
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("gpt-nonexistent");
+    expect(failure).toContain("codex");
+    expect(failure).toContain("truth source");
+  });
+
+  it("REJECTS a scalar model when no primary harness is resolvable (ambiguous pool)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", realLikeAdapter("codex", "openai")],
+      ["claude", realLikeAdapter("claude", "anthropic")],
+    ]);
+    await withScopedConfigDir(async () => {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      await expect(
+        orch.run({
+          repoRoot: repo,
+          prompt: "x",
+          mode: "agent",
+          harnesses: ["codex", "claude"],
+          model: "model-x",
+          n: 2,
+        }),
+      ).rejects.toThrow(/scalar model .* ambiguous without a primary harness/);
+    });
   });
 
   it("auto-protects test and package surfaces when deterministic gates are configured", async () => {
@@ -1756,8 +1854,8 @@ describe("Orchestrator", () => {
         async models() {
           const ids =
             family === "anthropic"
-              ? ["claude-opus-4-8"]
-              : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M"];
+              ? ["claude-opus-4-8", "opus"]
+              : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M", "o-review"];
           return ids.map((modelId) => ({ id: modelId, label: null, context_window: null }));
         },
         async *run(spec) {
@@ -2326,7 +2424,6 @@ describe("Orchestrator", () => {
         modelsThrow?: boolean;
         omitModels?: boolean;
         knownModels?: string[];
-        modelsAuthoritative?: boolean;
       } = {},
     ): HarnessAdapter {
       const adapter: HarnessAdapter = {
@@ -2342,7 +2439,6 @@ describe("Orchestrator", () => {
               review: opts.reviewCapability ?? true,
               structured_events: true,
               known_models: opts.knownModels ?? [],
-              models_authoritative: opts.modelsAuthoritative ?? false,
             },
             access_profiles_supported: opts.accessProfiles ?? ["readonly"],
           });
@@ -2509,9 +2605,20 @@ describe("Orchestrator", () => {
         ["fake-impl", diffImplementer("fake-impl")],
         ["rev", reviewer("rev", { omitModels: true })],
       ]),
-      /could not verify requested model 'gpt-5.5-xhigh-1M'.*neither model inventory nor manifest known-model hints.*claudexor models --harness rev/,
+      /refused requested model 'gpt-5.5-xhigh-1M'.*cannot verify models.*claudexor models --harness rev/,
       "",
       [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
+    );
+    // STRICT (D3): a manifest MISS is a typed refusal naming the truth source
+    // (previously a warn-through for non-authoritative manifests).
+    await expectRejected(
+      new Map([
+        ["fake-impl", diffImplementer("fake-impl")],
+        ["rev", reviewer("rev", { omitModels: true, knownModels: ["manifest-model"] })],
+      ]),
+      /refused requested model 'ghost-model'.*manifest known-model list.*claudexor models --harness rev/,
+      "",
+      [{ harness: "rev", model: "ghost-model" }],
     );
   });
 

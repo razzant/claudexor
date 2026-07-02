@@ -57,13 +57,6 @@
               },
               "default": []
             },
-            "defaultModel": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "default": null
-            },
             "envInheritance": {
               "type": "string",
               "enum": [

@@ -378,6 +378,13 @@
           "additionalProperties": false,
           "default": {}
         },
+        "routing_models": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
         "convergence": {
           "type": "object",
           "properties": {

@@ -94,6 +94,9 @@ jobs:
       - name: Complexity ratchet (readability only goes up)
         run: node scripts/complexity-ratchet.mjs
 
+      - name: Model-hints freshness (manifest known_models vs installed CLIs)
+        run: node scripts/model-hints-freshness.mjs
+
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary
 

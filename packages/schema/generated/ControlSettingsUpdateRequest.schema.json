@@ -42,16 +42,6 @@
             }
           ]
         },
-        "defaultModel": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "eligibleHarnesses": {
           "type": "array",
           "items": {

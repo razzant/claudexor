@@ -35,6 +35,7 @@ import {
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,
+  GlobalConfig,
   type ProtectedPathApproval,
   type ControlReviewerPanelEntry,
   type Attachment,
@@ -1160,7 +1161,6 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
       print(
         `routing.eligible_harnesses: ${cfg.global.routing.eligible_harnesses.length ? cfg.global.routing.eligible_harnesses.join(", ") : "(auto)"}`,
       );
-      print(`routing.default_model: ${cfg.global.routing.default_model ?? "(none)"}`);
       print(`routing.env_inheritance: ${cfg.global.routing.env_inheritance}`);
       print(`budget.max_usd_per_run: ${cfg.global.budget.max_usd_per_run ?? "(none)"}`);
       print(`interaction_timeout_ms: ${cfg.global.interaction_timeout_ms}`);
@@ -1197,11 +1197,68 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
     const value = args._[3];
     if (!key || value === undefined) {
       print(
-        "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|default_model|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
+        "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|harness.<id>.default_model|harness.<id>.effort|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
       );
       return 2;
     }
     try {
+      // Harness-scoped model/effort keys (D2/INV-103: model choice is
+      // harness-scoped — there is no global model setting). Values are
+      // validated against the harness's truth source BEFORE persisting, the
+      // same strict gate the daemon settings endpoint applies.
+      const harnessKey = /^harness\.([^.]+)\.(default_model|fallback_model|effort)$/.exec(key);
+      if (harnessKey) {
+        const [, harnessId, field] = harnessKey as unknown as [string, string, "default_model" | "fallback_model" | "effort"];
+        if (!isKnownHarness(harnessId))
+          throw new Error(`unknown harness '${harnessId}' (run \`claudexor harness list --all\`)`);
+        const cleared = value === "none";
+        if (!cleared && (field === "default_model" || field === "fallback_model")) {
+          const truth = await harnessModels(harnessId, process.cwd(), true);
+          const check = validateModel(
+            value,
+            truth.models.map((m) => m.id),
+            truth.source === "api" ? "api" : "manifest",
+          );
+          if (check.status !== "ok") {
+            throw new Error(
+              `harness '${harnessId}' refused ${field} '${value}' (truth source: ${truth.source}): ${check.message}`,
+            );
+          }
+        }
+        let effortValue: EffortHint | null = null;
+        if (!cleared && field === "effort") {
+          effortValue = EffortHint.parse(value);
+          const adapter = buildRegistry({ includeFakes: true }).get(harnessId);
+          const ladder = adapter ? (await adapter.discover()).capabilities.effort_levels : [];
+          if (!ladder.includes(effortValue)) {
+            throw new Error(
+              ladder.length === 0
+                ? `harness '${harnessId}' declares no effort ladder; leave effort unset`
+                : `harness '${harnessId}' does not accept effort '${value}' (declared ladder: ${ladder.join(", ")})`,
+            );
+          }
+        }
+        const res = updateGlobalConfig((cfg) => {
+          const base =
+            cfg.harnesses[harnessId] ??
+            GlobalConfig.shape.harnesses.removeDefault().valueSchema.parse({});
+          return {
+            ...cfg,
+            harnesses: {
+              ...cfg.harnesses,
+              [harnessId]: {
+                ...base,
+                ...(field === "default_model" ? { default_model: cleared ? null : value } : {}),
+                ...(field === "fallback_model" ? { fallback_model: cleared ? null : value } : {}),
+                ...(field === "effort" ? { effort: cleared ? null : effortValue } : {}),
+              },
+            },
+          };
+        });
+        if (json) printJson(res);
+        else print(`updated ${key} in ${res.path}`);
+        return 0;
+      }
       const res = updateGlobalConfig((cfg) => {
         if (key === "default_portfolio") {
           const p = Portfolio.parse(value);
@@ -1231,10 +1288,9 @@ async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number>
           return { ...cfg, routing: { ...cfg.routing, eligible_harnesses: list } };
         }
         if (key === "default_model") {
-          return {
-            ...cfg,
-            routing: { ...cfg.routing, default_model: value === "none" ? null : value },
-          };
+          throw new Error(
+            "the global default_model setting was removed (model choice is harness-scoped, INV-103); use `claudexor settings set harness.<id>.default_model <model>`",
+          );
         }
         if (key === "env_inheritance") {
           if (!["mirror_native", "clean"].includes(value))
@@ -1655,32 +1711,38 @@ async function main(): Promise<number> {
       const filtered = statuses;
       // B2: a configured default model that the harness does not recognize must
       // not be silently masked by a smoke that ran a DIFFERENT model. Validate
-      // each harness's configured default against its declared known_models and
-      // surface it honestly (warn for non-authoritative, INVALID for authoritative).
+      // each harness's configured default against its model truth source (live
+      // inventory or manifest hints via the shared harnessModels SSOT) and
+      // surface a violation honestly as INVALID (strict D3 — no "unverified").
+      const configuredChecks = new Map<
+        string,
+        { configured: string; check: ReturnType<typeof validateModel> }
+      >();
+      await Promise.all(
+        filtered.map(async (s) => {
+          const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
+          if (!configured) return;
+          const truth = await harnessModels(s.id, process.cwd(), true);
+          const check = validateModel(
+            configured,
+            truth.models.map((m) => m.id),
+            truth.source === "api" ? "api" : "manifest",
+          );
+          configuredChecks.set(s.id, { configured, check });
+        }),
+      );
       const modelNote = (s: (typeof statuses)[number]): string | null => {
-        const configured =
-          cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
-        const caps = s.manifest?.capabilities;
-        if (!configured || !caps) return null;
-        const check = validateModel(configured, caps.known_models, caps.models_authoritative);
-        if (check.status === "ok") return null;
-        return `    model: ${check.status === "rejected" ? "INVALID" : "unverified"} — ${check.message}`;
+        const entry = configuredChecks.get(s.id);
+        if (!entry || entry.check.status === "ok") return null;
+        return `    model: INVALID — ${entry.check.message}`;
       };
       if (json) {
         printJson({
-          harnesses: filtered.map((s) => {
-            const configured =
-              cfg.global.harnesses[s.id]?.default_model ?? cfg.global.routing.default_model ?? null;
-            const caps = s.manifest?.capabilities;
-            return {
-              ...s,
-              configured_model: configured,
-              configured_model_check:
-                configured && caps
-                  ? validateModel(configured, caps.known_models, caps.models_authoritative)
-                  : null,
-            };
-          }),
+          harnesses: filtered.map((s) => ({
+            ...s,
+            configured_model: configuredChecks.get(s.id)?.configured ?? null,
+            configured_model_check: configuredChecks.get(s.id)?.check ?? null,
+          })),
           node_advisory: atRiskNodeAdvisory(),
         });
         return 0;

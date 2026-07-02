@@ -553,9 +553,12 @@
                             },
                             "default": []
                           },
-                          "models_authoritative": {
-                            "type": "boolean",
-                            "default": false
+                          "known_models_verified_against": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
                           }
                         },
                         "additionalProperties": false
@@ -652,6 +655,44 @@
                   "type": "string"
                 },
                 "default": []
+              },
+              "configuredModel": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "configuredModelCheck": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ok",
+                          "rejected"
+                        ]
+                      },
+                      "message": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [

@@ -94,15 +94,21 @@ export const HarnessCapabilities = z.object({
    */
   effort_levels: z.array(EffortHint).default([]),
   /**
-   * Known model ids/aliases this harness accepts. When `models_authoritative`
-   * is true the list is exhaustive (an unknown model is rejected); otherwise it
-   * is a known-good hint set (an unknown model is WARNED about but passed
-   * through, since the vendor CLI is the final authority and may gain new
-   * models). Data-driven like `effort_levels` — no model id is hardcoded in
+   * Known model ids/aliases this harness accepts — the manifest-declared model
+   * truth source used when the adapter has no live `models()` inventory.
+   * STRICT (D3): an explicit model outside the active truth source is refused
+   * at settings-write, run preflight, and reviewer resolution; a harness with
+   * NO truth source (no `models()` and an empty list) refuses every explicit
+   * model. Data-driven like `effort_levels` — no model id is hardcoded in
    * routing logic.
    */
   known_models: z.array(z.string()).default([]),
-  models_authoritative: z.boolean().default(false),
+  /**
+   * Vendor CLI version this `known_models` hint set was last verified against
+   * (freshness note, surfaced with manifest-sourced model lists and checked by
+   * the model-hints-freshness gate). Null = never verified / not applicable.
+   */
+  known_models_verified_against: z.string().nullable().default(null),
 });
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
 

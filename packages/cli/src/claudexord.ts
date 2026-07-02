@@ -32,7 +32,7 @@ import {
   GlobalConfig,
   InterviewAnswer,
 } from "@claudexor/schema";
-import { invalidateDoctorCache } from "@claudexor/core";
+import { invalidateDoctorCache, validateModel } from "@claudexor/core";
 import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
@@ -177,6 +177,7 @@ async function main(): Promise<void> {
         web: p.web ?? p.externalContextPolicy,
         externalContextPolicy: p.externalContextPolicy ?? p.web,
         model: p.model,
+        models: p.models,
         effort: p.effort,
         tests: Array.isArray(p.tests) ? p.tests : undefined,
         protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
@@ -250,6 +251,67 @@ function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string)
   if (!root) throw new Error(`project scope root is required for ${purpose}`);
   if (!isAbsolute(root)) throw new Error("project root must be an absolute path");
   return root;
+}
+
+/**
+ * STRICT settings-write validation (D3/INV-104 + T1#26): persisted routing ids
+ * must be REAL registered harnesses (fakes are test fixtures, never
+ * persistable routing targets), model values must pass the harness's model
+ * truth source, and effort must be on the declared ladder. All violations are
+ * 400s naming the harness, the value, and the truth source — a bad value must
+ * never be persisted to die later as an opaque native error.
+ */
+async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest): Promise<void> {
+  const badRequest = (message: string): never => {
+    throw Object.assign(new Error(message), { status: 400 });
+  };
+  const realIds = new Set(buildRegistry({ includeFakes: false }).keys());
+  const realList = [...realIds].sort().join(", ");
+  if (p.primaryHarness) {
+    if (!realIds.has(p.primaryHarness)) {
+      badRequest(
+        `primaryHarness '${p.primaryHarness}' is not a real registered harness (expected one of: ${realList})`,
+      );
+    }
+  }
+  for (const id of p.eligibleHarnesses ?? []) {
+    if (!realIds.has(id)) {
+      badRequest(
+        `eligibleHarnesses entry '${id}' is not a real registered harness (expected one of: ${realList})`,
+      );
+    }
+  }
+  for (const [id, patch] of Object.entries(p.harnesses ?? {})) {
+    const models: Array<{ field: string; value: string }> = [];
+    if (patch.defaultModel) models.push({ field: "defaultModel", value: patch.defaultModel });
+    if (patch.fallbackModel) models.push({ field: "fallbackModel", value: patch.fallbackModel });
+    if (models.length > 0) {
+      const truth = await harnessModels(id, process.cwd(), true);
+      for (const { field, value } of models) {
+        const check = validateModel(
+          value,
+          truth.models.map((m) => m.id),
+          truth.source === "api" ? "api" : "manifest",
+        );
+        if (check.status !== "ok") {
+          badRequest(
+            `harness '${id}' refused ${field} '${value}' (truth source: ${truth.source}): ${check.message}`,
+          );
+        }
+      }
+    }
+    if (patch.effort) {
+      const adapter = buildRegistry().get(id);
+      const ladder = adapter ? (await adapter.discover()).capabilities.effort_levels : [];
+      if (!ladder.includes(patch.effort)) {
+        badRequest(
+          ladder.length === 0
+            ? `harness '${id}' declares no effort ladder; leave effort unset`
+            : `harness '${id}' does not accept effort '${patch.effort}' (declared ladder: ${ladder.join(", ")})`,
+        );
+      }
+    }
+  }
 }
 
 /** Merge camelCase per-harness patches into the snake_case GlobalConfig shape. */
@@ -408,9 +470,30 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
       interactions.answer(runId, interactionId, answers),
-    harnesses: async () => ({
-      harnesses: await buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }),
-    }),
+    harnesses: async () => {
+      const statuses = await buildGateway({ includeFakes: false }).statusAll({
+        cwd: NO_PROJECT_ROOT,
+      });
+      // T2#6c: the doctor's configured-model truth check rides the status DTO
+      // so the UI renders the same honesty the CLI prints (never a green
+      // harness with a doomed configured model).
+      const cfg = loadConfig(NO_PROJECT_ROOT);
+      return {
+        harnesses: await Promise.all(
+          statuses.map(async (s) => {
+            const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
+            if (!configured) return { ...s, configuredModel: null, configuredModelCheck: null };
+            const truth = await harnessModels(s.id, NO_PROJECT_ROOT, true);
+            const check = validateModel(
+              configured,
+              truth.models.map((m) => m.id),
+              truth.source === "api" ? "api" : "manifest",
+            );
+            return { ...s, configuredModel: configured, configuredModelCheck: check };
+          }),
+        ),
+      };
+    },
     harnessModels: async (input: { harnessId: string }) =>
       harnessModels(input.harnessId, NO_PROJECT_ROOT),
     createSetupJob: async (input: unknown) => setupJobs.create(input),
@@ -428,7 +511,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
           defaultPolicy: cfg.global.routing.default_policy,
           primaryHarness: cfg.global.routing.primary_harness,
           eligibleHarnesses: cfg.global.routing.eligible_harnesses,
-          defaultModel: cfg.global.routing.default_model,
           envInheritance: cfg.global.routing.env_inheritance,
           authPreference: cfg.global.routing.auth_preference,
         },
@@ -468,12 +550,13 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
       // surface as a 4xx, never be silently dropped.
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
+      await assertSettingsPatchValid(p);
       const nullableName = (
         value: string | null | undefined,
         current: string | null,
       ): string | null => {
         if (value === undefined) return current;
-        if (value === null || value === "none" || value === "__none") return null;
+        if (value === null) return null;
         return value;
       };
       const updated = updateGlobalConfig((cfg) => ({
@@ -483,7 +566,6 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
         routing: {
           ...cfg.routing,
           primary_harness: nullableName(p.primaryHarness, cfg.routing.primary_harness),
-          default_model: nullableName(p.defaultModel, cfg.routing.default_model),
           default_policy: p.routingPolicy ?? cfg.routing.default_policy,
           env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
           eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,

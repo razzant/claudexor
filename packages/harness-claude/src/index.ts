@@ -37,11 +37,11 @@ const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityPro
 
 /**
  * Ordered (weakest→strongest) reasoning-effort levels `claude --effort` accepts.
- * Claude does NOT accept `xhigh`/`max`, so they clamp to `high` via the shared
- * normalizer (the ADP2 "claude xhigh" bug fix). SINGLE source for the manifest's
- * `effort_levels` and the run-time normalizer.
+ * Verified against the installed CLI (`claude --help`, v2.1.165): the full
+ * ladder is low|medium|high|xhigh|max. SINGLE source for the manifest's
+ * `effort_levels` and the run-time normalizer (which now clamps nothing away).
  */
-const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high"];
+const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh", "max"];
 
 function permissionArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -225,15 +225,29 @@ export function createClaudeAdapter(): HarnessAdapter {
           orchestrate: true,
           quota_signal: "observed",
           usage_signal: "exact",
-          // claude --effort accepts low|medium|high ONLY (xhigh/max clamp to high
-          // via the shared normalizer). Single source for the run-time normalizer.
+          // claude --effort accepts low|medium|high|xhigh|max (verified against
+          // the installed CLI's --help). Single source for the run-time normalizer.
           effort_levels: [...CLAUDE_EFFORT_LEVELS],
-          // Known-good model aliases/ids (NOT exhaustive — the claude CLI is the
-          // final authority and gains models over time, so this is non-authoritative:
-          // an unknown model is warned about, never blocked). Stable aliases plus
-          // current ids; data-driven like effort_levels.
-          known_models: ["sonnet", "opus", "haiku", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
-          models_authoritative: false,
+          // Manifest model truth source (STRICT D3: an explicit model outside
+          // this list is refused, never forwarded to die as a native error).
+          // Stable aliases plus current full ids; verified against the vendor
+          // model-config docs and the installed CLI recorded below.
+          known_models: [
+            "sonnet",
+            "opus",
+            "haiku",
+            "fable",
+            "best",
+            "claude-fable-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+          ],
+          known_models_verified_against: "2.1.165",
         },
         capability_profile: {
           ...CLAUDE_CAPABILITY_PROFILE,
@@ -310,7 +324,7 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
     ? ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio", ...permissionArgs(spec.access)]
     : ["-p", spec.prompt, "--output-format", "stream-json", "--verbose", ...permissionArgs(spec.access)];
   if (spec.model_hint) args.push("--model", spec.model_hint);
-  // Clamp onto claude's supported effort ladder (xhigh/max -> high); null = not
+  // Clamp onto claude's declared effort ladder; null = not
   // requested OR not tunable -> pass no flag. Never sends an invalid level.
   const eff = normalizeEffort(spec.effort_hint, CLAUDE_EFFORT_LEVELS);
   if (eff) args.push("--effort", eff);

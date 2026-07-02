@@ -148,6 +148,16 @@
         "model": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
         },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+          },
+          "propertyNames": {
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
         "effort": {
           "type": "string",
           "enum": [

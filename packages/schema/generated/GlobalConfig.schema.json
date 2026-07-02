@@ -55,13 +55,6 @@
               },
               "default": []
             },
-            "default_model": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "default": null
-            },
             "env_inheritance": {
               "type": "string",
               "enum": [

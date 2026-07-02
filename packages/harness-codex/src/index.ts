@@ -373,11 +373,19 @@ export function createCodexAdapter(): HarnessAdapter {
           // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
           // to xhigh). Single source for the manifest AND the run-time normalizer.
           effort_levels: [...CODEX_EFFORT_LEVELS],
-          // Known-good model ids (NOT exhaustive — the codex CLI is the final
-          // authority; non-authoritative, so an unknown model is warned, not
-          // blocked). Data-driven like effort_levels.
-          known_models: ["gpt-5.5", "gpt-5", "gpt-5-codex", "gpt-5-mini", "o3", "o4-mini"],
-          models_authoritative: false,
+          // Manifest model truth source (STRICT D3: an explicit model outside
+          // this list is refused, never forwarded to die as a native error).
+          // Current + still-API-available ids per the vendor Codex models page,
+          // verified against the installed CLI recorded below.
+          known_models: [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex-spark",
+            "gpt-5.3-codex",
+            "gpt-5.2",
+          ],
+          known_models_verified_against: "0.137.0",
         },
         capability_profile: {
           execution_surfaces: [

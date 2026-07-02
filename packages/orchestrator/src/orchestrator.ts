@@ -176,8 +176,15 @@ export interface RunInput {
   /** External/web context policy. Separate from shell/network sandboxing. */
   web?: ExternalContextPolicy;
   externalContextPolicy?: ExternalContextPolicy;
-  /** Optional model hint forwarded to the selected harness route. */
+  /**
+   * Scalar model convenience: expands to the RESOLVED PRIMARY harness only
+   * (never the pool). Rejected when no primary is resolvable (D2/INV-103).
+   * Cleared during input resolution — routing reads `models`.
+   */
   model?: string;
+  /** Harness-scoped model map (harness id → model id). Specific beats general:
+   * an entry wins over the scalar `model` and the per-harness settings default. */
+  models?: Record<string, string>;
   /** Optional reasoning-effort hint forwarded to harnesses that support it. */
   effort?: EffortHint;
   /** Frozen SpecPack provenance when a run is bound to a hard-locked spec. */
@@ -385,6 +392,11 @@ interface RoutedAdapter {
   supportsMaxTurns: boolean;
   supportsToolLists: boolean;
   supportsBrowser: boolean;
+  /** Declared effort ladder (empty = effort is not a tunable surface; a
+   * requested effort is then DISCLOSED as ignored, never silently dropped). */
+  effortLevels: readonly EffortHint[];
+  /** Manifest model truth source (used when the adapter has no live models()). */
+  knownModels: readonly string[];
   settings: HarnessRouteSettings | null;
 }
 
@@ -514,7 +526,14 @@ export class Orchestrator {
         this.projectConfig(resolved.repoRoot).context.mandatory_files,
       );
     }
-    const reviewerPreflight = await this.preflightExplicitReviewerPanel(resolved);
+    // Reviewer panels are validated only for modes that actually review
+    // (race/convergence under agent, and plan). ask/audit never spawn
+    // reviewers, so a panel there must not spend doctor/model probes or fail
+    // a run that would never use it.
+    const reviewerPreflight =
+      mode === "agent" || mode === "plan"
+        ? await this.preflightExplicitReviewerPanel(resolved)
+        : undefined;
     switch (mode) {
       case "ask":
         return this.runAsk(resolved);
@@ -579,17 +598,36 @@ export class Orchestrator {
         if (report.status !== "ok") continue; // reviewer eligibility needs scoped doctor-OK.
         if (!report.enabled_intents.includes("review")) continue;
         if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
+        // Explicit per-family override first, then the user's per-harness
+        // default model: an explicit model request makes the route provable
+        // (accepted_model_arg) on CLIs that never echo their model.
+        const requestedModel =
+          this.deps.reviewerModels?.[m.provider_family] ??
+          harnessSettings[adapter.id]?.default_model ??
+          null;
+        // STRICT (D3): the auto panel applies the SAME model truth gate as the
+        // explicit panel — a doomed reviewer model is refused here, never
+        // forwarded to die as an opaque native error mid-review.
+        if (requestedModel) {
+          const check = validateModel(
+            requestedModel,
+            typeof adapter.models === "function"
+              ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map((x) => x.id)
+              : m.capabilities.known_models,
+            typeof adapter.models === "function" ? "api" : "manifest",
+          );
+          if (check.status !== "ok") {
+            throw new HarnessUnavailableError(
+              `auto-selected reviewer harness '${adapter.id}' refused model '${requestedModel}': ${check.message}; ` +
+                `fix the reviewer model override or harnesses.${adapter.id}.default_model, or run \`claudexor models --harness ${adapter.id}\``,
+            );
+          }
+        }
         seen.add(m.provider_family);
         specs.push({
           adapter,
           providerFamily: m.provider_family,
-          // Explicit per-family override first, then the user's per-harness
-          // default model: an explicit model request makes the route provable
-          // (accepted_model_arg) on CLIs that never echo their model.
-          requestedModel:
-            this.deps.reviewerModels?.[m.provider_family] ??
-            harnessSettings[adapter.id]?.default_model ??
-            null,
+          requestedModel,
           requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
           authPreference,
         });
@@ -700,20 +738,17 @@ export class Orchestrator {
         const requestedModel = entry.model ?? harnessSettings[entry.harness]?.default_model ?? null;
         if (requestedModel) {
           if (typeof adapter.models !== "function") {
-            const knownModels = manifest.capabilities.known_models;
-            if (knownModels.length === 0) {
-              throw new HarnessUnavailableError(
-                `reviewer harness '${entry.harness}' could not verify requested model '${requestedModel}' because it exposes neither model inventory nor manifest known-model hints; run \`claudexor models --harness ${entry.harness}\``,
-              );
-            }
+            // STRICT (D3): the manifest list is the truth source here; an empty
+            // list means the harness cannot verify models and the explicit
+            // model is refused (validateModel phrases both refusals).
             const check = validateModel(
               requestedModel,
-              knownModels,
-              manifest.capabilities.models_authoritative,
+              manifest.capabilities.known_models,
+              "manifest",
             );
             if (check.status !== "ok") {
               throw new HarnessUnavailableError(
-                `reviewer harness '${entry.harness}' could not verify requested model '${requestedModel}' from manifest known-model hints: ${check.message}; run \`claudexor models --harness ${entry.harness}\``,
+                `reviewer harness '${entry.harness}' refused requested model '${requestedModel}': ${check.message}; run \`claudexor models --harness ${entry.harness}\``,
               );
             }
           } else {
@@ -976,11 +1011,30 @@ export class Orchestrator {
       );
     }
     const web = input.web ?? input.externalContextPolicy ?? "auto";
+    // D2/INV-103: model choice is harness-scoped end-to-end. The scalar
+    // `model` is a convenience that expands to the RESOLVED PRIMARY only —
+    // never the whole pool (the old global fallback poisoned every pool
+    // member with one vendor's model id). Specific beats general: an explicit
+    // per-harness map entry wins over the scalar.
+    const models: Record<string, string> = { ...input.models };
+    if (input.model) {
+      const scalarTarget =
+        primaryHarness ?? (harnesses && harnesses.length === 1 ? harnesses[0] : undefined);
+      if (!scalarTarget) {
+        throw new Error(
+          `a scalar model ('${input.model}') is ambiguous without a primary harness: ` +
+            `the pool is ${harnesses && harnesses.length > 0 ? `[${harnesses.join(", ")}]` : "auto-resolved"} — ` +
+            `set a primary harness, pass exactly one --harness, or use a harness-scoped model map`,
+        );
+      }
+      models[scalarTarget] ??= input.model;
+    }
     return {
       ...input,
       harnesses,
       primaryHarness,
-      model: input.model ?? cfg?.global.routing.default_model ?? undefined,
+      model: undefined,
+      models,
       portfolio:
         input.portfolio ??
         this.deps.portfolio ??
@@ -1139,6 +1193,8 @@ export class Orchestrator {
           supportsMaxTurns: manifest.capabilities.max_turns,
           supportsToolLists: manifest.capabilities.tool_lists,
           supportsBrowser: manifest.capabilities.browser_tool,
+          effortLevels: manifest.capabilities.effort_levels,
+          knownModels: manifest.capabilities.known_models,
           settings: cfgEntry
             ? {
                 defaultModel: cfgEntry.default_model,
@@ -1167,7 +1223,49 @@ export class Orchestrator {
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
+    await this.assertRouteModelsAllowed(out, input);
     return out;
+  }
+
+  /**
+   * STRICT run-preflight model gate (D3/INV-104): every route that resolved an
+   * explicit model (per-run map or per-harness settings default) must pass its
+   * harness's model truth source — the live `models()` inventory when the
+   * adapter has one, else the manifest `known_models` list. A violation throws
+   * a typed error BEFORE any vendor CLI spawns; callers surface it through the
+   * routing-failure path, so failure.yaml names harness, model, and truth
+   * source. Fallback models get the same gate: a downgrade target that cannot
+   * run is a config bug better caught before the run than mid-run.
+   */
+  private async assertRouteModelsAllowed(routes: RoutedAdapter[], input: RunInput): Promise<void> {
+    const checked = new Set<string>();
+    for (const routed of routes) {
+      const id = routed.adapter.id;
+      if (checked.has(id)) continue;
+      checked.add(id);
+      const resolved = input.models?.[id] ?? routed.settings?.defaultModel ?? null;
+      const candidates = [
+        { role: "model", model: resolved },
+        { role: "fallback_model", model: routed.settings?.fallbackModel ?? null },
+      ].filter((c): c is { role: string; model: string } => Boolean(c.model));
+      if (candidates.length === 0) continue;
+      let truth: { list: readonly string[]; source: "api" | "manifest" };
+      if (typeof routed.adapter.models === "function") {
+        const inventory = await routed.adapter.models({ cwd: this.execRootOf(input) });
+        truth = { list: inventory.map((m) => m.id), source: "api" };
+      } else {
+        truth = { list: routed.knownModels, source: "manifest" };
+      }
+      for (const { role, model } of candidates) {
+        const check = validateModel(model, truth.list, truth.source);
+        if (check.status !== "ok") {
+          throw new HarnessUnavailableError(
+            `harness '${id}' refused ${role} '${model}' (truth source: ${truth.source}): ${check.message}; ` +
+              `run \`claudexor models --harness ${id}\``,
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -1485,6 +1583,10 @@ export class Orchestrator {
         max_usd:
           input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
       },
+      // The resolved harness-scoped model map (scalar already expanded to the
+      // primary by resolveRunInput). The contract is what route spec building
+      // reads — there is no run-global model (D2/INV-103).
+      routing_models: input.models ?? {},
     });
   }
 
@@ -1623,8 +1725,8 @@ export class Orchestrator {
    */
   private routeSpecKnobs(
     routed: RoutedAdapter,
-    contractPolicy: ExternalContextPolicy,
-    modelHint?: string,
+    contract: TaskContract,
+    overrideModel?: string,
     effortHint?: EffortHint,
   ): {
     model: string | null;
@@ -1636,6 +1738,7 @@ export class Orchestrator {
     ignored: string[];
   } {
     const s = routed.settings;
+    const contractPolicy = contract.external_context.policy;
     const ignored: string[] = [];
     let maxTurns: number | null = null;
     let toolsAllow: string[] = [];
@@ -1660,9 +1763,24 @@ export class Orchestrator {
     // The per-harness web default applies only when the run-level policy is the
     // default "auto"; an explicit run policy always wins.
     const webPolicy = contractPolicy === "auto" && s?.web ? s.web : contractPolicy;
+    // Harness-scoped model resolution (D2/INV-103): explicit per-attempt
+    // override (budget downgrade / fallback retry) beats the contract's
+    // per-harness map, which beats the per-harness settings default. There is
+    // no run-global model.
+    const model =
+      overrideModel ?? contract.routing_models[routed.adapter.id] ?? s?.defaultModel ?? null;
+    // Effort disclosure (INV-105): a requested effort on a harness with no
+    // declared ladder is DISCLOSED as ignored, never silently dropped.
+    let effort = effortHint ?? s?.effort ?? null;
+    if (effort && routed.effortLevels.length === 0) {
+      ignored.push(
+        `effort=${effort} (manifest capabilities.effort_levels is empty for ${routed.adapter.id})`,
+      );
+      effort = null;
+    }
     return {
-      model: modelHint ?? s?.defaultModel ?? null,
-      effort: effortHint ?? s?.effort ?? null,
+      model,
+      effort,
       webPolicy,
       maxTurns,
       toolsAllow,
@@ -1698,7 +1816,7 @@ export class Orchestrator {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(
       routed,
-      contract.external_context.policy,
+      contract,
       modelHint,
       effortHint,
     );
@@ -2374,11 +2492,10 @@ export class Orchestrator {
           detail: `budget downgrade — switching to fallback model ${downgradeModel}`,
         });
       }
-      const modelForAttempt = downgradeModel ?? input.model;
       const knobs = this.routeSpecKnobs(
         slot.routed,
-        contract.external_context.policy,
-        modelForAttempt,
+        contract,
+        downgradeModel ?? undefined,
         input.effort,
       );
       const effectiveWeb = this.discloseWebUpgrade(
@@ -2425,7 +2542,7 @@ export class Orchestrator {
             log.emit("harness.event", harnessEventPayload(adapter.id, slot.attemptId, safeEv));
           },
           input.signal,
-          modelForAttempt,
+          downgradeModel ?? undefined,
           input.effort,
           this.candidateIntent(input),
           log,
@@ -2709,12 +2826,7 @@ export class Orchestrator {
           const synthAdapter = synthRouted.adapter;
           // Disclose against the PER-ROUTE policy (per-harness web defaults
           // included), exactly like the candidate slots do.
-          const synthKnobs = this.routeSpecKnobs(
-            synthRouted,
-            contract.external_context.policy,
-            input.model,
-            input.effort,
-          );
+          const synthKnobs = this.routeSpecKnobs(synthRouted, contract, undefined, input.effort);
           const effectiveWeb = this.discloseWebUpgrade(
             log,
             synthRouted,
@@ -2747,7 +2859,7 @@ export class Orchestrator {
               log.emit("harness.event", harnessEventPayload(synthAdapter.id, "synth", safeEv));
             },
             input.signal,
-            input.model,
+            undefined,
             input.effort,
             "synthesize",
             log,
@@ -3690,12 +3802,7 @@ export class Orchestrator {
           break;
         }
 
-        const knobs = this.routeSpecKnobs(
-          routed,
-          contract.external_context.policy,
-          input.model,
-          input.effort,
-        );
+        const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
         const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
         let run: CandidateRun;
         try {
@@ -3723,7 +3830,7 @@ export class Orchestrator {
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
             },
             input.signal,
-            input.model,
+            undefined,
             input.effort,
             "repair",
             log,
@@ -4366,12 +4473,7 @@ export class Orchestrator {
           });
           break;
         }
-        const knobs = this.routeSpecKnobs(
-          routed,
-          contract.external_context.policy,
-          input.model,
-          input.effort,
-        );
+        const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
         const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
         const spec = HarnessRunSpec.parse({
           session_id: newId("ses"),
@@ -5071,12 +5173,7 @@ export class Orchestrator {
         budgetStopped = true;
         return;
       }
-      const knobs = this.routeSpecKnobs(
-        routed,
-        contract.external_context.policy,
-        modelOverride ?? input.model,
-        input.effort,
-      );
+      const knobs = this.routeSpecKnobs(routed, contract, modelOverride, input.effort);
       const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
       const explorerPrompt =
         (opts.swarm
@@ -5332,7 +5429,8 @@ export class Orchestrator {
           // Per-harness fallback_model: one same-harness retry on FAILURE (not
           // policy blocks) before falling through to the next harness.
           const fallbackModel = routed.settings?.fallbackModel;
-          const firstModel = input.model ?? routed.settings?.defaultModel ?? null;
+          const firstModel =
+            contract.routing_models[routed.adapter.id] ?? routed.settings?.defaultModel ?? null;
           if (
             last &&
             last.status === "failed" &&

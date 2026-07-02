@@ -532,9 +532,12 @@
               },
               "default": []
             },
-            "models_authoritative": {
-              "type": "boolean",
-              "default": false
+            "known_models_verified_against": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
             }
           },
           "additionalProperties": false

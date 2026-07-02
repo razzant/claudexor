@@ -74,7 +74,14 @@ export const ControlRunStartRequest = z
     harnesses: z.array(NonBlankString).optional(),
     primaryHarness: NonBlankString.optional(),
     portfolio: Portfolio.optional(),
+    /** Scalar model convenience: expands to the RESOLVED PRIMARY harness only
+     * (never the pool). With a multi-harness pool and no primary it is
+     * rejected — use `models` instead (D2/INV-103). */
     model: NonBlankString.optional(),
+    /** Harness-scoped model map (harness id → model id). Specific beats
+     * general: an entry here wins over the scalar `model` and over the
+     * per-harness settings default. */
+    models: z.record(NonBlankString, NonBlankString).optional(),
     effort: EffortHint.optional(),
     reviewerModels: z.record(ProviderFamily, NonBlankString).optional(),
     reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),
@@ -778,6 +785,18 @@ export const HarnessStatusDto = z.object({
   disabledIntents: z.array(z.string()).default([]),
   checks: z.array(ConformanceCheck).default([]),
   reasons: z.array(z.string()).default([]),
+  /** The user's configured per-harness default model, if any. */
+  configuredModel: z.string().nullable().default(null),
+  /** Strict truth-source check of `configuredModel` (D3): null when no model
+   * is configured; a rejection carries the actionable message so UIs render
+   * the same honesty `claudexor doctor` prints. */
+  configuredModelCheck: z
+    .object({
+      status: z.enum(["ok", "rejected"]),
+      message: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
 });
 export type HarnessStatusDto = z.infer<typeof HarnessStatusDto>;
 
@@ -789,13 +808,17 @@ export type ControlHarnessListResponse = z.infer<typeof ControlHarnessListRespon
 /**
  * Models enumerable for one harness. `source` is honest about provenance:
  * "api" when the adapter implemented a real enumeration (raw-api / OpenAI
- * `GET /v1/models`), "manifest" reserved for a future manifest-declared list,
- * "none" when the adapter cannot enumerate (the list is then empty).
+ * `GET /v1/models`), "manifest" when the list is the manifest's known-good
+ * hint set, "none" when the harness has no model truth source at all (the
+ * list is then empty and explicit models are refused under strict D3).
  */
 export const ControlHarnessModelsResponse = z.object({
   harnessId: z.string(),
   models: z.array(HarnessModel).default([]),
   source: z.enum(["api", "manifest", "none"]),
+  /** Freshness note for manifest-sourced lists: the vendor CLI version the
+   * known-model hints were last verified against (null for api/none). */
+  verifiedAgainst: z.string().nullable().default(null),
 });
 export type ControlHarnessModelsResponse = z.infer<typeof ControlHarnessModelsResponse>;
 
@@ -809,7 +832,6 @@ export const ControlSettingsSnapshot = z.object({
       defaultPolicy: z.enum(["auto", "primary", "portfolio"]).default("auto"),
       primaryHarness: z.string().nullable().default(null),
       eligibleHarnesses: z.array(z.string()).default([]),
-      defaultModel: z.string().nullable().default(null),
       envInheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
       authPreference: AuthPreference.default("auto"),
     })
@@ -880,7 +902,6 @@ export const ControlSettingsUpdateRequest = z
     interactionTimeoutMs: z.number().int().positive().optional(),
     routingPolicy: z.enum(["auto", "primary", "portfolio"]).optional(),
     primaryHarness: NonBlankString.nullable().optional(),
-    defaultModel: NonBlankString.nullable().optional(),
     eligibleHarnesses: z.array(NonBlankString).optional(),
     envInheritance: z.enum(["mirror_native", "clean"]).optional(),
     maxUsdPerRun: z.number().nonnegative().optional(),

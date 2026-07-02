@@ -51,14 +51,29 @@ export function buildGateway(opts: RegistryOptions = {}): HarnessGateway {
  * Resolve enumerable models for one harness (ADP4). The SSOT shared by the
  * control-api `harnessModels` service and the CLI `models` command, so both
  * surfaces report identical truth: `source: "api"` when the adapter has a real
- * models() producer, "none" (empty) when it cannot enumerate. Fails soft —
- * adapter models() already swallows network/auth errors and returns [].
+ * models() producer, `"manifest"` when the manifest's known-good hint set is
+ * the truth source (with the CLI version it was verified against), `"none"`
+ * only when the harness has no truth source at all. Fails soft — adapter
+ * models() already swallows network/auth errors and returns [].
  */
 export async function harnessModels(harnessId: string, cwd: string, includeFakes = false): Promise<ControlHarnessModelsResponse> {
   const adapter = buildRegistry({ includeFakes }).get(harnessId);
-  if (!adapter || typeof adapter.models !== "function") {
-    return { harnessId, models: [], source: "none" };
+  if (!adapter) {
+    return { harnessId, models: [], source: "none", verifiedAgainst: null };
   }
-  const models = await adapter.models({ cwd });
-  return { harnessId, models, source: "api" };
+  if (typeof adapter.models === "function") {
+    const models = await adapter.models({ cwd });
+    return { harnessId, models, source: "api", verifiedAgainst: null };
+  }
+  const manifest = await adapter.discover();
+  const known = manifest.capabilities.known_models;
+  if (known.length === 0) {
+    return { harnessId, models: [], source: "none", verifiedAgainst: null };
+  }
+  return {
+    harnessId,
+    models: known.map((id) => ({ id, label: null, context_window: null })),
+    source: "manifest",
+    verifiedAgainst: manifest.capabilities.known_models_verified_against,
+  };
 }

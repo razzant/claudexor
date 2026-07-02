@@ -142,8 +142,10 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       // Partial ladder: a deliberate clamp fixture for the effort normalizer
       // (requests for xhigh/max clamp down to high).
       effort_levels: ["low", "medium", "high"],
-      known_models: [],
-      models_authoritative: false,
+      // Small manifest truth source so strict-D3 tests can exercise BOTH the
+      // accept path (fake-model) and the typed-refusal path (anything else).
+      known_models: ["fake-model", "fake-model-alt"],
+      known_models_verified_against: null,
     },
     auth_modes: ["none"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],

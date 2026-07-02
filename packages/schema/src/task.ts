@@ -146,6 +146,10 @@ export const TaskContract = z.object({
       max_usd: z.number().nullable().default(null),
     })
     .default({}),
+  /** Resolved harness-scoped model map for this run (harness id → model id),
+   * after scalar→primary expansion. The contract is the SSOT the route spec
+   * builder reads; empty = every route uses its per-harness settings default. */
+  routing_models: z.record(z.string(), z.string()).default({}),
   convergence: ConvergencePredicate.default({}),
   context_policy: z
     .object({ no_silent_truncation: z.boolean().default(true) })

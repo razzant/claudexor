@@ -1,39 +1,46 @@
 /**
- * Validate a requested/configured model id against a harness's DECLARED known
- * models — the model analog of the effort normalizer (`normalizeEffort`).
- * Data-driven: the harness declares `known_models` + `models_authoritative`;
- * this never hardcodes a model list in logic.
+ * Validate a requested/configured model id against a harness's model truth
+ * source — the model analog of the effort normalizer (`normalizeEffort`).
+ * Data-driven: the caller supplies the truth list (live `models()` inventory
+ * or manifest `known_models`); this never hardcodes a model list in logic.
  *
+ * STRICT semantics (locked D3, INV-104): there is no "warn and pass through".
  * - no model requested (null/empty) → ok (the harness default is used).
- * - declared list empty → ok (the harness cannot vouch for a list; the vendor
- *   CLI is the authority — never block on a list we don't have).
- * - requested ∈ known_models → ok.
- * - requested ∉ known_models && authoritative → `rejected` (a hard, early error;
- *   the harness's list is exhaustive, e.g. an API `/v1/models` enumeration).
- * - requested ∉ known_models && !authoritative → `unknown` (a WARNING; passed
- *   through to the CLI, which is the final authority and may have gained the
- *   model after this known-good hint set was declared).
+ * - truth list empty → rejected: the harness cannot verify models, so an
+ *   EXPLICIT model is refused with actionable text instead of being forwarded
+ *   to the vendor CLI to die as an opaque native error.
+ * - requested ∈ list → ok.
+ * - requested ∉ list → rejected, naming the truth source and the list.
  */
-export type ModelCheckStatus = "ok" | "unknown" | "rejected";
+export type ModelCheckStatus = "ok" | "rejected";
 export interface ModelCheck {
   status: ModelCheckStatus;
   message: string | null;
 }
 
+/** Where the truth list came from; used to phrase actionable refusals. */
+export type ModelTruthSource = "api" | "manifest";
+
 export function validateModel(
   requested: string | null | undefined,
   known: readonly string[],
-  authoritative: boolean,
+  source: ModelTruthSource = "manifest",
 ): ModelCheck {
   const model = typeof requested === "string" ? requested.trim() : "";
   if (!model) return { status: "ok", message: null };
-  if (known.length === 0) return { status: "ok", message: null };
-  if (known.includes(model)) return { status: "ok", message: null };
-  if (authoritative) {
-    return { status: "rejected", message: `model "${model}" is not one this harness supports (known: ${known.join(", ")})` };
+  if (known.length === 0) {
+    return {
+      status: "rejected",
+      message:
+        `this harness cannot verify models (no ${source === "api" ? "live model inventory" : "manifest known_models"}); ` +
+        `use the harness default (omit the model) or add known_models to the manifest`,
+    };
   }
+  if (known.includes(model)) return { status: "ok", message: null };
+  const shown = known.slice(0, 80).join(", ");
+  const suffix = known.length > 80 ? `, ... (${known.length} total)` : "";
   return {
-    status: "unknown",
-    message: `model "${model}" is not in the harness's known-good set (${known.join(", ")}); the vendor CLI is the authority — if a run fails to start, this is the likely cause`,
+    status: "rejected",
+    message: `model "${model}" is not in the harness's ${source === "api" ? "live model inventory" : "manifest known-model list"} (${shown}${suffix})`,
   };
 }
