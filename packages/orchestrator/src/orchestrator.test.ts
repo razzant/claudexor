@@ -4418,6 +4418,7 @@ describe("interaction late-answer honesty (T2#23)", () => {
       "a01",
       "harness-x",
       true,
+      900_000,
     );
     expect(channel).toBeTruthy();
     const res = await channel!.request({
