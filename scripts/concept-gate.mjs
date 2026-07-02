@@ -24,11 +24,17 @@
  *   node scripts/concept-gate.mjs --since-last-tag   # every commit since the
  *                                                    # previous v* tag (release)
  *
- * Assumptions: linear history is the norm (merge commits are inspected via
- * diff-tree -m against each parent). On a SHALLOW clone, a commit whose
- * parent is outside the clone boundary skips the before/after comparison
- * (the `show sha~1` failure path) — CI fetches depth=100 to keep realistic
- * ranges fully comparable; deepen the fetch if a range ever exceeds that.
+ * Merge commits (including GitHub's synthetic refs/pull/N/merge, whose
+ * auto-generated message can never carry a marker): the constituent commits
+ * are checked individually by the range walk, so a CLEAN merge needs no
+ * marker of its own. Only a merge that itself introduces Bible content
+ * beyond its parents (an "evil merge" / conflict resolution — detected via
+ * `diff-tree --cc`) must carry a covering marker.
+ *
+ * Assumptions: on a SHALLOW clone, a commit whose parent is outside the
+ * clone boundary skips the before/after comparison (the `show sha~1`
+ * failure path) — CI fetches depth=100 to keep realistic ranges fully
+ * comparable; deepen the fetch if a range ever exceeds that.
  */
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -77,9 +83,29 @@ function invBlocks(text) {
 }
 
 function checkCommit(sha) {
-  // -m: also inspect merge commits against their first parent so a Bible edit
-  // cannot ride in unmarked through a merge.
-  const changed = git(["diff-tree", "-m", "--no-commit-id", "--name-only", "-r", sha]).split("\n");
+  const parents = git(["rev-list", "--parents", "-n", "1", sha]).trim().split(/\s+/).slice(1);
+  if (parents.length > 1) {
+    // Merge commit. Its constituent commits are range-walked individually, so
+    // requiring a marker HERE would deterministically fail every synthetic PR
+    // merge (refs/pull/N/merge) whose message GitHub generates. Only content
+    // the merge itself introduces beyond its parents (evil merge / conflict
+    // resolution) is constitutional surface: --cc prints exactly that.
+    const ccDiff = git(["diff-tree", "--cc", "--name-only", "-r", sha]).split("\n");
+    if (!ccDiff.includes(BIBLE)) return null;
+    const msg = git(["log", "-1", "--format=%B", sha]);
+    const marker = msg.match(MARKER_RE);
+    if (!marker) {
+      return (
+        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} beyond its parents (conflict resolution / evil merge)\n` +
+        `  without a CONCEPT-CHANGE(INV-…) marker. Resolve Bible conflicts in a marked non-merge commit,\n` +
+        `  or mark the merge itself if the owner approved the resolution.`
+      );
+    }
+    console.log(`concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}`);
+    return null;
+  }
+
+  const changed = git(["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).split("\n");
   if (!changed.includes(BIBLE)) return null;
 
   const msg = git(["log", "-1", "--format=%B", sha]);
