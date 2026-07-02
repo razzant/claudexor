@@ -369,6 +369,9 @@ private struct HarnessDefaultsRow: View {
     let settings: HarnessSettings?
     @State private var enabled = true
     @State private var modelDraft = ""
+    /// Catalog answer for THIS harness; nil = offline/unloaded. The save path
+    /// derives modelEditable from it (H2: truth-less rows must not persist).
+    @State private var models: HarnessModelsResponse?
     @State private var effort = "__default"
     @State private var web = "auto"
     @State private var maxUsdDraft = ""
@@ -404,11 +407,6 @@ private struct HarnessDefaultsRow: View {
     /// enough that a blur/commit feels immediate.
     private static let debounceMs: UInt64 = 600
 
-    /// Enumerated models for this harness (ADP4). nil = not yet loaded; an empty
-    /// list or a response that cannot enumerate falls back to the free-text field.
-    @State private var models: HarnessModelsResponse?
-    @State private var loadingModels = false
-
     private static let efforts = ["__default", "low", "medium", "high", "xhigh", "max"]
 
     var body: some View {
@@ -425,7 +423,7 @@ private struct HarnessDefaultsRow: View {
                     .onChange(of: enabled) { _, _ in scheduleSave(immediate: true) }
             }
             HStack(spacing: Theme.Spacing.sm) {
-                modelOverrideField
+                HarnessModelOverrideField(family: family, modelDraft: $modelDraft, fetch: model.harnessModels(for:), models: $models)
                 Picker("Effort", selection: $effort) {
                     Text("Default").tag("__default")
                     ForEach(Self.efforts.dropFirst(), id: \.self) { Text($0).tag($0) }
@@ -491,7 +489,6 @@ private struct HarnessDefaultsRow: View {
         // `settingsSnapshot` to every row never clobbers a value being typed.
         .onChange(of: settings) { _, _ in sync() }
         // Lazily enumerate this harness's models when the row first appears.
-        .task { await loadModels() }
         // FLUSH on disappear (Finding 1): if Settings closes / the row navigates
         // away within the ~600ms debounce window, a typed-but-unsaved value would
         // be lost if we only cancelled. Cancel the pending debounce SLEEP, then
@@ -531,82 +528,6 @@ private struct HarnessDefaultsRow: View {
                 .font(.caption2).foregroundStyle(Theme.status(.failed)).labelStyle(.titleAndIcon)
                 .lineLimit(2).help(message)
         }
-    }
-
-    /// Model override: a Picker over the harness's model TRUTH SOURCE (live
-    /// inventory or manifest known-good hints). STRICT (D3): there is no
-    /// free-text entry — a harness with no truth source runs its default only,
-    /// and a model outside the source would be refused by the engine anyway.
-    @ViewBuilder private var modelOverrideField: some View {
-        if let models, models.canEnumerate {
-            Picker("Model override", selection: $modelDraft) {
-                Text("Harness default").tag("")
-                // A stored override the truth source no longer lists (legacy value)
-                // stays visible so the user can SEE and clear it — the engine
-                // refuses it at run preflight either way.
-                if !modelDraft.isEmpty, !models.models.contains(where: { $0.id == modelDraft }) {
-                    Text("\(modelDraft) (not in \(models.source) list)").tag(modelDraft)
-                }
-                ForEach(models.models) { m in
-                    Text(modelMenuLabel(m)).tag(m.id)
-                }
-            }
-            .labelsHidden()
-            .help(modelPickerHelp(models))
-        } else if !modelDraft.isEmpty, models != nil {
-            // The harness ANSWERED with no truth source: a stored legacy
-            // override will be refused at preflight, so SHOW it and offer the
-            // only meaningful action — clearing it (explicit null on save).
-            LabeledContent("Model") {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text("\(modelDraft) — refused (no truth source)")
-                        .font(.caption).foregroundStyle(.orange)
-                    Button("Clear") { modelDraft = "" }
-                        .controlSize(.small)
-                        .help("Removes the stored override so this harness runs its default model.")
-                }
-            }
-            .help(modelFallbackHelp)
-        } else if !modelDraft.isEmpty {
-            // Catalog request failed (engine offline / transient): do NOT
-            // claim the override is refused — we could not check it.
-            LabeledContent("Model") {
-                Text("\(modelDraft) — model catalog unavailable")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .help("Could not load the \(family.label) model catalog; the override stays as-is. Reconnect to verify it.")
-        } else {
-            LabeledContent("Model") {
-                Text("Harness default only")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .help(modelFallbackHelp)
-        }
-    }
-
-    private func modelMenuLabel(_ m: HarnessModel) -> String {
-        let name = (m.label.map { $0.isEmpty ? m.id : $0 } ?? m.id)
-        let suffix = name == m.id ? "" : " (\(m.id))"
-        return name + suffix
-    }
-
-    private func modelPickerHelp(_ models: HarnessModelsResponse) -> String {
-        let freshness = models.verifiedAgainst.map { " (verified against CLI \($0))" } ?? ""
-        return "Model forwarded to \(family.label); source: \(models.source)\(freshness). Harness default keeps the engine choice."
-    }
-
-    private var modelFallbackHelp: String {
-        if loadingModels { return "Loading \(family.label) models…" }
-        return "\(family.label) exposes no model truth source, so runs use its default model; an explicit model would be refused (strict model governance)."
-    }
-
-    /// One-shot enumeration; thin consumer of the control-api DTO. A nil result
-    /// (offline/failed) leaves `models` nil so the free-text fallback renders.
-    private func loadModels() async {
-        guard models == nil, !loadingModels else { return }
-        loadingModels = true
-        defer { loadingModels = false }
-        models = await model.harnessModels(for: family)
     }
 
     private var maxUsdValid: Bool {

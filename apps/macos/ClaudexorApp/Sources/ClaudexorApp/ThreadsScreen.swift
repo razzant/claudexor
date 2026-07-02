@@ -726,9 +726,8 @@ struct ThreadsScreen: View {
                         .padding(.leading, 2)
                 }
             }
-            // Context depth is engine-owned "auto" now: the "deep" tier never had
-            // distinct behavior and was retired in the v0.15 triage (A3), so the
-            // picker that promised it is gone with the enum member.
+            // Context depth is engine-owned "auto"; the retired "deep" tier and
+            // its picker were removed in the v0.15 triage (A3).
             // Workspace mode is FIXED at thread creation, so it's only editable while
             // drafting the first turn (no thread selected yet). Isolated keeps a thread
             // worktree; in_place (default) mutates the live tree so the next turn sees it.

@@ -657,6 +657,16 @@ import Testing
         #expect(untouchedObj?["primaryHarness"] == nil)
     }
 
+    @Test func runScopeProjectAlwaysEncodesAutoContext() throws {
+        // The schema RunScopeContext enum has exactly one member; the helper
+        // must not be able to produce anything else on the wire.
+        let scope = RunScope.project(root: "/repo")
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(scope)) as? [String: Any]
+        #expect(obj?["kind"] as? String == "project")
+        #expect(obj?["root"] as? String == "/repo")
+        #expect(obj?["context"] as? String == "auto")
+    }
+
     @Test func updateThreadEncodesArchiveAndReopenStates() throws {
         // The server ThreadState enum is active|closed — reopen must send
         // "active" ("open" 400s against the strict DTO; the B2 regression).
