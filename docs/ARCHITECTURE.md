@@ -517,6 +517,33 @@ global LIVE-ONLY multiplex (events tagged with `run_id`, no replay): on
 reconnect a client re-snapshots `/runs` first and uses per-run streams where it
 needs gap-free state.
 
+A QUEUED job's per-run stream does not 404: `GET /runs/:id/events` opens the
+SSE response immediately, heartbeats while the job waits for a slot, and binds
+to the run directory when it materializes — a client can subscribe at enqueue
+time and never race the scheduler. `claudexor follow` rides the same contract
+with bounded reconnects (`Last-Event-ID` resume) and exits 1 with "stream
+lost" when the stream ends without a terminal event.
+
+### Daemon lifecycle (signals, orphans, crash GC)
+
+`claudexord` shuts down gracefully on SIGTERM/SIGINT (same path as the
+`claudexor.shutdown` RPC: abort in-flight runs, bounded wait, persist state).
+While running it snapshots its live harness child process groups to
+`daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
+crash (pid liveness + command-name recycling guard) and sweeps workspace
+debris under daemon-known project roots: orphaned envelopes (with their
+seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
+branches, leaked `claudexor/verify-*` branches, and stale
+`claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
+process is STILL ALIVE survive the sweep: `WorkspaceManager.create()` records
+an owner marker (pid + kernel start time — recycling-proof) that the sweeper
+honors, so in-process CLI/MCP/ACP runs are never garbage-collected by a daemon
+starting mid-flight. A second daemon refuses to start while a live daemon
+holds the socket — checked BEFORE crash GC so a racing start can never reap
+the live daemon's children. `claudexor daemon rotate-token` rotates the local
+auth token (refused while the daemon is live; takes effect on next start),
+and the daemon socket is `chmod 0600`.
+
 ### Interactive runs (waiting_on_user)
 
 Harnesses with the `interactive` capability (Claude Code via its bidirectional

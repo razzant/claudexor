@@ -3,6 +3,21 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **Unreleased (v0.15 program, phase 3)** — run honesty: every announced run
+  now ends with a terminal event on every path (throw/cancel/daemon restart);
+  a silent harness stream is killed by an inactivity watchdog
+  (`runtime.harness_inactivity_timeout_ms`, default 20 min; waiting on a user
+  question does not count as silence); diffs are captured byte-faithfully
+  (CRLF/binary survive; payload-less binary stubs are typed refusals); race
+  winners must additionally survive a FINAL VERIFY (fresh worktree at the
+  winner's base + deterministic gates; failures AND verifier errors block the
+  run fail-closed); apply/adopt ride a protected path (check-first, restore
+  on failure). BREAKING surface changes: `POST /runs` rejects client-supplied
+  `turnId` and `planRunId` (400); unknown CLI commands exit 2 (was: help with
+  exit 0); thread apply 409s while the head run is blocked/failed without a
+  typed operator decision (or its record was pruned); `--max-tool-calls` /
+  `maxToolCalls` is refused outside orchestrate; orchestrate sub-runs share
+  ONE aggregate budget (each sequential step gets the remaining headroom).
 - **Unreleased (v0.15 program)** — BREAKING config strictness: YAML configs
   (`~/.claudexor/config.yaml`, project `.claudexor/config.yaml`, trust files)
   are now parsed against STRICT schemas — an unknown/typo'd key is a loud

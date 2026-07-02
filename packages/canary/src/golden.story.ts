@@ -6,8 +6,8 @@
  * product, never the story, unless the owner approved a CONCEPT-CHANGE for
  * that invariant.
  */
-import { spawn } from "node:child_process";
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CLI, type Sandbox, cli, makeSandbox, readEvents, readRunFile, runFileExists } from "./support.js";
@@ -163,9 +163,75 @@ describe("canary golden stories", () => {
     expect(runFileExists(runDir as string, "final/telemetry.yaml")).toBe(true);
   }, 90_000);
 
-  // [INV-111:blocked-needs-decision] requires a deterministic NEEDS_HUMAN fake or a
-  // protected-path fixture; lands with the Phase 1 canary expansion.
-  it.todo("[INV-111:blocked-needs-decision] a blocked run refuses apply until a typed operator decision exists");
+  it("[INV-111:blocked-needs-decision] a NEEDS_HUMAN-blocked run refuses apply until a typed operator decision exists, then applies", async () => {
+    // Protected-path tamper is the deterministic NEEDS_HUMAN trigger: the spec
+    // freezes FAKE_CHANGE.txt as protected, the file EXISTS in the repo, and
+    // fake-implement overwrites it -> reviewer escalates -> blocked terminal.
+    execFileSync("git", ["-C", sb.repo, "config", "user.email", "c@c"]);
+    execFileSync("git", ["-C", sb.repo, "config", "user.name", "c"]);
+    writeFileSync(join(sb.repo, "FAKE_CHANGE.txt"), "protected original\n");
+    execFileSync("git", ["-C", sb.repo, "add", "-A"]);
+    execFileSync("git", ["-C", sb.repo, "commit", "-qm", "protect fixture"]);
+    const spec = {
+      schema_version: 2,
+      id: "spec-canary-protected",
+      created_at: new Date().toISOString(),
+      version: 1,
+      frozen: true,
+      intent: { raw: "change the protected file" },
+      constraints: { protected_paths: ["FAKE_CHANGE.txt"] },
+      tests: [{ id: "t1", command: 'node -e "process.exit(0)"' }],
+    };
+    const specPath = join(sb.repo, "spec.json");
+    writeFileSync(specPath, JSON.stringify(spec));
+    const r = cli(sb, ["race", "tamper the protected file", "--spec", specPath, "--harness", "fake-implement", "--n", "2", "--json"]);
+    const out = r.json() as { runId: string; runDir: string; status: string };
+    expect(out.status).toBe("blocked");
+    expect(readRunFile(out.runDir, "final/failure.yaml")).toMatch(/NEEDS_HUMAN|human/i);
+    // Apply REFUSES while no typed operator decision exists, naming the remedy.
+    const refused = cli(sb, ["apply", out.runId, "--dry-run"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stdout + refused.stderr).toMatch(/refusing apply/);
+    expect(refused.stdout + refused.stderr).toMatch(/decision/i);
+    // The typed operator decision (public surface: claudexor decision --override)
+    // unblocks apply for THIS patch.
+    const decided = cli(sb, ["decision", out.runId, "--override", "--json"]);
+    expect(decided.code).toBe(0);
+    const applied = cli(sb, ["apply", out.runId, "--dry-run"]);
+    expect(applied.code).toBe(0);
+  }, 120_000);
+
+  it("[INV-041:crlf-diff-fidelity] a candidate patch over CRLF content survives byte-faithfully and applies onto the live tree", () => {
+    // The repo holds a COMMITTED CRLF file; fake-implement overwrites it with
+    // LF content. The captured patch must carry the original CR bytes (raw
+    // capture, no readline mangling) and must APPLY cleanly back onto the
+    // live tree — the round-trip the phase's diff-fidelity work guarantees.
+    execFileSync("git", ["-C", sb.repo, "config", "user.email", "c@c"]);
+    execFileSync("git", ["-C", sb.repo, "config", "user.name", "c"]);
+    writeFileSync(join(sb.repo, "FAKE_CHANGE.txt"), "line one\r\nline two\r\n");
+    execFileSync("git", ["-C", sb.repo, "add", "-A"]);
+    execFileSync("git", ["-C", sb.repo, "commit", "-qm", "crlf fixture"]);
+    const r = cli(sb, [
+      "run",
+      "rewrite the file",
+      "--harness",
+      "fake-implement",
+      "--test",
+      'node -e "process.exit(0)"',
+      "--json",
+    ]);
+    const out = r.json() as { runId: string; runDir: string; status: string };
+    const patch = readRunFile(out.runDir, "final/patch.diff");
+    // The removed CRLF lines keep their CR bytes inside the patch artifact.
+    expect(patch).toMatch(/-line one\r\n/);
+    // The artifact byte-fidelity contract: git itself confirms the patch
+    // applies onto the live tree. (`claudexor apply` additionally demands a
+    // verified review — INV-112, pinned by its own story above — so the
+    // fidelity check goes straight to git.)
+    const patchPath = join(sb.repo, ".crlf-canary.patch");
+    writeFileSync(patchPath, patch);
+    execFileSync("git", ["-C", sb.repo, "apply", "--check", patchPath]);
+  });
 
   it("[INV-104:model-truth-refusal] a model outside the harness truth source is a typed preflight refusal with artifacts — no CLI spawn, no opaque native error", () => {
     const r = cli(sb, [
