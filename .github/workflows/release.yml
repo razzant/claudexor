@@ -113,8 +113,8 @@ jobs:
       - name: Docs truth (endpoints, mode ids, CLI flags)
         run: node scripts/docs-truth-check.mjs
 
-      - name: Concept gate
-        run: node scripts/concept-gate.mjs
+      - name: Concept gate (cumulative since the previous release tag)
+        run: node scripts/concept-gate.mjs --since-last-tag
 
       - name: Staged-field gate
         run: pnpm staged:check
