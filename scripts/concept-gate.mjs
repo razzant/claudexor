@@ -202,7 +202,15 @@ function checkCommit(sha) {
     try {
       base = git(["merge-base", ...(parents.length > 2 ? ["--octopus"] : []), ...parents]).trim();
     } catch {
-      /* disconnected histories: fall back to strict parent-agreement below */
+      // Distinguish a shallow clone hiding the common base (fail loudly,
+      // deepen-fetch is the remedy) from genuinely disconnected histories
+      // (fall back to strict parent-agreement below).
+      if (git(["rev-parse", "--is-shallow-repository"]).trim() === "true") {
+        throw new Error(
+          `concept-gate: cannot find the merge base of ${sha.slice(0, 10)} in this SHALLOW clone — ` +
+            `deepen the fetch (fetch-depth: 0) and rerun.`,
+        );
+      }
     }
     const basePieces = base === null ? null : biblePieces(bibleAt(base));
     const afterPieces = biblePieces(after);
