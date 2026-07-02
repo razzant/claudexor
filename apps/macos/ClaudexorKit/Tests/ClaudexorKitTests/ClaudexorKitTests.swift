@@ -657,6 +657,25 @@ import Testing
         #expect(untouchedObj?["primaryHarness"] == nil)
     }
 
+    @Test func threadListDecodeSalvagesRowsAndCountsDrops() throws {
+        // ONE malformed row must not blank the whole sidebar (T6#5): good rows
+        // survive, the drop is counted for disclosure.
+        let now = "2026-07-02T12:00:00Z"
+        let good: [String: Any] = [
+            "id": "th-ok", "title": "ok", "repoRoot": "/r", "mode": "agent",
+            "workspaceMode": "in_place", "authPreference": "auto",
+            "primaryHarness": NSNull(), "eligibleHarnesses": [],
+            "state": "active", "runIds": [], "headRunId": NSNull(),
+            "needsHuman": false, "createdAt": now, "updatedAt": now,
+        ]
+        let bad: [String: Any] = ["id": 42, "definitely": "not-a-thread"]
+        let body = try JSONSerialization.data(withJSONObject: ["threads": [good, bad]])
+        let decoded = try JSONDecoder().decode(ThreadListResponse.self, from: body)
+        #expect(decoded.threads.count == 1)
+        #expect(decoded.threads.first?.id == "th-ok")
+        #expect(decoded.droppedThreads == 1)
+    }
+
     @Test func runScopeProjectAlwaysEncodesAutoContext() throws {
         // The schema RunScopeContext enum has exactly one member; the helper
         // must not be able to produce anything else on the wire.

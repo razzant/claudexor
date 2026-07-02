@@ -61,6 +61,12 @@ struct ArtifactGalleryView: View {
         let list = produced
             ? await model.producedArtifacts(runId: runId)
             : await model.runArtifacts(runId: runId)
+        guard let list else {
+            // Load FAILED (offline/transport): show the error state instead of
+            // silently rendering "no artifacts" over kept last-known data.
+            loadError = "Could not load artifacts — the engine is offline or the request failed. Re-open this tab to retry."
+            return
+        }
         if list.isEmpty && !artifacts.isEmpty { return } // keep last-known on a transient empty
         artifacts = list
         loadError = nil

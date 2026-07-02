@@ -247,6 +247,40 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
 
 public struct ThreadListResponse: Codable, Sendable {
     public let threads: [ThreadSummary]
+    /** Rows the decoder had to DROP (schema-skewed records). Not a wire
+     * field — computed at decode so the sidebar can disclose the loss
+     * instead of silently blanking (T6#5). */
+    public var droppedThreads: Int = 0
+
+    enum CodingKeys: String, CodingKey { case threads }
+
+    public init(threads: [ThreadSummary]) {
+        self.threads = threads
+    }
+
+    public init(from decoder: Decoder) throws {
+        // Per-row salvage: ONE malformed ThreadSummary must not blank the
+        // whole sidebar. Failed rows are consumed (JSONValue) and counted.
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        var unkeyed = try c.nestedUnkeyedContainer(forKey: .threads)
+        var ok: [ThreadSummary] = []
+        var dropped = 0
+        while !unkeyed.isAtEnd {
+            if let t = try? unkeyed.decode(ThreadSummary.self) {
+                ok.append(t)
+            } else {
+                _ = try? unkeyed.decode(JSONValue.self)
+                dropped += 1
+            }
+        }
+        self.threads = ok
+        self.droppedThreads = dropped
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(threads, forKey: .threads)
+    }
 }
 
 public struct ThreadDetailResponse: Codable, Sendable {

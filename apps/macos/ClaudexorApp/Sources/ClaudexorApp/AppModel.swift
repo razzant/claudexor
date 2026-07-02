@@ -405,9 +405,11 @@ final class AppModel {
     // MARK: - Artifacts (Phase 3 gallery)
 
     /// List a run's produced artifacts (path/kind/bytes/mime) for the gallery.
-    func runArtifacts(runId: String) async -> [ArtifactInfo] {
-        guard let client else { return [] }
-        return (try? await client.listRunArtifacts(runId: runId)) ?? []
+    /// nil = the LOAD failed (offline/transport) — distinct from an honest
+    /// empty list, so the gallery can show its error state (T6#13).
+    func runArtifacts(runId: String) async -> [ArtifactInfo]? {
+        guard let client else { return nil }
+        return try? await client.listRunArtifacts(runId: runId)
     }
 
     /// Raw bytes of one artifact (images / pdf) for inline rendering or open.
@@ -425,10 +427,10 @@ final class AppModel {
     // MARK: - Produced outputs (project artifacts/, not the run tree)
 
     /// List a run's PRODUCED outputs — files the run writes into the project's
-    /// `artifacts/` folder — for the Canvas gallery.
-    func producedArtifacts(runId: String) async -> [ArtifactInfo] {
-        guard let client else { return [] }
-        return (try? await client.listProducedFiles(runId: runId)) ?? []
+    /// `artifacts/` folder — for the Canvas gallery. nil = load failed.
+    func producedArtifacts(runId: String) async -> [ArtifactInfo]? {
+        guard let client else { return nil }
+        return try? await client.listProducedFiles(runId: runId)
     }
 
     /// Raw bytes of one produced output (images / pdf) for inline rendering or open.
@@ -772,9 +774,15 @@ final class AppModel {
             let result = try await client.startRun(req)
             switch result {
             case .started(let info):
-                // swap the optimistic row for one keyed by the real run id
-                if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
-                    let prev = liveTasks[idx]
+                // Swap the optimistic row for one keyed by the real run id.
+                // A refresh may have raced in during the await (T6#14): drop
+                // any server row already inserted under the real id (dedupe)
+                // and INSERT when the optimistic row is gone (never lose the
+                // started run from the list).
+                liveTasks.removeAll { $0.id == info.runId }
+                do {
+                    let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id })
+                    let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var started = TaskRun(
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
@@ -789,13 +797,15 @@ final class AppModel {
                     started.tests = prev.tests
                     started.reviewerPanel = prev.reviewerPanel
                     started.protectedPathApprovals = prev.protectedPathApprovals
-                    liveTasks[idx] = started
+                    if let idx { liveTasks[idx] = started } else { liveTasks.insert(started, at: 0) }
                     route = .task(info.runId)
                     stream(runId: info.runId)
                 }
             case .queued(let info):
-                if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
-                    let prev = liveTasks[idx]
+                liveTasks.removeAll { $0.id == info.jobId }
+                do {
+                    let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id })
+                    let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var row = TaskRun(
                         id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .queued, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
@@ -814,7 +824,7 @@ final class AppModel {
                     row.tests = prev.tests
                     row.reviewerPanel = prev.reviewerPanel
                     row.protectedPathApprovals = prev.protectedPathApprovals
-                    liveTasks[idx] = row
+                    if let idx { liveTasks[idx] = row } else { liveTasks.insert(row, at: 0) }
                     route = .task(info.jobId)
                 }
             }
@@ -854,10 +864,20 @@ final class AppModel {
     func refreshThreads() async {
         guard let client else { return }
         do {
-            threads = try await client.listThreads().threads
-        } catch {
-            // Engine builds without thread support return 501; keep the list empty.
+            let list = try await client.listThreads()
+            threads = list.threads
+            if list.droppedThreads > 0 {
+                // Per-row salvage disclosed (T6#5): the store carried rows this
+                // app build cannot decode — say so instead of hiding them.
+                threadStatus = "\(list.droppedThreads) thread(s) could not be decoded by this app version and are hidden."
+            }
+        } catch let GatewayError.http(status, _) where status == 501 {
+            // Engine builds without thread support: honestly empty.
             threads = []
+        } catch {
+            // A transport/decode failure is NOT an empty thread list: keep the
+            // last-known rows and surface the error.
+            threadStatus = "Could not refresh threads: \(userMessage(for: error))"
         }
     }
 
@@ -1646,7 +1666,12 @@ final class AppModel {
                 snapshotLoadDepth[id] = nil
                 let deferred = deferredEnvelopes[id] ?? []
                 deferredEnvelopes[id] = nil
-                for env in deferred { apply(env, to: id) }
+                // Seq fence for the REPLAY too (T6#6): the snapshot we just
+                // merged reflects everything <= lastSeq; re-applying a
+                // deferred envelope from that range would double-count spend
+                // and duplicate timeline rows.
+                let fence = lastEventIds[id] ?? 0
+                for env in deferred where !(env.seq > 0 && env.seq <= fence) { apply(env, to: id) }
             }
         }
         do {
@@ -1951,8 +1976,18 @@ final class AppModel {
             while !Task.isCancelled {
                 guard let self, let client = self.client else { break }
                 let resumeFrom = self.lastEventIds[runId]
+                if resumeFrom == nil, let idx = self.liveTasks.firstIndex(where: { $0.id == runId }) {
+                    // Full replay rebuilds spend from budget.observation
+                    // increments (T6#7): seed from replay OR summary, never
+                    // both — a mid-run first attach used to double the money.
+                    self.liveTasks[idx].spendUsd = 0
+                }
                 do {
                     for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
+                        // A delivering stream is a HEALTHY stream: reset the
+                        // reconnect budget (T6#8) so a long run with occasional
+                        // transient drops never falsely reports a lost stream.
+                        attempt = 0
                         // Snapshot fence: a concurrent detail load may already
                         // reflect this event; never re-apply older sequence ids.
                         if env.seq > 0, env.seq <= (self.lastEventIds[runId] ?? 0) { continue }
