@@ -47,8 +47,15 @@ const LOCKED_TRIAD = "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-op
 const LOCKED_SCOPE = "openai/gpt-5.5";
 const OVERRIDE_ACK = "I_UNDERSTAND_THIS_VIOLATES_THE_LOCKED_PANEL";
 // Order-insensitive: reordering the same three locked models is not a panel
-// violation (the panel is a SET; sequence carries no meaning here).
-const normalizePanel = (s) => s.split(",").map((m) => m.trim()).sort().join(",");
+// violation (the panel is a SET; sequence carries no meaning here). Blank
+// segments from sloppy env values ("a,,b", trailing commas) are ignored.
+const normalizePanel = (s) =>
+  s
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean)
+    .sort()
+    .join(",");
 for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL", LOCKED_SCOPE]]) {
   const v = process.env[envName];
   if (v && normalizePanel(v) !== normalizePanel(locked) && process.env.TRIAD_ALLOW_OVERRIDE !== OVERRIDE_ACK) {
@@ -60,11 +67,15 @@ for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL",
     process.exit(1);
   }
   if (v && normalizePanel(v) !== normalizePanel(locked)) {
-    console.error(`WARNING: ${envName} override active (${v}) — acknowledged panel violation; recording it.`);
+    // Reachable only with the ack set (the guard above exits otherwise).
+    console.error(`WARNING: ${envName} override active — acknowledged panel substitution; recording it in summary.json.`);
   }
 }
-const TRIAD_MODELS = (process.env.TRIAD_MODELS || LOCKED_TRIAD).split(",");
-const SCOPE_MODEL = process.env.SCOPE_MODEL || LOCKED_SCOPE;
+const TRIAD_MODELS = (process.env.TRIAD_MODELS || LOCKED_TRIAD)
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
+const SCOPE_MODEL = (process.env.SCOPE_MODEL || LOCKED_SCOPE).trim();
 const SCOPE_ITEMS = [
   "intent_alignment",
   "forgotten_touchpoints",
@@ -764,7 +775,7 @@ async function main() {
     // a locked panel is a no-op and must not read as a violation.
     panel_override_active:
       normalizePanel(TRIAD_MODELS.join(",")) !== normalizePanel(LOCKED_TRIAD) ||
-      SCOPE_MODEL !== LOCKED_SCOPE,
+      normalizePanel(SCOPE_MODEL) !== normalizePanel(LOCKED_SCOPE),
     panel_override_acknowledged: process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
