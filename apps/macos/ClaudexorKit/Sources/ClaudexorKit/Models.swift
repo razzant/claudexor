@@ -21,8 +21,10 @@ public struct RunScope: Codable, Sendable, Equatable {
     public var context: String?
 
     public static let none = RunScope(kind: "none", root: nil, context: nil)
-    public static func project(root: String, context: String = "auto") -> RunScope {
-        RunScope(kind: "project", root: root, context: context)
+    /// Context is engine-owned: the schema enum has exactly one member
+    /// ("auto"), so the helper does not take a free-string parameter.
+    public static func project(root: String) -> RunScope {
+        RunScope(kind: "project", root: root, context: "auto")
     }
 }
 

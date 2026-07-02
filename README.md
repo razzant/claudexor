@@ -5,9 +5,9 @@ CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
 behind one typed interface.
 
 The core rule is simple: a harness is not a role. Roles are intents such as
-`explain`, `plan`, `spec`, `implement`, `repair`, `review`, `verify`,
-`synthesize`, `audit`, and `orchestrate`. Any harness that
-declares the capability can be assigned the intent.
+`explain`, `plan`, `spec`, `implement`, `create_from_scratch`, `repair`,
+`review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
+that declares the capability can be assigned the intent.
 
 Current status: **v0.14.1 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.

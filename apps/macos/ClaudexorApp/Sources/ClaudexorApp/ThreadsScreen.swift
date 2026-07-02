@@ -726,7 +726,6 @@ struct ThreadsScreen: View {
                         .padding(.leading, 2)
                 }
             }
-            // Context depth for PROJECT-SCOPED turns (RunScope.project picks deep|auto
             // Context depth is engine-owned "auto" now: the "deep" tier never had
             // distinct behavior and was retired in the v0.15 triage (A3), so the
             // picker that promised it is gone with the enum member.

@@ -708,7 +708,6 @@ final class AppModel {
             settingsStatus = "Choose a Current Project before launching \(mode.label). Ask can run without a project."
             return
         }
-        let launchContextMode = launchRepoRoot.isEmpty ? "off" : "auto"
         let launchProjectName = launchRepoRoot.isEmpty ? "No project" : URL(fileURLWithPath: launchRepoRoot).lastPathComponent
         let hasExplicitCap = capUsd != nil
         var optimistic = TaskRun(
@@ -751,7 +750,7 @@ final class AppModel {
             let orderedHarnesses = harnesses.map(\.rawValue)
             let scope = launchRepoRoot.isEmpty
                 ? RunScope.none
-                : RunScope.project(root: launchRepoRoot, context: "auto")
+                : RunScope.project(root: launchRepoRoot)
             let flags = mode.strategyFlags
             let req = StartRunRequest(prompt: prompt, mode: mode.apiValue,
                                       scope: scope,
@@ -1127,7 +1126,7 @@ final class AppModel {
             threadStatus = "Engine offline: reconnect before creating a thread."
             return
         }
-        let scope: RunScope = normalizedProjectRoot.isEmpty ? .none : .project(root: normalizedProjectRoot, context: "auto")
+        let scope: RunScope = normalizedProjectRoot.isEmpty ? .none : .project(root: normalizedProjectRoot)
         do {
             // Materialize the draft routing onto the new thread (sticky from turn one).
             // Send the GUARDED primary (`effectivePrimaryHarness` already returns nil

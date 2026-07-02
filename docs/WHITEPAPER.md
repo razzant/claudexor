@@ -98,8 +98,8 @@ delivered.
 ## Harnesses Are Tools, Not Roles
 
 A harness is an execution surface. A role is an intent: `explain`, `plan`,
-`spec`, `implement`, `repair`, `review`, `verify`, `synthesize`,
-`audit`, or `orchestrate`. Claudexor routes only when discovery, doctor, enabled
+`spec`, `implement`, `create_from_scratch`, `repair`, `review`, `verify`,
+`synthesize`, `audit`, or `orchestrate`. Claudexor routes only when discovery, doctor, enabled
 intents, capability profile, and access support all agree. Manifest auth source
 availability is not readiness; isolated smoke and doctor checks decide whether a
 harness is routable.
@@ -297,6 +297,12 @@ Budget truth is part of trust. Claudexor distinguishes exact native cost from
 estimated token-derived cost and keeps unknown spend unknown. It does not render
 missing data as `$0`.
 
+A per-run cap also has to survive concurrency: candidates in a race settle
+usage at different moments, so each parallel slot after the first reserves a
+small estimate hold against the cap, and a slot whose estimate meets or
+exceeds the remaining headroom is denied up front — a typed denial of that
+one slot, never a trip wire that cancels work already granted.
+
 Harness settings are per-harness defaults records in the global config: each
 harness can carry enabled state, default model, effort, max turns/rounds,
 budget cap, tool allow/deny lists, fallback model, and web policy. The
@@ -304,6 +310,15 @@ settings editor saves partial patches through the settings API — it changes
 only the fields the user touched, and an explicit empty value clears an
 override rather than freezing it. Knobs a harness manifest does not support
 are disclosed on the run (`ignored_settings`), never silently dropped.
+
+Two guarantees keep those records honest. Config files parse strictly: an
+unknown key is a loud, named error rather than a silently ignored knob
+(retired keys from older versions are migrated away, not tolerated). And
+model choice is harness-scoped with a truth source: an explicit model —
+whether stored in settings, passed on a run, or named for a reviewer — must
+appear in that harness's live inventory or manifest known-good list, or it
+is refused up front with the harness, model, and truth source named. There
+is no global cross-harness model value.
 
 ## macOS Design
 

@@ -553,9 +553,9 @@ private struct HarnessDefaultsRow: View {
             }
             .labelsHidden()
             .help(modelPickerHelp(models))
-        } else if !modelDraft.isEmpty {
-            // A stored legacy override on a truth-less harness: strict
-            // governance refuses it at preflight, so SHOW it and offer the
+        } else if !modelDraft.isEmpty, models != nil {
+            // The harness ANSWERED with no truth source: a stored legacy
+            // override will be refused at preflight, so SHOW it and offer the
             // only meaningful action — clearing it (explicit null on save).
             LabeledContent("Model") {
                 HStack(spacing: Theme.Spacing.xs) {
@@ -567,6 +567,14 @@ private struct HarnessDefaultsRow: View {
                 }
             }
             .help(modelFallbackHelp)
+        } else if !modelDraft.isEmpty {
+            // Catalog request failed (engine offline / transient): do NOT
+            // claim the override is refused — we could not check it.
+            LabeledContent("Model") {
+                Text("\(modelDraft) — model catalog unavailable")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .help("Could not load the \(family.label) model catalog; the override stays as-is. Reconnect to verify it.")
         } else {
             LabeledContent("Model") {
                 Text("Harness default only")
