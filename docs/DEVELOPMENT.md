@@ -58,15 +58,23 @@ Use the repository package manager and keep generated schema output checked.
 pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
+pnpm typecheck:tests   # type-checks *.test.ts, schema scripts, and canary sources
 pnpm test
 pnpm schema:gen
 git diff --exit-code packages/schema/generated
-pnpm docs:check   # docs-truth gate (endpoints / mode ids / CLI flags vs source)
-pnpm knip         # dead exports / unused files / unused dependencies gate
+node scripts/validate-generated-schemas.mjs   # ajv-compiles every generated schema (draft-07)
+pnpm docs:check    # docs-truth gate (endpoints / mode ids / CLI flags vs source)
+pnpm staged:check  # staged-field gate (comments do not count as consumers)
+pnpm knip          # dead exports / unused files / unused dependencies gate
+node scripts/complexity-ratchet.mjs   # readability ratchet: tracked files may only shrink
+pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)
 ```
 
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
-Prettier formatting when a formatting pass is relevant.
+Prettier formatting when a formatting pass is relevant. Note on Node versions:
+`.node-version` pins the DEV toolchain (24.16.0, matching CI); the root
+`engines.node >= 20.19.0` is the published-package compatibility floor — the
+split is intentional, do not "reconcile" them.
 
 macOS app checks:
 

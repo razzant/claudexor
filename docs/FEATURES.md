@@ -8,10 +8,8 @@ change alters a feature listed here, update or delete its row in the same
 commit. A feature that becomes solid loses its row — this ledger shrinks toward
 empty; growth is a regression signal.
 
-The full 355-row audit inventory behind this ledger (including solid rows and
-per-domain reports with file:line evidence) is a local operator artifact from
-the 2026-07-02 v0.14.1 audit; this public ledger carries the actionable subset.
-
-> Seeded during the v0.15 stabilization program (Phase 1 populates the rows
-> from the audit; later phases delete rows as fixes land). Until Phase 1 lands,
-> the authoritative problem inventory is the v0.15 plan.
+> Status: seeded during the v0.15 stabilization program. No public rows are
+> published yet — Phase 1 of that program populates this table from a full
+> repository audit, and later phases delete rows as fixes land. Until rows
+> exist here, treat features conservatively: verify current behavior against
+> code and tests rather than assuming any non-documented feature is solid.

@@ -74,6 +74,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build
+        run: pnpm build
+
       - name: Verify generated schemas
         shell: bash
         run: |
@@ -83,6 +86,10 @@ jobs:
             echo "::error::Generated JSON Schema is stale; run pnpm schema:gen and commit the result."
             exit 1
           }
+          if [ -n "$(git ls-files --others --exclude-standard packages/schema/generated)" ]; then
+            echo "::error::Untracked generated schema files exist; commit them."
+            exit 1
+          fi
 
       - name: Typecheck
         run: pnpm typecheck && pnpm typecheck:tests

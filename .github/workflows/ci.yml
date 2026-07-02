@@ -52,6 +52,10 @@ jobs:
         run: |
           pnpm schema:gen
           git diff --exit-code packages/schema/generated || (echo "::error::JSON Schema is stale; run 'pnpm schema:gen' and commit." && exit 1)
+          if [ -n "$(git ls-files --others --exclude-standard packages/schema/generated)" ]; then
+            echo "::error::Untracked generated schema files exist; commit them."
+            exit 1
+          fi
 
       - name: Validate generated JSON Schema dialect (ajv)
         run: node scripts/validate-generated-schemas.mjs
