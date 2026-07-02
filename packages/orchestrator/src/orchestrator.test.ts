@@ -4507,3 +4507,110 @@ describe("web evidence recovery keying (INV-043)", () => {
     expect(webUnsatisfied(t)).toBe(true);
   });
 });
+
+describe("final verify fail-closed + spend accounting (exit-gate criticals)", () => {
+  it("verifier infra error yields applied_cleanly=null (attempted), never a silent pass", async () => {
+    const repo = await initRepo();
+    const { finalVerifyPatch } = await import("./finalVerifier.js");
+    const rec = await finalVerifyPatch(
+      repo,
+      { baseSha: "0000000000000000000000000000000000000000", diff: "diff --git a/x b/x\n" },
+      [],
+      { emit: () => undefined },
+    );
+    // worktreeAdd cannot check out a nonexistent sha -> the verifier ERRORED.
+    expect(rec).toMatchObject({ attempted: true, applied_cleanly: null });
+    expect(rec.reason).toBeTruthy();
+  });
+
+  it("ask/plan/report results carry spendUsd so the orchestrate aggregate budget can charge them", async () => {
+    const repo = await initRepo();
+    const adapter = askAdapter("spender", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "the answer" };
+      yield { type: "usage", session_id: sessionId, ts, usage: { cost_usd: 0.01 } };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const res = await new Orchestrator({ registry: new Map([["spender", adapter]]), reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "2+2?",
+      mode: "ask",
+      harnesses: ["spender"],
+    });
+    expect(res.status).toBe("success");
+    expect(res.spendUsd).toBeCloseTo(0.01, 5);
+  });
+
+  it("orchestrate aggregate budget charges ask sub-runs and exhausts instead of overspending N times", async () => {
+    const repo = await initRepo();
+    const plan = {
+      tool_calls: [
+        { tool: "start_run", prompt: "q1", mode: "ask", harness: "spender", why: "" },
+        { tool: "start_run", prompt: "q2", mode: "ask", harness: "spender", why: "" },
+        { tool: "start_run", prompt: "q3", mode: "ask", harness: "spender", why: "" },
+      ],
+    };
+    const spender = askAdapter("spender", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "answered" };
+      yield { type: "usage", session_id: sessionId, ts, usage: { cost_usd: 0.01 } };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const registry = new Map<string, HarnessAdapter>([
+      ["brain", brainAdapter("brain", plan)],
+      ["spender", spender],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "answer three questions",
+      mode: "orchestrate",
+      harnesses: ["brain"],
+      autonomy: "auto_safe",
+      maxUsd: 0.015,
+    });
+    // Steps 1+2 spend 0.02 >= 0.015 -> step 3 must be SKIPPED and the run ends
+    // `exhausted` (pre-fix: ask sub-runs returned no spendUsd, aggregate stayed
+    // 0, and every step got the full cap again).
+    expect(res.status).toBe("exhausted");
+    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
+    expect(progress).toContain("aggregate budget exhausted");
+    expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("watchdog re-arms while a question is awaiting the user (isSuspended) instead of killing the run", async () => {
+    const { withInactivityWatchdog, HarnessInactivityTimeoutError } = await import("@claudexor/core");
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let suspended = true;
+    async function* slowSource() {
+      yield "first";
+      await sleep(200); // 4x the 50ms window, but suspended -> must survive
+      suspended = false;
+      yield "second";
+    }
+    const seen: string[] = [];
+    for await (const v of withInactivityWatchdog(slowSource(), {
+      timeoutMs: 50,
+      onTimeout: () => undefined,
+      isSuspended: () => suspended,
+    })) {
+      seen.push(v);
+    }
+    expect(seen).toEqual(["first", "second"]);
+    // Control: the same silence WITHOUT suspension times out.
+    async function* wedged() {
+      yield "only";
+      await sleep(60_000);
+    }
+    await expect(async () => {
+      for await (const v of withInactivityWatchdog(wedged(), {
+        timeoutMs: 50,
+        onTimeout: () => undefined,
+      })) {
+        void v;
+      }
+    }).rejects.toThrow(HarnessInactivityTimeoutError);
+  });
+});

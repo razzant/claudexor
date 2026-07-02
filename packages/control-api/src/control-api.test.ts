@@ -1812,6 +1812,69 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));
+    const token = "tok";
+    const now = new Date().toISOString();
+    const threadObj = {
+      id: "th-pruned",
+      created_at: now,
+      updated_at: now,
+      repo: { root: dir, base_ref: "HEAD" },
+      title: "pruned head",
+      mode: "agent",
+      workspace: { mode: "isolated", worktree_path: join(dir, "tree"), base_sha: "abc" },
+      auth_preference: "auto",
+      primary_harness: null,
+      eligible_harnesses: [],
+      portfolio: "subscription-first",
+      run_ids: ["run-gone"],
+      head_run_id: "run-gone",
+      state: "active",
+    };
+    let applied = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "j", state: "queued" };
+      },
+      async status() {
+        return { id: "x", state: "succeeded" };
+      },
+      async list() {
+        return []; // the head run's record aged out of jobs.json (maxHistory)
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const server = new DaemonControlApiServer({
+      token,
+      daemon,
+      services: {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
+        applyThread: async () => {
+          applied += 1;
+          return { applied: true, status: "applied" };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    try {
+      const res = await fetch(`${base}/threads/th-pruned/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toContain("no longer in the daemon history");
+      expect(applied).toBe(0);
+    } finally {
+      await server.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("streams events for a QUEUED job (SSE waits with heartbeats, binds the run dir when it appears)", async () => {
     // T3.1#6: GET /runs/:id/events on a queued job must open the stream and
     // wait, not 404 — `follow <jobId>` works from enqueue time.

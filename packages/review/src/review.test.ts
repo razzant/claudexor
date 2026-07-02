@@ -2622,3 +2622,21 @@ describe("reviewEngine", () => {
     expect(seenAuthPreference).toBe("api_key");
   });
 });
+
+describe("reviewer preserve set uses the shared quote-aware diff parser (INV-050)", () => {
+  it("decodes git C-quoted non-ASCII paths (octal escapes) into real touched paths", async () => {
+    const { __testExtractDiffTouchedPaths } = await import("./reviewEngine.js");
+    const diff = [
+      'diff --git "a/\\321\\204\\320\\260\\320\\271\\320\\273.txt" "b/\\321\\204\\320\\260\\320\\271\\320\\273.txt"',
+      "index 000..111 100644",
+      '--- "a/\\321\\204\\320\\260\\320\\271\\320\\273.txt"',
+      '+++ "b/\\321\\204\\320\\260\\320\\271\\320\\273.txt"',
+      "@@ -1 +1 @@",
+      "-a",
+      "+b",
+      "",
+    ].join("\n");
+    const paths = __testExtractDiffTouchedPaths(diff);
+    expect([...paths]).toContain("файл.txt");
+  });
+});

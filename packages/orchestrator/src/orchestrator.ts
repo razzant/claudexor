@@ -66,6 +66,18 @@ import {
   guardAnnouncedRun,
   writeFailure,
 } from "./runTerminals.js";
+import {
+  type TransientRetryPolicy,
+  transientRetryDelayMs,
+  gateProtectedPaths,
+  promptWithProtectedPathConstraint,
+  sleep,
+  redactHarnessEvent,
+  harnessEventPayload,
+  pushUniqueText,
+  formatFindings,
+  renderSummary,
+} from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt } from "./orchestrateBrain.js";
 import { finalVerifyPatch } from "./finalVerifier.js";
@@ -350,11 +362,6 @@ interface CandidateRun {
   infraPhase?: "workspace" | "harness";
 }
 
-interface TransientRetryPolicy {
-  maxRetries: number;
-  initialDelayMs: number;
-  maxDelayMs: number;
-}
 
 /** User-level per-harness defaults (from the global config) applied at route time. */
 interface HarnessRouteSettings {
@@ -1612,12 +1619,6 @@ export class Orchestrator {
         }) as unknown as Record<string, unknown>,
       );
     }
-    // Per-attempt abort controller: the inactivity watchdog aborts THIS
-    // attempt's stream (killing the process group through the existing abort
-    // plumbing) without touching the run-level cancel signal, so a timeout
-    // and a user cancel stay distinguishable (T3.1#1).
-    const attemptAbort = new AbortController();
-    spec.extra["abortSignal"] = signal ? AbortSignal.any([signal, attemptAbort.signal]) : attemptAbort.signal;
     if (interaction) spec.extra["interactionChannel"] = interaction;
     const inactivityMs = this.harnessInactivityTimeoutMs(contract.repo.root);
 
@@ -1648,6 +1649,16 @@ export class Orchestrator {
           nativeTry === 0
             ? spec
             : HarnessRunSpec.parse({ ...spec, session_id: newId("ses"), extra: { ...spec.extra } });
+        // Per-TRY abort controller: the inactivity watchdog aborts THIS try's
+        // stream (killing the process group through the existing abort
+        // plumbing) without touching the run-level cancel signal, so a timeout
+        // and a user cancel stay distinguishable (T3.1#1). Recreated per
+        // nativeTry — a transient retry must get a LIVE signal, not the
+        // previous try's already-aborted composite.
+        const attemptAbort = new AbortController();
+        runSpec.extra["abortSignal"] = signal
+          ? AbortSignal.any([signal, attemptAbort.signal])
+          : attemptAbort.signal;
         activeSessionId = runSpec.session_id;
         const transientStart = telemetry.transientFailures.length;
         try {
@@ -1657,6 +1668,9 @@ export class Orchestrator {
               attemptAbort.abort();
               void adapter.cancel?.(activeSessionId)?.catch(() => {});
             },
+            // Waiting on the USER (pending interaction) is legitimate
+            // silence — the interaction channel enforces its own wait budget.
+            isSuspended: () => (interaction?.pendingCount?.() ?? 0) > 0,
           });
           for await (const ev of watched) {
             if (signal?.aborted) break;
@@ -1816,7 +1830,13 @@ export class Orchestrator {
     });
 
     const attemptDir = join(paths.attemptsDir, attemptId);
-    assertNoSecretLikeTokens("candidate patch diff", diff);
+    try {
+      assertNoSecretLikeTokens("candidate patch diff", diff);
+    } catch (err) {
+      // The stream already settled real spend; a post-stream assertion throw
+      // must carry it so the slot catch settles the TRUE cost, not 0.
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
+    }
     store.writeText(join(attemptDir, "patch.diff"), diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
       attempt_id: attemptId,
@@ -2287,8 +2307,12 @@ export class Orchestrator {
         envelope = undefined;
       } catch (err) {
         // Envelope creation (or another pre-stream step) failed; stream errors
-        // are absorbed inside runCandidateInEnvelope with their real cost.
-        slotLedger(slot).settle(slot.leaseId, 0);
+        // are absorbed inside runCandidateInEnvelope with their real cost. A
+        // post-stream throw (e.g. the secret-token assertion) carries its
+        // streamed spend on the error — settle the TRUE cost, never launder
+        // real spend down to 0.
+        const carriedCost = typeof (err as { costUsd?: unknown })?.costUsd === "number" ? (err as { costUsd: number }).costUsd : 0;
+        slotLedger(slot).settle(slot.leaseId, carriedCost);
         const message = safeErrorMessage(err);
         // envelope is still undefined when wsm.create() itself threw — that is
         // a workspace-phase infrastructure failure, not a harness error.
@@ -2305,7 +2329,7 @@ export class Orchestrator {
         store.writeYaml(join(paths.attemptsDir, slot.attemptId, "attempt.yaml"), {
           attempt_id: slot.attemptId,
           harness_id: adapter.id,
-          cost_usd: 0,
+          cost_usd: carriedCost,
           errored: true,
           phase: infraPhase,
           errors: [message],
@@ -2720,9 +2744,16 @@ export class Orchestrator {
       !input.signal?.aborted
     ) {
       finalVerify = await finalVerifyPatch(execRoot, winnerRun, this.gateSpecs(contract), log);
+      // FAIL CLOSED (INV-115): `applied_cleanly === null` after an attempt
+      // means the verifier itself errored (worktree add failed, git timeout,
+      // unwritable tmp). "We could not check whether it survives a clean
+      // base" must block exactly like a proven failure — otherwise a local
+      // verify-infra problem silently vacates the guarantee. The operator
+      // accept_risk path stays available (it is an infra failure, not a
+      // proven conflict).
       finalVerifyFailed =
         finalVerify.attempted &&
-        (finalVerify.applied_cleanly === false || finalVerify.gates_passed === false);
+        (finalVerify.applied_cleanly !== true || finalVerify.gates_passed === false);
       if (finalVerifyFailed) status = "blocked";
     }
 
@@ -2886,12 +2917,21 @@ export class Orchestrator {
         // RunFailure.category is a closed enum; "validation" is the honest
         // bucket (the winner failed re-validation on a fresh base).
         category: "validation",
-        safeMessage: `final verify failed: ${finalVerify?.reason ?? (finalVerify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`,
+        safeMessage:
+          finalVerify?.applied_cleanly === null
+            ? `final verify ERRORED before proving the patch against a clean base: ${finalVerify?.reason ?? "verify infrastructure error"}`
+            : `final verify failed: ${finalVerify?.reason ?? (finalVerify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`,
         runDir: paths.root,
-        nextActions: [
-          "Inspect arbitration/decision.yaml (final_verify)",
-          "Re-run after fixing the base conflict or the failing gates",
-        ],
+        nextActions:
+          finalVerify?.applied_cleanly === null
+            ? [
+                "Inspect arbitration/decision.yaml (final_verify) for the verifier error",
+                "Fix the verify infrastructure (git worktree/tmp) and re-run, or accept_risk to override",
+              ]
+            : [
+                "Inspect arbitration/decision.yaml (final_verify)",
+                "Re-run after fixing the base conflict or the failing gates",
+              ],
       });
     } else if (status !== "success" && !honestTerminal) {
       writeFailure(store, paths, {
@@ -2941,7 +2981,13 @@ export class Orchestrator {
     if (status === "success" || honestTerminal) {
       log.emit("run.completed", { status, outcome: result.decision.outcome });
     } else if (status === "blocked") {
-      log.emit("run.blocked", { status, phase: "review", failure_ref: "final/failure.yaml" });
+      // The event's phase must agree with failure.yaml (a verify block is
+      // phase "verification", not "review").
+      log.emit("run.blocked", {
+        status,
+        phase: finalVerifyFailed ? "verification" : "review",
+        failure_ref: "final/failure.yaml",
+      });
     } else {
       log.emit("run.failed", { status, phase: "arbitration", failure_ref: "final/failure.yaml" });
     }
@@ -3413,6 +3459,7 @@ export class Orchestrator {
       );
       if (gitPreconditionError) {
         return {
+          spendUsd: ledger.spend(),
           runId,
           taskId,
           mode,
@@ -3467,6 +3514,7 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode,
@@ -3510,6 +3558,7 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode,
@@ -4109,6 +4158,7 @@ export class Orchestrator {
       });
     }
     return {
+      spendUsd: ledger.spend(),
       runId,
       taskId,
       mode,
@@ -4215,6 +4265,7 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode: "plan",
@@ -4253,6 +4304,7 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode: "plan",
@@ -4366,6 +4418,7 @@ export class Orchestrator {
                 plannerAbort.abort();
                 void adapter.cancel?.(spec.session_id)?.catch(() => {});
               },
+              isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
             });
             for await (const ev of watchedPlan) {
               if (input.signal?.aborted) break;
@@ -4517,6 +4570,7 @@ export class Orchestrator {
           failure_ref: "final/failure.yaml",
         });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode: "plan",
@@ -4689,6 +4743,7 @@ export class Orchestrator {
     log.emit("run.completed", { status: "success" });
 
     return {
+      spendUsd: ledger.spend(),
       runId,
       taskId,
       mode: "plan",
@@ -5081,6 +5136,7 @@ export class Orchestrator {
                 reportAbort.abort();
                 void adapter.cancel?.(activeSessionId)?.catch(() => {});
               },
+              isSuspended: () => (reportInteraction?.pendingCount?.() ?? 0) > 0,
             });
             for await (const ev of watchedReport) {
               if (input.signal?.aborted) break;
@@ -5413,6 +5469,7 @@ export class Orchestrator {
         });
       }
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode: opts.mode,
@@ -5476,6 +5533,7 @@ export class Orchestrator {
           failure_ref: "final/failure.yaml",
         });
       return {
+        spendUsd: ledger.spend(),
         runId,
         taskId,
         mode: opts.mode,
@@ -5700,6 +5758,7 @@ export class Orchestrator {
     }
 
     return {
+      spendUsd: ledger.spend(),
       runId,
       taskId,
       mode: opts.mode,
@@ -5783,12 +5842,15 @@ export class Orchestrator {
         break;
       }
       // Honor the budget cap on tool calls (count attempted executions).
+      // Same honesty as the USD cap: a plan cut short by a budget knob ends
+      // `exhausted`, never a quiet "success" whose note miscounts the steps.
       if (maxToolCalls !== null && executed >= maxToolCalls) {
         step.status = "skipped";
         step.detail = `budget max_tool_calls=${maxToolCalls} reached`;
-        stoppedReason = `budget max_tool_calls=${maxToolCalls} reached`;
+        stoppedReason = `budget max_tool_calls=${maxToolCalls} reached after ${executed} step(s)`;
+        terminal = "exhausted";
         persist();
-        continue;
+        break;
       }
       const risk = toolRisk(call.tool);
       // RISKY step (apply, or any fail-closed-risky tool).
@@ -5883,7 +5945,9 @@ export class Orchestrator {
           ? `failed (${done}/${steps.length} steps done; ${stoppedReason ?? "see progress"})`
           : terminal === "cancelled"
             ? `cancelled (${done}/${steps.length} steps done)`
-            : `all ${done}/${steps.length} steps done`;
+            : terminal === "exhausted"
+              ? `budget exhausted (${done}/${steps.length} steps done; ${stoppedReason ?? "see progress"})`
+              : `all ${done}/${steps.length} steps done`;
     return { terminal, note };
   }
 
@@ -6162,94 +6226,6 @@ function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null
 }
 
 
-function transientRetryDelayMs(
-  nativeDelayMs: number | null,
-  policy: TransientRetryPolicy,
-  retryIndex: number,
-): number {
-  const fallback = policy.initialDelayMs * 2 ** retryIndex;
-  const delay = nativeDelayMs ?? fallback;
-  return Math.min(delay, policy.maxDelayMs);
-}
-
-function gateProtectedPaths(commands: string[]): string[] {
-  if (commands.length === 0) return [];
-  const paths = new Set([
-    "package.json",
-    "**/package.json",
-    "test/**",
-    "tests/**",
-    "__tests__/**",
-    "**/*.test.*",
-    "**/*.spec.*",
-  ]);
-  for (const command of commands) {
-    for (const raw of command.split(/\s+/)) {
-      const token = raw.trim().replace(/^['"]|['"]$/g, "");
-      if (
-        !token ||
-        token.startsWith("-") ||
-        token.includes("=") ||
-        token.includes("://") ||
-        token.startsWith("/")
-      )
-        continue;
-      if (!token.includes("/") && !token.includes(".")) continue;
-      const clean = token.replace(/^[./]+/, "").replace(/[),;]+$/g, "");
-      if (!clean || clean === "package.json") continue;
-      const testish =
-        clean.startsWith("test/") ||
-        clean.startsWith("tests/") ||
-        clean.startsWith("__tests__/") ||
-        clean.includes(".test.") ||
-        clean.includes(".spec.");
-      if (testish) paths.add(clean.endsWith("/") ? `${clean}**` : clean);
-    }
-  }
-  return [...paths];
-}
-
-function promptWithProtectedPathConstraint(
-  prompt: string,
-  protectedPaths: string[],
-  autoProtectedPaths: string[] = [],
-  approvals: ProtectedPathApproval[] = [],
-): string {
-  if (protectedPaths.length === 0 && autoProtectedPaths.length === 0) return prompt;
-  const specLines = protectedPaths.length
-    ? [
-        "",
-        "Engine constraint: do not edit spec/config protected paths unless the frozen task contract explicitly asks for it. Protected paths:",
-        ...protectedPaths.slice(0, 20).map((p) => `- ${p}`),
-      ]
-    : [];
-  const approvalLines = approvals.length
-    ? [
-        "",
-        "Approved auto-protected gate/test path changes for this run:",
-        ...approvals.slice(0, 20).map((a) => `- ${a.path}${a.reason ? ` (${a.reason})` : ""}`),
-      ]
-    : [];
-  const autoLines = autoProtectedPaths.length
-    ? [
-        "",
-        "Engine constraint: do not edit auto-protected gate/test paths, test commands, or package test scripts unless the user explicitly asked to change tests. Auto-protected paths:",
-        ...autoProtectedPaths.slice(0, 20).map((p) => `- ${p}`),
-        ...approvalLines,
-      ]
-    : [];
-  return [
-    prompt,
-    ...specLines,
-    ...autoLines,
-  ].join("\n");
-}
-
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function assertNoSecretLikeTokens(label: string, text: string): void {
   if (containsSecretLikeToken(text)) {
     throw new Error(`${label} contains secret-like token; refusing to persist artifact`);
@@ -6260,107 +6236,3 @@ function safeErrorMessage(err: unknown): string {
   return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
-function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
-  try {
-    return JSON.parse(redactSecrets(JSON.stringify(ev))) as HarnessEvent;
-  } catch {
-    return {
-      ...ev,
-      text: ev.text ? redactSecrets(ev.text) : undefined,
-      error: ev.error ? redactSecrets(ev.error) : undefined,
-      payload: ev.payload ? { redacted: true } : undefined,
-    };
-  }
-}
-
-function harnessEventPayload(
-  harnessId: string,
-  attemptId: string,
-  ev: HarnessEvent,
-): Record<string, unknown> {
-  const safe = redactHarnessEvent(ev);
-  const title =
-    safe.error ??
-    safe.text ??
-    (safe.usage
-      ? `usage: ${safe.usage.input_tokens ?? 0} in / ${safe.usage.output_tokens ?? 0} out`
-      : safe.type);
-  return {
-    harness_id: harnessId,
-    attempt_id: attemptId,
-    session_id: safe.session_id,
-    type: safe.type,
-    title: String(title).slice(0, 500),
-    text: safe.text,
-    error: safe.error,
-    usage: safe.usage,
-    observed_model: safe.observed_model,
-    tool: safe.tool,
-    interaction: safe.interaction,
-    payload: safe.payload,
-  };
-}
-
-/**
- * Deduplicate the known "final result repeats the last streamed message" shape
- * (adjacent only). Legitimately repeated earlier messages are preserved — a
- * whole-array dedupe would silently merge real output.
- */
-function pushUniqueText(parts: string[], text: string): void {
-  const normalized = text.trim();
-  if (!normalized) return;
-  const last = parts[parts.length - 1]?.trim();
-  if (last === normalized) return;
-  parts.push(normalized);
-}
-
-function formatFindings(findings: ReviewFinding[]): string {
-  if (findings.length === 0) return "(no findings recorded)";
-  return findings
-    .map(
-      (f) =>
-        `- [${f.severity}/${f.status}] ${f.claim}` +
-        (f.evidence.files.length > 0
-          ? ` (${f.evidence.files.map((x) => x.path).join(", ")})`
-          : "") +
-        (f.proposed_fix ? ` -> fix: ${f.proposed_fix}` : ""),
-    )
-    .join("\n");
-}
-
-function renderSummary(
-  runId: string,
-  mode: ModeKind,
-  decision: {
-    winner: string | null;
-    status: string;
-    outcome?: string;
-    why_winner: string;
-    apply_recommendation: string;
-  },
-  evidences: CandidateEvidence[],
-  synthReason: string,
-  reviewVerified: boolean,
-): string {
-  return (
-    [
-      `# Run ${runId} (${mode})`,
-      "",
-      `- Status: ${decision.status}`,
-      `- Outcome: ${decision.outcome ?? "unknown"}`,
-      `- Winner: ${decision.winner ?? "none"}`,
-      `- Apply: ${decision.apply_recommendation}`,
-      `- Review verified (cross-family): ${reviewVerified}`,
-      `- Synthesis: ${synthReason}`,
-      "",
-      "## Candidates",
-      ...evidences.map(
-        (e) =>
-          `- ${e.label} (${e.attemptId}): gates ${e.testsPassed}/${e.testsTotal}, blockers ${e.findings.filter((f) => isBlocking(f)).length}, cleanReview ${e.finalReviewClean}`,
-      ),
-      "",
-      "## Why winner",
-      decision.why_winner,
-    ].join("\n") + "\n"
-  );
-}

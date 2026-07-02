@@ -1,4 +1,4 @@
-import { runCapture, type HarnessAdapter } from "@claudexor/core";
+import { parseUnifiedDiff, runCapture, type HarnessAdapter } from "@claudexor/core";
 import { preflightEvidence, type DiffEvidence, writeDiffEvidence } from "@claudexor/context";
 import type {
   AuthPreference,
@@ -1173,54 +1173,22 @@ function isPreservedReviewerPath(rel: string, preservePaths: Set<string>): boole
   return false;
 }
 
-function extractDiffTouchedPaths(diff: string): Set<string> {
-  const paths = new Set<string>();
-  for (const line of diff.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
-      for (const path of parseDiffGitHeaderPaths(line)) {
-        addReviewerPreservePath(paths, path);
-      }
-    } else if (line.startsWith("rename from ")) {
-      addReviewerPreservePath(paths, line.slice("rename from ".length).trim());
-    } else if (line.startsWith("rename to ")) {
-      addReviewerPreservePath(paths, line.slice("rename to ".length).trim());
-    }
-  }
-  return paths;
+/** Test-only alias for the preserve-set extractor. */
+export function __testExtractDiffTouchedPaths(diff: string): Set<string> {
+  return extractDiffTouchedPaths(diff);
 }
 
-function parseDiffGitHeaderPaths(line: string): string[] {
-  const rest = line.slice("diff --git ".length);
-  const tokens: string[] = [];
-  let i = 0;
-  while (i < rest.length && tokens.length < 2) {
-    while (rest[i] === " ") i += 1;
-    if (i >= rest.length) break;
-    if (rest[i] === '"') {
-      i += 1;
-      let token = "";
-      while (i < rest.length) {
-        const ch = rest[i] ?? "";
-        if (ch === '"') {
-          i += 1;
-          break;
-        }
-        if (ch === "\\" && i + 1 < rest.length) {
-          token += rest[i + 1] ?? "";
-          i += 2;
-          continue;
-        }
-        token += ch;
-        i += 1;
-      }
-      tokens.push(token);
-    } else {
-      const start = i;
-      while (i < rest.length && rest[i] !== " ") i += 1;
-      tokens.push(rest.slice(start, i));
-    }
+function extractDiffTouchedPaths(diff: string): Set<string> {
+  // One structural parser owns diff headers (INV-050): parseUnifiedDiff is
+  // quote-aware and decodes git's C-quoted paths (incl. octal escapes for
+  // non-ASCII), which the old private tokenizer mis-decoded — a mis-decoded
+  // touched path silently dropped the file from the reviewer preserve set.
+  const paths = new Set<string>();
+  for (const file of parseUnifiedDiff(diff).files) {
+    if (file.oldPath) addReviewerPreservePath(paths, file.oldPath);
+    if (file.newPath) addReviewerPreservePath(paths, file.newPath);
   }
-  return tokens.map((token) => token.replace(/^[ab]\//, ""));
+  return paths;
 }
 
 function addReviewerPreservePath(paths: Set<string>, value: string): void {

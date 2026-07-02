@@ -35,10 +35,15 @@ export function interactionChannelFor(
   const handler = input.onInteraction;
   if (!handler) return undefined;
   const timeoutMs = input.interactionTimeoutMs ?? defaultTimeoutMs;
+  // Waiting on a human is legitimate stream silence: the inactivity watchdog
+  // consults this count and re-arms instead of killing the "wedged" harness.
+  let pending = 0;
   return {
+    pendingCount: () => pending,
     request: async (request: InteractionRequest): Promise<InteractionAnswerSet | null> => {
       const requestedAt = nowIso();
       const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
+      pending += 1;
       // Invoke the answer surface BEFORE announcing the event: handlers
       // register the pending question synchronously (daemon
       // InteractionRegistry), so any subscriber that reacts to
@@ -84,6 +89,7 @@ export function interactionChannelFor(
       ]);
       if (timer) clearTimeout(timer);
       if (onAbort) input.signal?.removeEventListener("abort", onAbort);
+      pending -= 1;
       if (answers && answers.answers.length > 0) {
         log.emit("interaction.answered", {
           interaction_id: request.interaction_id,

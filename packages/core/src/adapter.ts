@@ -67,6 +67,9 @@ export type AdapterRegistry = Map<string, HarnessAdapter>;
  */
 export interface InteractionChannel {
   request(req: InteractionRequest): Promise<InteractionAnswerSet | null>;
+  /** Number of questions currently awaiting an answer. Lets stream watchdogs
+   * treat waiting-on-user as legitimate silence instead of a wedged harness. */
+  pendingCount?(): number;
 }
 
 export function interactionChannelFromSpec(spec: HarnessRunSpec): InteractionChannel | undefined {

@@ -1,11 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { eventPayload, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
+import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
 import {
   AccessProfile,
   AttachmentInput,
@@ -544,7 +545,15 @@ export class DaemonControlApiServer {
         const headRunId = (detail.thread as { head_run_id?: string | null }).head_run_id ?? null;
         if (headRunId) {
           const headRec = (await this.opts.daemon.list()).find((r) => (r.runId ?? r.id) === headRunId);
-          if (headRec && (headRec.state === "blocked" || headRec.state === "failed")) {
+          // A recorded head run whose record was PRUNED from jobs.json
+          // (maxHistory) has an unknowable state — the gate must fail closed,
+          // not silently wave the apply through.
+          if (!headRec) {
+            return this.json(res, 409, {
+              error: `thread head run ${headRunId} is no longer in the daemon history; its state cannot be verified — rerun the turn before applying the thread diff`,
+            });
+          }
+          if (headRec.state === "blocked" || headRec.state === "failed") {
             const decision = readValidOperatorDecision(headRec);
             if (!decision) {
               appendRunAuditEvent(headRec, "control.rejected", {
@@ -1431,73 +1440,6 @@ function readNewLines(path: string, offset: number, carry: string): { lines: str
 
 /* ---- Thread projections (engine snake_case -> control camelCase) ---- */
 
-function projectThread(raw: unknown, needsHuman: boolean): ControlThread {
-  const t = raw as Record<string, unknown>;
-  const repo = t["repo"] as { root?: string } | null;
-  const workspace = t["workspace"] as { mode?: string } | undefined;
-  return ControlThread.parse({
-    id: t["id"],
-    title: t["title"] ?? null,
-    repoRoot: repo?.root ?? null,
-    mode: t["mode"],
-    workspaceMode: workspace?.mode ?? "in_place",
-    authPreference: t["auth_preference"] ?? "auto",
-    primaryHarness: t["primary_harness"] ?? null,
-    eligibleHarnesses: t["eligible_harnesses"] ?? [],
-    state: t["state"] ?? "active",
-    runIds: t["run_ids"] ?? [],
-    headRunId: t["head_run_id"] ?? null,
-    needsHuman,
-    createdAt: t["created_at"],
-    updatedAt: t["updated_at"],
-  });
-}
-
-function projectSession(raw: unknown): ControlSession {
-  const s = raw as Record<string, unknown>;
-  return ControlSession.parse({
-    id: s["id"],
-    threadId: s["thread_id"],
-    harnessId: s["harness_id"],
-    nativeSessionId: s["native_session_id"] ?? null,
-    observedModel: s["last_observed_model"] ?? null,
-    state: s["state"] ?? "live",
-  });
-}
-
-/** Project a run summary down to the compact card embedded on a thread turn. */
-function turnRunCard(summary: ControlRunSummary): ControlTurnRunCard {
-  return ControlTurnRunCard.parse({
-    state: summary.state,
-    mode: summary.mode,
-    strategy: summary.strategy ?? null,
-    n: summary.n,
-    result: summary.result,
-    spendUsd: summary.spendUsd ?? null,
-    outputReadyState: summary.outputReadyState,
-    waitingOnUser: summary.waitingOnUser,
-    finishedAt: summary.finishedAt ?? null,
-  });
-}
-
-function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>): ControlThreadTurn {
-  const t = raw as Record<string, unknown>;
-  const runId = (t["run_id"] as string | null) ?? null;
-  return ControlThreadTurn.parse({
-    id: t["id"],
-    threadId: t["thread_id"],
-    runId,
-    parentRunId: t["parent_run_id"] ?? null,
-    planRunId: t["plan_run_id"] ?? null,
-    kind: t["kind"] ?? "followup",
-    prompt: t["prompt"] ?? "",
-    // Embedded run card so the chat renders the whole conversation (state +
-    // honest outcome) from this one response — no N+1 run-detail fetch per turn.
-    run: runId ? cards.get(runId) ?? null : null,
-    createdAt: t["created_at"],
-  });
-}
-
 function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
   return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
 }
@@ -1759,7 +1701,11 @@ function markRunReverted(rec: DaemonRunRecord): void {
     const meta = (doc["meta"] && typeof doc["meta"] === "object" ? doc["meta"] : {}) as Record<string, unknown>;
     meta["apply_state"] = "reverted";
     doc["meta"] = meta;
-    writeFileSync(wpPath, stringifyYaml(doc), "utf8");
+    // Atomic tmp+rename: a crash mid-write must never leave work_product.yaml
+    // half-written (it would degrade the run projection to kind: none).
+    const tmp = `${wpPath}.tmp-${process.pid}`;
+    writeFileSync(tmp, stringifyYaml(doc), "utf8");
+    renameSync(tmp, wpPath);
   } catch {
     /* best-effort: the revert succeeded regardless of this metadata flip */
   }

@@ -29,6 +29,13 @@ export async function* withInactivityWatchdog<T>(
     timeoutMs: number;
     /** Called once when the window elapses; abort the stream here. */
     onTimeout: () => void;
+    /**
+     * Legitimate-silence probe. When the window elapses while this returns
+     * true (e.g. a question is awaiting the USER's answer), the watchdog
+     * RE-ARMS instead of firing — waiting on a human is not a wedged harness,
+     * and the interaction channel enforces its own answer-wait budget.
+     */
+    isSuspended?: () => boolean;
   },
 ): AsyncIterable<T> {
   const iterator = source[Symbol.asyncIterator]();
@@ -38,6 +45,10 @@ export async function* withInactivityWatchdog<T>(
   const arm = (): void => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
+      if (opts.isSuspended?.()) {
+        arm();
+        return;
+      }
       timedOut = true;
       opts.onTimeout();
       wake?.();

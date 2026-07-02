@@ -73,6 +73,12 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     if (fv.applied_cleanly === false) {
       return `final verify: the patch did not apply onto a fresh tree at its base (${fv.reason ?? "conflict"}); re-run the task`;
     }
+    // FAIL CLOSED (INV-115): null means the verifier ERRORED — the patch was
+    // never proven against a clean base. Unlike a proven conflict this is an
+    // infra failure, so accept_risk may override it.
+    if (fv.applied_cleanly === null && !override) {
+      return `final verify: the verifier errored before proving the patch against a clean base (${fv.reason ?? "verify infrastructure error"}); refusing apply (an operator accept_risk decision can override)`;
+    }
     if (fv.gates_passed === false && !override) {
       return "final verify: deterministic gates failed on the fresh verify tree; refusing apply (an operator accept_risk decision can override)";
     }

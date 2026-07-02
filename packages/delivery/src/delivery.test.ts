@@ -255,4 +255,21 @@ describe("final_verify apply-gate consumer (D12/INV-115)", () => {
     expect(gateWith({ attempted: false, reason: "no base sha" })).toBeNull();
     expect(gateWith(null)).toBeNull();
   });
+
+  it("FAILS CLOSED when the verifier ERRORED (applied_cleanly=null): refuses without an override, allows with accept_risk", () => {
+    const errored = { attempted: true, applied_cleanly: null, reason: "worktree add failed" };
+    const refusal = gateWith(errored);
+    expect(refusal).toContain("verifier errored");
+    // The operator can accept the INFRA risk (unlike a proven conflict).
+    const overridden = validateApplyGate({
+      state: "succeeded",
+      decision: DecisionRecord.parse({ ...baseDecision, final_verify: errored }),
+      workProduct: { ...wp, meta: { patch_sha256: sha256(patch) } } as never,
+      patch,
+      originalRepoRoot: process.cwd(),
+      targetRepoRoot: process.cwd(),
+      operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
+    });
+    expect(overridden).toBeNull();
+  });
 });

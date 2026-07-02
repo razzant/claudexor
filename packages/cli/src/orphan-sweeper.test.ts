@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { processStartTime } from "@claudexor/workspace";
+import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
+
+function initRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "claudexor-sweep-"));
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "config", "user.email", "t@t"]);
+  execFileSync("git", ["-C", dir, "config", "user.name", "t"]);
+  writeFileSync(join(dir, "a.txt"), "a\n");
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "commit", "-qm", "init"]);
+  return dir;
+}
+
+function envelope(root: string, taskId: string, attemptId: string, owner?: { pid: number; started: string | null }): string {
+  const base = join(root, ".claudexor", "workspaces", taskId, attemptId);
+  mkdirSync(join(base, "tree"), { recursive: true });
+  mkdirSync(join(base, "home"), { recursive: true });
+  writeFileSync(join(base, "tree", "work.txt"), "in flight\n");
+  if (owner) {
+    writeFileSync(join(base, "owner.json"), JSON.stringify({ ...owner, created_at: new Date().toISOString() }) + "\n");
+  }
+  return base;
+}
+
+describe("crash-GC live-owner guard", () => {
+  it("keeps envelopes whose recorded owner process is ALIVE and sweeps dead/markerless ones", async () => {
+    const root = initRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "claudexor-sweep-state-"));
+    try {
+      // Live owner: THIS test process (same pid + command name).
+      const live = envelope(root, "task-live", "a01", {
+        pid: process.pid,
+        started: processStartTime(process.pid),
+      });
+      // Dead owner: a pid from the far end of the space (guaranteed-ish gone);
+      // even a recycled pid cannot reproduce the recorded start time.
+      const dead = envelope(root, "task-dead", "a01", { pid: 999_999_990, started: "Thu Jan  1 00:00:00 1970" });
+      // Legacy envelope without a marker: swept (pre-marker debris).
+      const legacy = envelope(root, "task-legacy", "a01");
+
+      const jobsPath = join(stateDir, "jobs.json");
+      writeFileSync(
+        jobsPath,
+        JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n",
+      );
+      const actions = await sweepOrphanWorkspaces({ jobsPath, threadsPath: join(stateDir, "threads.json") });
+
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(dead)).toBe(false);
+      expect(existsSync(legacy)).toBe(false);
+      expect(actions.some((a) => a.includes("kept envelope task-live/a01") && a.includes("live owner"))).toBe(true);
+      expect(actions.some((a) => a.includes("disposed orphan envelope task-dead/a01"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});

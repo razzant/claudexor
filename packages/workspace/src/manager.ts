@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -42,6 +43,18 @@ export interface CreateEnvelopeOptions {
  * per-harness config dirs, allocated ports, and dirty-tree handling. Claudexor
  * owns these envelopes (it does not rely on a harness's native --worktree).
  */
+/** `ps` start time for a pid, or null when unavailable. Pid+start-time
+ * equality is the recycling-proof liveness identity for envelope owners
+ * (command names/titles mutate; the kernel start time never does). */
+export function processStartTime(pid: number): string | null {
+  try {
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export class WorkspaceManager {
   constructor(private readonly repoRoot: string) {}
 
@@ -107,6 +120,16 @@ export class WorkspaceManager {
       cursor_config: cursorConfig,
       opencode_config: opencodeConfig,
     };
+    // Liveness marker for crash GC: the sweeper must never dispose an envelope
+    // whose creating process (daemon, CLI, MCP/ACP serve) is still alive —
+    // startup GC's "nothing can own an envelope" premise only holds for
+    // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
+    // (command names/titles mutate — vitest, daemons and tools retitle
+    // themselves; the kernel start time never does).
+    writeFileSync(
+      join(base, "owner.json"),
+      JSON.stringify({ pid: process.pid, started: processStartTime(process.pid), created_at: nowIso() }) + "\n",
+    );
     const ports = await allocatePorts(opts.ports ?? 0);
 
     // In-place mode: mutate the live repoRoot directly (no isolated worktree).
