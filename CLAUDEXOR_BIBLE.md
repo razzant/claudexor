@@ -69,6 +69,12 @@ process below. Never paper over the conflict.
   harnesses are visible with reasons but never silently selectable; explicit
   selection of an unavailable harness fails loudly. verify: orchestrator
   routing tests; canary (unavailable-harness story, planned).
+- **INV-013** Adapters are translational and orchestration is centralized:
+  `harness-*` packages only translate native CLI/API streams into typed
+  events and I/O. They never orchestrate, select winners, manage budgets,
+  or decide review policy — those live in the engine/orchestrator. verify:
+  review question; grep for orchestration/review imports in `harness-*`
+  packages.
 
 ## 3. Schema Is The Contract
 
@@ -102,10 +108,11 @@ process below. Never paper over the conflict.
   every wire boundary unless explicitly reintroduced in schema and docs.
   verify: canary `[INV-032:modes-canonical]`; CLI mode validation tests.
 - **INV-033** `Agent` is the default composer/`claudexor run` route on a
-  project thread; a no-project thread falls back to read-only `Ask`.
-  `Orchestrate` is the brain — an intent routed like reviewers, never a
-  privileged harness. verify: orchestrator default-mode tests; UI intent
-  menu review.
+  project thread — in Agent the harness itself decides whether to answer or
+  edit the tree (Codex/Cursor/Claude Code semantics); a no-project thread
+  falls back to read-only `Ask`. `Orchestrate` is the brain — an intent
+  routed like reviewers, never a privileged harness. verify: orchestrator
+  default-mode tests; UI intent menu review.
 - **INV-034** A thread is the Claudexor-owned conversation (runs are its
   turns); the vendor CLI session is a re-hostable cache that later turns
   resume natively. verify: thread schema; session-resume orchestrator tests.
