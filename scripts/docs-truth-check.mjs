@@ -329,10 +329,29 @@ function collectSourceHaystack() {
   if (!tabEnum) {
     failures.push("could not locate the inspector Tab enum in TaskDetailView.swift");
   } else {
-    const tabs = [...tabEnum[1].matchAll(/case (\w+)/g)].map((m) => m[1].toLowerCase());
+    // Declaration lines only (`case a, b, c` — no dot, no colon), NOT the
+    // switch labels of the label accessor. A one-line comma list must yield
+    // every id, not just the first (`/case (\w+)/` extracted 1 of 8 tabs).
+    const tabs = [...tabEnum[1].matchAll(/^\s*case ([\w][\w, ]*)$/gm)]
+      .flatMap((m) => m[1].split(","))
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (tabs.length < 2) {
+      failures.push(`inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in TaskDetailView.swift`);
+    }
+    // Docs speak the user-facing label (`Outcome`, `Timeline`), so parity
+    // accepts either the label from the `label` switch or the raw case id.
+    const labelByCase = new Map(
+      [...tabEnum[1].matchAll(/case \.(\w+):\s*return "([^"]+)"/g)].map((m) => [m[1].toLowerCase(), m[2].toLowerCase()]),
+    );
     const design = readFileSync("docs/DESIGN_SYSTEM.md", "utf8").toLowerCase();
     for (const tab of tabs) {
-      if (!design.includes(tab)) failures.push(`docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}' (TaskDetailView.swift Tab enum)`);
+      const label = labelByCase.get(tab);
+      if (!design.includes(tab) && !(label && design.includes(label))) {
+        failures.push(
+          `docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}'${label ? ` (label "${label}")` : ""} (TaskDetailView.swift Tab enum)`,
+        );
+      }
     }
   }
 
