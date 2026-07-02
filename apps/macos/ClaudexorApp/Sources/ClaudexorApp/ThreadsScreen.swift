@@ -31,10 +31,13 @@ struct ThreadsScreen: View {
     @State private var protectedApprovalsText = ""
     /// Per-turn model override for the primary harness. Empty = harness default
     /// (the global default stays in Settings → Harnesses). Not sticky across threads.
-    @State private var composerModel = ""
+    /// Harness-scoped per-turn models (harness id -> model id); built by the
+    /// per-harness pickers in the "⋯" popover (D2: no run-global model).
+    @State private var composerModels: [String: String] = [:]
     /// Enumerated models for the current primary harness (ADP4). nil until loaded;
     /// an empty / non-enumerable response falls back to a free-text field.
-    @State private var primaryModels: HarnessModelsResponse?
+    /// Cached model truth sources per pooled harness (id -> catalog).
+    @State private var poolModelCatalogs: [String: HarnessModelsResponse] = [:]
     /// True while a Stop request is in flight for the head run (server owns the cancel).
     @State private var stopping = false
     /// Width of the LEFT thread list, driven by an explicit drag handle (item 6).
@@ -79,6 +82,7 @@ struct ThreadsScreen: View {
             untilClean: untilClean,
             maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
             browser: browser && browserAvailableForCurrentTurn,
+            models: composerModels,
             reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
             protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals
         )
@@ -242,6 +246,40 @@ struct ThreadsScreen: View {
             }
         }
         .padding(.top, Theme.Spacing.xs)
+        .sheet(isPresented: Binding(
+            get: { renameTargetId != nil },
+            set: { if !$0 { renameTargetId = nil } }
+        )) { renameSheet }
+    }
+
+    @State private var renameDraft = ""
+    @State private var renameTargetId: String?
+
+    private var renameSheet: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Rename thread").font(.headline)
+            TextField("Thread title", text: $renameDraft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitRename() }
+            HStack {
+                Spacer()
+                Button("Cancel") { renameTargetId = nil }
+                Button("Rename") { submitRename() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(Theme.Spacing.lg)
+        .frame(width: 360)
+    }
+
+    private func submitRename() {
+        guard let id = renameTargetId else { return }
+        let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        renameTargetId = nil
+        Task { await model.renameThread(id, title: title) }
     }
 
     private func threadRow(_ thread: ThreadSummary) -> some View {
@@ -255,6 +293,19 @@ struct ThreadsScreen: View {
                 }
             }
             Text(threadSubtitle(thread)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        // B3: rename/archive ride the existing PATCH /threads/:id (server-owned
+        // title/state); the row finally exposes the affordance.
+        .contextMenu {
+            Button("Rename…") {
+                renameDraft = thread.title ?? ""
+                renameTargetId = thread.id
+            }
+            if thread.state != "closed" {
+                Button("Archive") { Task { await model.archiveThread(thread.id) } }
+            } else {
+                Button("Reopen") { Task { await model.reopenThread(thread.id) } }
+            }
         }
         .padding(.vertical, Theme.Spacing.xxs)
     }
@@ -468,20 +519,19 @@ struct ThreadsScreen: View {
                     capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
                     untilClean = false; maxAttempts = 3; showOptions = false; browser = false
                     reviewerPanelText = ""; protectedApprovalsText = ""
-                    composerModel = ""
+                    composerModels = [:]
                 }
                 // The no-project gate also fires when the project changes under a draft
                 // (clearing it from Settings, etc.) — fall back to read-only Ask.
                 .onChange(of: threadHasProject) { _, has in
                     if !has { composerMode = .ask; showOptions = false }
                 }
-                // A per-turn model is harness-specific: when the primary harness
-                // changes, a model chosen for the OLD harness would route-fail on the
-                // new one. Clear the selection AND the cached enumeration so the picker
-                // can't briefly show the stale list or send a stale id.
-                .onChange(of: primaryFamily) { _, _ in
-                    composerModel = ""
-                    primaryModels = nil
+                // Models are harness-scoped now: a primary switch keeps each
+                // harness's own selection valid. Only prune entries for harnesses
+                // that LEFT the pool, so a dropped chip can't smuggle a model in.
+                .onChange(of: poolFamilies) { _, families in
+                    let ids = Set(families.map(\.rawValue))
+                    composerModels = composerModels.filter { ids.contains($0.key) }
                 }
 
                 if !composerAttachments.isEmpty { attachmentChips }
@@ -574,7 +624,15 @@ struct ThreadsScreen: View {
                     }
                 }
             }
-            OptionRow(label: "Model") { modelControl }
+            OptionSection(title: "Models — per harness for THIS turn") {
+                ComposerModelsSection(
+                    families: poolFamilies.isEmpty ? [primaryFamily].compactMap { $0 } : poolFamilies,
+                    primary: primaryFamily,
+                    selections: $composerModels,
+                    catalogs: $poolModelCatalogs,
+                    fetch: { family in await model.harnessModels(for: family) }
+                )
+            }
             OptionRow(label: "Budget") {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text("$").foregroundStyle(.secondary)
@@ -716,64 +774,6 @@ struct ThreadsScreen: View {
         }
         .padding(Theme.Spacing.lg)
         .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
-        // Enumerate the chosen primary harness's models when the panel opens (and
-        // re-enumerate when the primary changes). nil-keyed when Auto: a "free text"
-        // fallback covers the no-known-primary case so the field always works.
-        .task(id: primaryFamily) { await loadPrimaryModels() }
-    }
-
-    /// Per-turn model override for the primary harness. A Picker over enumerated
-    /// model ids when the harness can honestly enumerate (mirrors HarnessDefaultsRow),
-    /// else an HONEST free-text field. Empty = harness default (the key is dropped).
-    /// The GLOBAL default still lives in Settings → Harnesses (this is per-turn only).
-    ///
-    /// In practice the chat-routable harnesses (codex/claude/cursor/opencode) report
-    /// no enumerable models today, so this resolves to free text; the only adapter
-    /// with a `models()` producer is raw-api, which is CLI-routable (not in the chat
-    /// pool). The Picker path stays so any chat harness that gains enumeration lights
-    /// it up automatically — the control is honest either way, never a false dropdown.
-    @ViewBuilder private var modelControl: some View {
-        if let models = primaryModels, models.canEnumerate {
-            Picker("", selection: $composerModel) {
-                Text("Harness default").tag("")
-                // Preserve a typed/legacy id the enumeration doesn't list instead of
-                // silently dropping it (same guard as the Settings model picker).
-                if !composerModel.isEmpty, !models.models.contains(where: { $0.id == composerModel }) {
-                    Text("\(composerModel) (custom)").tag(composerModel)
-                }
-                ForEach(models.models) { m in
-                    Text(modelMenuLabel(m)).tag(m.id)
-                }
-            }
-            .labelsHidden()
-            .fixedSize()
-            .help("Model for THIS turn's primary harness (source: \(models.source)). Default keeps the harness/global choice.")
-        } else {
-            TextField("harness default", text: $composerModel)
-                .frame(maxWidth: 160)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .help(primaryFamily == nil
-                      ? "Pick a primary harness to choose its model, or type a model id for this turn. Empty = harness default."
-                      : "Optional model for this turn. Empty = harness default.")
-        }
-    }
-
-    private func modelMenuLabel(_ m: HarnessModel) -> String {
-        let name = m.label.map { $0.isEmpty ? m.id : $0 } ?? m.id
-        return name == m.id ? name : "\(name) (\(m.id))"
-    }
-
-    /// One-shot enumeration of the chosen primary harness's models (thin consumer of
-    /// the control-api DTO). Auto/no-primary leaves it nil so the free-text field shows.
-    private func loadPrimaryModels() async {
-        guard let family = primaryFamily else { primaryModels = nil; return }
-        let fetched = await model.harnessModels(for: family)
-        // The primary harness may have changed during the await (the chip switched
-        // or a thread switch re-resolved it). Don't assign models fetched for a now-
-        // stale family — that would offer the wrong harness's models for this turn.
-        guard primaryFamily == family else { return }
-        primaryModels = fetched
     }
 
     private func togglePool(_ family: HarnessFamily) {
@@ -803,7 +803,7 @@ struct ThreadsScreen: View {
         }
         let mode = composerMode
         let options = currentOptions
-        let chosenModel = composerModel
+        let chosenModel = primaryFamily.flatMap { composerModels[$0.rawValue] } ?? ""
         let atts = composerAttachments
         composerText = ""
         composerAttachments = []
@@ -1101,7 +1101,10 @@ private struct TurnCard: View {
                 // the moment between decide() and the refreshed run detail.
                 let unblocked = run.operatorDecisionAction != nil || riskAccepted
                 if (run.status == .blocked || run.status == .needsReview) && !unblocked {
-                    decisionBar(run)
+                    DecisionBar(runId: run.id) {
+                        // Bridge the moment between decide() and refreshed detail.
+                        riskAccepted = true
+                    }
                 }
                 if applied {
                     Label("Applied to project", systemImage: "checkmark.seal.fill")
@@ -1279,30 +1282,6 @@ private struct TurnCard: View {
         case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
         default: return nil
         }
-    }
-
-    /// Review-queue actions ON the turn (the "apply: human_review" fix).
-    private func decisionBar(_ run: TaskRun) -> some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            Button("Accept risk & unblock") {
-                Task {
-                    actionError = await model.decide(runId: run.id, action: "accept_risk", acceptedRisks: ["operator accepted via thread"])
-                    if actionError == nil {
-                        riskAccepted = true
-                        // Pull the server-persisted decision so the affordance survives reloads.
-                        await model.loadRunDetail(run.id)
-                    }
-                }
-            }
-            .help("Records an auditable operator decision bound to this exact patch, then allows apply")
-            Button("Rerun with feedback…") {
-                Task { actionError = await model.decide(runId: run.id, action: "rerun_with_feedback", feedback: "Address the blocking review findings.") }
-            }
-            .help("Enqueues a follow-up run seeded with reviewer feedback")
-            Spacer()
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 
     private func applyBar(_ run: TaskRun) -> some View {

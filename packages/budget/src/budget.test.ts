@@ -137,3 +137,29 @@ describe("router", () => {
     expect(obs?.cooldown_until).toBeTruthy();
   });
 });
+
+describe("DD-27 wave guard (estimate holds)", () => {
+  it("denies a wave slot whose estimate exceeds remaining headroom without poisoning granted work", () => {
+    const ledger = new BudgetLedger({ maxUsd: 0.1 });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    expect(first.granted).toBe(true);
+    // Second slot holds the floor and fits (0.05 <= 0.1 remaining).
+    const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.05 });
+    expect(second.granted).toBe(true);
+    // Third slot would need 0.06 but only 0.05 remains -> typed wave denial.
+    const third = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.06 });
+    expect(third.granted).toBe(false);
+    expect(third.denied).toBe("estimate_headroom");
+    // The denial recorded NO hold: the tier is unchanged for granted work.
+    expect(ledger.tier()).not.toBe("hard");
+  });
+
+  it("keeps hard-cap denials typed as hard_cap", () => {
+    const ledger = new BudgetLedger({ maxUsd: 0.01 });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.01 });
+    expect(first.granted).toBe(true);
+    const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    expect(second.granted).toBe(false);
+    expect(second.denied).toBe("hard_cap");
+  });
+});

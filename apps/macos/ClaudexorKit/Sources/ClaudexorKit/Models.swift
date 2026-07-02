@@ -67,7 +67,12 @@ public struct StartRunRequest: Codable, Sendable {
     public var harnesses: [String]?
     public var primaryHarness: String?
     public var portfolio: String?
+    /// Scalar convenience: expands to the RESOLVED PRIMARY harness only (never
+    /// the pool). Prefer `models` for anything multi-harness.
     public var model: String?
+    /// Harness-scoped model map (harness id -> model id). Specific beats
+    /// general: an entry wins over the scalar `model` and settings defaults.
+    public var models: [String: String]?
     public var reviewerPanel: [ReviewerPanelEntry]?
     public var reviewerModels: [String: String]?
     public var reviewerEfforts: [String: String]?
@@ -89,6 +94,7 @@ public struct StartRunRequest: Codable, Sendable {
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
                 primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
+                models: [String: String]? = nil,
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
@@ -104,6 +110,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.primaryHarness = primaryHarness
         self.portfolio = portfolio
         self.model = model
+        self.models = models
         self.reviewerPanel = reviewerPanel
         self.reviewerModels = reviewerModels
         self.reviewerEfforts = reviewerEfforts
@@ -358,9 +365,12 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// Per-turn primary harness override (bias hint; engine pins it first). When
     /// nil the turn inherits the thread's sticky primary_harness.
     public var primaryHarness: String?
-    /// Per-turn model override forwarded to the primary harness. When nil the turn
-    /// uses the harness default (Settings → Harnesses owns the global default).
+    /// Per-turn scalar model override: expands to the RESOLVED PRIMARY only.
+    /// Prefer `models` for anything multi-harness (a race pool).
     public var model: String?
+    /// Harness-scoped model map (harness id -> model id) for this turn. Specific
+    /// beats general: an entry wins over the scalar and settings defaults.
+    public var models: [String: String]?
     /// Explicit reviewer panel for this turn. Mirrors StartRunRequest/control DTO
     /// so thread turns can exercise the same CLI-first review route.
     public var reviewerPanel: [ReviewerPanelEntry]?
@@ -391,6 +401,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
                 maxUsd: Double? = nil, primaryHarness: String? = nil, model: String? = nil,
+                models: [String: String]? = nil,
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
@@ -408,6 +419,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.maxUsd = maxUsd
         self.primaryHarness = primaryHarness
         self.model = model
+        self.models = models
         self.reviewerPanel = reviewerPanel
         self.reviewerModels = reviewerModels
         self.reviewerEfforts = reviewerEfforts
@@ -995,9 +1007,14 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let disabledIntents: [String]
     public let checks: [HarnessCheck]
     public let reasons: [String]?
+    /// The user's configured per-harness default model, if any.
+    public let configuredModel: String?
+    /// Strict truth-source verdict for `configuredModel` ("ok"/"rejected" +
+    /// actionable message) — the UI renders the doctor's honesty.
+    public let configuredModelCheck: HarnessModelCheck?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons
+        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons, configuredModel, configuredModelCheck
     }
 
     public init(from decoder: Decoder) throws {
@@ -1009,7 +1026,14 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
         disabledIntents = try c.decodeIfPresent([String].self, forKey: .disabledIntents) ?? []
         checks = try c.decodeIfPresent([HarnessCheck].self, forKey: .checks) ?? []
         reasons = try c.decodeIfPresent([String].self, forKey: .reasons)
+        configuredModel = try c.decodeIfPresent(String.self, forKey: .configuredModel)
+        configuredModelCheck = try c.decodeIfPresent(HarnessModelCheck.self, forKey: .configuredModelCheck)
     }
+}
+
+public struct HarnessModelCheck: Codable, Sendable, Equatable {
+    public let status: String
+    public let message: String?
 }
 
 public struct HarnessCheck: Codable, Sendable, Equatable {
@@ -1058,13 +1082,17 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
     public let models: [HarnessModel]
     /// "api" | "manifest" | "none".
     public let source: String
+    /// Freshness note for manifest-sourced lists: the vendor CLI version the
+    /// known-model hints were last verified against (nil for api/none).
+    public let verifiedAgainst: String?
 
-    enum CodingKeys: String, CodingKey { case harnessId, models, source }
+    enum CodingKeys: String, CodingKey { case harnessId, models, source, verifiedAgainst }
 
-    public init(harnessId: String, models: [HarnessModel] = [], source: String) {
+    public init(harnessId: String, models: [HarnessModel] = [], source: String, verifiedAgainst: String? = nil) {
         self.harnessId = harnessId
         self.models = models
         self.source = source
+        self.verifiedAgainst = verifiedAgainst
     }
 
     public init(from decoder: Decoder) throws {
@@ -1072,9 +1100,11 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
         harnessId = try c.decode(String.self, forKey: .harnessId)
         models = try c.decodeIfPresent([HarnessModel].self, forKey: .models) ?? []
         source = try c.decode(String.self, forKey: .source)
+        verifiedAgainst = try c.decodeIfPresent(String.self, forKey: .verifiedAgainst)
     }
 
-    /// True when the harness honestly cannot enumerate models (empty picker → free text).
+    /// True when a truth source exists (STRICT D3: no truth source = the
+    /// harness runs its default only; there is no free-text model entry).
     public var canEnumerate: Bool { source != "none" && !models.isEmpty }
 }
 
@@ -1131,7 +1161,6 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
     public let defaultPolicy: String
     public let primaryHarness: String?
     public let eligibleHarnesses: [String]
-    public let defaultModel: String?
     public let envInheritance: String
     /// Engine auth route preference: subscription | api_key | auto.
     public let authPreference: String?
@@ -1163,7 +1192,6 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
     public let toolsDeny: [String]
     public let fallbackModel: String?
     public let web: String
-    public let nativeOptions: [String: JSONValue]
     public let authPreference: String?
 }
 
@@ -1222,8 +1250,9 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
 public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var defaultPortfolio: String?
     public var routingPolicy: String?
-    public var primaryHarness: String?
-    public var defaultModel: String?
+    /// Double-optional: `.some(nil)` encodes an explicit JSON null = CLEAR the
+    /// primary (no `"__none"` sentinel — the server rejects magic strings).
+    public var primaryHarness: String??
     public var eligibleHarnesses: [String]?
     public var envInheritance: String?
     public var authPreference: String?
@@ -1233,7 +1262,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     public var harnesses: [String: HarnessSettingsPatch]?
 
     public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
-                primaryHarness: String? = nil, defaultModel: String? = nil,
+                primaryHarness: String?? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 authPreference: String? = nil,
                 maxUsdPerRun: Double? = nil,
@@ -1243,7 +1272,6 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         self.defaultPortfolio = defaultPortfolio
         self.routingPolicy = routingPolicy
         self.primaryHarness = primaryHarness
-        self.defaultModel = defaultModel
         self.eligibleHarnesses = eligibleHarnesses
         self.envInheritance = envInheritance
         self.authPreference = authPreference
@@ -1254,15 +1282,17 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, defaultModel, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, clearMaxUsdPerRun, interactionTimeoutMs, harnesses
+        case defaultPortfolio, routingPolicy, primaryHarness, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, clearMaxUsdPerRun, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(defaultPortfolio, forKey: .defaultPortfolio)
         try c.encodeIfPresent(routingPolicy, forKey: .routingPolicy)
-        try c.encodeIfPresent(primaryHarness, forKey: .primaryHarness)
-        try c.encodeIfPresent(defaultModel, forKey: .defaultModel)
+        if let outer = primaryHarness {
+            if let value = outer { try c.encode(value, forKey: .primaryHarness) }
+            else { try c.encodeNil(forKey: .primaryHarness) }
+        }
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
         try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
         try c.encodeIfPresent(authPreference, forKey: .authPreference)

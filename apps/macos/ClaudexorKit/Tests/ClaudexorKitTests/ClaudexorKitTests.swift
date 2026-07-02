@@ -602,13 +602,69 @@ import Testing
     @Test func threadTurnRequestEncodesPerTurnModel() throws {
         // A per-turn model override forwards under the same key the run-start request
         // uses (the turn endpoint .strict()-parses it).
-        let req = ThreadTurnRequest(prompt: "go", mode: "agent", model: "gpt-5-codex")
+        let req = ThreadTurnRequest(prompt: "go", mode: "agent", model: "gpt-5.5")
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
-        #expect(obj?["model"] as? String == "gpt-5-codex")
+        #expect(obj?["model"] as? String == "gpt-5.5")
         // Absent when unset (harness default) — no stray key for the strict endpoint.
         let plain = ThreadTurnRequest(prompt: "hi")
         let plainObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
         #expect(plainObj?["model"] == nil)
+    }
+
+    @Test func threadTurnRequestEncodesHarnessScopedModels() throws {
+        // D2/INV-103: the harness-scoped map rides the turn; the pool is never
+        // poisoned by one vendor's model id.
+        let req = ThreadTurnRequest(prompt: "go", mode: "agent", models: ["codex": "gpt-5.5", "claude": "opus"])
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        let map = obj?["models"] as? [String: String]
+        #expect(map?["codex"] == "gpt-5.5")
+        #expect(map?["claude"] == "opus")
+        // Absent when unset — the strict endpoint rejects stray keys.
+        let plain = ThreadTurnRequest(prompt: "hi")
+        let plainObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+        #expect(plainObj?["models"] == nil)
+    }
+
+    @Test func startRunRequestEncodesHarnessScopedModels() throws {
+        let req = StartRunRequest(prompt: "x", models: ["codex": "gpt-5.5"])
+        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
+        #expect((obj?["models"] as? [String: String])?["codex"] == "gpt-5.5")
+    }
+
+    @Test func harnessModelsResponseDecodesManifestFreshness() throws {
+        // Manifest-sourced lists carry the CLI version the hints were verified
+        // against; the pickers surface it as a freshness note (INV-104).
+        let json = """
+        {"harnessId":"codex","models":[{"id":"gpt-5.5"}],"source":"manifest","verifiedAgainst":"0.137.0"}
+        """.data(using: .utf8)!
+        let res = try JSONDecoder().decode(HarnessModelsResponse.self, from: json)
+        #expect(res.source == "manifest")
+        #expect(res.verifiedAgainst == "0.137.0")
+        #expect(res.canEnumerate)
+    }
+
+    @Test func settingsUpdateEncodesExplicitNullToClearPrimary() throws {
+        // No "__none" magic string: .some(nil) encodes JSON null = clear.
+        let clear = SettingsUpdateRequest(primaryHarness: .some(nil))
+        let raw = String(data: try JSONEncoder().encode(clear), encoding: .utf8) ?? ""
+        #expect(raw.contains("\"primaryHarness\":null"))
+        let set = SettingsUpdateRequest(primaryHarness: .some("codex"))
+        let setObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(set)) as? [String: Any]
+        #expect(setObj?["primaryHarness"] as? String == "codex")
+        // Untouched: the key is absent entirely.
+        let untouched = SettingsUpdateRequest(defaultPortfolio: "balanced")
+        let untouchedObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(untouched)) as? [String: Any]
+        #expect(untouchedObj?["primaryHarness"] == nil)
+    }
+
+    @Test func harnessStatusDecodesConfiguredModelCheck() throws {
+        let json = """
+        {"id":"codex","status":"ok","enabledIntents":[],"disabledIntents":[],"checks":[],
+         "configuredModel":"gpt-old","configuredModelCheck":{"status":"rejected","message":"not in the manifest list"}}
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(HarnessStatus.self, from: json)
+        #expect(status.configuredModel == "gpt-old")
+        #expect(status.configuredModelCheck?.status == "rejected")
     }
 
     // MARK: - TranscriptReducer

@@ -90,6 +90,11 @@
                 }
               ],
               "default": null
+            },
+            "estimate_usd_floor": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0.05
             }
           },
           "additionalProperties": false,

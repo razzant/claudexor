@@ -10,7 +10,6 @@ struct SettingsScreen: View {
     @State private var routingPolicy = "auto"
     @State private var primaryHarness = "__none"
     @State private var authPreference = "auto"
-    @State private var defaultModel = ""
     @State private var envInheritance = "mirror_native"
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
     @State private var maxUsdPerRun = ""
@@ -113,9 +112,6 @@ struct SettingsScreen: View {
                         }
                     }
                     .help("Primary is a bias, not a hardcoded semantic role.")
-                    TextField("Default model hint", text: $defaultModel)
-                        .textFieldStyle(.roundedBorder)
-                        .help("Optional model hint forwarded to compatible harnesses. Leave empty for each harness default.")
                     Picker("Env inheritance", selection: $envInheritance) {
                         Text("Mirror native").tag("mirror_native")
                         Text("Clean").tag("clean")
@@ -308,7 +304,6 @@ struct SettingsScreen: View {
         routingPolicy = s.routing.defaultPolicy
         primaryHarness = s.routing.primaryHarness ?? "__none"
         authPreference = s.routing.authPreference ?? "auto"
-        defaultModel = s.routing.defaultModel ?? ""
         envInheritance = s.routing.envInheritance
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
         maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
@@ -331,8 +326,9 @@ struct SettingsScreen: View {
         let patch = SettingsUpdateRequest(
             defaultPortfolio: defaultPortfolio,
             routingPolicy: routingPolicy,
-            primaryHarness: primaryHarness,
-            defaultModel: defaultModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "__none" : defaultModel,
+            // Explicit null clears the primary (no "__none" magic string —
+            // the server validates ids against the real registry).
+            primaryHarness: primaryHarness == "__none" ? .some(nil) : .some(primaryHarness),
             eligibleHarnesses: eligibleHarnesses.map(\.rawValue).sorted(),
             envInheritance: envInheritance,
             authPreference: authPreference,
@@ -529,29 +525,32 @@ private struct HarnessDefaultsRow: View {
         }
     }
 
-    /// Model override: a Picker over enumerated model ids+labels when the harness
-    /// can honestly enumerate, with an HONEST fallback to free text otherwise
-    /// (empty list / source "none" / engine offline) so the user can still type.
+    /// Model override: a Picker over the harness's model TRUTH SOURCE (live
+    /// inventory or manifest known-good hints). STRICT (D3): there is no
+    /// free-text entry — a harness with no truth source runs its default only,
+    /// and a model outside the source would be refused by the engine anyway.
     @ViewBuilder private var modelOverrideField: some View {
         if let models, models.canEnumerate {
             Picker("Model override", selection: $modelDraft) {
                 Text("Harness default").tag("")
-                // Preserve a stored override that the enumeration doesn't list
-                // (custom/legacy model) instead of silently dropping it on save.
+                // A stored override the truth source no longer lists (legacy value)
+                // stays visible so the user can SEE and clear it — the engine
+                // refuses it at run preflight either way.
                 if !modelDraft.isEmpty, !models.models.contains(where: { $0.id == modelDraft }) {
-                    Text("\(modelDraft) (custom)").tag(modelDraft)
+                    Text("\(modelDraft) (not in \(models.source) list)").tag(modelDraft)
                 }
                 ForEach(models.models) { m in
                     Text(modelMenuLabel(m)).tag(m.id)
                 }
             }
             .labelsHidden()
-            .help("Model forwarded to \(family.label) (source: \(models.source)). Harness default keeps the engine choice.")
+            .help(modelPickerHelp(models))
         } else {
-            TextField("Model override", text: $modelDraft)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .help(modelFallbackHelp)
+            LabeledContent("Model") {
+                Text("Harness default only")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .help(modelFallbackHelp)
         }
     }
 
@@ -561,12 +560,14 @@ private struct HarnessDefaultsRow: View {
         return name + suffix
     }
 
+    private func modelPickerHelp(_ models: HarnessModelsResponse) -> String {
+        let freshness = models.verifiedAgainst.map { " (verified against CLI \($0))" } ?? ""
+        return "Model forwarded to \(family.label); source: \(models.source)\(freshness). Harness default keeps the engine choice."
+    }
+
     private var modelFallbackHelp: String {
         if loadingModels { return "Loading \(family.label) models…" }
-        if models?.source == "none" {
-            return "\(family.label) cannot enumerate models — type a model id, or leave empty for the harness default."
-        }
-        return "Optional model forwarded to \(family.label). Empty keeps the harness default."
+        return "\(family.label) exposes no model truth source, so runs use its default model; an explicit model would be refused (strict model governance)."
     }
 
     /// One-shot enumeration; thin consumer of the control-api DTO. A nil result

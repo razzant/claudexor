@@ -71,6 +71,15 @@ export const GlobalConfig = z
     budget: z
       .object({
         max_usd_per_run: z.number().nonnegative().nullable().default(null),
+        /**
+         * Per-candidate reservation floor (USD) held against the run cap for
+         * every race-wave slot AFTER the first, BEFORE any usage streams.
+         * Makes concurrent in-flight candidates visible to the budget breaker
+         * so a parallel wave cannot blow past `max_usd_per_run` between
+         * settlements. The first slot never holds it: a cap smaller than the
+         * floor still runs one candidate and stops on real usage.
+         */
+        estimate_usd_floor: z.number().nonnegative().default(0.05),
       })
       .strict()
       .default({}),

@@ -23,6 +23,7 @@
     "@claudexor/delivery": "workspace:*",
     "@claudexor/event-log": "workspace:*",
     "@claudexor/schema": "workspace:*",
+    "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1"
   }

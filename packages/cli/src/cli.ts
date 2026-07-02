@@ -30,7 +30,7 @@ import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { atRiskNodeAdvisory, harnessRuntimeEnv, validateModel } from "@claudexor/core";
-import { SecretStore, type SecretBackend } from "@claudexor/secrets";
+import { MANAGED_SECRET_NAMES, SecretStore, isManagedSecretName, type SecretBackend } from "@claudexor/secrets";
 import {
   DecisionRecord,
   EffortHint,
@@ -83,6 +83,7 @@ import {
 } from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { settingsCommand } from "./settings-command.js";
+import { trustCommand } from "./trust-command.js";
 import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
@@ -192,6 +193,10 @@ Usage:
   claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
   claudexor decision <run_id> <action>    Decide a blocked run: --accept-risk|--override|--revert|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"
   claudexor settings show|set             Show/update user defaults
+  claudexor trust                         Show/update this repo's user-local trust
+    --allow-full-access                   Permit access=full (unsandboxed) for this repo
+    --revoke-full-access                  Revoke the full-access allow
+    --access-default <profile>            readonly|workspace_write default for write modes
   claudexor auth status|login             Inspect native harness auth
   claudexor secrets list|set|delete       Manage stored API-key refs (Keychain/0600 file)
   claudexor release check-name <name>     Naming gate (npm/pypi/crates/github)
@@ -1305,7 +1310,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       return 2;
     }
     if (!isManagedSecretName(name)) {
-      print("secret name must be openai, anthropic, openrouter, cursor, opencode, or raw");
+      print(`secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
       return 2;
     }
     const envVar = flagStr(args, "from-env");
@@ -1332,7 +1337,7 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
       return 2;
     }
     if (!isManagedSecretName(name)) {
-      print("secret name must be openai, anthropic, openrouter, cursor, opencode, or raw");
+      print(`secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
       return 2;
     }
     store.delete(name);
@@ -1344,23 +1349,13 @@ async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> 
   return 2;
 }
 
-const MANAGED_SECRET_NAMES = new Set([
-  "openai",
-  "anthropic",
-  "openrouter",
-  "cursor",
-  "opencode",
-  "raw",
-]);
-
-function isManagedSecretName(name: string): boolean {
-  return MANAGED_SECRET_NAMES.has(name);
-}
-
 
 /** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
 const KNOWN_FLAGS = new Set([
   "harness",
+  "allow-full-access",
+  "revoke-full-access",
+  "access-default",
   "mode",
   "n",
   "attempts",
@@ -1620,6 +1615,9 @@ async function main(): Promise<number> {
 
     case "settings":
       return settingsCommand(args, json);
+
+    case "trust":
+      return trustCommand(args, json);
 
     case "auth":
       return authCommand(args, json);

@@ -52,7 +52,7 @@ import {
   TaskContract as TaskContractSchema,
   isBlocking,
 } from "@claudexor/schema";
-import { loadConfig } from "@claudexor/config";
+import { loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
@@ -898,6 +898,11 @@ export class Orchestrator {
    */
   /** The tree the harness reads/operates in: the thread worktree for an isolated
    * thread, else the project. Config/artifacts/contract stay anchored to repoRoot. */
+  /** Per-candidate reservation floor (DD-27) from user config. */
+  private estimateUsdFloor(repoRoot: string): number {
+    return this.config(repoRoot)?.global.budget.estimate_usd_floor ?? 0.05;
+  }
+
   private execRootOf(input: RunInput): string {
     return input.executionRoot ?? input.repoRoot;
   }
@@ -1438,7 +1443,8 @@ export class Orchestrator {
     // readonly never runs unsandboxed and needs no trust allow.
     if (effectiveAccess === "full" && !resolvedCfg.trust.allow_full_access) {
       throw new Error(
-        "access profile 'full' requires allow_full_access: true in the user-level trust file for this repo (~/.claudexor/trust/<repo-hash>.yaml); refusing to run unsandboxed",
+        `access profile 'full' requires allow_full_access: true in the user-level trust file for this repo ` +
+          `(${trustConfigPath(input.repoRoot)}); enable it with \`claudexor trust --allow-full-access\` — refusing to run unsandboxed`,
       );
     }
     const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";
@@ -2324,6 +2330,13 @@ export class Orchestrator {
         attemptId,
         intent: this.candidateIntent(input),
         harnessId: routed.adapter.id,
+        // DD-27 wave guard: every slot AFTER the first holds the estimate
+        // floor at reservation, so concurrent candidates are visible to the
+        // breaker BEFORE any usage streams and a parallel wave cannot blow
+        // past the cap between settlements. The first slot holds nothing —
+        // a cap smaller than the floor must still run ONE candidate and stop
+        // on real usage, never zero.
+        ...(i > 0 ? { estimateUsd: this.estimateUsdFloor(input.repoRoot) } : {}),
       });
       log.emit("budget.lease.created", {
         granted: lease.granted,
@@ -2332,8 +2345,10 @@ export class Orchestrator {
         harness_id: routed.adapter.id,
       });
       if (!lease.granted) {
-        budgetStopped = true;
-        break; // hard cap: do not spawn more paid work
+        // Wave-guard denial stops ADDING slots but must not cancel the ones
+        // already granted; only a tripped hard cap stops everything.
+        if (lease.denied !== "estimate_headroom") budgetStopped = true;
+        break; // do not spawn more paid work
       }
       slots.push({
         routed,

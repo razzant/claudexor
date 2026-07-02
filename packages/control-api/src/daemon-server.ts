@@ -65,6 +65,7 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import { isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -2300,10 +2301,10 @@ function validateAbsoluteRepoRoot(repoRoot: string): string | null {
   return isAbsolute(repoRoot) ? null : "project root must be an absolute path";
 }
 
-const ALLOWED_SECRET_NAMES = new Set(["openai", "anthropic", "cursor", "opencode", "raw", "openrouter"]);
-
+// Single allowlist shared with the CLI (A17) — includes claude_oauth, which
+// the claude adapter reads for subscription-route auth.
 function isAllowedSecretName(name: string): boolean {
-  return ALLOWED_SECRET_NAMES.has(name);
+  return isManagedSecretName(name);
 }
 
 function validSecretSetBody(body: unknown): boolean {

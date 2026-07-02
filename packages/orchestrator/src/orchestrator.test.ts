@@ -488,7 +488,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       n: 6,
     });
-    const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+        const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBeGreaterThanOrEqual(1);
     expect(primary.length).toBeLessThanOrEqual(4);
     expect(primary.some((c) => c.attemptId === "a05" || c.attemptId === "a06")).toBe(false);

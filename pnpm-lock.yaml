@@ -190,6 +190,9 @@ importers:
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudexor/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util

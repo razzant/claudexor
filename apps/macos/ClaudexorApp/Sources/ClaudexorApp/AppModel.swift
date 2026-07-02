@@ -1054,6 +1054,35 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
+    /// Rename a thread (B3): server-owned title via the existing PATCH.
+    func renameThread(_ id: String, title: String) async {
+        guard let client else { threadStatus = "Engine offline — reconnect to rename."; return }
+        do {
+            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(title: title))
+            applyThreadUpdate(updated)
+            await refreshThreads()
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
+    /// Archive (close) a thread; it stays inspectable, out of the active list.
+    func archiveThread(_ id: String) async {
+        await setThreadState(id, state: "closed")
+    }
+
+    /// Reopen a previously archived thread.
+    func reopenThread(_ id: String) async {
+        await setThreadState(id, state: "open")
+    }
+
+    private func setThreadState(_ id: String, state: String) async {
+        guard let client else { threadStatus = "Engine offline — reconnect to change thread state."; return }
+        do {
+            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(state: state))
+            applyThreadUpdate(updated)
+            await refreshThreads()
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
     /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
     func setEligiblePool(_ pool: [String]) async {
         guard let id = selectedThreadId else {
@@ -1187,6 +1216,15 @@ final class AppModel {
         return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, specPath: specPath, model: model, attachments: attachments, options: options)
     }
 
+    /// Trim + drop empty entries; nil when nothing remains (key omitted on the wire).
+    private func normalizedTurnModels(_ models: [String: String]) -> [String: String]? {
+        let cleaned = models.compactMapValues { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
@@ -1248,6 +1286,8 @@ final class AppModel {
                 maxUsd: options.maxUsd,
                 // Per-turn model override (empty = harness default → don't send the key).
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
+                // Harness-scoped map (D2): specific beats the scalar and defaults.
+                models: normalizedTurnModels(options.models),
                 reviewerPanel: options.reviewerPanel,
                 access: writeMode ? options.access : nil,
                 web: options.web,
@@ -1542,10 +1582,10 @@ final class AppModel {
     }
 
     /// Typed operator decision on a blocked run (review queue actions).
-    func decide(runId: String, action: String, feedback: String? = nil, acceptedRisks: [String] = []) async -> String? {
+    func decide(runId: String, action: String, feedback: String? = nil, acceptedRisks: [String]? = nil) async -> String? {
         guard let client else { return "Engine offline." }
         do {
-            let res = try await client.decide(runId: runId, body: RunDecisionRequest(action: action, feedback: feedback, acceptedRisks: acceptedRisks))
+            let res = try await client.decide(runId: runId, body: RunDecisionRequest(action: action, feedback: feedback, acceptedRisks: acceptedRisks ?? []))
             await refreshRuns()
             return res.accepted ? nil : (res.message ?? "Decision was not accepted (\(res.status)).")
         } catch {

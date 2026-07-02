@@ -286,6 +286,9 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 - Single window, **three regions**:
   - **Thread list (glass sidebar):** the conversations, with a needs-you marker;
     "New" enters the draft state (the first message materializes the thread).
+    Each row carries a context menu — Rename… (title sheet) and
+    Archive/Reopen — riding the server-owned `PATCH /threads/:id`
+    (`title`/`state`); no local-only thread state.
   - **Conversation (frosted cards; code solid):** the turns — prompt, live
     transcript (reasoning + tool calls), honest outcome (plan badge / diffstat /
     winner adopted), decision/apply actions, and the always-live composer.
@@ -355,10 +358,16 @@ views in the shared design-system files; screens compose them.
   field, never UI-invented state:
   - the **harness pool** multiselect chips (the eligible pool Race runs — one
     candidate per harness; the primary answers in chat);
-  - the **per-turn model picker** for the primary harness — a `Picker` over
-    enumerated ids when the harness can enumerate models, otherwise an honest
-    free-text field; empty means the harness's configured default (model choice
-    is harness-scoped — there is no cross-harness model value);
+  - the **per-harness model rows** (`Models — per harness for THIS turn`): one
+    row per pooled harness, `[harness label][model dropdown]`, each dropdown
+    fed by THAT harness's model truth source (`/harnesses/:id/models` — live
+    `api` inventory or `manifest` known-good hints, with the freshness note in
+    hover help). There is NO free-text model entry: a harness without a truth
+    source shows "Harness default only" (strict model governance — an
+    arbitrary id would be refused at run preflight). Selections build the
+    harness-scoped `models` map on the turn; model choice is harness-scoped —
+    there is no cross-harness model value, and a race pool is never poisoned
+    by one vendor's id;
   - the **budget** field (typed per-turn USD cap; validated currency text, never
     a slider), **access** profile, and **web** policy pickers;
   - the **reviewer panel editor** (ordered explicit `harness[=model[:effort]]`
@@ -453,9 +462,16 @@ views in the shared design-system files; screens compose them.
   backend exposes selected scope.
 - **Decision bar (blocked turns).** A turn whose run is `blocked`/needs-review
   and has NO persisted operator decision renders a decision bar on the turn
-  card — typed server decisions via `POST /runs/:id/decision` ("Accept risk &
-  unblock" → `accept_risk`; "Rerun with feedback…" → `rerun_with_feedback`),
-  with apply offered through the server-gated apply bar once unblocked. The
+  card — typed server decisions via `POST /runs/:id/decision`:
+  - "Accept risk & unblock…" → `accept_risk`, with an EDITABLE risks note
+    sheet (the operator's own words become the audit record — never a canned
+    string);
+  - "Rerun with feedback…" → `rerun_with_feedback`, with a real feedback text
+    sheet (the ellipsis promises an input, so an input exists);
+  - "Override needs-human" → `override_needs_human`, destructive-styled with
+    an explicit confirmation dialog (it unblocks apply past a needs-human
+    escalation; a mutated patch invalidates the override).
+  Apply is offered through the server-gated apply bar once unblocked. The
   unblocked state is server-derived (a persisted decision from ANY surface
   collapses the bar) — never a local accept/unblock flag. The turn's
   apply-state is shown honestly: `applied` is green, `applied_review_blocked`

@@ -305,6 +305,9 @@ struct TurnOptions: Equatable {
     var untilClean: Bool = false
     var maxAttempts: Int? = nil        // nil => engine default repair cap
     var browser: Bool = false          // arm the agent-driven browser (full access)
+    /// Harness-scoped per-turn models (harness id -> model id). Built by the
+    /// composer's per-harness pickers; empty entries are dropped before send.
+    var models: [String: String] = [:]
     var reviewerPanel: [ReviewerPanelEntry]? = nil
     var protectedPathApprovals: [ProtectedPathApproval]? = nil
 }

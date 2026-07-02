@@ -60,6 +60,16 @@ const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
   { path: ["harnesses", "*", "native_options"], retired: "never consumed by any adapter (v0.15 triage); per-harness knobs are typed fields" },
 ];
 
+/** Keys older `claudexor init` scaffolds wrote into PROJECT config and current
+ * schemas retired. Same migration-debt registry semantics as the global list. */
+const RETIRED_PROJECT_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
+  { path: ["project"], retired: "language_stack was never consumed" },
+  { path: ["delivery"], retired: "delivery knobs were never consumed from project config" },
+  { path: ["review"], retired: "review attempts/strictness moved to engine policy" },
+  { path: ["context", "agents_md_first"], retired: "context assembly always reads agent docs first" },
+  { path: ["context", "never_silent_truncate"], retired: "no-silent-truncation is a Bible invariant, not a knob" },
+];
+
 function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const strip = (node: Record<string, unknown>, segs: string[][]): void => {
@@ -114,7 +124,7 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const global = applyEnvOverrides(parseStrict(GlobalConfig, globalRaw ?? {}, globalPath));
 
   const projectPath = join(repoRoot, ".claudexor", "config.yaml");
-  const projectRaw = readYaml(projectPath);
+  const projectRaw = stripRetiredKeys(readYaml(projectPath), RETIRED_PROJECT_CONFIG_KEYS);
   if (projectRaw !== null) sources.push(projectPath);
   const project = parseStrict(ProjectConfig, projectRaw ?? {}, projectPath);
 
@@ -169,6 +179,30 @@ function applyEnvOverrides(global: GlobalConfig): GlobalConfig {
 
 export function globalConfigPath(): string {
   return join(globalConfigDir(), "config.yaml");
+}
+
+/** Resolved user-local trust file path for one repo (keyed by repo-root hash). */
+export function trustConfigPath(repoRoot: string): string {
+  return join(globalConfigDir(), "trust", `${repoHash(repoRoot)}.yaml`);
+}
+
+/**
+ * Write the user-local trust file for a repo (used by `claudexor trust`).
+ * Values are validated against the STRICT TrustConfig schema; the write is
+ * atomic (tmp+rename) like updateGlobalConfig.
+ */
+export function updateTrustConfig(
+  repoRoot: string,
+  mutator: (config: TrustConfig) => TrustConfig,
+): { path: string; config: TrustConfig } {
+  const path = trustConfigPath(repoRoot);
+  const current = parseStrict(TrustConfig, readYaml(path) ?? {}, path);
+  const next = TrustConfig.parse(mutator(current));
+  ensureDir(join(globalConfigDir(), "trust"));
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeText(tmp, yamlStringify(next));
+  renameSync(tmp, path);
+  return { path, config: next };
 }
 
 /**

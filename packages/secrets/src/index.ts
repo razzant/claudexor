@@ -202,6 +202,26 @@ export class SecretStore {
   }
 }
 
+/**
+ * The single allowlist of managed secret names (A17: previously duplicated in
+ * the CLI and the control API, and BOTH were missing `claude_oauth` — the
+ * claude adapter reads it, so it must be settable). Names are secret REFS,
+ * never values; adding a name here makes it settable via CLI and HTTP alike.
+ */
+export const MANAGED_SECRET_NAMES = [
+  "openai",
+  "anthropic",
+  "claude_oauth",
+  "openrouter",
+  "cursor",
+  "opencode",
+  "raw",
+] as const;
+
+export function isManagedSecretName(name: string): boolean {
+  return (MANAGED_SECRET_NAMES as readonly string[]).includes(name);
+}
+
 export interface ResolveOptions {
   /** Test seam: inject a scoped store. Production callers use the default. */
   store?: SecretStore;

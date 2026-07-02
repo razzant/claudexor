@@ -35,6 +35,10 @@ export interface ReserveResult {
   tier: CircuitTier;
   lease?: BudgetLease;
   reason?: string;
+  /** Typed denial cause (no string matching on `reason`): `hard_cap` = the
+   * breaker already tripped; `estimate_headroom` = the DD-27 wave guard —
+   * this slot's estimate does not fit, but already-granted work continues. */
+  denied?: "hard_cap" | "estimate_headroom";
 }
 
 /** Stable fingerprint of a prompt for loop detection. */
@@ -88,10 +92,34 @@ export class BudgetLedger {
     return mostSevere(localTier, parentTier);
   }
 
+  /** USD still available under the nearest cap in the ledger chain (null = uncapped). */
+  private remainingHeadroomUsd(): number | null {
+    const cap = this.limits.maxUsd ?? null;
+    const local = cap === null || cap <= 0 ? null : cap * this.thresholds.hard - (this.spendUsd + this.outstandingHolds());
+    const parent = this.parent?.remainingHeadroomUsd() ?? null;
+    if (local === null) return parent;
+    if (parent === null) return local;
+    return Math.min(local, parent);
+  }
+
   reserve(input: ReserveInput): ReserveResult {
     const tier = this.tier();
     if (tier === "hard") {
-      return { granted: false, tier, reason: "budget exhausted (hard cap reached)" };
+      return { granted: false, tier, reason: "budget exhausted (hard cap reached)", denied: "hard_cap" };
+    }
+    // DD-27 wave guard: an estimate-bearing reservation must FIT the remaining
+    // headroom, or it is DENIED without recording the hold — a denied slot
+    // must never poison the tier for candidates that were already granted.
+    if (typeof input.estimateUsd === "number" && input.estimateUsd > 0) {
+      const headroom = this.remainingHeadroomUsd();
+      if (headroom !== null && input.estimateUsd > headroom) {
+        return {
+          granted: false,
+          tier,
+          reason: `insufficient headroom for estimated cost (${input.estimateUsd.toFixed(2)} USD > ${Math.max(headroom, 0).toFixed(2)} USD remaining)`,
+          denied: "estimate_headroom",
+        };
+      }
     }
     const lease = BudgetLeaseSchema.parse({
       lease_id: newId("lease"),
