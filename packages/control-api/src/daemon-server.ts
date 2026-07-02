@@ -512,7 +512,31 @@ export class DaemonControlApiServer {
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
         const body = ControlThreadApplyRequest.parse(raw);
-        const result = await applySvc(decodeURIComponent(threadApplyMatch[1] as string), { mode: body.mode, branch: body.branch, message: body.message });
+        const threadId = decodeURIComponent(threadApplyMatch[1] as string);
+        // Head-run state gate (T3.2#8 / D4 / INV-113): the cumulative thread
+        // diff spans turns, so there is no single WorkProduct to hash-bind —
+        // but a thread whose HEAD run is blocked (NEEDS_HUMAN) or failed must
+        // NOT deliver with one POST unless a typed operator decision exists.
+        // This closes the last undocumented bypass of the apply-gate doctrine.
+        const detail = await detailSvc(threadId);
+        const headRunId = (detail.thread as { head_run_id?: string | null }).head_run_id ?? null;
+        if (headRunId) {
+          const headRec = (await this.opts.daemon.list()).find((r) => (r.runId ?? r.id) === headRunId);
+          if (headRec && (headRec.state === "blocked" || headRec.state === "failed")) {
+            const decision = readValidOperatorDecision(headRec);
+            if (!decision) {
+              appendRunAuditEvent(headRec, "control.rejected", {
+                control: "thread_apply",
+                thread_id: threadId,
+                reason: `head run is ${headRec.state} without a typed operator decision`,
+              });
+              return this.json(res, 409, {
+                error: `thread head run ${headRunId} is ${headRec.state}; apply requires a typed operator decision first (POST /runs/${headRunId}/decision)`,
+              });
+            }
+          }
+        }
+        const result = await applySvc(threadId, { mode: body.mode, branch: body.branch, message: body.message });
         return this.json(res, 200, ControlThreadApplyResponse.parse(result));
       } catch (err) {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;

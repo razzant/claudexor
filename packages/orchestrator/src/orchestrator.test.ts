@@ -1087,6 +1087,11 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
     ]);
+    // The tamper fence verifies the recorded hash — use the REAL one
+    // (parse-normalized, matching both producers).
+    const { hashJson } = await import("@claudexor/util");
+    const { SpecPack } = await import("@claudexor/schema");
+    const realHash = hashJson(SpecPack.parse(JSON.parse(readFileSync(specPath, "utf8"))));
     const orch = new Orchestrator({ registry, reviewers: [] });
     const res = await orch.run({
       repoRoot: repo,
@@ -1094,13 +1099,13 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["fake-success"],
       specId: "spec-123",
-      specHash: "sha256:abc",
+      specHash: realHash,
       specPath,
       tests: [specGate, explicitGate],
     });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("id: spec-123");
-    expect(taskYaml).toContain("hash: sha256:abc");
+    expect(taskYaml).toContain(`hash: ${realHash}`);
     // Spec CONTENT now reaches the contract (the previously-dead pipeline):
     expect(taskYaml).toContain("widget renders");
     expect(taskYaml).toContain("no redesign");
@@ -1501,6 +1506,53 @@ describe("Orchestrator", () => {
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
     expect(telemetry).toContain("tool_warnings_total: 1");
     expect(telemetry).toContain("status: success_with_warnings");
+  });
+
+  it("spec tamper fence: a frozen spec modified after freeze refuses the run loudly (INV-081)", async () => {
+    const repo = await initRepo();
+    const spec = {
+      schema_version: 2,
+      id: "spec-tamper",
+      created_at: new Date().toISOString(),
+      version: 1,
+      frozen: true,
+      intent: { raw: "do the thing" },
+      summary: "frozen contract",
+    };
+    const { hashJson } = await import("@claudexor/util");
+    const specPath = join(repo, "spec.json");
+    writeFileSync(specPath, JSON.stringify(spec));
+    // Parse-normalized hash (defaults applied) — matching both producers.
+    const { SpecPack } = await import("@claudexor/schema");
+    const goodHash = hashJson(SpecPack.parse(JSON.parse(readFileSync(specPath, "utf8"))));
+    const orch = new Orchestrator({ registry: new Map([["fake-impl", diffImplementer("fake-impl")]]), reviewers: [] });
+    // Tamper AFTER freeze: success criteria silently rewritten.
+    writeFileSync(specPath, JSON.stringify({ ...spec, summary: "TAMPERED contract" }));
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "implement",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        n: 1,
+        specPath,
+        specHash: goodHash,
+        specId: "spec-tamper",
+      }),
+    ).rejects.toThrow(/SpecPack hash mismatch/);
+    // The recorded hash still accepts the UNMODIFIED spec.
+    writeFileSync(specPath, JSON.stringify(spec));
+    const ok = await orch.run({
+      repoRoot: repo,
+      prompt: "implement",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+      specPath,
+      specHash: goodHash,
+      specId: "spec-tamper",
+    });
+    expect(ok.status).not.toBe("failed");
   });
 
   it("inactivity watchdog: a wedged harness stream ends as a typed failure, never a forever-running run (INV-116)", async () => {

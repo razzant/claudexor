@@ -1729,6 +1729,89 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("thread apply 409s while the HEAD run is blocked without a typed decision, and passes once decided (D4/INV-113)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-gate-"));
+    const runDir = join(dir, "run-head");
+    const { mkdirSync: mkd } = await import("node:fs");
+    mkd(join(runDir, "arbitration"), { recursive: true });
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-gate",
+      created_at: now,
+      updated_at: now,
+      repo: { root: dir, base_ref: "HEAD" },
+      title: "gated thread",
+      mode: "agent",
+      workspace: { mode: "isolated", worktree_path: join(dir, "tree"), base_sha: "abc" },
+      auth_preference: "auto",
+      primary_harness: null,
+      eligible_harnesses: [],
+      portfolio: "subscription-first",
+      run_ids: ["run-head"],
+      head_run_id: "run-head",
+      state: "active",
+    };
+    let applied = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "j", state: "queued" };
+      },
+      async status() {
+        return { id: "job-head", state: "blocked", runId: "run-head", runDir };
+      },
+      async list() {
+        return [{ id: "job-head", state: "blocked", runId: "run-head", runDir }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const server = new DaemonControlApiServer({
+      token,
+      daemon,
+      services: {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
+        applyThread: async () => {
+          applied += 1;
+          return { applied: true, status: "applied" };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    try {
+      const blockedRes = await fetch(`${base}/threads/th-gate/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(blockedRes.status).toBe(409);
+      expect(((await blockedRes.json()) as { error: string }).error).toContain("typed operator decision");
+      expect(applied).toBe(0);
+
+      // A typed operator decision unblocks the gate (hash-bound to the patch).
+      const { sha256 } = await import("@claudexor/util");
+      mkd(join(runDir, "final"), { recursive: true });
+      const patchText = "diff --git a/x b/x\n";
+      writeFileSync(join(runDir, "final", "patch.diff"), patchText);
+      writeFileSync(
+        join(runDir, "arbitration", "operator_decision.yaml"),
+        `action: accept_risk\ndecided_at: "${now}"\npatch_sha256: "${sha256(patchText)}"\n`,
+      );
+      const okRes = await fetch(`${base}/threads/th-gate/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(okRes.status).toBe(200);
+      expect(applied).toBe(1);
+    } finally {
+      await server.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("streams events for a QUEUED job (SSE waits with heartbeats, binds the run dir when it appears)", async () => {
     // T3.1#6: GET /runs/:id/events on a queued job must open the stream and
     // wait, not 404 — `follow <jobId>` works from enqueue time.

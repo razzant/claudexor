@@ -603,18 +603,19 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    post-turn snapshot (divergence-fenced, below).
 4. **Race winner adoption** — a best-of-N thread race runs candidates in
    isolated envelopes and applies the winner's patch to the execution tree ONLY
-   on a clean terminal (success or ungated); blockers stop adoption, and a
-   failed apply leaves `adopted:false` with the tree unchanged and offers a
-   manual apply. (Hardening of the honest-restore guarantee — conflict residue
-   can never linger behind an
-   `adopted:false` — lands in v0.15 Phase 3, INV-114.)
+   on a clean terminal (success or ungated); blockers stop adoption. Adoption
+   runs the PROTECTED apply path (`git apply --check` first, restore on a
+   `--3way` failure): `adopted:false` guarantees the tree is byte-identical,
+   and a failed restore is disclosed as `tree_mutated` on the adoption event
+   instead of hidden (INV-114).
 5. **Thread apply** — `POST /threads/:id/apply` delivers an isolated thread's
-   accumulated worktree diff. Fences: a secret-like-token scan refuses the
-   patch, a project-HEAD-moved check is disclosed as an advisory (delivery
-   still merges via `git apply --3way` or fails loudly), and delivery reuses
-   the shared `deliver` path. A head-run state gate (the thread's HEAD run must
-   be non-blocked/non-failed or covered by a typed operator
-   decision) lands in v0.15 Phase 3 (locked decision D4).
+   accumulated worktree diff. Fences: a HEAD-RUN STATE GATE (a thread whose
+   head run is blocked or failed 409s unless a typed operator decision covers
+   that run — the audited `control.rejected` event records the refusal; D4),
+   a secret-like-token scan refuses the patch, a project-HEAD-moved check is
+   disclosed as an advisory, and delivery reuses the shared protected
+   `deliver` path (`--check` first, restore on failure, honest
+   `treeMutated`).
 6. **Automatic git init** — a NON-GIT project folder is initialized before any
    write candidate spawns (`.gitignore` seeded with `.claudexor/`, `git init`,
    deterministic baseline commit). Fence: the mutation is announced via a typed

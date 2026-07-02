@@ -1348,6 +1348,15 @@ export class Orchestrator {
     if (input.specPath) {
       try {
         const spec = SpecPackZ.parse(JSON.parse(readFileSync(input.specPath, "utf8")));
+        // Tamper fence (T3.2#7, INV-081): the frozen spec's recorded hash must
+        // match what we just read — a spec.json edited AFTER freeze would
+        // otherwise silently rewrite success criteria/tests/protected paths
+        // while the contract records the stale hash as provenance.
+        if (input.specHash && hashJson(spec) !== input.specHash) {
+          throw new Error(
+            `frozen SpecPack hash mismatch (expected ${input.specHash}, got ${hashJson(spec)}); the spec was modified after freeze — re-freeze it or drop --spec`,
+          );
+        }
         const fromSpec = specPackToTaskContract(spec, {
           repoRoot: input.repoRoot,
           mode,
