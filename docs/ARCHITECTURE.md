@@ -65,9 +65,11 @@ strategies became flags, not modes:
     delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
     project. Per-step progress is persisted to
     `final/orchestration_progress.yaml`.
-  The executor's budget is AGGREGATE: sequential sub-runs share one cap (each
-  step gets the remaining headroom, carried by the settled spend of prior
-  steps; exhausted headroom ends the run `exhausted`), and
+  The executor's budget is AGGREGATE and WHOLE-CAP: the brain's own settled
+  spend seeds the aggregate, and sequential sub-runs AND review-step reviewer
+  panels all charge the same cap (each step gets the remaining headroom;
+  exhausted headroom ends the run with the failure-shaped `exhausted`
+  terminal — failure.yaml + run.failed, never a clean success), and
   `--max-tool-calls` (control-api `maxToolCalls`) caps the plan
   steps. Both knobs apply only to `orchestrate` — any other mode refuses them
   loudly (CLI usage error / control-api 400) rather than carrying a silent

@@ -75,9 +75,17 @@ export async function finalVerifyPatch(
       ...fields,
     });
   if (!winner.baseSha) {
-    // In-place single-candidate turns mutate the live tree directly; there
-    // is no patch-vs-base to verify (and no base recorded).
-    return FinalVerifyRecord.parse({ attempted: false, reason: "no base sha recorded for the winner envelope" });
+    // FAIL CLOSED: the in-place exemption is a CALLER-level decision (the
+    // orchestrator skips in-place turns before calling). An ENVELOPE patch
+    // reaching this point without a recorded base sha cannot be proven
+    // against a clean base — that blocks like any other verifier error,
+    // never silently bypasses INV-115.
+    return FinalVerifyRecord.parse({
+      attempted: true,
+      applied_cleanly: null,
+      reason: "no base sha recorded for the winner envelope; cannot verify against a clean base",
+      duration_ms: Date.now() - started,
+    });
   }
   const verifyBase = mkdtempSync(join(tmpdir(), "claudexor-verify-"));
   const verifyTree = join(verifyBase, "tree");

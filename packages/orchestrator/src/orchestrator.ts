@@ -34,7 +34,6 @@ import {
   OrchestrateContract as OrchestrateContractSchema,
   type OrchestrateContract as OrchestrateContractT,
   type OrchestrateAutonomy,
-  OrchestratePlan as OrchestratePlanSchema,
   type OrchestratePlan as OrchestratePlanT,
   type OrchestratePlanCall as OrchestratePlanCallT,
   type OrchestratePlanProgress as OrchestratePlanProgressT,
@@ -6248,13 +6247,6 @@ export class Orchestrator {
     return existsSync(path) ? readFileSync(path, "utf8") : null;
   }
 }
-
-/**
- * Extract + validate the brain's typed plan from its markdown report (the
- * fenced ```json block the orchestrate prompt requires). Structured-output
- * parsing, not governance: validity is decided by the OrchestratePlan schema.
- */
-
 
 function assertNoSecretLikeTokens(label: string, text: string): void {
   if (containsSecretLikeToken(text)) {

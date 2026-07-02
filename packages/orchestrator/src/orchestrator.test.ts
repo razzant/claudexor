@@ -1606,9 +1606,14 @@ describe("Orchestrator", () => {
     const conflict = await finalVerifyPatch(repo, { baseSha, diff: conflictPatch }, failingGates, noopVerifyLog);
     expect(conflict.attempted).toBe(true);
     expect(conflict.applied_cleanly).toBe(false);
-    // No base sha (in-place single candidate): honestly not attempted.
-    const skipped = await finalVerifyPatch(repo, { diff: goodPatch }, failingGates, noopVerifyLog);
-    expect(skipped.attempted).toBe(false);
+    // No base sha at the HELPER level FAILS CLOSED (the in-place exemption
+    // is a caller decision): an envelope patch without a recorded base
+    // cannot be proven and must block, never silently bypass INV-115.
+    const noBase = await finalVerifyPatch(repo, { diff: goodPatch }, failingGates, noopVerifyLog);
+    expect(noBase.attempted).toBe(true);
+    expect(noBase.applied_cleanly).toBeNull();
+    const { finalVerifyBlocks } = await import("./finalVerifier.js");
+    expect(finalVerifyBlocks(noBase)).toBe(true);
   });
 
   it("spec tamper fence: a frozen spec modified after freeze refuses the run loudly (INV-081)", async () => {

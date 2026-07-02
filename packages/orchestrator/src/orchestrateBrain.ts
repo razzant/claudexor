@@ -46,6 +46,11 @@ export function buildOrchestrateBrainPrompt(
   ].join("\n");
 }
 
+/**
+ * Extract + validate the brain's typed plan from its markdown report (the
+ * fenced ```json block the orchestrate prompt requires). Structured-output
+ * parsing, not governance: validity is decided by the OrchestratePlan schema.
+ */
 export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
   const fence = /```json\s*\n([\s\S]*?)\n```/g;
   let lastBlock: string | null = null;
