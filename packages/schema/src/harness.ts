@@ -408,6 +408,26 @@ export const HarnessEvent = z.object({
     .optional(),
   observed_model: z.string().optional(),
   /**
+   * Typed live plan/todo progress (D14): adapters map their native plan tools
+   * (codex `todo_list` items, claude `TodoWrite` todos) into this shape in
+   * the parse layer; the orchestrator forwards the LAST-WINS list as a
+   * `plan.progress` run event and the UI renders live checklists. Never
+   * parsed from prose.
+   */
+  plan_progress: z
+    .object({
+      items: z
+        .array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            status: z.enum(["pending", "in_progress", "completed"]),
+          }),
+        )
+        .default([]),
+    })
+    .optional(),
+  /**
    * Typed rate-limit / quota signal. Adapters set this in their parse layer when
    * the native CLI reports a 429 / quota / overload (adapter knowledge is allowed);
    * the budget layer projects it WITHOUT regex over model/CLI prose. Replaces the

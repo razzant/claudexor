@@ -169,3 +169,18 @@ describe("parseCodexEvent", () => {
     expect(msg?.text).toContain("[ ] Step two");
   });
 });
+
+describe("plan progress (D14)", () => {
+  it("maps todo_list items to the TYPED plan_progress field (message kept for plan extraction)", () => {
+    const out = parseCodexEvent(
+      { type: "item.completed", item: { type: "todo_list", items: [{ text: "step one", completed: true }, { text: "step two", completed: false }] } },
+      "s1",
+    );
+    const ev = out?.[0];
+    expect(ev?.type).toBe("message");
+    expect(ev?.plan_progress?.items).toEqual([
+      { id: "codex-0", title: "step one", status: "completed" },
+      { id: "codex-1", title: "step two", status: "pending" },
+    ]);
+  });
+});

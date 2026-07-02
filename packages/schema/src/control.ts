@@ -532,36 +532,6 @@ export const ControlInteractionAnswerResponse = z.object({
 });
 export type ControlInteractionAnswerResponse = z.infer<typeof ControlInteractionAnswerResponse>;
 
-export const ControlRunDetail = z.object({
-  summary: ControlRunSummary,
-  /**
-   * Highest event seq included in this snapshot. Clients subscribe to the
-   * event stream from this cursor; events with seq <= lastSeq are already
-   * reflected in the snapshot (snapshot-then-subscribe, no gaps, no dupes).
-   */
-  lastSeq: z.number().int().nonnegative().default(0),
-  artifacts: z.array(ControlArtifactInfo).default([]),
-  primaryOutput: ControlPrimaryOutput.nullable().default(null),
-  timeline: z.array(ControlTimelineEvent).default([]),
-  budget: ControlBudgetSnapshot.default({}),
-  finalSummary: z.string().nullable().default(null),
-  decision: DecisionRecord.nullable().default(null),
-  /** Persisted operator unblock decision (accept_risk/override), hash-bound; server-owned apply affordance. */
-  operatorDecision: z
-    .object({ action: z.string(), decidedAt: z.string().nullable().default(null) })
-    .nullable()
-    .default(null),
-  workProduct: WorkProduct.nullable().default(null),
-  reviewFindings: z.array(ReviewFinding).default([]),
-  pendingInteractions: z.array(ControlPendingInteraction).default([]),
-  /** Typed executor progress for an orchestrate run (auto_safe/auto_full);
-   * null for non-orchestrate runs or suggest autonomy. Projected from
-   * final/orchestration_progress.yaml. */
-  orchestrate: OrchestratePlanProgress.nullable().default(null),
-  failure: RunFailure.nullable().default(null),
-});
-export type ControlRunDetail = z.infer<typeof ControlRunDetail>;
-
 export const RunControlTarget = z.object({
   attemptId: z.string().optional(),
   harnessId: z.string().optional(),

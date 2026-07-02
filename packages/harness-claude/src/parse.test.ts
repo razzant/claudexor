@@ -311,3 +311,36 @@ describe("parseClaudeEvent", () => {
     expect(parseClaudeEvent({ type: "control_cancel_request" }, "s1")).toEqual([]);
   });
 });
+
+describe("plan progress (D14)", () => {
+  it("maps TodoWrite todos to the TYPED plan_progress field on the tool_call event", () => {
+    const out = parseClaudeEvent(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  { content: "write tests", status: "completed", activeForm: "writing tests" },
+                  { content: "fix bug", status: "in_progress", activeForm: "fixing bug" },
+                  { content: "ship", status: "pending", activeForm: "shipping" },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      "s1",
+    );
+    const ev = out?.find((e) => e.type === "tool_call");
+    expect(ev?.plan_progress?.items).toEqual([
+      { id: "claude-0", title: "write tests", status: "completed" },
+      { id: "claude-1", title: "fix bug", status: "in_progress" },
+      { id: "claude-2", title: "ship", status: "pending" },
+    ]);
+  });
+});

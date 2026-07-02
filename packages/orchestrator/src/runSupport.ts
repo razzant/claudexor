@@ -7,6 +7,9 @@ import type { HarnessEvent, ModeKind, ProtectedPathApproval, ReviewFinding } fro
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ArtifactStore } from "@claudexor/artifact-store";
 
 export interface TransientRetryPolicy {
   maxRetries: number;
@@ -213,4 +216,29 @@ export function renderSummary(
       decision.why_winner,
     ].join("\n") + "\n"
   );
+}
+
+/** Pure read: a referenced run's decision/work_product status, or null. */
+export function readRunStatus(repoRoot: string, runId: string): string | null {
+  const store = new ArtifactStore(repoRoot);
+  const sub = store.runPaths(runId);
+  const decision = store.readYaml<{ status?: string; outcome?: string }>(
+    join(sub.arbitrationDir, "decision.yaml"),
+  );
+  const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(
+    join(sub.finalDir, "work_product.yaml"),
+  );
+  if (!decision && !wp) return null;
+  const parts: string[] = [];
+  if (decision?.status) parts.push(`decision=${decision.status}`);
+  if (wp?.meta?.["result_kind"]) parts.push(`result_kind=${String(wp.meta["result_kind"])}`);
+  if (wp?.meta?.["apply_state"]) parts.push(`apply_state=${String(wp.meta["apply_state"])}`);
+  return parts.length > 0 ? parts.join(", ") : `run ${runId}: artifacts present`;
+}
+/** Pure read: a referenced run's recorded patch diff, or null. */
+export function readRunPatch(repoRoot: string, runId: string): string | null {
+  const store = new ArtifactStore(repoRoot);
+  const sub = store.runPaths(runId);
+  const path = join(sub.finalDir, "patch.diff");
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
 }

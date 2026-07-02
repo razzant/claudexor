@@ -884,3 +884,31 @@ import Testing
         #expect(harnessSaveShouldSettle(capturedGen: secondEdit, currentGen: gen) == true)  // newest, settles
     }
 }
+
+@Test func runDetailDecodesCandidateCards() throws {
+    let json = """
+    {
+      "summary": {"id": "run-1", "runId": "run-1", "state": "succeeded", "mode": "agent"},
+      "lastSeq": 5,
+      "candidates": [
+        {"attemptId": "a01", "harnessId": "claude", "label": "A", "costUsd": 0.42,
+         "costEstimated": false, "errored": false, "gatesPassed": 2, "gatesTotal": 2,
+         "blockers": 0, "reviewVerified": true, "finalReviewClean": true, "winner": true,
+         "diffstat": {"files": 3, "additions": 25, "deletions": 4}},
+        {"attemptId": "a02", "harnessId": "codex", "errored": true, "costUsd": 0.1,
+         "costEstimated": true, "gatesPassed": 0, "gatesTotal": 1, "blockers": 1,
+         "reviewVerified": false, "winner": false}
+      ]
+    }
+    """
+    let detail = try JSONDecoder().decode(RunDetail.self, from: Data(json.utf8))
+    #expect(detail.candidates.count == 2)
+    let a = detail.candidates[0]
+    #expect(a.attemptId == "a01")
+    #expect(a.winner)
+    #expect(a.diffstat?.additions == 25)
+    let b = detail.candidates[1]
+    #expect(b.errored)
+    #expect(b.finalReviewClean == nil)
+    #expect(b.diffstat == nil)
+}

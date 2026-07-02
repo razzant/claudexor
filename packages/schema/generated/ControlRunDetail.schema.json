@@ -1464,6 +1464,147 @@
           ],
           "default": null
         },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attemptId": {
+                "type": "string"
+              },
+              "harnessId": {
+                "type": "string"
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "costUsd": {
+                "type": "number",
+                "default": 0
+              },
+              "costEstimated": {
+                "type": "boolean",
+                "default": false
+              },
+              "errored": {
+                "type": "boolean",
+                "default": false
+              },
+              "gatesPassed": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "gatesTotal": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "blockers": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "reviewVerified": {
+                "type": "boolean",
+                "default": false
+              },
+              "finalReviewClean": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "default": null
+              },
+              "winner": {
+                "type": "boolean",
+                "default": false
+              },
+              "diffstat": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "files": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                      },
+                      "additions": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                      },
+                      "deletions": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "attemptId",
+              "harnessId"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "planProgress": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "in_progress",
+                          "completed"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "failure": {
           "anyOf": [
             {

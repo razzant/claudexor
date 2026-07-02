@@ -16,6 +16,7 @@ export * from "./workproduct.js";
 export * from "./budget.js";
 export * from "./route.js";
 export * from "./decision.js";
+export * from "./control-run-detail.js";
 export * from "./gate.js";
 export * from "./events.js";
 export * from "./telemetry.js";

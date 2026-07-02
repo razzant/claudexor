@@ -106,6 +106,44 @@ describe("DaemonControlApiServer", () => {
       join(runDir, "arbitration", "decision.yaml"),
       "winner: a01\nstatus: success\noutcome: ready\n",
     );
+    mkdirSync(join(runDir, "attempts", "a01"), { recursive: true });
+    mkdirSync(join(runDir, "attempts", "a02"), { recursive: true });
+    writeFileSync(
+      join(runDir, "attempts", "a01", "attempt.yaml"),
+      [
+        "attempt_id: a01",
+        "harness_id: claude",
+        "label: A",
+        "cost_usd: 0.42",
+        "cost_estimated: false",
+        "errored: false",
+        "gates:",
+        "  - id: g1",
+        "    status: passed",
+        "  - id: g2",
+        "    status: passed",
+        "diffstat:",
+        "  files: 3",
+        "  additions: 25",
+        "  deletions: 4",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(runDir, "attempts", "a02", "attempt.yaml"),
+      [
+        "attempt_id: a02",
+        "harness_id: codex",
+        "label: B",
+        "cost_usd: 0.1",
+        "cost_estimated: true",
+        "errored: true",
+        "gates:",
+        "  - id: g1",
+        "    status: failed",
+        "",
+      ].join("\n"),
+    );
     writeFileSync(
       join(runDir, "reviews", "a01.yaml"),
       [
@@ -2168,6 +2206,83 @@ describe("DaemonControlApiServer", () => {
       });
       expect(inlineEnv.status).toBe(400);
       expect(enqueued).toBe(0);
+    });
+  });
+
+  it("projects the LAST plan.progress event as planProgress (D14)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // Two plan.progress events: the projection must be LAST-WINS.
+    const evPath = join(record.runDir!, "events.jsonl");
+    const mk = (items: unknown, seq: number) =>
+      JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", seq, type: "plan.progress", payload: { items } });
+    appendFileSync(
+      evPath,
+      "\n" + mk([{ id: "claude-0", title: "old", status: "pending" }], 90) + "\n" +
+        mk(
+          [
+            { id: "claude-0", title: "write tests", status: "completed" },
+            { id: "claude-1", title: "ship", status: "in_progress" },
+          ],
+          91,
+        ) + "\n",
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
+      const body = (await detail.json()) as { planProgress: { items: Array<{ id: string; title: string; status: string }> } | null };
+      expect(body.planProgress).not.toBeNull();
+      expect(body.planProgress!.items).toEqual([
+        { id: "claude-0", title: "write tests", status: "completed" },
+        { id: "claude-1", title: "ship", status: "in_progress" },
+      ]);
+    });
+  });
+
+  it("projects candidate evidence cards from attempts/reviews/decision artifacts (D13)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await fetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as {
+        candidates: Array<{
+          attemptId: string;
+          harnessId: string;
+          label: string | null;
+          costUsd: number;
+          costEstimated: boolean;
+          errored: boolean;
+          gatesPassed: number;
+          gatesTotal: number;
+          blockers: number;
+          winner: boolean;
+          finalReviewClean: boolean | null;
+          diffstat: { files: number; additions: number; deletions: number } | null;
+        }>;
+      };
+      expect(body.candidates.length).toBe(2);
+      const a = body.candidates.find((c) => c.attemptId === "a01")!;
+      expect(a).toMatchObject({
+        harnessId: "claude",
+        label: "A",
+        costUsd: 0.42,
+        gatesPassed: 2,
+        gatesTotal: 2,
+        winner: true,
+        blockers: 0, // the WARN finding in reviews/a01.yaml is not blocking
+        finalReviewClean: true,
+      });
+      expect(a.diffstat).toEqual({ files: 3, additions: 25, deletions: 4 });
+      const b = body.candidates.find((c) => c.attemptId === "a02")!;
+      expect(b).toMatchObject({
+        harnessId: "codex",
+        errored: true,
+        costEstimated: true,
+        gatesPassed: 0,
+        gatesTotal: 1,
+        winner: false,
+        finalReviewClean: null, // no review artifact for the errored loser
+      });
     });
   });
 

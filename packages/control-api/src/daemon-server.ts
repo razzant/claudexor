@@ -5,8 +5,9 @@ import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep 
 import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
-import { eventPayload, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
+import { eventPayload, latestPlanProgress, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
+import { candidatesFor } from "./candidates.js";
 import {
   AccessProfile,
   AttachmentInput,
@@ -1879,6 +1880,11 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     // Typed executor progress for an orchestrate auto_safe/auto_full run; null
     // for suggest / non-orchestrate runs. Thin projection of the engine artifact.
     orchestrate: safeReadStructuredArtifact(rec, "final/orchestration_progress.yaml", OrchestratePlanProgress),
+    // Per-candidate evidence cards (D13): projected from the run's attempt/
+    // review artifacts; empty for single-envelope modes.
+    candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
+    // Live plan checklist (D14): the last plan.progress event's items.
+    planProgress: latestPlanProgress(rec),
     failure,
   });
 }

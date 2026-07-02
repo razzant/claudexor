@@ -76,6 +76,8 @@ import {
   pushUniqueText,
   formatFindings,
   renderSummary,
+  readRunStatus,
+  readRunPatch,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
@@ -1683,6 +1685,11 @@ export class Orchestrator {
             if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
             this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
+            // Live plan checklist (D14): forward the adapter's typed plan
+            // progress as a run event (LAST WINS; the UI renders the latest).
+            if (safeEv.plan_progress) {
+              log?.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+            }
             if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
               cost += safeEv.usage.cost_usd;
               if (safeEv.usage.estimated) costEstimated = true;
@@ -1837,15 +1844,25 @@ export class Orchestrator {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
     store.writeText(join(attemptDir, "patch.diff"), diff);
+    const attemptDiffstat = diffStats(diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
       attempt_id: attemptId,
       harness_id: adapter.id,
+      label,
       cost_usd: cost,
+      cost_estimated: costEstimated,
       errored,
       errors: errors.slice(0, 5),
       ...telemetrySummary(telemetry),
       outcome: telemetry.outcome,
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
+      // Candidate-card evidence (D13): the Candidates tab renders per-attempt
+      // diffstat without re-parsing patch bytes client-side.
+      diffstat: {
+        files: attemptDiffstat.paths.length,
+        additions: attemptDiffstat.additions,
+        deletions: attemptDiffstat.deletions,
+      },
       branch: envelope.branch_name,
     });
     return {
@@ -4452,6 +4469,9 @@ export class Orchestrator {
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
+              if (safeEv.plan_progress) {
+                log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+              }
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 log.emit("budget.observation", {
@@ -5170,6 +5190,9 @@ export class Orchestrator {
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
+              if (safeEv.plan_progress) {
+                log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+              }
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 log.emit("budget.observation", {
@@ -6052,7 +6075,7 @@ export class Orchestrator {
       }
       case "status": {
         // Pure read of the referenced run's decision/work_product artifacts.
-        const read = this.readRunStatus(input.repoRoot, call.run_id);
+        const read = readRunStatus(input.repoRoot, call.run_id);
         return {
           status: read ? "done" : "skipped",
           runId: call.run_id,
@@ -6064,7 +6087,7 @@ export class Orchestrator {
         // step ACTUALLY runs the reviewer panel (evidence beats summaries — a
         // "done" review must mean a review happened), persists its artifacts, and
         // reports the real outcome; eligibility alone is never reported as done.
-        const diff = this.readRunPatch(input.repoRoot, call.run_id);
+        const diff = readRunPatch(input.repoRoot, call.run_id);
         if (diff === null)
           return {
             status: "skipped",
@@ -6221,31 +6244,7 @@ export class Orchestrator {
     };
   }
 
-  /** Pure read: a referenced run's decision/work_product status, or null. */
-  private readRunStatus(repoRoot: string, runId: string): string | null {
-    const store = new ArtifactStore(repoRoot);
-    const sub = store.runPaths(runId);
-    const decision = store.readYaml<{ status?: string; outcome?: string }>(
-      join(sub.arbitrationDir, "decision.yaml"),
-    );
-    const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(
-      join(sub.finalDir, "work_product.yaml"),
-    );
-    if (!decision && !wp) return null;
-    const parts: string[] = [];
-    if (decision?.status) parts.push(`decision=${decision.status}`);
-    if (wp?.meta?.["result_kind"]) parts.push(`result_kind=${String(wp.meta["result_kind"])}`);
-    if (wp?.meta?.["apply_state"]) parts.push(`apply_state=${String(wp.meta["apply_state"])}`);
-    return parts.length > 0 ? parts.join(", ") : `run ${runId}: artifacts present`;
-  }
 
-  /** Pure read: a referenced run's recorded patch diff, or null. */
-  private readRunPatch(repoRoot: string, runId: string): string | null {
-    const store = new ArtifactStore(repoRoot);
-    const sub = store.runPaths(runId);
-    const path = join(sub.finalDir, "patch.diff");
-    return existsSync(path) ? readFileSync(path, "utf8") : null;
-  }
 }
 
 function assertNoSecretLikeTokens(label: string, text: string): void {

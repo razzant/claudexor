@@ -176,12 +176,27 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
         ];
       }
       case "todo_list": {
-        // Codex's structured plan (re-emitted on revision; last wins). Surface it
-        // as a message so the plan is visible in the timeline and available to the
-        // relay's plan-extraction. Verified shape: item.items[].{text,completed}.
+        // Codex's structured plan (re-emitted on revision; last wins). The
+        // TYPED plan_progress rides a message event (D14): the UI renders the
+        // live checklist from the typed field while the prose stays available
+        // to plan-extraction. Verified shape: item.items[].{text,completed}.
         const items = Array.isArray(item.items) ? item.items : [];
         const lines = items.map((t: { text?: string; completed?: boolean }) => `${t.completed ? "[x]" : "[ ]"} ${String(t.text ?? "")}`);
-        return [{ type: "message", session_id: sessionId, ts, text: lines.length ? `Plan:\n${lines.join("\n")}` : "Plan updated" }];
+        return [
+          {
+            type: "message",
+            session_id: sessionId,
+            ts,
+            text: lines.length ? `Plan:\n${lines.join("\n")}` : "Plan updated",
+            plan_progress: {
+              items: items.map((t: { text?: string; completed?: boolean }, i: number) => ({
+                id: `codex-${i}`,
+                title: String(t.text ?? ""),
+                status: t.completed ? ("completed" as const) : ("pending" as const),
+              })),
+            },
+          },
+        ];
       }
       default:
         return null;

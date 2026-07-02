@@ -120,3 +120,26 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
   }
   return out;
 }
+
+/** The LAST plan.progress event's typed items (live plan checklist, D14), or
+ * null when the run never emitted one. Last-wins by construction: plan tools
+ * re-emit the whole list on every revision. */
+export function latestPlanProgress(rec: RunDirCarrier): { items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }> } | null {
+  const events = readRunEvents(rec);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev?.["type"] !== "plan.progress") continue;
+    const payload = eventPayload(ev);
+    const rawItems = Array.isArray(payload["items"]) ? (payload["items"] as unknown[]) : [];
+    const items = rawItems
+      .map((raw) => {
+        const r = raw as { id?: unknown; title?: unknown; status?: unknown };
+        if (typeof r.id !== "string" || typeof r.title !== "string") return null;
+        const status = r.status === "completed" ? "completed" : r.status === "in_progress" ? "in_progress" : "pending";
+        return { id: r.id, title: r.title, status: status as "pending" | "in_progress" | "completed" };
+      })
+      .filter((x): x is { id: string; title: string; status: "pending" | "in_progress" | "completed" } => x !== null);
+    return { items };
+  }
+  return null;
+}

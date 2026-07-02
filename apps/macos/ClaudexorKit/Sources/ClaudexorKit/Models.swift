@@ -635,66 +635,6 @@ public struct InteractionAnswerResponse: Codable, Sendable, Equatable {
     public let message: String?
 }
 
-public struct RunDetail: Codable, Sendable, Equatable {
-    public let summary: RunSummary
-    /// Highest event seq reflected in this snapshot — subscribe to the event
-    /// stream from this cursor (snapshot-then-subscribe, no gaps, no dupes).
-    public let lastSeq: Int
-    public let artifacts: [ArtifactInfo]
-    public let primaryOutput: PrimaryOutput?
-    public let timeline: [TimelineEvent]
-    public let budget: BudgetSnapshot?
-    public let finalSummary: String?
-    public let decision: JSONValue?
-    public let workProduct: JSONValue?
-    public let reviewFindings: [JSONValue]
-    public let pendingInteractions: [PendingInteraction]
-    public let failure: RunFailureInfo?
-    /// Server-persisted operator unblock decision (hash-bound); the apply
-    /// affordance derives from THIS, never from local UI state.
-    public let operatorDecisionAction: String?
-
-    enum CodingKeys: String, CodingKey {
-        case summary, lastSeq, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, pendingInteractions, failure, operatorDecision
-    }
-
-    private struct OperatorDecisionDto: Codable { let action: String? }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        summary = try c.decode(RunSummary.self, forKey: .summary)
-        lastSeq = try c.decodeIfPresent(Int.self, forKey: .lastSeq) ?? 0
-        artifacts = try c.decodeIfPresent([ArtifactInfo].self, forKey: .artifacts) ?? []
-        primaryOutput = try c.decodeIfPresent(PrimaryOutput.self, forKey: .primaryOutput)
-        timeline = try c.decodeIfPresent([TimelineEvent].self, forKey: .timeline) ?? []
-        budget = try c.decodeIfPresent(BudgetSnapshot.self, forKey: .budget)
-        finalSummary = try c.decodeIfPresent(String.self, forKey: .finalSummary)
-        decision = try c.decodeIfPresent(JSONValue.self, forKey: .decision)
-        workProduct = try c.decodeIfPresent(JSONValue.self, forKey: .workProduct)
-        reviewFindings = try c.decodeIfPresent([JSONValue].self, forKey: .reviewFindings) ?? []
-        pendingInteractions = try c.decodeIfPresent([PendingInteraction].self, forKey: .pendingInteractions) ?? []
-        failure = try c.decodeIfPresent(RunFailureInfo.self, forKey: .failure)
-        operatorDecisionAction = (try c.decodeIfPresent(OperatorDecisionDto.self, forKey: .operatorDecision))?.action
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(summary, forKey: .summary)
-        try c.encode(lastSeq, forKey: .lastSeq)
-        try c.encode(artifacts, forKey: .artifacts)
-        try c.encodeIfPresent(primaryOutput, forKey: .primaryOutput)
-        try c.encode(timeline, forKey: .timeline)
-        try c.encodeIfPresent(budget, forKey: .budget)
-        try c.encodeIfPresent(finalSummary, forKey: .finalSummary)
-        try c.encodeIfPresent(decision, forKey: .decision)
-        try c.encodeIfPresent(workProduct, forKey: .workProduct)
-        try c.encode(reviewFindings, forKey: .reviewFindings)
-        try c.encode(pendingInteractions, forKey: .pendingInteractions)
-        try c.encodeIfPresent(failure, forKey: .failure)
-        try c.encodeIfPresent(operatorDecisionAction.map { OperatorDecisionDto(action: $0) }, forKey: .operatorDecision)
-    }
-}
-
 public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let status: String

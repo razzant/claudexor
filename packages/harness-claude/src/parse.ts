@@ -116,6 +116,17 @@ function parseClaudeEventStateful(
         if (EDIT_TOOLS.has(name)) {
           const path = input.file_path ?? input.path ?? input.notebook_path;
           out.push({ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name, tool_use_id: block.id } });
+        } else if (name === "TodoWrite" && Array.isArray(input.todos)) {
+          // Typed plan progress (D14): claude's todo list IS the live plan.
+          // Map in the parse layer (adapter knowledge of its own tool shape);
+          // status values already match pending|in_progress|completed.
+          const items = (input.todos as Array<{ content?: unknown; status?: unknown }>).map((t, i) => ({
+            id: `claude-${i}`,
+            title: String(t.content ?? ""),
+            status:
+              t.status === "completed" ? ("completed" as const) : t.status === "in_progress" ? ("in_progress" as const) : ("pending" as const),
+          }));
+          out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, plan_progress: { items } });
         } else if (name === "ExitPlanMode" && typeof input.plan === "string" && input.plan.trim()) {
           // The produced plan rides in ExitPlanMode's INPUT; surface it as the
           // message it is so plan-mode runs keep their work product headless.
