@@ -337,7 +337,41 @@ export class WorkspaceManager {
     }
   }
 
-  async prune(): Promise<void> {
-    await worktreePrune(this.repoRoot);
+  /**
+   * Dispose an ORPHANED envelope by ids alone (crash GC, T3.1#5): a daemon
+   * crash leaves envelopes with no live job. Reconstructs the disposal
+   * surface (worktree path, branch name, envelope base) from the same id
+   * derivation create() used, so the safety invariants (id-validated base,
+   * never the live tree) hold without a persisted envelope record.
+   */
+  async disposeOrphan(taskId: string, attemptId: string): Promise<void> {
+    const base = this.envelopeBase(taskId, attemptId);
+    await this.dispose(
+      WorkspaceEnvelopeSchema.parse({
+        id: newId("env"),
+        task_id: taskId,
+        attempt_id: attemptId,
+        repo_root: this.repoRoot,
+        base_ref: "HEAD",
+        base_sha: "0000000000000000000000000000000000000000",
+        worktree_path: join(base, "tree"),
+        branch_name: `claudexor/${taskId}/${attemptId}`,
+        env_dir: join(base, "env"),
+        home_dir: join(base, "home"),
+        harness_config_dirs: {
+          codex_home: join(base, "home", ".codex"),
+          claude_config: join(base, "home", ".claude"),
+          cursor_config: join(base, "home", ".cursor"),
+          opencode_config: join(base, "home", ".config", "opencode"),
+        },
+        ports: { allocated: [] },
+        policy_profile: "workspace_write",
+        dirty_policy: "snapshot",
+        logs_dir: join(base, "logs"),
+        artifacts_dir: join(base, "artifacts"),
+        created_at: nowIso(),
+      }),
+    );
   }
+
 }

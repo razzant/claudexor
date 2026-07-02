@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { createInterface } from "node:readline";
 import { composeBaseEnv } from "./env-scope.js";
 
@@ -67,6 +68,7 @@ export async function* spawnProcess(
     // keep writing to the worktree, or hang the run forever.
     detached: true,
   });
+  if (typeof child.pid === "number") registerChildProcess(child.pid, cmd);
 
   // Signal the child's process GROUP (negative pid) so grandchildren die too;
   // fall back to the direct child if the group is already gone.
@@ -130,6 +132,7 @@ export async function* spawnProcess(
   rlErr.on("line", (line) => push({ type: "stderr", line }));
 
   child.on("error", (err) => {
+    if (typeof child.pid === "number") unregisterChildProcess(child.pid);
     spawnError = err;
     finished = true;
     if (wake) {
@@ -138,6 +141,7 @@ export async function* spawnProcess(
     }
   });
   child.on("close", (code, signal) => {
+    if (typeof child.pid === "number") unregisterChildProcess(child.pid);
     push({ type: "exit", code, signal });
     finished = true;
     if (wake) {

@@ -373,3 +373,53 @@ describe("jobs.json robustness", () => {
     }
   }, 20000);
 });
+
+describe("interrupt terminal stamping", () => {
+  it("appends run.failed{interrupted} to the orphaned events.jsonl when a running job is flipped on restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const runDir = join(dir, "run-orphan");
+    const eventsPath = join(runDir, "events.jsonl");
+    // A previous daemon life: run announced, one event, NO terminal.
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      eventsPath,
+      `${JSON.stringify({ seq: 1, ts: new Date().toISOString(), run_id: "run-orphan", task_id: "t1", type: "run.created", payload: {} })}\n`,
+    );
+    writeFileSync(
+      persistPath,
+      JSON.stringify([
+        {
+          id: "job-orphan",
+          state: "running",
+          params: {},
+          createdAt: new Date().toISOString(),
+          runId: "run-orphan",
+          taskId: "t1",
+          runDir,
+        },
+      ]),
+    );
+    const server = new DaemonServer({
+      socketPath,
+      token: "tkn-interrupt",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "tkn-interrupt");
+      const list = (await client.list()) as JobRecord[];
+      expect(list.find((r) => r.id === "job-orphan")?.state).toBe("interrupted");
+      const lines = readFileSync(eventsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { type: string; seq: number; payload: { status?: string } });
+      const terminal = lines.at(-1);
+      expect(terminal?.type).toBe("run.failed");
+      expect(terminal?.payload.status).toBe("interrupted");
+      expect(terminal?.seq).toBe(2); // seq continues the tail
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
+});

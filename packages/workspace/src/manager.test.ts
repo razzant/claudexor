@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -326,5 +327,25 @@ describe("ensureGitRepository", () => {
     const tracked = await git(dir, ["ls-files"]);
     expect(tracked.stdout).toContain("data.txt");
     expect(tracked.stdout).not.toContain(".claudexor/");
+  });
+});
+
+describe("disposeOrphan (crash GC)", () => {
+  it("removes an orphaned envelope's worktree, branch, and scoped base by ids alone", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-orphan-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, "a.txt"), "x\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    const wsm = new WorkspaceManager(repo);
+    const env = await wsm.create({ taskId: "task-orph", attemptId: "a01" });
+    // Simulate the crash: the envelope is on disk with no live owner.
+    expect(existsSync(env.worktree_path)).toBe(true);
+    const wsm2 = new WorkspaceManager(repo);
+    await wsm2.disposeOrphan("task-orph", "a01");
+    expect(existsSync(join(repo, ".claudexor", "workspaces", "task-orph"))).toBe(false);
+    const branches = execFileSync("git", ["branch", "--list", "claudexor/*"], { cwd: repo, encoding: "utf8" });
+    expect(branches.trim()).toBe("");
+    rmSync(repo, { recursive: true, force: true });
   });
 });

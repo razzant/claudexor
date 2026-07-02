@@ -208,6 +208,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@claudexor/event-log':
+        specifier: workspace:*
+        version: link:../event-log
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema

@@ -5,6 +5,7 @@ export * from "./model.js";
 export * from "./proc.js";
 export * from "./runloop.js";
 export * from "./inactivity.js";
+export * from "./process-registry.js";
 export * from "./conformance.js";
 export * from "./capabilities.js";
 export * from "./doctor.js";

@@ -13,6 +13,7 @@ import {
   logPath,
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
+import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { SecretStore } from "@claudexor/secrets";
@@ -193,11 +194,21 @@ async function main(): Promise<void> {
     },
   });
 
+  // Crash GC before any new work (reap surviving children, sweep orphaned
+  // envelopes/branches/tmp-homes), then arm live-children bookkeeping and
+  // graceful SIGTERM/SIGINT shutdown (T3.1#4/#5).
+  await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
+
   await server.start();
   appendFileSync(
     logPath(),
     `[${new Date().toISOString()}] claudexord listening on ${socketPath}\n`,
   );
+  const lifecycle = armDaemonLifecycle({
+    daemonDir: daemonDir(),
+    logPath: logPath(),
+    stop: () => server.stop(),
+  });
   const control =
     process.env.CLAUDEXOR_NO_CONTROL_API === "1"
       ? null
@@ -227,6 +238,7 @@ async function main(): Promise<void> {
   }
   await server.waitForShutdown();
   await control?.stop();
+  lifecycle.finalize();
   appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord shut down\n`);
   process.exit(0);
 }

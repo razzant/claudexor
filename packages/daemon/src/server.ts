@@ -3,6 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { join } from "node:path";
+import { appendRunEvent } from "@claudexor/event-log";
 import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
@@ -308,7 +310,22 @@ export class DaemonServer {
       // A fresh process cannot resume an in-memory RUN, so a `running` job becomes
       // interrupted (honest). `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web
       // policy) the review queue must keep across restarts.
-      if (rec.state === "running") rec.state = "interrupted";
+      if (rec.state === "running") {
+        rec.state = "interrupted";
+        // Stamp the orphaned event log with a TERMINAL event (T3.1#5d): the
+        // canonical events.jsonl must agree with jobs.json, or SSE tailers and
+        // `follow` wait forever on a log that will never terminate.
+        if (rec.runDir && rec.runId) {
+          try {
+            appendRunEvent(join(rec.runDir, "events.jsonl"), rec.runId, rec.taskId ?? "", "run.failed", {
+              status: "interrupted",
+              error: "daemon restarted while the run was in flight",
+            });
+          } catch {
+            /* best-effort: a missing/corrupt log must not block startup */
+          }
+        }
+      }
       this.records.set(rec.id, rec);
       // A `queued` job never started; its params are persisted, so RE-ENQUEUE it
       // on restart (drain() runs after start()) instead of silently dropping
