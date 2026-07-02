@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCapture } from "@claudexor/core";
+import { sha256 } from "@claudexor/util";
 import { DecisionRecord } from "@claudexor/schema";
 import { checkPatch, deliver, validateApplyGate } from "./index.js";
 
@@ -229,7 +230,6 @@ describe("final_verify apply-gate consumer (D12/INV-115)", () => {
   const patch = "diff --git a/x b/x\n";
 
   function gateWith(finalVerify: Record<string, unknown> | null, decisionOverrides: Record<string, unknown> = {}) {
-    const { sha256 } = require("@claudexor/util") as { sha256: (s: string) => string };
     return validateApplyGate({
       state: "succeeded",
       decision: DecisionRecord.parse({ ...baseDecision, final_verify: finalVerify, ...decisionOverrides }),

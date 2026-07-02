@@ -296,12 +296,14 @@ export class DaemonControlApiServer {
           error: "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
         });
       }
-      // planRunId only has an owner on thread turns (the turn pipeline
-      // prefixes the parent plan and forces mode); a direct run would carry
-      // it as dead provenance at best (T5#9).
-      if (params.planRunId && !directThreadId) {
+      // planRunId only has an owner on thread turns: POST /threads/:id/turns
+      // reads final/plan.md, prefixes it into the prompt, and forces agent
+      // mode. A direct POST /runs — WITH OR WITHOUT a threadId — skips that
+      // pipeline, so the turn would record a plan contract the run never
+      // consumed (T5#9). Reject unconditionally.
+      if (params.planRunId) {
         return this.json(res, 400, {
-          error: "planRunId requires a thread turn; use POST /threads/:id/turns (implement-plan flows are thread-scoped)",
+          error: "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
         });
       }
       let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
@@ -551,7 +553,12 @@ export class DaemonControlApiServer {
                 reason: `head run is ${headRec.state} without a typed operator decision`,
               });
               return this.json(res, 409, {
-                error: `thread head run ${headRunId} is ${headRec.state}; apply requires a typed operator decision first (POST /runs/${headRunId}/decision)`,
+                // State-specific remediation: decisions unblock only BLOCKED
+                // runs; a failed head needs a fixing rerun, not an override.
+                error:
+                  headRec.state === "blocked"
+                    ? `thread head run ${headRunId} is blocked; apply requires a typed operator decision first (POST /runs/${headRunId}/decision)`
+                    : `thread head run ${headRunId} failed; rerun the turn (rerun_with_feedback) or fix the failure before applying the thread diff`,
               });
             }
           }
@@ -1532,6 +1539,14 @@ function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartReque
   // doomed run that produces nothing.
   if (parsed.prompt.trim().length === 0 && !specPath) {
     throw Object.assign(new Error("prompt must not be empty (provide a prompt or a frozen specPath)"), { status: 400 });
+  }
+  // maxToolCalls caps the orchestrate EXECUTOR's plan steps; accepting it on
+  // any other mode would create a silent no-op knob (INV-023).
+  if (parsed.maxToolCalls !== undefined && mode !== "orchestrate") {
+    throw Object.assign(
+      new Error("maxToolCalls only applies to mode=orchestrate (it caps the executor's plan steps)"),
+      { status: 400 },
+    );
   }
   if (specPath && specPath !== parsed.specPath) parsed = { ...parsed, specPath };
   // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must

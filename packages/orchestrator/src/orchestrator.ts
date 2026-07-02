@@ -2728,6 +2728,20 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
+      // The persisted decision must AGREE with the terminal: a verify failure
+      // blocks the run, so a stale success/apply recommendation would let the
+      // gate read a contradiction (arbitration said ship, verifier said no).
+      ...(finalVerifyFailed
+        ? {
+            status: "blocked" as const,
+            outcome: "blocked" as const,
+            apply_recommendation: "human_review" as const,
+            evidence_facts: [
+              ...result.decision.evidence_facts,
+              `final verify failed: ${finalVerify?.reason ?? "deterministic gates failed on the fresh verify tree"}`,
+            ],
+          }
+        : {}),
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
     });
@@ -2869,7 +2883,9 @@ export class Orchestrator {
     if (finalVerifyFailed) {
       writeFailure(store, paths, {
         phase: "verification",
-        category: finalVerify?.applied_cleanly === false ? "apply_conflict" : "gates",
+        // RunFailure.category is a closed enum; "validation" is the honest
+        // bucket (the winner failed re-validation on a fresh base).
+        category: "validation",
         safeMessage: `final verify failed: ${finalVerify?.reason ?? (finalVerify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`,
         runDir: paths.root,
         nextActions: [

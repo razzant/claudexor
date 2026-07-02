@@ -11,6 +11,7 @@ import {
   defaultSocketPath,
   ensureToken,
   logPath,
+  socketAlive,
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
@@ -194,6 +195,15 @@ async function main(): Promise<void> {
       });
     },
   });
+
+  // SINGLETON GUARD FIRST: a second claudexord must refuse BEFORE crash GC —
+  // otherwise it would reap the LIVE daemon's recorded children and sweep
+  // envelopes its running jobs still own. server.start() re-checks (race-safe
+  // enough: the window between the probe and listen is milliseconds, and GC
+  // only runs when the probe found no live daemon).
+  if (await socketAlive(socketPath)) {
+    throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
+  }
 
   // Crash GC before any new work (reap surviving children, sweep orphaned
   // envelopes/branches/tmp-homes), then arm live-children bookkeeping and

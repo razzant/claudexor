@@ -171,8 +171,14 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   }
   if (tool.kind === "web") {
     t.web.attempted = true;
+    // Evidence WAS obtained — satisfied is factual for the web_required gate.
     t.web.satisfied = true;
-    t.web.failed = false;
+    // But the failed marker clears only when THIS success matches the failed
+    // call's target (INV-043 keying): a success on an unrelated query must
+    // not silently launder the earlier failure's disclosure.
+    if (t.web.target === null || t.web.target === (tool.target ?? null)) {
+      t.web.failed = false;
+    }
     t.web.tool = tool.name;
     t.web.target = tool.target ?? t.web.target;
   }

@@ -65,6 +65,13 @@ strategies became flags, not modes:
     delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
     project. Per-step progress is persisted to
     `final/orchestration_progress.yaml`.
+  The executor's budget is AGGREGATE: sequential sub-runs share one cap (each
+  step gets the remaining headroom, carried by the settled spend of prior
+  steps; exhausted headroom ends the run `exhausted`), and
+  `--max-tool-calls` (control-api `maxToolCalls`) caps the plan
+  steps. Both knobs apply only to `orchestrate` — any other mode refuses them
+  loudly (CLI usage error / control-api 400) rather than carrying a silent
+  no-op knob.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
 `readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)

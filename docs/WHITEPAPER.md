@@ -244,6 +244,23 @@ first, then `git init` plus a deterministic Claudexor-authored baseline commit
 make diffs truthful from the very first run. The mutation is announced in the
 run timeline (`project.git.initialized`) — never silent.
 
+Captured diffs are byte-faithful and re-verified before they ship. Process
+capture never rides line-splitting (CRLF content and binary payloads survive
+exactly as git emitted them), a failed apply RESTORES the target tree — or
+reports the mutation honestly when restoration itself fails — and an
+otherwise-adoptable race winner must additionally survive a FINAL VERIFY:
+its patch is applied onto a fresh tree at its own recorded base and the
+deterministic gates re-run there before adoption or apply eligibility. A
+patch that cannot survive a clean base does not touch the live tree.
+
+Runs cannot hang silently, and crashes do not leak. Every announced run ends
+with a terminal event on every path (throw, cancel, daemon restart); a
+harness stream that goes silent past the inactivity window is killed with a
+typed timeout instead of parking a run in "running" forever; and the daemon
+shuts down gracefully on host signals, records its live child process
+groups, and on the next start reaps surviving orphans and sweeps workspace
+envelopes nothing owns — including the seeded credentials inside them.
+
 ## Observability
 
 Run artifacts live in two honest planes that are never conflated. The run tree

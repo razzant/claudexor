@@ -481,7 +481,10 @@ function tokenMatches(candidate: string, expected: string): boolean {
 }
 
 /** True when something is actively accepting connections on the socket path. */
-function socketAlive(socketPath: string): Promise<boolean> {
+/** Is a daemon already listening on this socket? Exported so the claudexord
+ * entrypoint can refuse BEFORE running crash GC — a second daemon must never
+ * reap the live daemon's children or sweep envelopes its jobs still own. */
+export function socketAlive(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = connect(socketPath);
     const done = (alive: boolean) => {

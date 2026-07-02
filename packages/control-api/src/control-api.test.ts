@@ -2888,7 +2888,7 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: "x", mode: "agent", scope: { kind: "project", root: repo }, planRunId: "run-plan" }),
       });
       expect(withPlan.status).toBe(400);
-      expect(((await withPlan.json()) as { error: string }).error).toContain("planRunId requires a thread turn");
+      expect(((await withPlan.json()) as { error: string }).error).toContain("planRunId is not accepted on POST /runs");
     } finally {
       await server.stop();
       rmSync(repo, { recursive: true, force: true });

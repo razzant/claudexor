@@ -826,6 +826,9 @@ final class AppModel {
                 // Per-row salvage disclosed (T6#5): the store carried rows this
                 // app build cannot decode — say so instead of hiding them.
                 threadStatus = "\(list.droppedThreads) thread(s) could not be decoded by this app version and are hidden."
+            } else if threadStatus?.contains("could not be decoded") == true {
+                // The condition is gone; a stale warning must not linger.
+                threadStatus = nil
             }
         } catch let GatewayError.http(status, _) where status == 501 {
             // Engine builds without thread support: honestly empty.

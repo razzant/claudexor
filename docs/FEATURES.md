@@ -12,12 +12,11 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **104** (broken: 1, dead: 1, half-baked: 8, suspicious: 6, works-with-caveats: 88)
+Rows: **100** (broken: 1, half-baked: 8, suspicious: 6, works-with-caveats: 85)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|
 | cli/daemon/api | CLI-unknown-command | broken | Falls into `default:` → prints help, **exit 0** (verified live) | packages/cli/src/cli.ts:2168-2171 | backlog |
-| engine/orchestrator | F57 orchestrate max_tool_calls | dead | Executor checks it, but the only producer hardcodes `null`; unreachable. | orchestrator.ts:4831, 5788, 5819-5826 | backlog |
 | cli/daemon/api | CLI-auth-login | half-baked | Prints a static hint string per harness; no action; ignores `--json` | packages/cli/src/cli.ts:1377-1395 | backlog |
 | engine/orchestrator | F15 orchestrate answer_question | half-baked | (documented) | orchestrator.ts:6038-6072; schema/orchestrate.ts:28-38 | backlog |
 | engine/schema | BUD-PORTFOLIO | half-baked | (planned: v0.15 P4, D7 quotas fill RouterCandidate) | packages/schema/src/budget.ts:8-19; packages/budget/src/router.ts:30-65; packages/orchestrator/src/orchestrator.ts:1190-1201 (only harnessId/family/authMode set) | v0.15 P4 |
@@ -52,8 +51,6 @@ Rows: **104** (broken: 1, dead: 1, half-baked: 8, suspicious: 6, works-with-cave
 | cli/daemon/api | CLI-spec | works-with-caveats | Two-phase: no `--answers` → plan run + questions.json draft; with `--answers` → freeze + persist spec dir; rejects secret-like prompts | packages/cli/src/cli.ts:919-1026, 925-930; caveat: silently ignores `--attach`/`--image`/`--model`/`--max-usd` | v0.15 P2 |
 | cli/daemon/api | D-cancel | works-with-caveats | Abort controller; queued flips to cancelled; unknown id still returns `{cancelled:true}` | packages/daemon/src/server.ts:196-206 | v0.15 P3 |
 | cli/daemon/api | D-runner | works-with-caveats | Shared `normalizeRunStartRequest`; isolated-thread worktree resolution (base persisted only on create); native session resume map; turn binding never fails the run | packages/cli/src/claudexord.ts:72-193; caveat: bogus threadId/turnId from direct socket callers silently unbound, claudexord.ts:114-126 | backlog |
-| cli/daemon/api | D-shutdown | works-with-caveats | RPC `claudexor.shutdown` aborts in-flight runs, waits ≤5s, persists; **no SIGTERM/SIGINT handler exists** | packages/daemon/src/server.ts:100-123, 207-209; packages/cli/src/claudexord.ts:635-638 | v0.15 P3 |
-| cli/daemon/api | D-token | works-with-caveats | Per-user UUID at `daemon/token` 0600; constant-time compare; never rotated | packages/daemon/src/token.ts:19-46; packages/daemon/src/server.ts:392-397 | backlog |
 | engine/orchestrator | F01 ask | works-with-caveats | `runAsk` → `runReadOnlyReport` intent `explain`, sequential harness chain, first success wins, web-blocked attempts open a fallback arc to the next harness; generic failure is terminal (no fallback, primary-first honesty). Answer at `final/answer.md`. | orchestrator.ts:4771-4780, 5325-5394, 5391-5393 | v0.15 P3 |
 | engine/orchestrator | F06 agent --n (race) | works-with-caveats | Upfront budget leases per slot, bounded-parallel isolated envelopes, per-candidate review, synthesis option, arbitration, winner auto-adopt into in-place tree gated on clean terminal, apply failure disclosed. | orchestrator.ts:2293-2328, 2500, 2884-2909 | v0.15 P3 |
 | engine/orchestrator | F07 agent --attempts | works-with-caveats | `runConvergence` with `maxAttempts`; explicit cap always wins over per-harness `max_rounds`. | orchestrator.ts:529-531, 3992-3995 | backlog |
@@ -84,7 +81,6 @@ Rows: **104** (broken: 1, dead: 1, half-baked: 8, suspicious: 6, works-with-cave
 | engine/workspace+delivery | IV-DIFF | works-with-caveats | (daemon `specFreeze` never passes `previous`, so `changes` is always `[]` there) | `packages/interview/src/spec.ts:95-130`; `packages/cli/src/claudexord.ts:621` | v0.15 P3 |
 | engine/workspace+delivery | IV-FREEZE | works-with-caveats | (hash never verified downstream; multi-file persist non-atomic) | `packages/cli/src/spec.ts:410-475`; `packages/util/src/index.ts:30-49` | backlog |
 | engine/workspace+delivery | IV-PARSE | works-with-caveats | (documented as delimiter parsing, not governance; edge brittleness) | `packages/cli/src/spec.ts:141-305` | backlog |
-| engine/workspace+delivery | WS-DIFFSTAGED | works-with-caveats | Captured-diff fidelity unverified for CRLF round-trips and binary patches (integration tests land v0.15 P3, INV-041). | `packages/workspace/src/git.ts:303-324` | v0.15 P3 |
 | engine/workspace+delivery | WS-DISPOSE | works-with-caveats | (trusts `worktree_path` for `git worktree remove`; no crash GC) | `packages/workspace/src/manager.ts:315-369` | v0.15 P2 |
 | engine/workspace+delivery | WS-INPLACE | works-with-caveats | Captured-diff CRLF corruption risk (INV-041, tests land v0.15 P3); `dirty_policy` is recorded but not enforced. | `packages/workspace/src/manager.ts:112-140,286-313` | v0.15 P3 |
 | engine/workspace+delivery | WS-NONGIT | works-with-caveats | best-effort `cpSync` baseline, `diff -ruN` vs live tree, 200k cap with in-band truncation marker | `packages/workspace/src/manager.ts:195-215,295-310` | v0.15 P2 |
