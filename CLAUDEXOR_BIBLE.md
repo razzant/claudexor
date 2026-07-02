@@ -307,8 +307,8 @@ process below. Never paper over the conflict.
   per-harness model map (per-harness defaults + per-turn map); no global
   cross-harness model value exists, and a scalar model convenience input
   expands only to the resolved primary — never to the pool. verify: schema
-  (no `routing.default_model`); routing tests. Locked v0.15 D2; enforcement
-  lands Phase 2.
+  (no `routing.default_model`); routing tests. Locked in the
+  v0.15 program (D2); enforcement lands in Phase 2.
 - **INV-104** A model outside the harness's model truth source (live
   inventory or manifest known-good list) is refused at settings-write, run
   preflight, and reviewer resolution — never forwarded to the vendor CLI to
