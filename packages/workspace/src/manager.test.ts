@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyPatch, ensureGitRepository, git, isGitRepo, revertWorkingTreeTo, snapshotTree } from "./git.js";
+import { applyPatchProtected, ensureGitRepository, git, isGitRepo, revertWorkingTreeTo, snapshotTree } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
 
@@ -209,7 +209,7 @@ describe("WorkspaceManager", () => {
     expect(diff).toContain("wt-change.txt");
     // Adopt a patch into the worktree (race-winner path) — must not throw.
     const patch = "diff --git a/adopted.txt b/adopted.txt\nnew file mode 100644\nindex 0000000..0905ab8\n--- /dev/null\n+++ b/adopted.txt\n@@ -0,0 +1 @@\n+adopted\n";
-    await applyPatch(wt.path, patch);
+    expect((await applyPatchProtected(wt.path, patch)).ok).toBe(true);
     expect(existsSync(join(wt.path, "adopted.txt"))).toBe(true);
   });
 
@@ -390,5 +390,25 @@ describe("diff fidelity (T3.2#1/#2)", () => {
     await wsm.dispose(env);
     rmSync(repo, { recursive: true, force: true });
     rmSync(clone, { recursive: true, force: true });
+  });
+});
+
+describe("revert with quoted/special filenames (T3.2#4)", () => {
+  it("removes a turn-added non-ASCII file and reports it (git C-quotes it on the newline format)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-q-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, "base.txt"), "base\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    const pre = await snapshotTree(repo);
+    // The turn adds a file whose name git quotes under core.quotePath=true.
+    const special = "файл с пробелом.txt";
+    writeFileSync(join(repo, special), "added by turn\n");
+    const post = await snapshotTree(repo);
+    const res = await revertWorkingTreeTo(repo, pre, post);
+    expect(res.reverted).toBe(true);
+    expect(res.removed).toContain(special);
+    expect(existsSync(join(repo, special))).toBe(false);
+    rmSync(repo, { recursive: true, force: true });
   });
 });

@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -123,5 +124,97 @@ describe("delivery", () => {
       targetRepoRoot: "/x",
     });
     expect(err).toBe("work product is required before apply");
+  });
+});
+
+const gitq = (repo: string, args: string[]): void => {
+  execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { stdio: "pipe" });
+};
+
+async function initRepo(): Promise<string> {
+  const repo = mkdtempSync(join(tmpdir(), "claudexor-deliver-prot-"));
+  await git(repo, ["init", "-b", "main"]);
+  writeFileSync(join(repo, "seed.txt"), "seed\n");
+  gitq(repo, ["add", "-A"]);
+  gitq(repo, ["commit", "-qm", "init"]);
+  return repo;
+}
+
+describe("protected apply path (T3.2#3/#6)", () => {
+  it("a conflicting 3way apply refuses cleanly with the tree RESTORED (adopted:false means unchanged)", async () => {
+    const repo = await initRepo();
+    // Patch built against content the tree no longer has -> --check refuses.
+    writeFileSync(join(repo, "f.txt"), "original\n");
+    gitq(repo, ["add", "-A"]);
+    gitq(repo, ["commit", "-qm", "seed"]);
+    const patch = [
+      "diff --git a/f.txt b/f.txt",
+      "index 000..111 100644",
+      "--- a/f.txt",
+      "+++ b/f.txt",
+      "@@ -1 +1 @@",
+      "-DIFFERENT base content",
+      "+patched",
+      "",
+    ].join("\n");
+    const before = execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" });
+    const res = await deliver(repo, patch, { mode: "apply" });
+    expect(res.applied).toBe(false);
+    expect(res.treeMutated).toBe(false); // the INV-114 guarantee
+    const after = execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" });
+    expect(after).toBe(before);
+    expect(readFileSync(join(repo, "f.txt"), "utf8")).toBe("original\n");
+  });
+
+  it("branch delivery on a FAILED apply returns to the original branch and deletes the scratch branch", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, "f.txt"), "original\n");
+    gitq(repo, ["add", "-A"]);
+    gitq(repo, ["commit", "-qm", "seed"]);
+    const badPatch = [
+      "diff --git a/f.txt b/f.txt",
+      "--- a/f.txt",
+      "+++ b/f.txt",
+      "@@ -1 +1 @@",
+      "-NOPE",
+      "+patched",
+      "",
+    ].join("\n");
+    const res = await deliver(repo, badPatch, { mode: "branch", branch: "claudexor/scratch-x" });
+    expect(res.applied).toBe(false);
+    expect(res.treeMutated).toBe(false);
+    const head = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    expect(head).not.toBe("claudexor/scratch-x");
+    const branches = execFileSync("git", ["branch", "--list", "claudexor/scratch-x"], { cwd: repo, encoding: "utf8" });
+    expect(branches.trim()).toBe("");
+  });
+
+  it("commit delivery stages successfully when the project gitignores .claudexor and a stray evidence dir exists", async () => {
+    const repo = await initRepo();
+    // The seeded-gitignore case: Claudexor-initialized repos ignore .claudexor;
+    // the old :(exclude) pathspec HARD-ERRORED here and delivery refused on a
+    // stray evidence dir. Both must be non-issues now.
+    writeFileSync(join(repo, ".gitignore"), ".claudexor/\n");
+    gitq(repo, ["add", "-A"]);
+    gitq(repo, ["commit", "-qm", "ignore"]);
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "scratch.txt"), "runtime\n");
+    mkdirSync(join(repo, ".claudexor-review-evidence"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor-review-evidence", "GOAL.md"), "packet\n");
+    const patch = [
+      "diff --git a/added.txt b/added.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/added.txt",
+      "@@ -0,0 +1 @@",
+      "+hello",
+      "",
+    ].join("\n");
+    const res = await deliver(repo, patch, { mode: "commit", message: "test: protected staging" });
+    expect(res.detail ?? "").toBe("");
+    expect(res.applied).toBe(true);
+    const show = execFileSync("git", ["show", "--stat", "--name-only", "HEAD"], { cwd: repo, encoding: "utf8" });
+    expect(show).toContain("added.txt");
+    expect(show).not.toContain(".claudexor-review-evidence");
   });
 });

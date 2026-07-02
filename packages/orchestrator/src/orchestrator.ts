@@ -78,7 +78,7 @@ import {
 } from "@claudexor/context";
 import {
   WorkspaceManager,
-  applyPatch,
+  applyPatchProtected,
   ensureGitRepository,
   snapshotTree,
 } from "@claudexor/workspace";
@@ -2795,8 +2795,11 @@ export class Orchestrator {
           // edits made during review/arbitration are not folded into the target.
           postTurnSha = earlyPostTurnSha;
         } else if (adoptable) {
-          try {
-            await applyPatch(execRoot, winnerRun.diff);
+          // Protected path (T3.2#3): --check first, restore on 3way failure —
+          // adopted:false MUST mean the live tree is byte-identical (INV-114);
+          // a failed restore is disclosed as tree_mutated, never hidden.
+          const applied = await applyPatchProtected(execRoot, winnerRun.diff);
+          if (applied.ok) {
             adopted = true;
             applyState = "applied";
             log.emit("work_product.adopted", {
@@ -2810,13 +2813,14 @@ export class Orchestrator {
             } catch {
               postTurnSha = null;
             }
-          } catch (err) {
+          } else {
             adopted = false;
             applyState = "not_applied";
             log.emit("work_product.adopted", {
               applied: false,
               patch_sha256: patchSha256,
-              detail: safeErrorMessage(err),
+              detail: redactSecrets(applied.detail ?? "apply failed"),
+              tree_mutated: applied.treeMutated,
             });
           }
         }

@@ -2,13 +2,18 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
+import { isClaudexorArtifactPath } from "./artifact-paths.js";
 
 /** BYTE-FAITHFUL git capture (T3.2#1): raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
  * (trim-based consumers like revParse are unaffected: git ends its own
  * output with \n). */
-export async function git(repo: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const r = await runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000 });
+export async function git(
+  repo: string,
+  args: string[],
+  input?: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const r = await runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000, input });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -127,7 +132,7 @@ export async function stashCreate(repo: string): Promise<string | null> {
   const meaningful = status
     .split("\n")
     .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
-    .filter((p) => p.length > 0 && !p.startsWith(".claudexor"));
+    .filter((p) => p.length > 0 && !isClaudexorArtifactPath(p));
   if (meaningful.length === 0) return null;
   const head = await git(repo, ["rev-parse", "HEAD"]);
   if (head.code !== 0) throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
@@ -255,28 +260,42 @@ export async function revertWorkingTreeTo(
   // only reverts tracked modifications/deletions, never deletes extra files.
   // `--no-renames` forces a turn rename to surface as delete-old + ADD-new so the
   // new path is caught here (rename detection would hide it under an R status).
-  const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", preTurnSha, expectedPostSha]);
+  // `-z` (T3.2#4): NUL-separated RAW paths — git C-quotes special names on the
+  // newline format, and the quoted literal never exists on disk, so rmSync
+  // "removed" nothing while the old code still reported reverted:true.
+  const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", preTurnSha, expectedPostSha]);
   if (added.code !== 0) throw new WorkspaceError(`revert diff failed: ${added.stderr.trim()}`);
   const toRemove = added.stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((p) => p.length > 0 && !p.startsWith(".claudexor"));
+    .split("\0")
+    .map((l) => l.replace(/\n$/, ""))
+    .filter((p) => p.length > 0 && !isClaudexorArtifactPath(p));
   // Restore every path present in the pre-turn snapshot (mods + deletions).
   const restore = await git(repo, ["checkout", preTurnSha, "--", "."]);
   if (restore.code !== 0) throw new WorkspaceError(`revert checkout failed: ${restore.stderr.trim()}`);
   const removed: string[] = [];
+  const survivors: string[] = [];
   for (const rel of toRemove) {
     try {
       rmSync(join(repo, rel), { force: true });
-      removed.push(rel);
     } catch {
-      /* best-effort: a file already gone is fine */
+      /* verified below: existence decides, not the rm call */
     }
+    if (existsSync(join(repo, rel))) survivors.push(rel);
+    else removed.push(rel);
   }
   // Re-sync the index so `git status` reflects the restored tree (checkout left
   // turn-added paths staged-for-delete handling to us).
   await git(repo, ["add", "-A", "--", "."]);
   await git(repo, ["reset", "--quiet"]);
+  if (survivors.length > 0) {
+    // A survivor means the tree does NOT match the pre-turn state: refusing
+    // to claim reverted:true is the honesty contract (INV-114 family).
+    return {
+      reverted: false,
+      removed,
+      reason: `failed to remove turn-added file(s): ${survivors.join(", ")}`,
+    };
+  }
   return { reverted: true, removed };
 }
 
@@ -294,21 +313,58 @@ export async function worktreeRemove(repo: string, path: string): Promise<void> 
  * the live in-place tree). Throws loudly on conflict so the caller can disclose
  * `adopted:false` and offer a manual apply — the work is never silently lost.
  */
-export async function applyPatch(repo: string, diff: string): Promise<void> {
-  if (!diff.trim()) return;
-  // OS temp dir, not `<repo>/.git` (a worktree's `.git` is a file — review #9).
-  const patchFile = join(tmpdir(), `claudexor-adopt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.patch`);
-  try {
-    writeFileSync(patchFile, diff, "utf8");
-    const r = await git(repo, ["apply", "--3way", "--whitespace=nowarn", patchFile]);
-    if (r.code !== 0) throw new WorkspaceError(`git apply --3way failed: ${r.stderr.trim()}`);
-  } finally {
+
+export interface ProtectedApplyResult {
+  ok: boolean;
+  /** True when the tree does NOT match its pre-apply state (restore failed). */
+  treeMutated: boolean;
+  detail?: string;
+}
+
+/**
+ * The PROTECTED apply path (T3.2#3): `git apply --check` first (clean typed
+ * refusal, tree untouched), then `--3way`; if 3way still fails (race with a
+ * concurrent edit), RESTORE — `checkout -- .` for tracked content plus
+ * removal of files the partial apply CREATED (from the shared diff parser's
+ * added-paths) — and verify with `status --porcelain`. `ok:false,
+ * treeMutated:false` is a GUARANTEE the tree is byte-identical (INV-114);
+ * a failed restoration reports `treeMutated:true` honestly instead.
+ */
+export async function applyPatchProtected(repo: string, diff: string): Promise<ProtectedApplyResult> {
+  if (!diff.trim()) return { ok: true, treeMutated: false, detail: "empty patch; no-op" };
+  const check = await git(repo, ["apply", "--check", "--whitespace=nowarn", "-"], diff);
+  if (check.code !== 0) {
+    return { ok: false, treeMutated: false, detail: `apply --check refused: ${check.stderr.trim()}` };
+  }
+  const before = await statusFingerprint(repo);
+  const ap = await git(repo, ["apply", "--3way", "--whitespace=nowarn", "-"], diff);
+  if (ap.code === 0) return { ok: true, treeMutated: true };
+  // 3way failed after a passing --check (concurrent mutation): restore.
+  const added = parseUnifiedDiff(diff)
+    .files.filter((f) => f.added && f.newPath)
+    .map((f) => f.newPath as string);
+  for (const rel of added) {
     try {
-      rmSync(patchFile, { force: true });
+      rmSync(join(repo, rel), { force: true });
     } catch {
-      /* best-effort patch-file cleanup */
+      /* verified below via the status fingerprint */
     }
   }
+  await git(repo, ["checkout", "--", "."]);
+  const after = await statusFingerprint(repo);
+  const restored = after === before;
+  return {
+    ok: false,
+    treeMutated: !restored,
+    detail:
+      `apply --3way failed: ${ap.stderr.trim()}` +
+      (restored ? "; tree restored to its pre-apply state" : "; RESTORE FAILED — tree left mutated, inspect manually"),
+  };
+}
+
+async function statusFingerprint(repo: string): Promise<string> {
+  const r = await git(repo, ["status", "--porcelain"]);
+  return r.stdout;
 }
 
 export async function worktreePrune(repo: string): Promise<void> {
