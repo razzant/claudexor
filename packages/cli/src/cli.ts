@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { spawn } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
@@ -25,12 +23,10 @@ import {
   writeJson,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
-import { DaemonClient, defaultSocketPath, logPath, readToken, rotateToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
-import { atRiskNodeAdvisory, harnessRuntimeEnv, validateModel } from "@claudexor/core";
-import { MANAGED_SECRET_NAMES, SecretStore, isManagedSecretName, type SecretBackend } from "@claudexor/secrets";
+import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
 import {
   DecisionRecord,
   EffortHint,
@@ -70,7 +66,6 @@ import {
   ensureDaemon,
   enqueueAndAwait,
   exitCodeForState,
-  waitForDaemonReady,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";

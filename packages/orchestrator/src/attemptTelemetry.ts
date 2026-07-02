@@ -39,6 +39,8 @@ export interface WebEvidenceState {
   failed: boolean;
   tool: string | null;
   target: string | null;
+  /** Target of the UNRECOVERED failed web call (INV-043 recovery key). */
+  failedTarget: string | null;
   errorSummary: string | null;
 }
 
@@ -78,6 +80,7 @@ export function createAttemptTelemetry(
       failed: false,
       tool: null,
       target: null,
+      failedTarget: null,
       errorSummary: null,
     },
     observedModel: null,
@@ -154,6 +157,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       t.web.attempted = true;
       t.web.tool = tool.name;
       t.web.target = tool.target ?? t.web.target;
+      t.web.failedTarget = tool.target ?? null;
       t.web.errorSummary = redactSecrets(
         tool.error_summary ?? "web tool result marked error",
       ).slice(0, 1000);
@@ -171,13 +175,18 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   }
   if (tool.kind === "web") {
     t.web.attempted = true;
-    // Evidence WAS obtained — satisfied is factual for the web_required gate.
+    // DECIDED SEMANTICS (round-19/20 reviews): the web-evidence gate asks
+    // "was web evidence OBTAINED", so ANY successful web call satisfies it —
+    // reformulating a failed query and succeeding on the new one is
+    // legitimate alternative-route recovery, not laundering (blocking it
+    // would false-block the most common web workflow). What must NOT vanish
+    // is the DISCLOSURE: `failed` clears only when the success matches the
+    // failed call's target (INV-043 keying), so telemetry.yaml keeps the
+    // unrecovered failure + errorSummary visible even on satisfied runs.
     t.web.satisfied = true;
-    // But the failed marker clears only when THIS success matches the failed
-    // call's target (INV-043 keying): a success on an unrelated query must
-    // not silently launder the earlier failure's disclosure.
-    if (t.web.target === null || t.web.target === (tool.target ?? null)) {
+    if (t.web.failedTarget === null || t.web.failedTarget === (tool.target ?? null)) {
       t.web.failed = false;
+      t.web.failedTarget = null;
     }
     t.web.tool = tool.name;
     t.web.target = tool.target ?? t.web.target;

@@ -4436,3 +4436,44 @@ describe("interaction late-answer honesty (T2#23)", () => {
     expect(discarded?.payload["reason"]).toBe("timed_out");
   });
 });
+
+describe("web evidence recovery keying (INV-043)", () => {
+  it("keeps the failure DISCLOSED when an unrelated-target web success satisfies the evidence gate", async () => {
+    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");
+    const t = createAttemptTelemetry("auto", false);
+    const ts = new Date().toISOString();
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebSearch", kind: "web", status: "error", target: "query-A", error_summary: "search A failed" },
+    } as never);
+    expect(t.web.failed).toBe(true);
+    // Success on a DIFFERENT target: evidence obtained (satisfied — the gate
+    // asks for evidence, and reformulated queries are legitimate recovery),
+    // but the A-failure stays disclosed (failed remains true).
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebSearch", kind: "web", status: "ok", target: "query-B" },
+    } as never);
+    expect(t.web.satisfied).toBe(true);
+    expect(t.web.failed).toBe(true); // disclosure survives
+    expect(t.web.errorSummary).toContain("search A failed");
+    expect(webUnsatisfied(t)).toBe(false); // evidence gate: satisfied
+    // Success on the SAME target is the attributable recovery that clears it.
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebSearch", kind: "web", status: "ok", target: "query-A" },
+    } as never);
+    expect(t.web.failed).toBe(false);
+  });
+
+  it("web_required with only failures stays blocking regardless", async () => {
+    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");
+    const t = createAttemptTelemetry("live", true);
+    const ts = new Date().toISOString();
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "WebFetch", kind: "web", status: "error", target: "https://x", error_summary: "boom" },
+    } as never);
+    expect(webUnsatisfied(t)).toBe(true);
+  });
+});

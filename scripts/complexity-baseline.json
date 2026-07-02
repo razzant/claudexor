@@ -6,7 +6,7 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 1040,
   "packages/acp-server/src/index.ts": 613,
   "packages/cli/src/claudexord.ts": 620,
-  "packages/cli/src/cli.ts": 1778,
+  "packages/cli/src/cli.ts": 1773,
   "packages/cli/src/plugins.ts": 1465,
   "packages/control-api/src/daemon-server.ts": 2282,
   "packages/harness-codex/src/index.ts": 683,

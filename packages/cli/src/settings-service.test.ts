@@ -31,7 +31,7 @@ describe("assertSettingsPatchValid", () => {
         ControlSettingsUpdateRequest.parse({ harnesses: { codex: { defaultModel: "gpt-5.5" } } }),
       ),
     ).resolves.toBeUndefined();
-  });
+  }, 30_000); // codex discover() spawns the vendor CLI; its startup latency is environmental
 
   it("refuses an effort outside the declared ladder", async () => {
     // raw-api discovers without a vendor binary and declares NO effort ladder;

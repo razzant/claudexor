@@ -2867,6 +2867,19 @@ describe("DaemonControlApiServer", () => {
     });
     rmSync(nonGit, { recursive: true, force: true });
   });
+  it("refuses maxToolCalls on non-orchestrate modes and accepts it for orchestrate (INV-023)", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-mtc-"));
+    try {
+      expect(() =>
+        normalizeRunStartRequest({ prompt: "x", mode: "agent", scope: { kind: "project", root }, maxToolCalls: 3 }),
+      ).toThrow(/only applies to mode=orchestrate/);
+      const ok = normalizeRunStartRequest({ prompt: "x", mode: "orchestrate", scope: { kind: "project", root }, maxToolCalls: 3 });
+      expect(ok.maxToolCalls).toBe(3);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects client-supplied turnId and thread-less planRunId on POST /runs (T5#8/#9)", async () => {
     const { daemon } = fakeDaemon();
     const server = new DaemonControlApiServer({ token, daemon });
