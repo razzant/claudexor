@@ -121,7 +121,7 @@ process below. Never paper over the conflict.
   what the engine records as the work product must `git apply` cleanly to
   the base it was captured against (no silent corruption — CRLF, quoted
   paths, binary — between capture and delivery). verify: workspace diff
-  tests; CRLF/binary integration tests (v0.15 Phase 3).
+  tests; CRLF/binary integration tests (land in the v0.15 program, Phase 3).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
   route proof is observed (stream- or transcript-observed model, never an
   argv echo), reviewer telemetry is persisted, and the reviewer read the
@@ -226,7 +226,7 @@ process below. Never paper over the conflict.
 - **INV-072** Ordinary project runs (and Race candidates) execute in
   isolated envelopes under `.claudexor/workspaces/.../tree`, with the
   harness cwd at the envelope worktree. verify: workspace manager tests.
-- **INV-073** v0.10+ chat thread WRITE turns run IN-PLACE in the thread's
+- **INV-073** Chat thread WRITE turns run IN-PLACE in the thread's
   explicit execution tree — the live project for an `in_place` thread, or
   the thread's persistent worktree for an `isolated` thread — and the
   surface must disclose which applies. verify: thread schema defaults;
@@ -320,7 +320,7 @@ process below. Never paper over the conflict.
 - **INV-105** Per-harness knobs a manifest does not support are disclosed as
   `ignored_settings` on `harness.started` — never silently dropped. This
   covers every run knob (model, effort, turns, tools). verify: knob
-  disclosure tests (coverage completed v0.15 Phase 2).
+  disclosure tests (coverage lands in the v0.15 program, Phase 2).
 
 ## 11. Delivery Is Server-Owned
 
