@@ -26,6 +26,10 @@ export interface DaemonOptions {
   persistPath?: string;
   /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
+  /** Called when a job reaches a terminal state (any path) with its runId —
+   * used to drop pending interactions so a dead run never advertises
+   * waiting_on_user. */
+  onRunTerminal?: (runId: string) => void;
 }
 
 export const JOB_STATES = [
@@ -434,6 +438,13 @@ export class DaemonServer {
       rec.finishedAt = nowIso();
       this.controllers.delete(id);
       this.active -= 1;
+      if (rec.runId) {
+        try {
+          this.opts.onRunTerminal?.(rec.runId);
+        } catch {
+          /* observer failure must not corrupt terminal bookkeeping */
+        }
+      }
       this.pruneHistory();
       this.persist();
       this.drain();

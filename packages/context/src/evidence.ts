@@ -96,8 +96,15 @@ function summarizeDiff(diff: string, displayDiff = diff): string {
     .filter((line): line is string => line !== null);
   const files = displayFiles.slice(0, 80);
   const hunks = lines.filter((line) => line.startsWith("@@")).length;
-  const additions = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
-  const deletions = lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  // Display-only counters, but keep them honest for content lines that BEGIN
+  // with header-like glyphs: a removed "--- literal text" line is content
+  // (headers are only `--- a/...`, `--- b/...`, `--- /dev/null`).
+  const isMinusHeader = (line: string): boolean =>
+    line.startsWith("--- a/") || line.startsWith("--- b/") || line === "--- /dev/null" || line.startsWith('--- "a/') || line.startsWith('--- "b/');
+  const isPlusHeader = (line: string): boolean =>
+    line.startsWith("+++ b/") || line.startsWith("+++ a/") || line === "+++ /dev/null" || line.startsWith('+++ "b/') || line.startsWith('+++ "a/');
+  const additions = lines.filter((line) => line.startsWith("+") && !isPlusHeader(line)).length;
+  const deletions = lines.filter((line) => line.startsWith("-") && !isMinusHeader(line)).length;
   const fallbackHeaders = displayLines
     .filter(
       (line) => /^#{1,6}\s+\S/.test(line) || line.startsWith("### ") || line.startsWith("## "),

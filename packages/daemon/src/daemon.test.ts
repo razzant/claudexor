@@ -423,3 +423,24 @@ describe("interrupt terminal stamping", () => {
     }
   }, 20000);
 });
+
+describe("InteractionRegistry terminal hygiene", () => {
+  it("dropForRun resolves and removes a run's pending questions (no stale waiting_on_user)", async () => {
+    const { InteractionRegistry } = await import("./interactions.js");
+    const registry = new InteractionRegistry();
+    const ctx = {
+      runId: "run-t",
+      taskId: "task-t",
+      attemptId: "a01",
+      harnessId: "h",
+      request: { interaction_id: "int-1", source_tool: "AskUserQuestion", questions: [] },
+      requestedAt: new Date().toISOString(),
+      timeoutAt: new Date(Date.now() + 900_000).toISOString(),
+    };
+    const parked = registry.register(ctx as never);
+    expect(registry.pendingForRun("run-t").length).toBe(1);
+    registry.dropForRun("run-t");
+    expect(registry.pendingForRun("run-t").length).toBe(0);
+    await expect(parked).resolves.toBeNull();
+  });
+});

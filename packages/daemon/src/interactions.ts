@@ -63,6 +63,19 @@ export class InteractionRegistry {
     return { status: "delivered" };
   }
 
+  /** Resolve-and-drop every pending question of a run that reached a terminal
+   * (cancel/failed/succeeded): a dead run must not advertise waiting_on_user
+   * for up to the interaction timeout. Resolving null mirrors the
+   * orchestrator's own decline path. */
+  dropForRun(runId: string): void {
+    for (const [id, entry] of this.pending) {
+      if (entry.ctx.runId === runId) {
+        this.pending.delete(id);
+        entry.resolve(null);
+      }
+    }
+  }
+
   pendingForRun(runId: string): ControlPendingInteraction[] {
     this.prune();
     return [...this.pending.values()]

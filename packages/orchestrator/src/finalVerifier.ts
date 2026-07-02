@@ -24,6 +24,42 @@ interface VerifyEventLog {
   emit(type: "gate.completed", payload: Record<string, unknown>): unknown;
 }
 
+/** FAIL-CLOSED verdict (INV-115): an attempted verify that did not PROVE
+ * applied_cleanly (false OR null/errored) or whose gates failed blocks the
+ * run. One owner — race and convergence consume the same rule. */
+export function finalVerifyBlocks(finalVerify: FinalVerifyRecord | null): boolean {
+  return (
+    finalVerify !== null &&
+    finalVerify.attempted &&
+    (finalVerify.applied_cleanly !== true || finalVerify.gates_passed === false)
+  );
+}
+
+/** The persisted decision must AGREE with a blocked terminal: status/outcome
+ * blocked, human_review recommendation, and an evidence fact naming the cause.
+ * One owner for the race and convergence decision writes. */
+export function blockedDecisionOverride(
+  evidenceFacts: string[],
+  finalVerify: FinalVerifyRecord | null,
+): {
+  status: "blocked";
+  outcome: "blocked";
+  apply_recommendation: "human_review";
+  evidence_facts: string[];
+} {
+  const fact = finalVerifyBlocks(finalVerify)
+    ? finalVerify?.applied_cleanly !== true
+      ? `final verify failed: ${finalVerify?.reason ?? "patch did not survive a fresh tree at its base"}`
+      : "final verify failed: deterministic gates failed on the fresh verify tree"
+    : "reviewer escalated blocking NEEDS_HUMAN findings; a typed operator decision is required";
+  return {
+    status: "blocked",
+    outcome: "blocked",
+    apply_recommendation: "human_review",
+    evidence_facts: [...evidenceFacts, fact],
+  };
+}
+
 export async function finalVerifyPatch(
   execRoot: string,
   winner: VerifiableWinner,

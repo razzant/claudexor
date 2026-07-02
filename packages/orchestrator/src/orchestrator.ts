@@ -79,8 +79,8 @@ import {
   renderSummary,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
-import { buildOrchestrateBrainPrompt } from "./orchestrateBrain.js";
-import { finalVerifyPatch } from "./finalVerifier.js";
+import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
+import { blockedDecisionOverride, finalVerifyBlocks, finalVerifyPatch } from "./finalVerifier.js";
 import {
   type AttemptTelemetry,
   type ToolErrorRecord,
@@ -2737,46 +2737,31 @@ export class Orchestrator {
     // BLOCKS the run with a typed reason instead of shipping it.
     let finalVerify: FinalVerifyRecord | null = null;
     let finalVerifyFailed = false;
+    // IN-PLACE turns are explicitly EXEMPT (not merely base-less): a thread
+    // turn's snapshot base_sha IS recorded, but its diff was produced against
+    // the LIVE tree — a fresh snapshot worktree lacks gitignored deps
+    // (node_modules etc.), so gates there would false-block green turns. The
+    // verifier's contract is isolated-envelope patches only.
+    const inPlaceWinner = input.inPlace === true && requestedSingleCandidate;
     if (
       winnerRun &&
+      !inPlaceWinner &&
       winnerRun.diff.trim().length > 0 &&
       (status === "success" || status === "ungated") &&
       !input.signal?.aborted
     ) {
       finalVerify = await finalVerifyPatch(execRoot, winnerRun, this.gateSpecs(contract), log);
-      // FAIL CLOSED (INV-115): `applied_cleanly === null` after an attempt
-      // means the verifier itself errored (worktree add failed, git timeout,
-      // unwritable tmp). "We could not check whether it survives a clean
-      // base" must block exactly like a proven failure — otherwise a local
-      // verify-infra problem silently vacates the guarantee. The operator
-      // accept_risk path stays available (it is an infra failure, not a
-      // proven conflict).
-      finalVerifyFailed =
-        finalVerify.attempted &&
-        (finalVerify.applied_cleanly !== true || finalVerify.gates_passed === false);
+      // FAIL CLOSED (INV-115): verify errors block like proven failures —
+      // shared verdict owner (finalVerifyBlocks). accept_risk stays available.
+      finalVerifyFailed = finalVerifyBlocks(finalVerify);
       if (finalVerifyFailed) status = "blocked";
     }
 
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
-      // The persisted decision must AGREE with the terminal: a BLOCKED run
-      // (verify failure OR reviewer NEEDS_HUMAN escalation) must not persist
-      // a stale success/review_not_run verdict — the apply gate and operator
-      // read decision.yaml as the run's verdict, and a contradiction would
-      // either wave an unverified patch through or hide the unblock path.
-      ...(status === "blocked"
-        ? {
-            status: "blocked" as const,
-            outcome: "blocked" as const,
-            apply_recommendation: "human_review" as const,
-            evidence_facts: [
-              ...result.decision.evidence_facts,
-              finalVerifyFailed
-                ? `final verify failed: ${finalVerify?.reason ?? "deterministic gates failed on the fresh verify tree"}`
-                : "reviewer escalated blocking NEEDS_HUMAN findings; a typed operator decision is required",
-            ],
-          }
-        : {}),
+      // Shared honesty owner: a blocked terminal overrides the persisted
+      // decision (status/outcome/human_review + evidence fact).
+      ...(status === "blocked" ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify) : {}),
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
     });
@@ -4032,6 +4017,33 @@ export class Orchestrator {
     // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
     const needsHuman = lastFindings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f));
     if (needsHuman && status !== "success" && status !== "cancelled") status = "blocked";
+    // FinalVerifier (INV-115) applies to EVERY applyable envelope-mode patch,
+    // not only race winners: a convergence run's delivered patch must also
+    // survive a fresh tree at its own base + the deterministic gates there.
+    // In-place convergence is exempt for the same reason as in-place turns
+    // (the diff was produced against the LIVE tree; a bare snapshot worktree
+    // lacks gitignored deps and would false-block green runs).
+    let convFinalVerify: FinalVerifyRecord | null = null;
+    if (
+      input.inPlace !== true &&
+      lastRun &&
+      lastRun.diff.trim().length > 0 &&
+      (status === "success" || status === "ungated") &&
+      !input.signal?.aborted
+    ) {
+      convFinalVerify = await finalVerifyPatch(execRoot, lastRun, this.gateSpecs(contract), log);
+      if (finalVerifyBlocks(convFinalVerify)) status = "blocked";
+    }
+    if (decision) {
+      // Shared honesty owner (same as the race path): a blocked terminal
+      // overrides the persisted decision; final_verify is recorded either way.
+      decision = {
+        ...decision,
+        ...(status === "blocked" ? blockedDecisionOverride(decision.evidence_facts, convFinalVerify) : {}),
+        final_verify: convFinalVerify,
+      };
+      store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
+    }
     this.writeRunTelemetry(
       store,
       paths,
@@ -5674,6 +5686,9 @@ export class Orchestrator {
         store,
         paths,
         log,
+        // The BRAIN's own settled spend counts against the same cap: the
+        // aggregate must start from it, not from zero (D9 completeness).
+        ledger.spend(),
       );
       terminal = exec.terminal;
       typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
@@ -5761,6 +5776,26 @@ export class Orchestrator {
       // terminal): tailers waiting for run.completed-as-success must not
       // mistake an operator abort for a clean report.
       log.emit("run.failed", { status: terminal });
+    } else if (terminal === "exhausted") {
+      // A budget-truncated plan is failure-shaped: skipped steps mean the
+      // goal was NOT met — `claudexor follow` and jobs.json must not read a
+      // cut-short auto_full run as a clean success (exit 0).
+      writeFailure(store, paths, {
+        phase: "executor",
+        category: "budget",
+        safeMessage:
+          "orchestrate executor exhausted its budget before completing the plan (see final/orchestration_progress.yaml for the skipped steps)",
+        runDir: paths.root,
+        nextActions: [
+          "Inspect final/orchestration_progress.yaml",
+          "Re-run with a higher --max-usd / --max-tool-calls",
+        ],
+      });
+      log.emit("run.failed", {
+        status: terminal,
+        phase: "executor",
+        failure_ref: "final/failure.yaml",
+      });
     } else {
       log.emit("run.completed", { status: terminal });
     }
@@ -5804,6 +5839,7 @@ export class Orchestrator {
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     log: EventLog,
+    brainSpentUsd = 0,
   ): Promise<{ terminal: RunStatus; note: string }> {
     const maxToolCalls = contract?.budget.max_tool_calls ?? null;
     const steps: OrchestratePlanProgressT["steps"] = plan.tool_calls.map((call, index) => ({
@@ -5824,10 +5860,10 @@ export class Orchestrator {
     log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
 
     let executed = 0;
-    // Aggregate budget (D9): sub-runs share ONE cap. Each sequential sub-run
-    // gets the REMAINING headroom (cap minus settled spend of prior steps) —
-    // never the full cap again per step (the N-times-overspend bug).
-    let aggregateSpentUsd = 0;
+    // Aggregate budget (D9): the brain's own spend plus every sub-run share
+    // ONE cap. Each sequential sub-run gets the REMAINING headroom (cap minus
+    // settled spend so far) — never the full cap again per step.
+    let aggregateSpentUsd = brainSpentUsd;
     for (let i = 0; i < plan.tool_calls.length; i++) {
       const call = plan.tool_calls[i]!;
       const step = steps[i]!;
@@ -6079,6 +6115,9 @@ export class Orchestrator {
           status: "done",
           runId: call.run_id,
           detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
+          // Reviewer panels can spend real money on API-keyed routes; the
+          // aggregate cap must charge it like any other step (D9).
+          spendUsd: result.reviewSpendUsd ?? null,
         };
       }
       case "answer_question": {
@@ -6215,23 +6254,6 @@ export class Orchestrator {
  * fenced ```json block the orchestrate prompt requires). Structured-output
  * parsing, not governance: validity is decided by the OrchestratePlan schema.
  */
-function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
-  const fence = /```json\s*\n([\s\S]*?)\n```/g;
-  let lastBlock: string | null = null;
-  for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;
-  if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
-  try {
-    const parsed = OrchestratePlanSchema.safeParse(JSON.parse(lastBlock));
-    if (!parsed.success)
-      return {
-        plan: null,
-        error: `plan block failed schema validation: ${parsed.error.issues[0]?.message ?? "invalid"}`,
-      };
-    return { plan: parsed.data, error: "" };
-  } catch (err) {
-    return { plan: null, error: `plan block is not valid JSON: ${safeErrorMessage(err)}` };
-  }
-}
 
 
 function assertNoSecretLikeTokens(label: string, text: string): void {

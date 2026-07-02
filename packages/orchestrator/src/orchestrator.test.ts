@@ -4639,6 +4639,14 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("aggregate budget exhausted");
     expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
+    // Failure-shaped terminal (a cut-short plan is NOT a clean success):
+    // failure.yaml lands and the event log ends in run.failed, so `follow`
+    // exits non-zero and jobs.json agrees.
+    expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("budget");
+    const evTypes = readRunEvents(res.runDir).map((e) => e.type);
+    expect(evTypes).toContain("run.failed");
+    expect(evTypes).not.toContain("run.completed");
   });
 
   it("watchdog re-arms while a question is awaiting the user (isSuspended) instead of killing the run", async () => {
@@ -4673,5 +4681,49 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
         void v;
       }
     }).rejects.toThrow(HarnessInactivityTimeoutError);
+  });
+});
+
+describe("FinalVerifier scope (INV-115 completeness)", () => {
+  it("in-place single-candidate turns are EXEMPT: no final_verify attempted (their diff is against the live tree)", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["impl", diffImplementer("impl", "local")]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "edit the live tree",
+      mode: "agent",
+      harnesses: ["impl"],
+      inPlace: true,
+      tests: ['node -e "process.exit(0)"'],
+    });
+    // The turn mutated the live tree; a fresh snapshot worktree would lack
+    // gitignored deps — verification must NOT have been attempted.
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).not.toMatch(/final_verify:\s*\n\s*attempted: true/);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+  });
+
+  it("an ENVELOPE convergence patch passes through the verifier (final_verify recorded on the decision)", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["a", diffImplementer("a", "local")]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "converge",
+      mode: "agent",
+      harnesses: ["a"],
+      attempts: 2,
+      tests: ['node -e "process.exit(0)"'],
+    });
+    expect(res.status).toBe("success");
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).toContain("final_verify:");
+    expect(decision).toContain("attempted: true");
+    expect(decision).toContain("applied_cleanly: true");
   });
 });

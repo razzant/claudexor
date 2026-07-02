@@ -71,6 +71,10 @@ async function main(): Promise<void> {
     token,
     // Durable run registry so the run list survives a daemon/Mac restart.
     persistPath: join(daemonDir(), "jobs.json"),
+    // A terminal run must stop advertising waiting_on_user immediately —
+    // cancelled/failed runs otherwise park their questions in the registry
+    // until the interaction timeout.
+    onRunTerminal: (runId) => interactions.dropForRun(runId),
     runner: async (params, ctx) => {
       const p = normalizeDaemonRunStart(params);
       const mode = p.mode;

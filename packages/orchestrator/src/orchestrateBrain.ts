@@ -3,7 +3,13 @@
  * from the typed OrchestrateContract — the prompt never invents actions the
  * executor will not honor.
  */
-import type { OrchestrateContract as OrchestrateContractT } from "@claudexor/schema";
+import type { OrchestrateContract as OrchestrateContractT, OrchestratePlan as OrchestratePlanT } from "@claudexor/schema";
+import { OrchestratePlan as OrchestratePlanSchema } from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
+
+function safeErrorMessage(err: unknown): string {
+  return redactSecrets(err instanceof Error ? err.message : String(err));
+}
 
 export function buildOrchestrateBrainPrompt(
   goal: string,
@@ -38,4 +44,22 @@ export function buildOrchestrateBrainPrompt(
     '   - apply:     {"tool":"apply","run_id":"<id>","mode":"apply","why":"…"}',
     `Keep the plan minimal and budget-aware. Do not propose tools outside the belt.`,
   ].join("\n");
+}
+
+export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
+  const fence = /```json\s*\n([\s\S]*?)\n```/g;
+  let lastBlock: string | null = null;
+  for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;
+  if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
+  try {
+    const parsed = OrchestratePlanSchema.safeParse(JSON.parse(lastBlock));
+    if (!parsed.success)
+      return {
+        plan: null,
+        error: `plan block failed schema validation: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+      };
+    return { plan: parsed.data, error: "" };
+  } catch (err) {
+    return { plan: null, error: `plan block is not valid JSON: ${safeErrorMessage(err)}` };
+  }
 }

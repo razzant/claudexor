@@ -604,10 +604,16 @@ sufficient verification even without a deterministic test gate;
 `DecisionRecord.verification_basis` (`cross_family_review | both`)
 discloses what backed an applyable outcome, so a no-test run adopted on review
 evidence never reads as "tests passed". Before adoption/apply eligibility, an
-otherwise-adoptable race winner with a patch also passes the FINAL VERIFIER
-(D12): the patch is applied onto a FRESH worktree at the winner's own base sha
-and the deterministic gates re-run there, recorded as
-`DecisionRecord.final_verify` (attempted/applied_cleanly/gates_passed/reason).
+otherwise-adoptable ENVELOPE-produced patch — race winner or convergence
+result — also passes the FINAL VERIFIER (D12): the patch is applied onto a
+FRESH worktree at its own base sha and the deterministic gates re-run there,
+recorded as `DecisionRecord.final_verify`
+(attempted/applied_cleanly/gates_passed/reason). In-place turns are exempt
+(their diff was produced against the LIVE tree; a bare snapshot worktree has
+no gitignored deps and would false-block green work), and the re-run is only
+meaningful for gates that are HERMETIC to the checkout — a gate that depends
+on non-committed state (e.g. an installed `node_modules`) will fail on the
+verify tree and block the run until made hermetic or overridden.
 A failure BLOCKS the run with a typed `verification` failure; the apply gate
 refuses a patch that failed to apply on the verify tree outright (no override
 can make an unappliable patch deliverable), while failed verify GATES can be

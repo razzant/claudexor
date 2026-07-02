@@ -375,10 +375,16 @@ process below. Never paper over the conflict.
   `adopted:false`/`not_applied` must mean the tree is unchanged. verify:
   protected-apply conflict tests (byte-identical restore; landed in the
   v0.15 program).
-- **INV-115** Before a winner's patch is applied or adopted, it is
-  re-verified in a fresh envelope (`git apply` to a clean base + configured
-  deterministic gates there); the result is recorded in the decision. A
-  patch that cannot survive a clean base does not touch the live tree.
+- **INV-115** Before an envelope-produced patch is applied or adopted —
+  race winner or convergence result — it is re-verified in a fresh
+  envelope (`git apply` to a clean base + configured deterministic gates
+  there); the result is recorded in the decision, and a verifier
+  infrastructure error blocks fail-closed exactly like a proven failure.
+  A patch that cannot survive a clean base does not touch the live tree.
+  In-place turns are exempt: their diff is produced against the LIVE tree,
+  and a bare snapshot worktree (no gitignored deps) would false-block
+  green work. Deterministic gates must be hermetic to the checkout for the
+  verify re-run to be meaningful.
   verify: FinalVerifier tests + the final_verify apply-gate consumer tests
   (landed in the v0.15 program; locked D12).
 - **INV-116** Terminal run state and output readiness are separate
