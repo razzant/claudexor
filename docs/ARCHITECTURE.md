@@ -165,17 +165,23 @@ swarm,
 the mode requires it. Surfaces show unavailable/degraded harnesses with reasons,
 but gate them out of launch and routing.
 
-Harness manifests include both compatibility booleans and a structured
-`capability_profile`: execution surface, session/resume support, output/event
-shape, auth sources, and access-control proof. Capabilities are data-driven and
-declared by the adapter: `effort_levels` (a shared normalizer clamps a requested
-hint onto the nearest supported level) and `known_models` + `models_authoritative`
-(a shared `validateModel` rejects an unknown model when the list is authoritative,
-else WARNS and passes it through, since the vendor CLI is the final authority).
-`doctor` validates each harness's CONFIGURED default model this way, so a broken
-default (e.g. a model the CLI cannot run) is reported honestly instead of masked
-by a smoke that used a different model. UI and future RunControl behavior
-must prefer the structured profile and only derive flat booleans from it.
+Harness manifests carry capability booleans the engine consumes (intent
+gating, knob support, the interactive-channel gate) and a small structured
+`capability_profile` limited to what is actually read: auth sources and
+credential transports, isolation containment, the honest readonly mechanism,
+and vision `image_input` (the never-consumed execution-surface/session/output
+subtrees were deleted in the v0.15 triage — a declared capability with no
+consumer is a staged field). Capabilities are data-driven and declared by the
+adapter: `effort_levels` (a shared normalizer clamps a requested hint onto the
+nearest supported level; a requested effort on an EMPTY ladder is disclosed
+via `ignored_settings`, never silently dropped) and `known_models` (+ the
+`known_models_verified_against` freshness note) as the manifest model truth
+source under the STRICT semantics described in the model-governance section
+above — there is no warn-and-pass-through tier. `doctor` validates each
+harness's CONFIGURED default model against the truth source, so a broken
+default (e.g. a model the CLI cannot run) is reported honestly instead of
+masked by a smoke that used a different model, and the same verdict rides
+the harness status DTO (`configuredModelCheck`) into the Settings UI.
 Manifest `auth_modes` and `capability_profile.auth.preferred_source` describe
 possible source availability only. They are not readiness. UI, routing, and
 reviewer selection use doctor status, enabled intents, and smoke/conformance

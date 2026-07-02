@@ -63,7 +63,16 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
     }
     if (patch.effort) {
       const adapter = buildRegistry().get(id);
-      const ladder = adapter ? (await adapter.discover()).capabilities.effort_levels : [];
+      let ladder: readonly string[] = [];
+      try {
+        ladder = adapter ? (await adapter.discover()).capabilities.effort_levels : [];
+      } catch (err) {
+        // A harness whose manifest cannot be discovered (binary missing) still
+        // 400s honestly rather than bubbling a raw error out of the endpoint.
+        badRequest(
+          `cannot verify effort for '${id}': ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       if (!ladder.includes(patch.effort)) {
         badRequest(
           ladder.length === 0

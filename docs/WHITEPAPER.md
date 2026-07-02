@@ -98,7 +98,7 @@ delivered.
 ## Harnesses Are Tools, Not Roles
 
 A harness is an execution surface. A role is an intent: `explain`, `plan`,
-`implement`, `repair`, `review`, `verify`, `compare`, `synthesize`, `arbitrate`,
+`spec`, `implement`, `repair`, `review`, `verify`, `synthesize`,
 `audit`, or `orchestrate`. Claudexor routes only when discovery, doctor, enabled
 intents, capability profile, and access support all agree. Manifest auth source
 availability is not readiness; isolated smoke and doctor checks decide whether a

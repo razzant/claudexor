@@ -295,7 +295,7 @@ function collectSourceHaystack() {
     "local_session", "native_session", "api_key_env", "provider_auth_file",
     "os_keychain", "http_header", "config_file", "env_var", "oauth_token_env",
     "subscription-first", "claude_oauth", "browser_tool", "image_input",
-    "web_policy", "effort_levels", "known_models", "models_authoritative",
+    "web_policy", "effort_levels", "known_models",
     "web_search", "node_repl", "review_not_run", "cross_family_review",
     "applied_review_blocked", "not_applied", "user.name", "user.email",
     // external tools / ecosystem names

@@ -102,3 +102,19 @@ describe("loadConfig", () => {
     });
   });
 });
+
+describe("strict config unknown keys", () => {
+  it("names unknown keys in the friendly ConfigParseError message (cross-package zod instance)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-strict-cfg-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      writeFileSync(join(dir, "config.yaml"), "version: 1\ntotally_unknown_knob: true\n");
+      expect(() => loadConfig(dir)).toThrowError(/unknown key\(s\): totally_unknown_knob/);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

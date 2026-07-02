@@ -84,7 +84,6 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         capabilities: {
           implement: true,
           review: true,
-          structured_events: true,
           // Manifest truth source for strict-D3 tests: explicit "model-x"
           // requests validate; anything else gets a typed refusal. The
           // *-cheap-model / *-review ids serve the reviewer-override tests.
@@ -129,7 +128,7 @@ function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessA
         provider_family: family,
         // Implement-only: it must NOT also qualify as a reviewer (else it would
         // review its own candidate and crowd out a real cross-family reviewer).
-        capabilities: { implement: true, structured_events: true },
+        capabilities: { implement: true },
         access_profiles_supported: ["workspace_write"],
       });
     },
@@ -171,7 +170,7 @@ function transientThenDiffImplementer(id: string): {
           display_name: id,
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { implement: true, structured_events: true },
+          capabilities: { implement: true },
           access_profiles_supported: ["workspace_write"],
         });
       },
@@ -251,7 +250,6 @@ function askAdapter(
           plan: true,
           review: true,
           read_files: true,
-          structured_events: true,
           web_policy: webPolicy,
         },
         access_profiles_supported: ["readonly"],
@@ -1290,7 +1288,7 @@ describe("Orchestrator", () => {
           display_name: "asker",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { read_files: true, structured_events: true },
+          capabilities: { read_files: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -1503,6 +1501,35 @@ describe("Orchestrator", () => {
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
     expect(telemetry).toContain("tool_warnings_total: 1");
     expect(telemetry).toContain("status: success_with_warnings");
+  });
+
+  it("discloses a requested effort on a harness with no declared ladder via ignored_settings (INV-105)", async () => {
+    const repo = await initRepo();
+    // realLikeAdapter declares NO effort_levels — a configured per-harness
+    // effort must be DISCLOSED as ignored on harness.started, never silently
+    // dropped (and never forwarded to a CLI that has no such flag).
+    const registry = new Map<string, HarnessAdapter>([["codex", realLikeAdapter("codex", "openai")]]);
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-effort-disclosure-"));
+    writeFileSync(join(configDir, "config.yaml"), "harnesses:\n  codex:\n    effort: high\n");
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex"],
+        n: 1,
+      });
+      const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+      expect(events).toContain("ignored_settings");
+      expect(events).toContain("effort=high");
+      expect(events).toContain("effort_levels is empty");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
   });
 
   it("lifts readiness-preferred auth route disclosures into typed run events", async () => {
@@ -1860,8 +1887,7 @@ describe("Orchestrator", () => {
             provider_family: family,
             capabilities: {
               review: true,
-              structured_events: true,
-              effort_levels: family === "anthropic" ? ["max"] : [],
+                  effort_levels: family === "anthropic" ? ["max"] : [],
             },
             access_profiles_supported: ["readonly"],
           });
@@ -1935,8 +1961,7 @@ describe("Orchestrator", () => {
             provider_family: family,
             capabilities: {
               review: true,
-              structured_events: true,
-              effort_levels: family === "anthropic" ? ["max"] : [],
+                  effort_levels: family === "anthropic" ? ["max"] : [],
             },
             access_profiles_supported: ["readonly"],
           });
@@ -2015,7 +2040,7 @@ describe("Orchestrator", () => {
           display_name: "rev cursor",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true, effort_levels: [] },
+          capabilities: { review: true, effort_levels: [] },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2041,15 +2066,15 @@ describe("Orchestrator", () => {
       reviewerPanel: [{ harness: "rev-cursor", model: "gemini-3.1-pro", effort: "max" }],
     });
 
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "x",
-        mode: "agent",
-        harnesses: ["fake-impl"],
-        n: 1,
-      }),
-    ).rejects.toThrow(
+    const effortRes = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+    });
+    expect(effortRes.status).toBe("failed");
+    expect(effortRes.summary).toContain(
       "reviewer harness 'rev-cursor' does not support requested effort 'max' (harness declares no effort controls)",
     );
   });
@@ -2070,7 +2095,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2140,7 +2165,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2219,7 +2244,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2277,7 +2302,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2330,7 +2355,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2388,7 +2413,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_events: true },
+          capabilities: { review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2425,9 +2450,9 @@ describe("Orchestrator", () => {
       reviewerPanel: [{ harness: "rev", model: "retry-model" }],
     });
 
-    await expect(
-      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
-    ).rejects.toThrow(/model inventory call failed after retry: model inventory was empty/);
+    const emptyRes = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
+    expect(emptyRes.status).toBe("failed");
+    expect(emptyRes.summary).toMatch(/model inventory call failed after retry: model inventory was empty/);
     expect(modelCalls).toBe(2);
     expect((modelCallTimes[1] ?? 0) - (modelCallTimes[0] ?? 0)).toBeGreaterThanOrEqual(200);
   });
@@ -2459,8 +2484,7 @@ describe("Orchestrator", () => {
             provider_family: "cursor",
             capabilities: {
               review: opts.reviewCapability ?? true,
-              structured_events: true,
-              known_models: opts.knownModels ?? [],
+                  known_models: opts.knownModels ?? [],
             },
             access_profiles_supported: opts.accessProfiles ?? ["readonly"],
           });
@@ -2507,9 +2531,20 @@ describe("Orchestrator", () => {
       process.env.CLAUDEXOR_CONFIG_DIR = configDir;
       try {
         const orch = new Orchestrator({ registry, reviewerPanel });
-        await expect(
-          orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
-        ).rejects.toThrow(message);
+        // A doomed panel ends the run as a TYPED failure WITH artifacts
+        // (failure.yaml naming the refusal) — after run-dir creation, before
+        // any candidate spends money. Never a bare pre-announce throw.
+        const res = await orch.run({
+          repoRoot: repo,
+          prompt: "x",
+          mode: "agent",
+          harnesses: ["fake-impl"],
+          n: 1,
+        });
+        expect(res.status).toBe("failed");
+        expect(res.summary).toMatch(message);
+        const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+        expect(failure).toContain("review_preflight");
       } finally {
         if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
         else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
@@ -2690,7 +2725,7 @@ describe("Orchestrator", () => {
           display_name: "impl",
           kind: "local_cli",
           provider_family: "local",
-          capabilities: { implement: true, structured_events: true },
+          capabilities: { implement: true },
           access_profiles_supported: ["workspace_write"],
         });
       },
@@ -2861,7 +2896,7 @@ describe("Orchestrator", () => {
           display_name: "planner",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { plan: true, structured_events: true },
+          capabilities: { plan: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -2882,21 +2917,24 @@ describe("Orchestrator", () => {
       reviewerPanel: [{ harness: "missing-reviewer" }],
     });
 
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "plan",
-        mode: "plan",
-        harnesses: ["planner"],
-        runId: "invalid-panel-plan",
-        onRunStart: () => {
-          runStarted = true;
-        },
-      }),
-    ).rejects.toThrow(/unknown reviewer harness 'missing-reviewer'/);
+    const planRes = await orch.run({
+      repoRoot: repo,
+      prompt: "plan",
+      mode: "plan",
+      harnesses: ["planner"],
+      runId: "invalid-panel-plan",
+      onRunStart: () => {
+        runStarted = true;
+      },
+    });
+    // The doomed panel ends the run with typed failure ARTIFACTS after the
+    // run dir exists — but still BEFORE any planner harness work spawns.
+    expect(planRes.status).toBe("failed");
+    expect(planRes.summary).toMatch(/unknown reviewer harness 'missing-reviewer'/);
     expect(plannerStarted).toBe(false);
-    expect(runStarted).toBe(false);
-    expect(existsSync(join(repo, ".claudexor", "runs", "invalid-panel-plan"))).toBe(false);
+    expect(runStarted).toBe(true);
+    const failure = readFileSync(join(repo, ".claudexor", "runs", "invalid-panel-plan", "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("review_preflight");
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {
@@ -2913,8 +2951,7 @@ describe("Orchestrator", () => {
             implement: true,
             edit_files: true,
             review: true,
-            structured_events: true,
-          },
+            },
           access_profiles_supported: ["workspace_write"],
         });
       },
@@ -3505,7 +3542,6 @@ function brainAdapter(
           plan: true,
           review: true,
           read_files: true,
-          structured_events: true,
         },
         access_profiles_supported: ["readonly"],
       });
@@ -3623,7 +3659,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
           display_name: "rec",
           kind: "local_cli",
           provider_family: "local",
-          capabilities: { implement: true, structured_events: true },
+          capabilities: { implement: true },
           access_profiles_supported: ["workspace_write"],
         });
       },

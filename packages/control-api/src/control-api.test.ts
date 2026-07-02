@@ -2440,10 +2440,9 @@ describe("DaemonControlApiServer", () => {
             defaultPolicy: "auto",
             primaryHarness: null,
             eligibleHarnesses: [],
-            defaultModel: null,
             envInheritance: "mirror_native",
           },
-          budget: { maxUsdPerRun: null, maxUsdPerDay: null },
+          budget: { maxUsdPerRun: null },
           runtime: {
             reviewerTimeoutMs: 2_400_000,
             transientRetry: { maxRetries: 3, initialDelayMs: 2_000, maxDelayMs: 20_000 },

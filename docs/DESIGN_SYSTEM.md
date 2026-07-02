@@ -373,7 +373,7 @@ views in the shared design-system files; screens compose them.
   - the **reviewer panel editor** (ordered explicit `harness[=model[:effort]]`
     entries; invalid entries block Send with an inline reason) and typed
     **protected-path approvals** for auto-protected gate/test paths;
-  - the **browser** toggle (see below) and the **context** depth picker;
+  - the **browser** toggle (see below);
   - the **Workspace** section with the **isolated-workspace toggle** (a draft
     thread can choose `isolated` — turns accumulate in a persistent thread
     worktree — instead of the default in-place execution);

@@ -1791,6 +1791,8 @@ function controlRoute(telemetry: RunTelemetry | null, p: Record<string, unknown>
   const observed = finalAttempt?.observed_model ?? telemetry.attempts.find((a) => a.observed_model)?.observed_model ?? null;
   const harnessId = finalAttempt?.harness_id ?? telemetry.attempts.find((a) => a.observed_model)?.harness_id ?? null;
   return {
+    // Scalar-only by design until D13 (P4) adds per-candidate route evidence:
+    // map-only pool members show requestedModel null here, honestly.
     requestedModel: typeof p["model"] === "string" ? p["model"] : null,
     observedModel: observed,
     harnessId,

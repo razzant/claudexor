@@ -530,14 +530,12 @@ export class Orchestrator {
         this.projectConfig(resolved.repoRoot).context.mandatory_files,
       );
     }
-    // Reviewer panels are validated only for modes that actually review
-    // (race/convergence under agent, and plan). ask/audit never spawn
-    // reviewers, so a panel there must not spend doctor/model probes or fail
-    // a run that would never use it.
-    const reviewerPreflight =
-      mode === "agent" || mode === "plan"
-        ? await this.preflightExplicitReviewerPanel(resolved)
-        : undefined;
+    // Reviewer panels are validated only inside the strategies that actually
+    // review (race/convergence under agent, and plan) — AFTER run-dir
+    // creation, so a doomed explicit panel yields typed failure ARTIFACTS
+    // (failure.yaml naming the refusal) instead of a bare pre-run throw.
+    // ask/audit never spawn reviewers, so a panel there never spends doctor/
+    // model probes and never fails a run that would not use it (T2#12).
     switch (mode) {
       case "ask":
         return this.runAsk(resolved);
@@ -548,13 +546,13 @@ export class Orchestrator {
         // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
         // and `--attempts` select the convergence loop; `--n` selects the race
         // width; `--create` switches the candidate intent to create_from_scratch.
-        if (resolved.untilClean) return this.runConvergence(resolved, mode, null, reviewerPreflight);
+        if (resolved.untilClean) return this.runConvergence(resolved, mode, null);
         if (resolved.attempts !== undefined && resolved.attempts !== null) {
-          return this.runConvergence(resolved, mode, resolved.attempts, reviewerPreflight);
+          return this.runConvergence(resolved, mode, resolved.attempts);
         }
-        return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, reviewerPreflight);
+        return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode);
       case "plan":
-        return this.runPlan(resolved, reviewerPreflight);
+        return this.runPlan(resolved);
       case "orchestrate":
         // Recursion guard: a sub-run spawned by the orchestrate executor carries
         // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
@@ -643,11 +641,60 @@ export class Orchestrator {
     return specs;
   }
 
-  private async preflightExplicitReviewerPanel(
+  /**
+   * Resolve reviewers INSIDE a strategy, after run-dir creation: an explicit
+   * panel whose harness/model/effort fails validation ends the run through
+   * the routing-failure artifact path (failure.yaml + summary + run.failed
+   * naming the refusal) BEFORE any candidate spends money — never a bare
+   * pre-announce throw with no artifacts (T2#12 artifact clause).
+   */
+  private async resolveReviewersWithArtifacts(
     input: RunInput,
-  ): Promise<ReviewerSpec[] | undefined> {
-    if (!this.deps.reviewerPanel || this.deps.reviewerPanel.length === 0) return undefined;
-    return this.resolveReviewers(input.repoRoot, input.authPreference);
+    log: EventLog,
+    store: ArtifactStore,
+    paths: ReturnType<ArtifactStore["runPaths"]>,
+    runId: string,
+    taskId: string,
+    mode: ModeKind,
+  ): Promise<{ reviewers: ReviewerSpec[] } | { failed: OrchestratorResult }> {
+    try {
+      return { reviewers: await this.resolveReviewers(input.repoRoot, input.authPreference) };
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      store.writeText(
+        join(paths.contextDir, "context_error.md"),
+        `# Reviewer Panel Error\n\n${message}\n`,
+      );
+      writeFailure(store, paths, {
+        phase: "review_preflight",
+        category: "harness_unavailable",
+        safeMessage: message,
+        runDir: paths.root,
+      });
+      store.writeText(
+        join(paths.finalDir, "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`,
+      );
+      log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+      log.emit("run.failed", {
+        status: "failed",
+        phase: "review_preflight",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
+      return {
+        failed: {
+          runId,
+          taskId,
+          mode,
+          status: "failed",
+          winner: null,
+          runDir: paths.root,
+          summary: message,
+          candidates: [],
+        },
+      };
+    }
   }
 
   private async resolveExplicitReviewerPanel(
@@ -2202,7 +2249,6 @@ export class Orchestrator {
   private async runRace(
     input: RunInput,
     mode: ModeKind,
-    preflightReviewers?: ReviewerSpec[],
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -2312,7 +2358,9 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, mode);
+    if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
+    const reviewers = reviewersOutcome.reviewers;
     const reviewVerified = this.routeVerified(reviewers);
     const harnessLedgers = new Map<string, BudgetLedger>();
 
@@ -3488,7 +3536,6 @@ export class Orchestrator {
     input: RunInput,
     mode: ModeKind,
     maxAttempts: number | null,
-    preflightReviewers?: ReviewerSpec[],
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -3541,7 +3588,9 @@ export class Orchestrator {
       diff: "(per-attempt)\n",
       tests: this.testsEvidence(contract),
     });
-    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, mode);
+    if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
+    const reviewers = reviewersOutcome.reviewers;
     const reviewVerified = this.routeVerified(reviewers);
 
     // One envelope carried forward across attempts so the harness can repair its own work.
@@ -4274,7 +4323,6 @@ export class Orchestrator {
 
   private async runPlan(
     input: RunInput,
-    preflightReviewers?: ReviewerSpec[],
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
@@ -4291,7 +4339,9 @@ export class Orchestrator {
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
-    const reviewers = preflightReviewers ?? await this.resolveReviewers(input.repoRoot, input.authPreference);
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, "plan");
+    if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
+    const reviewers = reviewersOutcome.reviewers;
 
     let adapters: RoutedAdapter[];
     try {
