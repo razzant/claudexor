@@ -72,7 +72,11 @@ describe("crash-GC live-owner guard", () => {
       // must not pin a seeded-credential home forever).
       const stale = envelope(root, "task-stale", "a01", { pid: process.pid, started: null });
       const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
-      utimesSync(join(root, ".claudexor", "workspaces", "task-stale", "a01"), old, old);
+      const staleBase = join(root, ".claudexor", "workspaces", "task-stale", "a01");
+      // Freshness = newest mtime across base + working dirs; age them ALL.
+      for (const path of [join(staleBase, "tree", "work.txt"), join(staleBase, "tree"), join(staleBase, "home"), join(staleBase, "owner.json"), staleBase]) {
+        utimesSync(path, old, old);
+      }
       const jobsPath = join(stateDir, "jobs.json");
       writeFileSync(jobsPath, JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n");
       await sweepOrphanWorkspaces({ jobsPath, threadsPath: join(stateDir, "threads.json") });

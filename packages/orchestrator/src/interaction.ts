@@ -45,92 +45,92 @@ export function interactionChannelFor(
       const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
       pending += 1;
       try {
-      // Invoke the answer surface BEFORE announcing the event: handlers
-      // register the pending question synchronously (daemon
-      // InteractionRegistry), so any subscriber that reacts to
-      // interaction.requested — `claudexor follow` checks pendingInteractions
-      // before prompting — finds the registry already populated. The reverse
-      // order would make that guarantee depend on event-loop timing.
-      // The handler is invoked SYNCHRONOUSLY (the registry-population contract
-      // below depends on it); only its failure handling is normalized — a
-      // synchronous throw becomes the same null-answer path as an async one.
-      let answersPromise: Promise<InteractionAnswerSet | null>;
-      try {
-        answersPromise = Promise.resolve(
-          handler({
-            runId,
-            taskId,
-            attemptId,
-            harnessId,
-            request,
-            requestedAt,
-            timeoutAt,
-          }),
-        ).catch(() => null);
-      } catch {
-        answersPromise = Promise.resolve(null);
-      }
-      log.emit("interaction.requested", {
-        interaction_id: request.interaction_id,
-        attempt_id: attemptId,
-        harness_id: harnessId,
-        source_tool: request.source_tool,
-        questions: request.questions,
-        requested_at: requestedAt,
-        timeout_at: timeoutAt,
-      });
-      let timer: NodeJS.Timeout | undefined;
-      let onAbort: (() => void) | undefined;
-      const startedWaiting = Date.now();
-      const answers = await Promise.race([
-        answersPromise,
-        new Promise<null>((resolve) => {
-          timer = setTimeout(() => resolve(null), timeoutMs);
-          timer.unref?.();
-        }),
-        // A cancelled run must release the interaction wait IMMEDIATELY —
-        // the abort already kills the harness process, and sitting out the
-        // remaining timeout would park a dead run in waiting_on_user.
-        new Promise<null>((resolve) => {
-          if (!input.signal) return;
-          if (input.signal.aborted) return resolve(null);
-          onAbort = () => resolve(null);
-          input.signal.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-      if (onAbort) input.signal?.removeEventListener("abort", onAbort);
-      if (answers && answers.answers.length > 0) {
-        log.emit("interaction.answered", {
+        // Invoke the answer surface BEFORE announcing the event: handlers
+        // register the pending question synchronously (daemon
+        // InteractionRegistry), so any subscriber that reacts to
+        // interaction.requested — `claudexor follow` checks pendingInteractions
+        // before prompting — finds the registry already populated. The reverse
+        // order would make that guarantee depend on event-loop timing.
+        // The handler is invoked SYNCHRONOUSLY (the registry-population contract
+        // below depends on it); only its failure handling is normalized — a
+        // synchronous throw becomes the same null-answer path as an async one.
+        let answersPromise: Promise<InteractionAnswerSet | null>;
+        try {
+          answersPromise = Promise.resolve(
+            handler({
+              runId,
+              taskId,
+              attemptId,
+              harnessId,
+              request,
+              requestedAt,
+              timeoutAt,
+            }),
+          ).catch(() => null);
+        } catch {
+          answersPromise = Promise.resolve(null);
+        }
+        log.emit("interaction.requested", {
           interaction_id: request.interaction_id,
           attempt_id: attemptId,
           harness_id: harnessId,
-          answer_count: answers.answers.length,
+          source_tool: request.source_tool,
+          questions: request.questions,
+          requested_at: requestedAt,
+          timeout_at: timeoutAt,
         });
-        return answers;
-      }
-      log.emit("interaction.timeout", {
-        interaction_id: request.interaction_id,
-        attempt_id: attemptId,
-        harness_id: harnessId,
-        waited_ms: Date.now() - startedWaiting,
-        ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
-      });
-      // Late-answer honesty (T2#23): the run already declined this
-      // interaction; an answer arriving AFTER the timeout must be visibly
-      // DISCARDED, not silently swallowed (the user typed it in good faith).
-      void answersPromise.then((late) => {
-        if (late && late.answers.length > 0) {
-          log.emit("interaction.answer_discarded", {
+        let timer: NodeJS.Timeout | undefined;
+        let onAbort: (() => void) | undefined;
+        const startedWaiting = Date.now();
+        const answers = await Promise.race([
+          answersPromise,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), timeoutMs);
+            timer.unref?.();
+          }),
+          // A cancelled run must release the interaction wait IMMEDIATELY —
+          // the abort already kills the harness process, and sitting out the
+          // remaining timeout would park a dead run in waiting_on_user.
+          new Promise<null>((resolve) => {
+            if (!input.signal) return;
+            if (input.signal.aborted) return resolve(null);
+            onAbort = () => resolve(null);
+            input.signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (onAbort) input.signal?.removeEventListener("abort", onAbort);
+        if (answers && answers.answers.length > 0) {
+          log.emit("interaction.answered", {
             interaction_id: request.interaction_id,
             attempt_id: attemptId,
             harness_id: harnessId,
-            answer_count: late.answers.length,
-            reason: input.signal?.aborted ? "run_cancelled" : "timed_out",
+            answer_count: answers.answers.length,
           });
+          return answers;
         }
-      });
-      return null;
+        log.emit("interaction.timeout", {
+          interaction_id: request.interaction_id,
+          attempt_id: attemptId,
+          harness_id: harnessId,
+          waited_ms: Date.now() - startedWaiting,
+          ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
+        });
+        // Late-answer honesty (T2#23): the run already declined this
+        // interaction; an answer arriving AFTER the timeout must be visibly
+        // DISCARDED, not silently swallowed (the user typed it in good faith).
+        void answersPromise.then((late) => {
+          if (late && late.answers.length > 0) {
+            log.emit("interaction.answer_discarded", {
+              interaction_id: request.interaction_id,
+              attempt_id: attemptId,
+              harness_id: harnessId,
+              answer_count: late.answers.length,
+              reason: input.signal?.aborted ? "run_cancelled" : "timed_out",
+            });
+          }
+        });
+        return null;
       } finally {
         // ALWAYS release the suspension: a synchronous handler throw or a
         // log.emit failure must not leave the watchdog suspended forever.

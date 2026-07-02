@@ -9,6 +9,14 @@
  *
  * Reach is honest: only roots recorded in jobs.json (plus their thread
  * trees) are sweepable — a project never run through this daemon is not.
+ *
+ * LIVE-OWNER GUARD: envelopes carry owner.json (pid + kernel start time);
+ * a live owner's envelopes survive the sweep. When start-time recycling
+ * proof is unavailable on either side (ps-less/sandboxed env, legacy
+ * marker), a live pid keeps the envelope only while its working dirs are
+ * FRESH (24h window over the newest of base/tree/home/owner.json mtimes) —
+ * a declared tradeoff: brief proof-less windows never kill in-flight work,
+ * while a recycled pid cannot pin a seeded-credential home forever.
  */
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,8 +53,14 @@ function knownProjectRoots(jobsPath: string): string[] {
     const records = JSON.parse(readFileSync(jobsPath, "utf8")) as Array<{ params?: unknown }>;
     if (!Array.isArray(records)) return [];
     for (const rec of records) {
-      const scope = (rec?.params as { scope?: { kind?: unknown; root?: unknown } } | undefined)?.scope;
-      if (scope && scope.kind === "project" && typeof scope.root === "string" && existsSync(scope.root)) {
+      const scope = (rec?.params as { scope?: { kind?: unknown; root?: unknown } } | undefined)
+        ?.scope;
+      if (
+        scope &&
+        scope.kind === "project" &&
+        typeof scope.root === "string" &&
+        existsSync(scope.root)
+      ) {
         roots.add(scope.root);
       }
     }
@@ -58,7 +72,9 @@ function knownProjectRoots(jobsPath: string): string[] {
 
 function knownThreadIds(threadsPath: string): Set<string> {
   try {
-    const raw = JSON.parse(readFileSync(threadsPath, "utf8")) as { threads?: Array<{ id?: unknown }> };
+    const raw = JSON.parse(readFileSync(threadsPath, "utf8")) as {
+      threads?: Array<{ id?: unknown }>;
+    };
     return new Set(
       (raw.threads ?? []).map((t) => t?.id).filter((id): id is string => typeof id === "string"),
     );
@@ -95,7 +111,9 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
       // covers everyone else. Fail-safe: a live-looking owner means KEEP.
       const owner = envelopeOwner(join(taskDir, attemptId));
       if (owner) {
-        actions.push(`kept envelope ${taskId}/${attemptId} under ${execRoot}: live owner pid ${owner}`);
+        actions.push(
+          `kept envelope ${taskId}/${attemptId} under ${execRoot}: live owner pid ${owner}`,
+        );
         continue;
       }
       try {
@@ -145,9 +163,26 @@ function envelopeOwner(envelopeBase: string): number | null {
     const live = processStartTime(raw.pid);
     // Recycling proof requires BOTH sides; with both present they must match.
     if (recorded !== null && live !== null) return live === recorded ? raw.pid : null;
-    // No recycling proof available: bounded keep on freshness.
-    const ageMs = Date.now() - statSync(envelopeBase).mtimeMs;
-    return ageMs < OWNERLESS_PROOF_KEEP_MAX_AGE_MS ? raw.pid : null;
+    // No recycling proof available: bounded keep on freshness. Freshness is
+    // the NEWEST mtime across the envelope base and its working dirs (an
+    // active harness touches tree/home; the base dir alone can stay stale),
+    // so a live long-running owner keeps extending its own window while a
+    // recycled pid cannot pin a seeded-credential home forever.
+    const newestMtime = Math.max(
+      ...[
+        envelopeBase,
+        join(envelopeBase, "tree"),
+        join(envelopeBase, "home"),
+        join(envelopeBase, "owner.json"),
+      ].map((path) => {
+        try {
+          return statSync(path).mtimeMs;
+        } catch {
+          return 0;
+        }
+      }),
+    );
+    return Date.now() - newestMtime < OWNERLESS_PROOF_KEEP_MAX_AGE_MS ? raw.pid : null;
   } catch {
     return null;
   }
@@ -160,11 +195,22 @@ function envelopeOwner(envelopeBase: string): number | null {
  * PERSISTENT for live threads and only deleted when the thread is gone from
  * the store.
  */
-async function sweepAttemptBranches(execRoot: string, liveThreadIds: Set<string>): Promise<string[]> {
+async function sweepAttemptBranches(
+  execRoot: string,
+  liveThreadIds: Set<string>,
+): Promise<string[]> {
   const actions: string[] = [];
-  const branches = await git(execRoot, ["branch", "--list", "claudexor/*", "--format=%(refname:short)"]);
+  const branches = await git(execRoot, [
+    "branch",
+    "--list",
+    "claudexor/*",
+    "--format=%(refname:short)",
+  ]);
   if (branches.code !== 0) return actions;
-  for (const branch of branches.stdout.split("\n").map((b) => b.trim()).filter(Boolean)) {
+  for (const branch of branches.stdout
+    .split("\n")
+    .map((b) => b.trim())
+    .filter(Boolean)) {
     const rest = branch.slice("claudexor/".length);
     if (rest.startsWith("verify-")) {
       // FinalVerifier branches leak only when a crash hit mid-verify (the

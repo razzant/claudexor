@@ -538,7 +538,11 @@ branches, leaked `claudexor/verify-*` branches, and stale
 process is STILL ALIVE survive the sweep: `WorkspaceManager.create()` records
 an owner marker (pid + kernel start time — recycling-proof) that the sweeper
 honors, so in-process CLI/MCP/ACP runs are never garbage-collected by a daemon
-starting mid-flight. A second daemon refuses to start while a live daemon
+starting mid-flight. One bounded exception: when start-time proof is
+unavailable on either side (`ps`-less or sandboxed environment, legacy
+marker), a live pid keeps the envelope only while its working dirs are fresh
+(24h window over the newest base/tree/home mtime) — a recycled pid must not
+pin a seeded-credential home forever. A second daemon refuses to start while a live daemon
 holds the socket — checked BEFORE crash GC so a racing start can never reap
 the live daemon's children. `claudexor daemon rotate-token` rotates the local
 auth token (refused while the daemon is live; takes effect on next start),
