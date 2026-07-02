@@ -201,12 +201,29 @@ explicit `WebSearch`/`WebFetch` allow/deny arguments, while Codex gets
 
 `access=full` (unsandboxed) additionally requires `allow_full_access: true` in
 the USER-LEVEL trust config (`~/.claudexor/trust/<repo-hash>.yaml`); versioned
-repo config can never self-grant it, and the violation is a loud routing error,
-not a silent downgrade. Per-harness engine defaults
+repo config can never self-grant it, and the violation is a loud routing error
+naming the resolved trust path, not a silent downgrade. `claudexor trust` is
+the writer for that file (`--allow-full-access`, `--revoke-full-access`,
+`--access-default readonly|workspace_write`). Per-harness engine defaults
 (`harnesses.<id>.enabled/default_model/effort/web/max_usd/max_turns/max_rounds/
 tools_allow/tools_deny/fallback_model` in the global config) gate pool
 membership and seed per-route run specs; knobs a manifest does not support are
 disclosed as `ignored_settings` on `harness.started`, never silently dropped.
+
+Model choice is harness-scoped end to end. A run carries a per-harness
+`models` map (harness id → model id); the scalar `model` convenience expands
+to the RESOLVED PRIMARY only and is rejected when no primary is resolvable —
+it never fans out to a pool. The resolved map is recorded on the TaskContract
+(`routing_models`), which route-spec building reads; per-attempt overrides
+(budget downgrade to `fallback_model`, fallback retry) sit on top. Every
+explicit model — per-run, settings default, fallback, reviewer — must pass
+the harness's model truth source (live `models()` inventory, else manifest
+`known_models`; a harness with neither refuses explicit models): enforced at
+settings write (400), run preflight (typed failure with artifacts before any
+CLI spawns), and both reviewer-panel paths. `/harnesses/:id/models` reports
+the truth source honestly (`source: api|manifest|none`, with the manifest's
+`verifiedAgainst` CLI-version freshness note), and the model-hints-freshness
+gate warns when the installed vendor CLI drifts from the verified version.
 Candidate diffs additionally pass a typed policy gate: protected-path changes
 and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run;
 explicit per-run `protected_path_approvals` can narrow only the auto-protected
@@ -626,7 +643,12 @@ Budget caps: the engine enforces `max_usd` per run (explicit run input, then
 surface defaults, then the global `budget.max_usd_per_run`). There is no daily
 `$`/day cap — `budget.max_usd_per_day` was removed; the only enforced money cap
 is per-run. Subscription/quota pressure is respected through the harness-reported
-quota/rate-limit signals, not a `$`/day ledger.
+quota/rate-limit signals, not a `$`/day ledger. Parallel race waves reserve a
+per-candidate estimate floor (`budget.estimate_usd_floor`, default $0.05) for
+every slot after the first, so concurrent in-flight candidates count against
+the cap BEFORE usage streams; a slot whose estimate does not fit remaining
+headroom is a typed `estimate_headroom` lease denial (already-granted work
+continues — only a tripped hard cap stops everything).
 
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)
