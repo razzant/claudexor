@@ -372,7 +372,9 @@ function collectSourceHaystack() {
   // hand-written verb list cannot silently rot when commands are added.
   // (Internal/unlisted verbs are not force-documented.)
   const helpMatch2 = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
-  const matrixMatch = /## Surface Matrix\n([\s\S]*?)(?=\n## )/.exec(integrations);
+  // Case-insensitive heading match; the section may also be the last one
+  // (no following `## ` heading), hence the `$` alternative.
+  const matrixMatch = /^##\s+Surface Matrix\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im.exec(integrations);
   if (!matrixMatch) {
     failures.push("docs/INTEGRATIONS.md no longer has a '## Surface Matrix' section (CLI verb parity check needs it)");
   } else if (helpMatch2) {

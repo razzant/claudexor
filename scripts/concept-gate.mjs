@@ -27,12 +27,14 @@
  * Merge commits (including GitHub's synthetic refs/pull/N/merge, whose
  * auto-generated message can never carry a marker): the constituent commits
  * are checked individually by the range walk, so a CLEAN merge needs no
- * marker of its own. Only a merge that itself introduces Bible content
- * beyond its parents (an "evil merge" / conflict resolution — detected via
- * `diff-tree --cc`) must carry a marker, and that marker gets the SAME
- * coverage + id-hygiene treatment as a normal commit: it must name every
- * invariant block whose merged text matches NO parent's version, and no
- * parent's invariant id may disappear in the result.
+ * marker of its own. The merge itself is checked by direct text comparison
+ * against every parent, piece by piece — each invariant block and the
+ * non-block remainder (preamble/headings) — never via `diff-tree --cc`,
+ * which is silent when a resolution picks one side wholesale. No parent's
+ * invariant id may disappear in the result, and any piece matching NO
+ * parent is hand-crafted resolution content that needs the same marker +
+ * block-coverage discipline as a normal commit (including the
+ * preamble/heading-only case).
  *
  * Shallow clones fail LOUDLY: if a commit in the range has a parent whose
  * object is outside the clone boundary, the gate errors and tells the
@@ -56,9 +58,14 @@ function invIds(text) {
   return new Set([...text.matchAll(ID_RE)].map((m) => m[1]));
 }
 
-/** Split the Bible into { id -> block text } (block = from its id line to the next id/heading). */
-function invBlocks(text) {
+/**
+ * Split the Bible into { blocks: id -> block text, remainder: string }.
+ * A block runs from its id line to the next id/heading; the remainder is
+ * every line outside any block (preamble, headings, inter-section prose).
+ */
+function splitBible(text) {
   const blocks = new Map();
+  const remainder = [];
   const lines = text.split("\n");
   let current = null;
   let buf = [];
@@ -78,12 +85,19 @@ function invBlocks(text) {
     } else if (/^#{1,3} /.test(line)) {
       flush();
       current = null;
+      remainder.push(line);
     } else if (current) {
       buf.push(line);
+    } else {
+      remainder.push(line);
     }
   }
   flush();
-  return blocks;
+  return { blocks, remainder: remainder.join("\n").replace(/\s+$/, "") };
+}
+
+function invBlocks(text) {
+  return splitBible(text).blocks;
 }
 
 /** Bible text at a commit; "" when the file does not exist in that tree. */
@@ -113,47 +127,63 @@ function checkCommit(sha) {
   if (parents.length > 1) {
     // Merge commit. Its constituent commits are range-walked individually, so
     // requiring a marker HERE would deterministically fail every synthetic PR
-    // merge (refs/pull/N/merge) whose message GitHub generates. Only content
-    // the merge itself introduces beyond its parents (evil merge / conflict
-    // resolution) is constitutional surface: --cc prints exactly that.
-    const ccDiff = git(["diff-tree", "--cc", "--name-only", "-r", sha]).split("\n");
-    if (!ccDiff.includes(BIBLE)) return null;
+    // merge (refs/pull/N/merge) whose message GitHub generates — including a
+    // CLEAN auto-merge whose whole-file text matches neither parent because
+    // each side edited a different region. The honest comparison unit is the
+    // invariant BLOCK plus the non-block remainder (preamble/headings),
+    // checked against every parent by direct text comparison (never
+    // `diff-tree --cc`, which stays silent when a resolution picks one
+    // parent's file wholesale and thereby drops the other parent's
+    // invariants). The merge itself owes a marker only for content that
+    // matches NO parent — hand-crafted resolution text.
     for (const p of parents) assertParentReachable(sha, p);
-
     const after = bibleAt(sha);
     const parentTexts = parents.map(bibleAt);
+    if (parentTexts.every((t) => t === after)) return null; // Bible untouched by this merge
 
-    // Id hygiene across the merge: an id present in ANY parent must survive.
+    // Id hygiene across the merge: an id present in ANY parent must survive,
+    // even when the resolution picked the other parent's file wholesale.
     const afterIds = invIds(after);
     const gone = [...new Set(parentTexts.flatMap((t) => [...invIds(t)]))].filter((id) => !afterIds.has(id));
     if (gone.length > 0) {
       return (
         `merge commit ${sha.slice(0, 10)} REMOVES invariant id(s) ${gone.join(", ")} from ${BIBLE}.\n` +
-        `  Ids are stable and never reused: mark the invariant RETIRED (keeping its id) instead of deleting it.`
+        `  Ids are stable and never reused: mark the invariant RETIRED (keeping its id) instead of deleting it\n` +
+        `  (a conflict resolution that picks one side's file wholesale still loses the other side's invariants).`
       );
     }
 
-    // Touched-by-the-merge-itself = blocks whose merged text matches NO parent.
-    const parentBlocks = parentTexts.map(invBlocks);
+    const afterSplit = splitBible(after);
+    const parentSplits = parentTexts.map(splitBible);
     const touched = new Set();
-    for (const [id, text] of invBlocks(after)) {
-      if (!parentBlocks.some((pb) => pb.get(id) === text)) touched.add(id);
+    for (const [id, text] of afterSplit.blocks) {
+      if (!parentSplits.some((ps) => ps.blocks.get(id) === text)) touched.add(id);
     }
-    if (touched.size === 0) return null; // clean content-level merge (e.g. union of marked parents)
+    const remainderTouched = !parentSplits.some((ps) => ps.remainder === afterSplit.remainder);
+    if (touched.size === 0 && !remainderTouched) return null; // clean merge: every piece came from a parent
 
+    // Hand-crafted resolution content: same marker discipline as a normal
+    // commit — marker required even for preamble/heading-only changes,
+    // coverage required for every invariant block matching NO parent.
     const msg = git(["log", "-1", "--format=%B", sha]);
     const marker = msg.match(MARKER_RE);
-    const markedIds = new Set(marker ? marker[1].split(",").map((s) => s.trim()) : []);
+    if (!marker) {
+      return (
+        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} beyond its parents (conflict resolution / evil merge)\n` +
+        `  without a CONCEPT-CHANGE(INV-…) marker. Resolve Bible conflicts in a marked non-merge commit,\n` +
+        `  or mark the merge itself if the owner approved the resolution.`
+      );
+    }
+    const markedIds = new Set(marker[1].split(",").map((s) => s.trim()));
     const uncovered = [...touched].filter((id) => !markedIds.has(id));
     if (uncovered.length > 0) {
       return (
-        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} invariant(s) ${uncovered.sort().join(", ")} beyond its parents\n` +
-        `  (conflict resolution / evil merge) without a covering CONCEPT-CHANGE marker.\n` +
-        `  Resolve Bible conflicts in a marked non-merge commit, or mark the merge itself if the owner approved the resolution.`
+        `merge commit ${sha.slice(0, 10)}: ${marker[0]} does not cover invariant(s) its resolution changes: ${uncovered.sort().join(", ")}.\n` +
+        `  The marker must name EVERY invariant whose text the merge resolution adds, edits, or retires.`
       );
     }
     console.log(
-      `concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}; touched invariant blocks: ${[...touched].sort().join(", ")}`,
+      `concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}; touched invariant blocks: ${[...touched].sort().join(", ") || "(preamble/headings only)"}`,
     );
     return null;
   }
