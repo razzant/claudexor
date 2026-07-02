@@ -4481,6 +4481,21 @@ describe("web evidence recovery keying (INV-043)", () => {
     expect(t.web.failed).toBe(false);
   });
 
+  it("a same-name same-target success of a DIFFERENT kind does not recover a web error", async () => {
+    const { createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const t = createAttemptTelemetry("auto", false);
+    const ts = new Date().toISOString();
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "fetch", kind: "web", status: "error", target: "https://a", error_summary: "net down" },
+    } as never);
+    observeAttemptTelemetry(t, {
+      type: "tool_result", session_id: "s", ts,
+      tool: { name: "fetch", kind: "exec", status: "ok", target: "https://a" },
+    } as never);
+    expect(t.toolErrors.filter((e) => !e.recovered).length).toBe(1); // web error NOT laundered
+  });
+
   it("web_required with only failures stays blocking regardless", async () => {
     const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("live", true);

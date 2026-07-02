@@ -6,7 +6,6 @@
  * tool later succeeds against the SAME target (T2#10).
  */
 import type { AttemptTelemetryRecord, ExternalContextPolicy, HarnessEvent, TaskContract, ToolKind } from "@claudexor/schema";
-import { AttemptTelemetryRecord as AttemptTelemetryRecordSchema } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 
 export interface ToolErrorRecord {
@@ -165,7 +164,10 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   // attempt (T2#10 keying fix: `bash echo done` must NOT launder an earlier
   // `bash npm test` failure — the name alone proved nothing).
   for (const err of t.toolErrors) {
-    if (!err.recovered && err.tool === tool.name && err.target === (tool.target ?? null)) {
+    // INV-043: recovery must be attributable to the failed operation — same
+    // tool, same KIND, same target (a non-web tool sharing a name with a web
+    // tool must not clear its web error).
+    if (!err.recovered && err.tool === tool.name && err.kind === tool.kind && err.target === (tool.target ?? null)) {
       err.recovered = true;
     }
   }
@@ -185,6 +187,11 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // errors recovered). Multiple failed targets stay disclosed until EACH
     // recovers; a missing target never wildcards (exact null==null match).
     t.web.failed = t.toolErrors.some((e) => e.kind === "web" && !e.recovered);
+    // Keep the summary in lockstep with the rollup: point at a live
+    // unrecovered failure, or clear once everything recovered.
+    t.web.errorSummary = t.web.failed
+      ? (t.toolErrors.find((e) => e.kind === "web" && !e.recovered)?.summary ?? t.web.errorSummary)
+      : null;
     t.web.tool = tool.name;
     t.web.target = tool.target ?? t.web.target;
   }
