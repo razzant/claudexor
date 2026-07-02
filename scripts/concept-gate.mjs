@@ -27,14 +27,15 @@
  * Merge commits (including GitHub's synthetic refs/pull/N/merge, whose
  * auto-generated message can never carry a marker): the constituent commits
  * are checked individually by the range walk, so a CLEAN merge needs no
- * marker of its own. The merge itself is checked by direct text comparison
- * against every parent, piece by piece — each invariant block and the
- * non-block remainder (preamble/headings) — never via `diff-tree --cc`,
- * which is silent when a resolution picks one side wholesale. No parent's
- * invariant id may disappear in the result, and any piece matching NO
- * parent is hand-crafted resolution content that needs the same marker +
- * block-coverage discipline as a normal commit (including the
- * preamble/heading-only case).
+ * marker of its own. The merge itself is checked piece by piece — each
+ * invariant block and each heading-anchored remainder chunk — against the
+ * merge base and every parent (never via `diff-tree --cc`, which is silent
+ * when a resolution picks one side wholesale). No parent's invariant id may
+ * disappear in the result; a piece matching NO parent, a piece where the
+ * merge dropped one parent's in-flight edit back to the base version, and a
+ * piece both parents edited differently (any pick discards someone's
+ * approved text) all require the same marker + coverage discipline as a
+ * normal commit (including the preamble/heading-only case).
  *
  * Shallow clones fail LOUDLY: if a commit in the range has a parent whose
  * object is outside the clone boundary, the gate errors and tells the
@@ -100,6 +101,44 @@ function invBlocks(text) {
   return splitBible(text).blocks;
 }
 
+/**
+ * Heading-anchored chunks of the non-block remainder: the preamble plus one
+ * chunk per `#`-heading (heading line + its non-block prose). Piecewise
+ * comparison at this granularity lets independent parent edits to DIFFERENT
+ * remainder regions merge cleanly, while a renamed/hand-crafted section
+ * still surfaces as a chunk matching no parent.
+ */
+function chunkRemainder(remainder) {
+  const chunks = new Map();
+  let key = "__preamble__";
+  let buf = [];
+  const seen = new Map();
+  const flush = () => {
+    if (buf.length === 0) return;
+    const n = seen.get(key) ?? 0;
+    seen.set(key, n + 1);
+    chunks.set(n === 0 ? key : `${key}#${n}`, buf.join("\n").replace(/\s+$/, ""));
+    buf = [];
+  };
+  for (const line of remainder.split("\n")) {
+    if (/^#{1,3} /.test(line)) {
+      flush();
+      key = line.trim();
+    }
+    buf.push(line);
+  }
+  flush();
+  return chunks;
+}
+
+/** All comparable pieces of a Bible text: invariant blocks + remainder chunks. */
+function biblePieces(text) {
+  const split = splitBible(text);
+  const m = new Map(split.blocks);
+  for (const [k, t] of chunkRemainder(split.remainder)) m.set(`§${k}`, t);
+  return m;
+}
+
 /** Bible text at a commit; "" when the file does not exist in that tree. */
 function bibleAt(sha) {
   try {
@@ -130,12 +169,18 @@ function checkCommit(sha) {
     // merge (refs/pull/N/merge) whose message GitHub generates — including a
     // CLEAN auto-merge whose whole-file text matches neither parent because
     // each side edited a different region. The honest comparison unit is the
-    // invariant BLOCK plus the non-block remainder (preamble/headings),
-    // checked against every parent by direct text comparison (never
-    // `diff-tree --cc`, which stays silent when a resolution picks one
-    // parent's file wholesale and thereby drops the other parent's
-    // invariants). The merge itself owes a marker only for content that
-    // matches NO parent — hand-crafted resolution text.
+    // PIECE — each invariant block and each heading-anchored remainder chunk —
+    // judged against the MERGE BASE (never `diff-tree --cc`, which stays
+    // silent when a resolution picks one parent's file wholesale):
+    //   - a piece only one parent changed must arrive as that parent's
+    //     version — arriving as the base version means the merge silently
+    //     DISCARDED an in-flight approved edit (marker required);
+    //   - a piece both parents changed differently is a conflict: ANY
+    //     resolution discards someone's approved text (marker required,
+    //     even when the result equals one parent);
+    //   - a piece matching NO parent is hand-crafted resolution content
+    //     (marker required);
+    //   - otherwise the piece came through cleanly.
     for (const p of parents) assertParentReachable(sha, p);
     const after = bibleAt(sha);
     const parentTexts = parents.map(bibleAt);
@@ -153,37 +198,65 @@ function checkCommit(sha) {
       );
     }
 
-    const afterSplit = splitBible(after);
-    const parentSplits = parentTexts.map(splitBible);
-    const touched = new Set();
-    for (const [id, text] of afterSplit.blocks) {
-      if (!parentSplits.some((ps) => ps.blocks.get(id) === text)) touched.add(id);
+    let base = null;
+    try {
+      base = git(["merge-base", ...(parents.length > 2 ? ["--octopus"] : []), ...parents]).trim();
+    } catch {
+      /* disconnected histories: fall back to strict parent-agreement below */
     }
-    const remainderTouched = !parentSplits.some((ps) => ps.remainder === afterSplit.remainder);
-    if (touched.size === 0 && !remainderTouched) return null; // clean merge: every piece came from a parent
+    const basePieces = base === null ? null : biblePieces(bibleAt(base));
+    const afterPieces = biblePieces(after);
+    const parentPieces = parentTexts.map(biblePieces);
 
-    // Hand-crafted resolution content: same marker discipline as a normal
-    // commit — marker required even for preamble/heading-only changes,
-    // coverage required for every invariant block matching NO parent.
+    const touched = new Set();
+    const allKeys = new Set([...afterPieces.keys(), ...parentPieces.flatMap((p) => [...p.keys()])]);
+    for (const key of allKeys) {
+      const result = afterPieces.get(key);
+      const parentVals = parentPieces.map((p) => p.get(key));
+      if (parentVals.every((v) => v === result)) continue; // unanimous
+      if (!parentVals.some((v) => v === result)) {
+        touched.add(key); // hand-crafted: matches no parent
+        continue;
+      }
+      if (basePieces === null) {
+        // No common ancestor: parents disagree and we cannot attribute the
+        // edit — strict, require a marker for the disputed piece.
+        touched.add(key);
+        continue;
+      }
+      const baseVal = basePieces.get(key);
+      const changed = [...new Set(parentVals.filter((v) => v !== baseVal))];
+      if (changed.length >= 2) touched.add(key); // conflicting edits: any pick discards one
+      else if (changed.length === 1 && result !== changed[0]) touched.add(key); // dropped an in-flight edit
+      // changed.length === 1 && result === changed[0] → clean adoption
+      // changed.length === 0 → parents all at base; result matches a parent → clean
+    }
+    if (touched.size === 0) return null; // clean merge: every piece accounted for
+
+    const touchedInv = [...touched].filter((k) => k.startsWith("INV-")).sort();
+    const touchedChunks = [...touched].filter((k) => !k.startsWith("INV-")).sort();
+    const detail =
+      touchedInv.join(", ") + (touchedChunks.length > 0 ? `${touchedInv.length > 0 ? "; " : ""}non-invariant: ${touchedChunks.join(", ")}` : "");
+
     const msg = git(["log", "-1", "--format=%B", sha]);
     const marker = msg.match(MARKER_RE);
     if (!marker) {
       return (
-        `merge commit ${sha.slice(0, 10)} itself changes ${BIBLE} beyond its parents (conflict resolution / evil merge)\n` +
+        `merge commit ${sha.slice(0, 10)} resolves ${BIBLE} content beyond a clean union of its parents (${detail})\n` +
         `  without a CONCEPT-CHANGE(INV-…) marker. Resolve Bible conflicts in a marked non-merge commit,\n` +
         `  or mark the merge itself if the owner approved the resolution.`
       );
     }
     const markedIds = new Set(marker[1].split(",").map((s) => s.trim()));
-    const uncovered = [...touched].filter((id) => !markedIds.has(id));
+    const uncovered = touchedInv.filter((id) => !markedIds.has(id));
     if (uncovered.length > 0) {
       return (
-        `merge commit ${sha.slice(0, 10)}: ${marker[0]} does not cover invariant(s) its resolution changes: ${uncovered.sort().join(", ")}.\n` +
-        `  The marker must name EVERY invariant whose text the merge resolution adds, edits, or retires.`
+        `merge commit ${sha.slice(0, 10)}: ${marker[0]} does not cover invariant(s) its resolution changes: ${uncovered.join(", ")}.\n` +
+        `  The marker must name EVERY invariant whose text the merge resolution adds, edits, retires, or discards.`
       );
     }
     console.log(
-      `concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} conflicts under ${marker[0]}; touched invariant blocks: ${[...touched].sort().join(", ") || "(preamble/headings only)"}`,
+      `concept-gate: merge ${sha.slice(0, 10)} resolves ${BIBLE} under ${marker[0]}; resolved pieces: ${detail || "(preamble/headings only)"}`,
     );
     return null;
   }
