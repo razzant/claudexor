@@ -564,7 +564,16 @@ unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is
 sufficient verification even without a deterministic test gate;
 `DecisionRecord.verification_basis` (`cross_family_review | both`)
 discloses what backed an applyable outcome, so a no-test run adopted on review
-evidence never reads as "tests passed". Cross-family verification requires each
+evidence never reads as "tests passed". Before adoption/apply eligibility, an
+otherwise-adoptable race winner with a patch also passes the FINAL VERIFIER
+(D12): the patch is applied onto a FRESH worktree at the winner's own base sha
+and the deterministic gates re-run there, recorded as
+`DecisionRecord.final_verify` (attempted/applied_cleanly/gates_passed/reason).
+A failure BLOCKS the run with a typed `verification` failure; the apply gate
+refuses a patch that failed to apply on the verify tree outright (no override
+can make an unappliable patch deliverable), while failed verify GATES can be
+overridden through the same accept_risk path as any blocked run.
+Deterministic-first: the verifier spends no model tokens. Cross-family verification requires each
 reviewer family's route proof to be OBSERVED, not an argv echo: claude reports
 its model in the stream, and codex (whose `--json` stream omits the model)
 recovers the model it actually ran from its own session rollout transcript

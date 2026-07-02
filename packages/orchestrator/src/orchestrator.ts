@@ -1,4 +1,5 @@
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AccessProfile,
@@ -40,6 +41,7 @@ import {
   type OrchestrateStepStatus,
   toolRisk,
   DecisionRecord as DecisionRecordSchema,
+  FinalVerifyRecord,
   WorkProduct as WorkProductSchema,
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
@@ -55,7 +57,7 @@ import {
 import { loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, parseUnifiedDiff, validateModel, withInactivityWatchdog } from "@claudexor/core";
+import { HarnessUnavailableError, summarizeDiffPaths as diffStats, validateModel, withInactivityWatchdog } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
 import {
   type AnnouncedRunContext,
@@ -66,6 +68,7 @@ import {
 } from "./runTerminals.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt } from "./orchestrateBrain.js";
+import { finalVerifyPatch } from "./finalVerifier.js";
 import { interactionChannelFor } from "./interaction.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
@@ -79,8 +82,11 @@ import {
 import {
   WorkspaceManager,
   applyPatchProtected,
+  branchDelete,
   ensureGitRepository,
   snapshotTree,
+  worktreeAdd,
+  worktreeRemove,
 } from "@claudexor/workspace";
 import { deliver, validateApplyGate } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
@@ -308,6 +314,8 @@ interface CandidateRun {
   answerText?: string;
   /** Filesystem tree reviewers must inspect for this candidate. */
   reviewCwd?: string;
+  /** The envelope's base sha — the FinalVerifier's verify-tree anchor. */
+  baseSha?: string;
   gates: GateResult[];
   cost: number;
   errored: boolean;
@@ -441,43 +449,6 @@ function assertEnvelopeSubRun(sub: RunInput): void {
 }
 
 /** Changed paths and +/- line counts parsed from a unified git diff. */
-function diffStats(diff: string): {
-  paths: string[];
-  addedPaths: string[];
-  modifiedPaths: string[];
-  existingPaths: string[];
-  additions: number;
-  deletions: number;
-} {
-  // Shared quote-aware parser (T3.2#2): git-quoted headers (non-ASCII,
-  // spaces, quotes) used to fail the old regex and silently DROP the file
-  // from protected-path/NEEDS_HUMAN/risk gating.
-  const parsed = parseUnifiedDiff(diff);
-  const paths: string[] = [];
-  const addedPaths: string[] = [];
-  const modifiedPaths: string[] = [];
-  const existingPaths: string[] = [];
-  for (const f of parsed.files) {
-    const path = f.newPath ?? f.oldPath;
-    if (!path) continue;
-    paths.push(path);
-    if (f.added) {
-      addedPaths.push(path);
-    } else {
-      modifiedPaths.push(path);
-      if (f.oldPath) existingPaths.push(f.oldPath);
-      existingPaths.push(path);
-    }
-  }
-  return {
-    paths,
-    addedPaths,
-    modifiedPaths,
-    existingPaths: [...new Set(existingPaths)],
-    additions: parsed.additions,
-    deletions: parsed.deletions,
-  };
-}
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
 async function runBounded<T>(
@@ -1898,6 +1869,7 @@ export class Orchestrator {
       diff,
       answerText,
       reviewCwd: envelope.worktree_path,
+      baseSha: envelope.base_sha ?? undefined,
       gates,
       cost,
       errored,
@@ -2739,12 +2711,6 @@ export class Orchestrator {
       // Arbitration throws end terminally with artifacts, never as an orphan (#5).
       return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err);
     }
-    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
-      ...result.decision,
-      review_verified: actualReviewVerified,
-    });
-    store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
-    const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     log.emit("arbitration.completed", {
       winner: result.decision.winner,
       status: result.decision.status,
@@ -2758,8 +2724,35 @@ export class Orchestrator {
     const needsHuman = evidences.some((e) =>
       e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)),
     );
-    const status: RunStatus =
+    let status: RunStatus =
       needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
+
+    // FinalVerifier (D12/INV-115): an otherwise-adoptable winner with a patch
+    // must ALSO apply cleanly onto a fresh tree at its own base and pass the
+    // deterministic gates there, BEFORE adoption/apply eligibility. A failure
+    // BLOCKS the run with a typed reason instead of shipping it.
+    let finalVerify: FinalVerifyRecord | null = null;
+    let finalVerifyFailed = false;
+    if (
+      winnerRun &&
+      winnerRun.diff.trim().length > 0 &&
+      (status === "success" || status === "ungated") &&
+      !input.signal?.aborted
+    ) {
+      finalVerify = await finalVerifyPatch(execRoot, winnerRun, this.gateSpecs(contract), log);
+      finalVerifyFailed =
+        finalVerify.attempted &&
+        (finalVerify.applied_cleanly === false || finalVerify.gates_passed === false);
+      if (finalVerifyFailed) status = "blocked";
+    }
+
+    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
+      ...result.decision,
+      review_verified: actualReviewVerified,
+      final_verify: finalVerify,
+    });
+    store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
+    const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     if (winnerRun) {
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       const patchSha256 = sha256(winnerRun.diff);
@@ -2893,7 +2886,18 @@ export class Orchestrator {
 
     const honestTerminal =
       status === "no_op" || status === "ungated" || status === "review_not_run";
-    if (status !== "success" && !honestTerminal) {
+    if (finalVerifyFailed) {
+      writeFailure(store, paths, {
+        phase: "verification",
+        category: finalVerify?.applied_cleanly === false ? "apply_conflict" : "gates",
+        safeMessage: `final verify failed: ${finalVerify?.reason ?? (finalVerify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`,
+        runDir: paths.root,
+        nextActions: [
+          "Inspect arbitration/decision.yaml (final_verify)",
+          "Re-run after fixing the base conflict or the failing gates",
+        ],
+      });
+    } else if (status !== "success" && !honestTerminal) {
       writeFailure(store, paths, {
         phase: needsHuman ? "review" : "arbitration",
         category: needsHuman
@@ -2963,6 +2967,7 @@ export class Orchestrator {
       reviewVerified: actualReviewVerified,
     };
   }
+
 
   /** Single-owner telemetry artifact (final/telemetry.yaml); surfaces project it, never recompute. */
   private writeRunTelemetry(

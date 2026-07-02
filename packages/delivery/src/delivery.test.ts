@@ -218,3 +218,41 @@ describe("protected apply path (T3.2#3/#6)", () => {
     expect(show).not.toContain(".claudexor-review-evidence");
   });
 });
+
+describe("final_verify apply-gate consumer (D12/INV-115)", () => {
+  const baseDecision = {
+    winner: "a01",
+    status: "success" as const,
+    outcome: "ready" as const,
+  };
+  const wp = { kind: "patch", meta: { patch_sha256: "" } };
+  const patch = "diff --git a/x b/x\n";
+
+  function gateWith(finalVerify: Record<string, unknown> | null, decisionOverrides: Record<string, unknown> = {}) {
+    const { sha256 } = require("@claudexor/util") as { sha256: (s: string) => string };
+    return validateApplyGate({
+      state: "succeeded",
+      decision: DecisionRecord.parse({ ...baseDecision, final_verify: finalVerify, ...decisionOverrides }),
+      workProduct: { ...wp, meta: { patch_sha256: sha256(patch) } } as never,
+      patch,
+      originalRepoRoot: process.cwd(),
+      targetRepoRoot: process.cwd(),
+    });
+  }
+
+  it("refuses apply when the patch failed to apply on the verify tree (no override possible)", () => {
+    const err = gateWith({ attempted: true, applied_cleanly: false, reason: "conflict vs base" });
+    expect(err).toContain("did not apply onto a fresh tree");
+  });
+
+  it("refuses apply when verify gates failed (override path exists for blocked runs)", () => {
+    const err = gateWith({ attempted: true, applied_cleanly: true, gates_passed: false });
+    expect(err).toContain("deterministic gates failed");
+  });
+
+  it("passes when the final verify is green or honestly not attempted", () => {
+    expect(gateWith({ attempted: true, applied_cleanly: true, gates_passed: true })).toBeNull();
+    expect(gateWith({ attempted: false, reason: "no base sha" })).toBeNull();
+    expect(gateWith(null)).toBeNull();
+  });
+});

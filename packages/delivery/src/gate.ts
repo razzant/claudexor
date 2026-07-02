@@ -64,6 +64,19 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (input.decision.status !== "success" && !override) {
     return `decision status is ${input.decision.status}; refusing apply (${applyHint(input.decision.status)})`;
   }
+  // FinalVerifier consumer (D12/INV-115): a patch that FAILED to apply onto a
+  // fresh tree at its own base is factually undeliverable — no operator
+  // override can change that. Failed verify GATES may be overridden through
+  // the same accept_risk path as any blocked run.
+  const fv = input.decision.final_verify;
+  if (fv?.attempted) {
+    if (fv.applied_cleanly === false) {
+      return `final verify: the patch did not apply onto a fresh tree at its base (${fv.reason ?? "conflict"}); re-run the task`;
+    }
+    if (fv.gates_passed === false && !override) {
+      return "final verify: deterministic gates failed on the fresh verify tree; refusing apply (an operator accept_risk decision can override)";
+    }
+  }
   if (!input.workProduct) return "work product is required before apply";
   if (input.workProduct.kind !== "patch") return `work product kind ${input.workProduct.kind} is not applyable as a patch`;
   const recorded = input.workProduct.meta?.["patch_sha256"];

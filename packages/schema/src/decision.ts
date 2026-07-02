@@ -60,6 +60,28 @@ export const VerificationBasis = z.enum([
 ]);
 export type VerificationBasis = z.infer<typeof VerificationBasis>;
 
+/**
+ * FinalVerifier record (D12/INV-115): the winner's patch was applied onto a
+ * FRESH worktree at the candidate's own base sha and the deterministic gates
+ * were re-run there. Producer: orchestrator (race adoption preflight).
+ * Consumers: validateApplyGate (a failed final verify refuses apply) and the
+ * inspect/UI surfaces. Deterministic-first: no model involvement.
+ */
+export const FinalVerifyRecord = z.object({
+  attempted: z.boolean(),
+  /** Base the verify tree was created from (the winner envelope's base_sha). */
+  base_sha: z.string().nullable().default(null),
+  applied_cleanly: z.boolean().nullable().default(null),
+  gates_passed: z.boolean().nullable().default(null),
+  gates: z
+    .array(z.object({ id: z.string(), status: z.string() }))
+    .default([]),
+  duration_ms: z.number().int().nonnegative().nullable().default(null),
+  /** Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail. */
+  reason: z.string().nullable().default(null),
+});
+export type FinalVerifyRecord = z.infer<typeof FinalVerifyRecord>;
+
 export const DecisionRecord = z.object({
   winner: Id.nullable(),
   status: RunStatus,
@@ -81,5 +103,8 @@ export const DecisionRecord = z.object({
   // Honest disclosure of WHAT verified an applyable run (gates, cross-family
   // review, or both). Producer: arbitration. Consumer: CLI/UI apply affordance.
   verification_basis: VerificationBasis.default("none"),
+  // Present only for write runs with a patch where the verifier ran (or
+  // recorded WHY it did not). Absent for answer-only/no-patch runs.
+  final_verify: FinalVerifyRecord.nullable().default(null),
 });
 export type DecisionRecord = z.infer<typeof DecisionRecord>;

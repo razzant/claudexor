@@ -4,6 +4,8 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
+import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
+import { eventPayload, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
 import {
   AccessProfile,
   AttachmentInput,
@@ -1977,72 +1979,6 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
 }
 
 /** Typed severity per event type — no string matching over event names. */
-const WARNING_EVENT_TYPES = new Set([
-  "route.fallback.started",
-  "route.fallback.auth_switched",
-  "route.fallback.exhausted",
-  "policy.web.upgraded",
-  "run.blocked",
-]);
-const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
-
-function timelineSeverity(type: string, payload: Record<string, unknown>, tool: Record<string, unknown>): "info" | "warning" | "error" {
-  if (payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)) return "error";
-  const reason = FallbackReason.safeParse(payload["reason"]);
-  if (type === "route.fallback.auth_switched" && reason.success && reason.data === "readiness_preferred") return "info";
-  if (WARNING_EVENT_TYPES.has(type)) return "warning";
-  return "info";
-}
-
-function timelineEvents(rec: DaemonRunRecord): ControlTimelineEvent[] {
-  const out: ControlTimelineEvent[] = [];
-  for (const ev of readRunEvents(rec)) {
-    const payload = eventPayload(ev);
-    const type = String(ev["type"] ?? "event");
-    // Typed tool info travels on the normalized HarnessEvent `tool` field.
-    const tool = payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
-      ? (payload["tool"] as Record<string, unknown>)
-      : {};
-    const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
-    const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
-    const title = stringOrNull(payload["title"] ?? payload["message"] ?? payload["summary"] ?? payload["text"] ?? payload["error"]) ?? prettyEventType(type);
-    const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
-    const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ?? stringOrNull(tool["content_summary"]) ?? errorSummary;
-    const toolName = stringOrNull(tool["name"]);
-    const target = stringOrNull(tool["target"]);
-    const severity = timelineSeverity(type, payload, tool);
-    out.push(ControlTimelineEvent.parse({
-      type,
-      ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
-      harnessId,
-      attemptId,
-      title,
-      detail,
-      severity,
-      toolName,
-      target,
-      errorSummary,
-      rawRef: "events.jsonl",
-    }));
-  }
-  // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
-  if (out.length > TIMELINE_EVENTS_MAX) {
-    const omitted = out.length - TIMELINE_EVENTS_MAX;
-    const tail = out.slice(-TIMELINE_EVENTS_MAX);
-    tail.unshift(
-      ControlTimelineEvent.parse({
-        type: "timeline.truncated",
-        title: `${omitted} earlier event(s) omitted from this projection`,
-        detail: "Full history remains in events.jsonl.",
-        severity: "info",
-        rawRef: "events.jsonl",
-      }),
-    );
-    return tail;
-  }
-  return out;
-}
-
 function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): ControlBudgetSnapshot {
   const p = paramsRecord(rec);
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
@@ -2101,35 +2037,9 @@ function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): 
   return ControlBudgetSnapshot.parse({ maxUsd, spendUsd, remainingUsd, estimated, source });
 }
 
-function readRunEvents(rec: DaemonRunRecord): Record<string, unknown>[] {
-  const raw = readRawTextArtifact(rec, "events.jsonl");
-  if (!raw) return [];
-  const out: Record<string, unknown>[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) out.push(obj as Record<string, unknown>);
-    } catch {
-      /* malformed line remains in events.jsonl; omit from projections */
-    }
-  }
-  return out;
-}
 
-function eventPayload(ev: Record<string, unknown>): Record<string, unknown> {
-  return ev["payload"] && typeof ev["payload"] === "object" && !Array.isArray(ev["payload"])
-    ? (ev["payload"] as Record<string, unknown>)
-    : {};
-}
 
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? redactSecrets(value) : null;
-}
 
-function prettyEventType(type: string): string {
-  return type.replace(/\./g, " · ").replace(/_/g, " ");
-}
 
 function readStructured<T>(text: string | null, ext: string, schema: { parse(value: unknown): T }): T | null {
   if (text === null) return null;
@@ -2160,20 +2070,6 @@ function listArtifacts(root: string): ControlArtifactInfo[] {
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function safeArtifactPath(root: string, requested: string): string | null {
-  if (requested.includes("\0")) return null;
-  const parts = requested.split(/[\\/]+/).filter(Boolean);
-  if (parts.includes("..")) return null;
-  const base = safeArtifactRoot(root);
-  if (!base) return null;
-  const clean = normalize(parts.join(sep));
-  const abs = resolve(base, clean);
-  if (!existsSync(abs)) return null;
-  const lst = lstatSync(abs);
-  if (lst.isSymbolicLink()) return null;
-  const real = realpathSync(abs);
-  return real === base || real.startsWith(base + sep) ? real : null;
-}
 
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
  *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
@@ -2184,12 +2080,6 @@ export function producedRepoRoot(rec: DaemonRunRecord): string | null {
   return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim() ? scope.root : null;
 }
 
-function safeArtifactRoot(root: string): string | null {
-  if (!root || !existsSync(root)) return null;
-  const st = lstatSync(root);
-  if (st.isSymbolicLink() || !st.isDirectory()) return null;
-  return realpathSync(root);
-}
 
 function readPatch(rec: DaemonRunRecord): string | null {
   return readRawTextArtifact(rec, "final/patch.diff");

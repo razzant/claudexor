@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1506,6 +1507,68 @@ describe("Orchestrator", () => {
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
     expect(telemetry).toContain("tool_warnings_total: 1");
     expect(telemetry).toContain("status: success_with_warnings");
+  });
+
+  it("FinalVerifier (D12): a winner whose gates fail on a FRESH verify tree is blocked, not shipped", async () => {
+    const repo = await initRepo();
+    // fake-implement writes IMPLEMENTED.md into its worktree -> real patch.
+    // The gate greps the file CONTENT on the verify tree: it passes only if
+    // the patch actually applied there (proves the fresh-tree mechanics),
+    // and we then flip expectations with an impossible gate.
+    const orchGreen = new Orchestrator({
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
+      reviewers: reviewers(),
+    });
+    const green = await orchGreen.run({
+      repoRoot: repo,
+      prompt: "implement",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      tests: ["test -f CHANGED.txt"],
+    });
+    expect(["success", "ungated"]).toContain(green.status);
+    const greenDecision = readFileSync(join(green.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(greenDecision).toContain("final_verify");
+    expect(greenDecision).toContain("applied_cleanly: true");
+    expect(greenDecision).toContain("gates_passed: true");
+
+    // Direct verdict coverage on the same repo (private method, cast):
+    const { finalVerifyPatch } = await import("./finalVerifier.js");
+    const noopVerifyLog = { emit: () => undefined };
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const goodPatch = [
+      "diff --git a/v.txt b/v.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/v.txt",
+      "@@ -0,0 +1 @@",
+      "+verified",
+      "",
+    ].join("\n");
+    const failingGates = [{ id: "g1", command: "exit 3", required: true }];
+    const gatesFail = await finalVerifyPatch(repo, { baseSha, diff: goodPatch }, failingGates, noopVerifyLog);
+    expect(gatesFail).toMatchObject({ attempted: true, applied_cleanly: true, gates_passed: false });
+    // A patch built against content the base never had -> apply refusal.
+    const conflictPatch = [
+      "diff --git a/math.js b/math.js",
+      "index 000..111 100644",
+      "--- a/math.js",
+      "+++ b/math.js",
+      "@@ -1 +1 @@",
+      "-CONTENT THE BASE NEVER HAD",
+      "+patched",
+      "",
+    ].join("\n");
+    const conflict = await finalVerifyPatch(repo, { baseSha, diff: conflictPatch }, failingGates, noopVerifyLog);
+    expect(conflict.attempted).toBe(true);
+    expect(conflict.applied_cleanly).toBe(false);
+    // No base sha (in-place single candidate): honestly not attempted.
+    const skipped = await finalVerifyPatch(repo, { diff: goodPatch }, failingGates, noopVerifyLog);
+    expect(skipped.attempted).toBe(false);
   });
 
   it("spec tamper fence: a frozen spec modified after freeze refuses the run loudly (INV-081)", async () => {

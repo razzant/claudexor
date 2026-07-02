@@ -198,3 +198,47 @@ export function parseUnifiedDiff(diff: string): UnifiedDiffSummary {
   flush();
   return { files, additions, deletions, hunks };
 }
+
+export interface DiffPathSummary {
+  paths: string[];
+  addedPaths: string[];
+  modifiedPaths: string[];
+  existingPaths: string[];
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * Path-oriented projection of a unified diff for policy/risk gating and
+ * diffstat honesty: which files the patch touches, which are NEW vs
+ * pre-existing, and the +/- counts. Quote-aware via parseUnifiedDiff — a
+ * git-quoted header (non-ASCII, spaces) must never silently DROP a file
+ * from protected-path/NEEDS_HUMAN classification.
+ */
+export function summarizeDiffPaths(diff: string): DiffPathSummary {
+  const parsed = parseUnifiedDiff(diff);
+  const paths: string[] = [];
+  const addedPaths: string[] = [];
+  const modifiedPaths: string[] = [];
+  const existingPaths: string[] = [];
+  for (const f of parsed.files) {
+    const path = f.newPath ?? f.oldPath;
+    if (!path) continue;
+    paths.push(path);
+    if (f.added) {
+      addedPaths.push(path);
+    } else {
+      modifiedPaths.push(path);
+      if (f.oldPath) existingPaths.push(f.oldPath);
+      existingPaths.push(path);
+    }
+  }
+  return {
+    paths,
+    addedPaths,
+    modifiedPaths,
+    existingPaths: [...new Set(existingPaths)],
+    additions: parsed.additions,
+    deletions: parsed.deletions,
+  };
+}
