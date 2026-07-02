@@ -129,7 +129,9 @@ jobs:
         run: node scripts/complexity-ratchet.mjs
 
       - name: Model-hints freshness (manifest known_models vs installed CLIs)
-        run: node scripts/model-hints-freshness.mjs
+        # Release escalates drift warnings to failures; CI runners without the
+        # vendor CLIs report "not discoverable" and pass either way.
+        run: node scripts/model-hints-freshness.mjs --strict
 
       - name: Canary golden stories
         run: pnpm canary

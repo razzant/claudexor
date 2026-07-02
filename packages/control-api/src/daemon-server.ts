@@ -65,7 +65,7 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
-import { isManagedSecretName } from "@claudexor/secrets";
+import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export interface DaemonRunRecord {
@@ -942,13 +942,13 @@ export class DaemonControlApiServer {
     if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
     if (method === "POST" && path === "/secrets") {
       const body = await this.readBody(req);
-      if (!validSecretSetBody(body)) return this.json(res, 400, { error: "secret name must be openai, anthropic, openrouter, cursor, opencode, or raw" });
+      if (!validSecretSetBody(body)) return this.json(res, 400, { error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}` });
       return this.service(res, "setSecret", body);
     }
     const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
     if (method === "DELETE" && secretDeleteMatch) {
       const name = decodeURIComponent(secretDeleteMatch[1] as string);
-      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: "secret name must be openai, anthropic, openrouter, cursor, opencode, or raw" });
+      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}` });
       return this.service(res, "deleteSecret", name);
     }
     if (method === "POST" && path === "/spec/questions") {

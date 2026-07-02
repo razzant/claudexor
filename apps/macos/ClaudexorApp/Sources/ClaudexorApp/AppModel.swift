@@ -79,9 +79,6 @@ final class AppModel {
     var projectRoot: String = "" {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
     }
-    var projectContextMode: String = "auto" {
-        didSet { UserDefaults.standard.set(projectContextMode, forKey: "claudexor.projectContextMode") }
-    }
     /// Recently-used project roots (MRU, most-recent first, capped) — powers the
     /// composer's project chip so you Browse once, then pick from a menu (В6).
     var recentProjects: [String] = [] {
@@ -232,8 +229,6 @@ final class AppModel {
         default: break
         }
         projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
-        projectContextMode = UserDefaults.standard.string(forKey: "claudexor.projectContextMode") ?? "auto"
-        if projectContextMode != "deep" { projectContextMode = "auto" }
         recentProjects = UserDefaults.standard.stringArray(forKey: "claudexor.recentProjects") ?? []
     }
 
@@ -705,7 +700,7 @@ final class AppModel {
             settingsStatus = "Choose a Current Project before launching \(mode.label). Ask can run without a project."
             return
         }
-        let launchContextMode = launchRepoRoot.isEmpty ? "off" : (projectContextMode == "deep" ? "deep" : "auto")
+        let launchContextMode = launchRepoRoot.isEmpty ? "off" : "auto"
         let launchProjectName = launchRepoRoot.isEmpty ? "No project" : URL(fileURLWithPath: launchRepoRoot).lastPathComponent
         let hasExplicitCap = capUsd != nil
         var optimistic = TaskRun(
@@ -748,7 +743,7 @@ final class AppModel {
             let orderedHarnesses = harnesses.map(\.rawValue)
             let scope = launchRepoRoot.isEmpty
                 ? RunScope.none
-                : RunScope.project(root: launchRepoRoot, context: launchContextMode == "deep" ? "deep" : "auto")
+                : RunScope.project(root: launchRepoRoot, context: "auto")
             let flags = mode.strategyFlags
             let req = StartRunRequest(prompt: prompt, mode: mode.apiValue,
                                       scope: scope,

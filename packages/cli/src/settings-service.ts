@@ -35,6 +35,14 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
     }
   }
   for (const [id, patch] of Object.entries(p.harnesses ?? {})) {
+    // Per-harness settings persist only for REAL harnesses too (T1#26): a
+    // fake fixture id must fail here exactly like it does on the CLI path,
+    // never quietly persist a `harnesses.fake-*` block.
+    if (!realIds.has(id)) {
+      badRequest(
+        `harness settings for '${id}' are not persistable: not a real registered harness (expected one of: ${realList})`,
+      );
+    }
     const models: Array<{ field: string; value: string }> = [];
     if (patch.defaultModel) models.push({ field: "defaultModel", value: patch.defaultModel });
     if (patch.fallbackModel) models.push({ field: "fallbackModel", value: patch.fallbackModel });
@@ -74,8 +82,9 @@ export function applyHarnessSettingsPatches(
 ): GlobalConfigT["harnesses"] {
   if (!patches) return current;
   // FAIL LOUDLY on unknown harness ids: a typo ('codexx') must never be
-  // silently persisted as a new config entry nothing will ever read.
-  const knownIds = new Set(buildRegistry().keys());
+  // silently persisted as a new config entry nothing will ever read. REAL
+  // harnesses only — fakes are test fixtures, never persistable (T1#26).
+  const knownIds = new Set(buildRegistry({ includeFakes: false }).keys());
   const next = { ...current };
   for (const [id, patch] of Object.entries(patches)) {
     if (!knownIds.has(id)) {

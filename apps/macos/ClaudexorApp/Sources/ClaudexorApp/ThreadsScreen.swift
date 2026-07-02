@@ -725,22 +725,9 @@ struct ThreadsScreen: View {
                 }
             }
             // Context depth for PROJECT-SCOPED turns (RunScope.project picks deep|auto
-            // off `projectContextMode`). The owner removed project SELECTION from
-            // Settings but kept this preference — give it a reachable in-chat control.
-            // Hidden when the turn has no project (then the scope is `.none`, no depth).
-            if threadHasProject {
-                OptionRow(label: "Context") {
-                    Picker("", selection: Binding(
-                        get: { model.projectContextMode },
-                        set: { model.projectContextMode = $0 }
-                    )) {
-                        Text("Auto").tag("auto"); Text("Deep").tag("deep")
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("Auto = grounded as needed · Deep = always read the repo deeply (slower, more thorough)")
-                }
-            }
+            // Context depth is engine-owned "auto" now: the "deep" tier never had
+            // distinct behavior and was retired in the v0.15 triage (A3), so the
+            // picker that promised it is gone with the enum member.
             // Workspace mode is FIXED at thread creation, so it's only editable while
             // drafting the first turn (no thread selected yet). Isolated keeps a thread
             // worktree; in_place (default) mutates the live tree so the next turn sees it.

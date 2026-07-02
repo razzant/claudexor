@@ -12,7 +12,10 @@ import SwiftUI
 ///   unblocks apply past a needs-human escalation.
 struct DecisionBar: View {
     let runId: String
-    let onDecided: () async -> Void
+    /// Called ONLY for UNBLOCK decisions (accept_risk / override_needs_human).
+    /// A rerun_with_feedback enqueues a follow-up run — the original stays
+    /// blocked, so the bar must not collapse into apply affordances for it.
+    let onUnblocked: () async -> Void
     @Environment(AppModel.self) private var model
 
     @State private var showFeedbackSheet = false
@@ -115,7 +118,9 @@ struct DecisionBar: View {
         showFeedbackSheet = false
         if error == nil {
             await model.loadRunDetail(runId)
-            await onDecided()
+            if action == "accept_risk" || action == "override_needs_human" {
+                await onUnblocked()
+            }
         } else {
             model.threadStatus = error
         }
