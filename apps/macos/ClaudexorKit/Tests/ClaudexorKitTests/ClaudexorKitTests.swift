@@ -846,8 +846,12 @@ import Testing
         #expect(modelFieldState(models: nil, modelDraft: "legacy", loadFailed: true) == .unavailableWithDraft)
         #expect(modelFieldState(models: nil, modelDraft: "", loadFailed: true) == .unavailable)
         #expect(modelFieldState(models: answered("none", []), modelDraft: "", loadFailed: false) == .defaultOnly)
-        // Mid-retry (loadFailed reset, catalog still nil): no stale failure copy.
-        #expect(modelFieldState(models: nil, modelDraft: "", loadFailed: false) == .defaultOnly)
+        // Catalog not answered yet (initial load / mid-retry): transient
+        // loading state — NEVER the "default only" truth claim.
+        #expect(modelFieldState(models: nil, modelDraft: "", loadFailed: false) == .loading)
+        #expect(modelFieldState(models: nil, modelDraft: "legacy", loadFailed: false) == .loading)
+        // Whitespace-only draft normalizes to empty (matches buildHarnessPatch).
+        #expect(modelFieldState(models: answered("none", []), modelDraft: "  ", loadFailed: false) == .defaultOnly)
     }
 
     @Test func harnessSaveDoesNotSettleWhenNewerEditRacedIn() {

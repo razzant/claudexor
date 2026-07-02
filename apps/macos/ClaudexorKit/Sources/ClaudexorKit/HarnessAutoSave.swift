@@ -76,6 +76,8 @@ public enum ModelFieldState: Equatable {
     case unavailable
     /// Truth source answered "none" and nothing is stored: default only.
     case defaultOnly
+    /// Catalog not answered yet (initial load or active retry): transient.
+    case loading
 }
 
 public func modelFieldState(
@@ -84,9 +86,12 @@ public func modelFieldState(
     loadFailed: Bool
 ) -> ModelFieldState {
     if let models, models.canEnumerate { return .picker }
-    let hasDraft = !modelDraft.isEmpty
+    // Same normalization as buildHarnessPatch: a whitespace-only draft IS an
+    // empty draft (the save path encodes it as an explicit clear).
+    let hasDraft = !modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     if hasDraft, models != nil { return .refusedLegacy }
-    if hasDraft { return .unavailableWithDraft }
+    if hasDraft, loadFailed { return .unavailableWithDraft }
+    if models == nil, !loadFailed { return .loading }
     if loadFailed { return .unavailable }
     return .defaultOnly
 }

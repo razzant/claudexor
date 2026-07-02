@@ -43,6 +43,13 @@ struct HarnessModelOverrideField: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             .help(modelFallbackHelp)
+        case .loading:
+            // Catalog not answered yet: a transient state, not a truth claim.
+            LabeledContent("Model") {
+                Text("Loading model catalog…")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .help("Loading the \(family.label) model catalog…")
         }
     }
 
