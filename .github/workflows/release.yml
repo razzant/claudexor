@@ -113,6 +113,9 @@ jobs:
       - name: Docs truth (endpoints, mode ids, CLI flags)
         run: node scripts/docs-truth-check.mjs
 
+      - name: Concept gate
+        run: node scripts/concept-gate.mjs
+
       - name: Staged-field gate
         run: pnpm staged:check
 

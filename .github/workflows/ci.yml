@@ -67,6 +67,15 @@ jobs:
       - name: Docs truth (endpoints, mode ids, CLI flags)
         run: node scripts/docs-truth-check.mjs
 
+      - name: Concept gate (Bible edits need CONCEPT-CHANGE markers)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=50 origin "${{ github.base_ref }}"
+            node scripts/concept-gate.mjs --range "origin/${{ github.base_ref }}..HEAD"
+          else
+            node scripts/concept-gate.mjs
+          fi
+
       - name: Staged-field gate (schema fields need producer+consumer)
         run: pnpm staged:check
 
