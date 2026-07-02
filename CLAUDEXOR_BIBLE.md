@@ -312,23 +312,31 @@ process below. Never paper over the conflict.
   the run inspector; there is no separate Review Queue screen. verify:
   docs-truth deleted-screen guard.
 - **INV-103** Model choice is harness-scoped end-to-end: the engine keeps a
-  per-harness model map (per-harness defaults + per-turn map); no global
-  cross-harness model value exists, and a scalar model convenience input
-  expands only to the resolved primary — never to the pool. verify: schema
-  (no `routing.default_model`); routing tests. Locked in the
-  v0.15 program (D2); enforcement lands in Phase 2.
+  per-harness model map (per-harness defaults + per-turn map recorded on the
+  TaskContract as `routing_models`); no global cross-harness model value
+  exists, and a scalar model convenience input expands only to the resolved
+  primary — never to the pool (ambiguous scalars are rejected). verify:
+  schema (no `routing.default_model`); canaries
+  `[INV-103:scalar-model-primary-only]` and `[INV-103:no-global-model]`;
+  routing tests. Locked in the v0.15 program (D2).
 - **INV-104** A model outside the harness's model truth source (live
   inventory or manifest known-good list) is refused at settings-write, run
-  preflight, and reviewer resolution — never forwarded to the vendor CLI to
-  die as an opaque native error. Refusals name the harness, the model, and
-  the truth source; model truth is surfaced to UIs (`source: api |
-  manifest`), and known-model hints carry a freshness note. verify:
-  validateModel call sites; settings 400 tests; canary (bad-model story).
-  Locked v0.15 D3 (strict everywhere); enforcement lands Phase 2.
+  preflight (typed failure WITH artifacts before any CLI spawns), and both
+  reviewer-resolution paths — never forwarded to the vendor CLI to die as an
+  opaque native error. Refusals name the harness, the model, and the truth
+  source; model truth is surfaced to UIs (`source: api | manifest`), and
+  known-model hints carry a `verifiedAgainst` freshness note checked by the
+  model-hints-freshness gate. verify: canaries
+  `[INV-104:model-truth-refusal]`, `[INV-104:models-manifest-fallback]`,
+  `[INV-104:settings-write-strict]`; settings-service tests;
+  modelGovernance preflight tests. Locked in the v0.15 program (D3, strict
+  everywhere).
 - **INV-105** Per-harness knobs a manifest does not support are disclosed as
   `ignored_settings` on `harness.started` — never silently dropped. This
-  covers every run knob (model, effort, turns, tools). verify: knob
-  disclosure tests (coverage lands in the v0.15 program, Phase 2).
+  covers max_turns, tool lists, and effort (an empty declared ladder); an
+  explicit MODEL never reaches an unsupporting route at all — the strict
+  truth-source preflight refuses it first (INV-104). verify: knob
+  disclosure tests incl. the INV-105 effort-disclosure test.
 
 ## 11. Delivery Is Server-Owned
 
