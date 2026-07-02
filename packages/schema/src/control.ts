@@ -117,8 +117,10 @@ export const ControlRunStartRequest = z
     specHash: ContentHash.optional(),
     /** Thread/session linkage (A2): a run is a turn inside a thread. */
     threadId: Id.optional(),
-    /** Pre-created turn to bind this run to (single-writer: control-api creates
-     * the turn, the daemon runner binds the started run id to it). */
+    /** INTERNAL single-writer handoff: control-api pre-creates the turn and
+     * passes its id to the daemon runner. REJECTED (400) when supplied by a
+     * client on POST /runs — a foreign turnId could rebind another thread's
+     * lineage; POST /threads/:id/turns is the public turn surface. */
     turnId: Id.optional(),
     parentRunId: Id.optional(),
     /** When set, this turn implements an approved plan: the engine prefixes the

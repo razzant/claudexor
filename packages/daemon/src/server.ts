@@ -124,7 +124,17 @@ export class DaemonServer {
     await new Promise<void>((resolve, reject) => {
       this.server = createServer((sock) => this.onConnection(sock));
       this.server.once("error", reject);
-      this.server.listen(this.opts.socketPath, () => resolve());
+      this.server.listen(this.opts.socketPath, () => {
+        // Owner-only socket (T5#23): the bearer token is the auth layer, but a
+        // world-connectable socket needlessly exposes the RPC surface to every
+        // local user; chmod narrows it to the owning account.
+        try {
+          chmodSync(this.opts.socketPath, 0o600);
+        } catch {
+          /* best-effort on exotic filesystems */
+        }
+        resolve();
+      });
     });
     // Resume any queued jobs re-enqueued from a previous session (see load()).
     void this.drain();

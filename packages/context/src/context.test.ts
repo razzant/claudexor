@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -202,5 +202,26 @@ describe("evidence packet", () => {
     const summary = readFileSync(join(dir, "DIFF_SUMMARY.md"), "utf8");
     expect(summary).toContain("src/a b/file name.ts -> src/a b/file name.ts");
     expect(summary).toContain("src/bright.ts -> src/bright.ts");
+  });
+});
+
+describe("atlas walker symlink safety (T3#7)", () => {
+  it("survives a self-referencing symlink cycle and skips directory symlinks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-atlas-cycle-"));
+    writeFileSync(join(dir, "real.txt"), "content\n");
+    // `ln -s . loop` — the classic stack-overflow cycle.
+    symlinkSync(".", join(dir, "loop"));
+    // A dir symlink pointing OUTSIDE the tree must not be walked either.
+    const outside = mkdtempSync(join(tmpdir(), "claudexor-atlas-outside-"));
+    writeFileSync(join(outside, "secret.txt"), "outside\n");
+    symlinkSync(outside, join(dir, "escape"));
+    const { buildScopeAtlas } = await import("./atlas.js");
+    const atlas = await buildScopeAtlas(dir);
+    const paths = atlas.atlas.map((e) => e.path);
+    expect(paths).toContain("real.txt");
+    expect(paths.some((p) => p.includes("secret.txt"))).toBe(false);
+    expect(paths.some((p) => p.startsWith("loop/"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   });
 });

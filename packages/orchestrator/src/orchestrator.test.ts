@@ -4398,3 +4398,40 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     expect((timeoutEvent?.payload as Record<string, unknown>)["reason"]).toBe("cancelled");
   });
 });
+
+describe("interaction late-answer honesty (T2#23)", () => {
+  it("emits interaction.answer_discarded when the answer arrives after the timeout", async () => {
+    const { interactionChannelFor } = await import("./interaction.js");
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const log = { emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }) };
+    let releaseAnswer: (v: { answers: { question_id: string; answer: string }[] }) => void = () => undefined;
+    const channel = interactionChannelFor(
+      {
+        onInteraction: () => new Promise((resolve) => {
+          releaseAnswer = resolve;
+        }),
+        interactionTimeoutMs: 100,
+      } as never,
+      log as never,
+      "run-late",
+      "task-late",
+      "a01",
+      "harness-x",
+      true,
+    );
+    expect(channel).toBeTruthy();
+    const res = await channel!.request({
+      interaction_id: "int-1",
+      source_tool: "ask_user",
+      questions: [{ id: "q1", question: "answer me?" }],
+    } as never);
+    expect(res).toBeNull(); // timed out
+    expect(events.some((e) => e.type === "interaction.timeout")).toBe(true);
+    // The user answers AFTER the decline.
+    releaseAnswer({ answers: [{ question_id: "q1", answer: "too late" }] });
+    await new Promise((r) => setTimeout(r, 20));
+    const discarded = events.find((e) => e.type === "interaction.answer_discarded");
+    expect(discarded).toBeTruthy();
+    expect(discarded?.payload["reason"]).toBe("timed_out");
+  });
+});

@@ -100,6 +100,20 @@ export function interactionChannelFor(
         waited_ms: Date.now() - startedWaiting,
         ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
       });
+      // Late-answer honesty (T2#23): the run already declined this
+      // interaction; an answer arriving AFTER the timeout must be visibly
+      // DISCARDED, not silently swallowed (the user typed it in good faith).
+      void answersPromise.then((late) => {
+        if (late && late.answers.length > 0) {
+          log.emit("interaction.answer_discarded", {
+            interaction_id: request.interaction_id,
+            attempt_id: attemptId,
+            harness_id: harnessId,
+            answer_count: late.answers.length,
+            reason: input.signal?.aborted ? "run_cancelled" : "timed_out",
+          });
+        }
+      });
       return null;
     },
   };

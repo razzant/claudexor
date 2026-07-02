@@ -25,7 +25,7 @@ import {
   writeJson,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
-import { DaemonClient, defaultSocketPath, logPath, readToken } from "@claudexor/daemon";
+import { DaemonClient, defaultSocketPath, logPath, readToken, rotateToken } from "@claudexor/daemon";
 import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
@@ -200,7 +200,7 @@ Usage:
   claudexor auth status|login             Inspect native harness auth
   claudexor secrets list|set|delete       Manage stored API-key refs (Keychain/0600 file)
   claudexor release check-name <name>     Naming gate (npm/pypi/crates/github)
-  claudexor daemon start|status|stop|logs Optional local daemon (claudexord)
+  claudexor daemon start|status|stop|logs|rotate-token Optional local daemon (claudexord)
   claudexor mcp serve                     Expose Claudexor as an MCP server (stdio)
   claudexor acp serve                     Expose Claudexor as an ACP agent (stdio)
   claudexor plugin install <host|all>     Install host integration (cursor|claude|codex|opencode|all)
@@ -1176,8 +1176,15 @@ async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
       else print(tail);
       return 0;
     }
-    if (json) printJson({ ok: false, exitCode: 2, error: "usage: claudexor daemon start|status|stop|logs" });
-    else print("usage: claudexor daemon start|status|stop|logs");
+    if (sub === "rotate-token") {
+      rotateToken();
+      const note = "token rotated; restart the daemon (claudexor daemon stop && claudexor daemon start) so it picks the new token up";
+      if (json) printJson({ ok: true, rotated: true, note });
+      else print(note);
+      return 0;
+    }
+    if (json) printJson({ ok: false, exitCode: 2, error: "usage: claudexor daemon start|status|stop|logs|rotate-token" });
+    else print("usage: claudexor daemon start|status|stop|logs|rotate-token");
     return 2;
   } catch (err) {
     const message = `claudexord not reachable (${err instanceof Error ? err.message : String(err)})`;

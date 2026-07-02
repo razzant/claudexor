@@ -44,3 +44,20 @@ export function readToken(): string | null {
     return null;
   }
 }
+
+/** Rotate the local auth token (T5#23): a fresh random token replaces the
+ * old one (0600). Existing daemon sessions keep their in-memory token, so
+ * rotation takes effect on the next daemon start — the CLI surface says so. */
+export function rotateToken(): string {
+  const dir = daemonDir();
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "token");
+  const token = randomUUID();
+  writeFileSync(path, token + "\n", { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* best-effort */
+  }
+  return token;
+}

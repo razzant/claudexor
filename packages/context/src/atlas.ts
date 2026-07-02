@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
@@ -79,19 +79,44 @@ async function listFiles(repoRoot: string): Promise<string[]> {
   return walk(repoRoot, repoRoot);
 }
 
-function walk(root: string, dir: string): string[] {
+function walk(root: string, dir: string, seenDirs: Set<string> = new Set()): string[] {
   const skip = new Set([".git", "node_modules", "dist", ".turbo", ".claudexor", "coverage"]);
   const out: string[] = [];
+  // Symlink cycle guard (T3#7): `ln -s . loop` used to recurse until stack
+  // overflow, and a symlink to / walked the filesystem into the ContextPack.
+  // Directory SYMLINKS are skipped entirely (the fallback walker only maps
+  // the real tree); real dirs are deduped by their resolved identity.
+  let realDir: string;
+  try {
+    realDir = realpathSync(dir);
+  } catch {
+    return out;
+  }
+  if (seenDirs.has(realDir)) return out;
+  seenDirs.add(realDir);
   for (const name of readdirSync(dir)) {
     if (skip.has(name)) continue;
     const full = join(dir, name);
-    let s;
+    let l;
     try {
-      s = statSync(full);
+      l = lstatSync(full);
     } catch {
       continue;
     }
-    if (s.isDirectory()) out.push(...walk(root, full));
+    if (l.isSymbolicLink()) {
+      // A symlinked FILE still maps (stat resolves it); a symlinked DIR is
+      // skipped — it either cycles or points outside the tree being mapped.
+      let s;
+      try {
+        s = statSync(full);
+      } catch {
+        continue;
+      }
+      if (s.isDirectory()) continue;
+      out.push(relative(root, full));
+      continue;
+    }
+    if (l.isDirectory()) out.push(...walk(root, full, seenDirs));
     else out.push(relative(root, full));
   }
   return out;

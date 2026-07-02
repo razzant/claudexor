@@ -2867,4 +2867,32 @@ describe("DaemonControlApiServer", () => {
     });
     rmSync(nonGit, { recursive: true, force: true });
   });
+  it("rejects client-supplied turnId and thread-less planRunId on POST /runs (T5#8/#9)", async () => {
+    const { daemon } = fakeDaemon();
+    const server = new DaemonControlApiServer({ token, daemon });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-turnid-"));
+    try {
+      const withTurn = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "x", mode: "agent", scope: { kind: "project", root: repo }, turnId: "tn-foreign" }),
+      });
+      expect(withTurn.status).toBe(400);
+      expect(((await withTurn.json()) as { error: string }).error).toContain("turnId is not accepted");
+
+      const withPlan = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: "x", mode: "agent", scope: { kind: "project", root: repo }, planRunId: "run-plan" }),
+      });
+      expect(withPlan.status).toBe(400);
+      expect(((await withPlan.json()) as { error: string }).error).toContain("planRunId requires a thread turn");
+    } finally {
+      await server.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
 });

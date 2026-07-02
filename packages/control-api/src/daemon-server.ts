@@ -286,6 +286,24 @@ export class DaemonControlApiServer {
       // before it can be seen. A pre-created turnId (the /threads/:id/turns path)
       // already did this, so we only fill the gap for a bare threadId.
       const directThreadId = typeof params.threadId === "string" && params.threadId ? params.threadId : null;
+      // turnId is the INTERNAL single-writer handoff (control-api pre-creates
+      // the turn, the daemon runner binds the run to it). A client-supplied
+      // turnId could rebind any thread's turn lineage to an unrelated run
+      // (T5#8) — reject it at the boundary; the /threads/:id/turns path is
+      // the public way to create a turn.
+      if (params.turnId) {
+        return this.json(res, 400, {
+          error: "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
+        });
+      }
+      // planRunId only has an owner on thread turns (the turn pipeline
+      // prefixes the parent plan and forces mode); a direct run would carry
+      // it as dead provenance at best (T5#9).
+      if (params.planRunId && !directThreadId) {
+        return this.json(res, 400, {
+          error: "planRunId requires a thread turn; use POST /threads/:id/turns (implement-plan flows are thread-scoped)",
+        });
+      }
       let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
       if (directThreadId && !params.turnId) {
         const createTurnSvc = this.opts.services?.createThreadTurn;
