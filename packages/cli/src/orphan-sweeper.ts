@@ -164,23 +164,17 @@ function envelopeOwner(envelopeBase: string): number | null {
     // Recycling proof requires BOTH sides; with both present they must match.
     if (recorded !== null && live !== null) return live === recorded ? raw.pid : null;
     // No recycling proof available: bounded keep on freshness. Freshness is
-    // the NEWEST mtime across the envelope base and its working dirs (an
-    // active harness touches tree/home; the base dir alone can stay stale),
-    // so a live long-running owner keeps extending its own window while a
-    // recycled pid cannot pin a seeded-credential home forever.
+    // the NEWEST mtime across the envelope base, owner.json, and a BOUNDED
+    // recursive walk of the working dirs — editing an EXISTING file bumps
+    // only the file's mtime, not its parent directory's, so directory stats
+    // alone would sweep a live owner that edits in place. A live long-running
+    // owner keeps extending its own window; a recycled pid cannot pin a
+    // seeded-credential home forever.
     const newestMtime = Math.max(
-      ...[
-        envelopeBase,
-        join(envelopeBase, "tree"),
-        join(envelopeBase, "home"),
-        join(envelopeBase, "owner.json"),
-      ].map((path) => {
-        try {
-          return statSync(path).mtimeMs;
-        } catch {
-          return 0;
-        }
-      }),
+      safeMtime(envelopeBase),
+      safeMtime(join(envelopeBase, "owner.json")),
+      newestMtimeUnder(join(envelopeBase, "tree")),
+      newestMtimeUnder(join(envelopeBase, "home")),
     );
     return Date.now() - newestMtime < OWNERLESS_PROOF_KEEP_MAX_AGE_MS ? raw.pid : null;
   } catch {
@@ -261,6 +255,40 @@ function sweepReadOnlyHomes(): string[] {
     }
   }
   return actions;
+}
+
+function safeMtime(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** Newest mtime under a dir via a BOUNDED walk (freshness evidence, not an
+ * exhaustive index): caps visited entries so a huge worktree cannot stall the
+ * startup sweep; the newest-first ordering is not needed — any fresh entry
+ * proves liveness. */
+function newestMtimeUnder(root: string, maxEntries = 512): number {
+  let newest = safeMtime(root);
+  let visited = 0;
+  const stack = [root];
+  while (stack.length > 0 && visited < maxEntries) {
+    const dir = stack.pop()!;
+    for (const entry of safeReaddir(dir)) {
+      if (visited >= maxEntries) break;
+      visited += 1;
+      const full = join(dir, entry);
+      try {
+        const st = statSync(full);
+        if (st.mtimeMs > newest) newest = st.mtimeMs;
+        if (st.isDirectory()) stack.push(full);
+      } catch {
+        /* raced deletion — skip */
+      }
+    }
+  }
+  return newest;
 }
 
 function safeReaddir(dir: string): string[] {

@@ -79,9 +79,18 @@ describe("crash-GC live-owner guard", () => {
       }
       const jobsPath = join(stateDir, "jobs.json");
       writeFileSync(jobsPath, JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n");
+      // Inverse case: dirs are OLD but one nested file is fresh — editing an
+      // existing file bumps only the file's mtime, and that must count as
+      // liveness (the walk looks at files, not just directory entries).
+      const nested = envelope(root, "task-nested", "a01", { pid: process.pid, started: null });
+      for (const path of [join(nested, "tree"), join(nested, "home"), join(nested, "owner.json"), nested]) {
+        utimesSync(path, old, old);
+      }
+      // tree/work.txt keeps its fresh mtime (just created).
       await sweepOrphanWorkspaces({ jobsPath, threadsPath: join(stateDir, "threads.json") });
       expect(existsSync(fresh)).toBe(true);
       expect(existsSync(stale)).toBe(false);
+      expect(existsSync(nested)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(stateDir, { recursive: true, force: true });
