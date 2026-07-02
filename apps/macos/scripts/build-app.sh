@@ -75,12 +75,20 @@ SPM_BUNDLE="$APP_PKG/.build/release/$SPM_BUNDLE_NAME"
 sed -e "s/__CLAUDEXOR_VERSION__/$VERSION/" -e "s/__CLAUDEXOR_BUILD__/$BUILD/" \
     "$PACKAGING/Info.plist" > "$APP/Contents/Info.plist"
 
-# App icon (optional): drop an AppIcon.icns into packaging/ to include it.
-if [ -f "$PACKAGING/AppIcon.icns" ]; then
-  cp "$PACKAGING/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-else
-  echo "    (no packaging/AppIcon.icns — bundle will use the default icon)"
-fi
+# App icon: derived at build time from the single tracked source PNG (the SPM
+# resource the dev executable also uses), so no multi-MB .icns lives in git.
+ICON_SRC="$APP_PKG/Sources/ClaudexorApp/Resources/AppIcon.png"
+[ -f "$ICON_SRC" ] || { echo "ERROR: icon source missing at $ICON_SRC" >&2; exit 1; }
+ICONSET_DIR="$(mktemp -d)/AppIcon.iconset"
+mkdir -p "$ICONSET_DIR"
+for size in 16 32 64 128 256 512; do
+  /usr/bin/sips -z "$size" "$size" "$ICON_SRC" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+  retina=$((size * 2))
+  /usr/bin/sips -z "$retina" "$retina" "$ICON_SRC" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+done
+/usr/bin/iconutil -c icns "$ICONSET_DIR" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$(dirname "$ICONSET_DIR")"
+echo "    AppIcon.icns derived from $(basename "$ICON_SRC")"
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
