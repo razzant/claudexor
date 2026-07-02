@@ -755,10 +755,12 @@ async function main() {
     round: Number(round),
     base,
     generated_at: new Date().toISOString(),
-    // Explicit audit marker: true only when the operator overrode the
-    // owner-locked reviewer panel via TRIAD_ALLOW_OVERRIDE (see the guard at
-    // the top of this file). Absence of the ack with substituted models is
-    // impossible — the guard hard-errors first.
+    // Explicit audit markers. `panel_override_active` is the truth signal: the
+    // panel actually ran with non-locked models (an unacknowledged override is
+    // impossible — the guard at the top hard-errors first). The ack alone with
+    // a locked panel is a no-op and must not read as a violation.
+    panel_override_active:
+      TRIAD_MODELS.join(",") !== LOCKED_TRIAD || SCOPE_MODEL !== LOCKED_SCOPE,
     panel_override_acknowledged: process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
