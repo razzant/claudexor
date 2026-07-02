@@ -58,15 +58,6 @@ describe("arbitrate", () => {
     expect(res2.decision.final_checks.some((x) => x.includes("tie:"))).toBe(false);
   });
 
-  it("held-out tests are authoritative (anti reward hacking)", () => {
-    // X games visible tests (10/10) but fails held-out; Y passes held-out.
-    const x = candidate("X", { testsPassed: 10, testsTotal: 10, heldOutPassed: 0, heldOutTotal: 10 });
-    const y = candidate("Y", { testsPassed: 8, testsTotal: 10, heldOutPassed: 10, heldOutTotal: 10 });
-    const res = arbitrate([x, y]);
-    expect(res.ranking[0]?.label).toBe("Y");
-    expect(res.decision.winner).toBe("Y");
-  });
-
   it("prefers higher acceptance coverage", () => {
     const a = candidate("A", { acceptanceCovered: ["AC-1", "AC-2"], acceptanceTotal: 2 });
     const b = candidate("B", { acceptanceCovered: ["AC-1"], acceptanceTotal: 2 });

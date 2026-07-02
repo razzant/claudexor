@@ -15,9 +15,9 @@ release gates, and integration notes live in
 
 Claudexor is a local-first control plane over external coding harnesses:
 Codex CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters.
-A harness is not a role. Roles are intents (`explain`, `plan`, `implement`,
-`repair`, `review`, `verify`, `compare`, `synthesize`, `arbitrate`, `audit`,
-`orchestrate`).
+A harness is not a role. Roles are intents (`explain`, `plan`, `spec`,
+`implement`, `create_from_scratch`, `repair`, `review`, `verify`,
+`synthesize`, `audit`, `orchestrate`).
 
 ```text
 surface -> schema/control DTO -> orchestrator/core -> gateway -> harness adapter -> native tool/API
@@ -490,7 +490,9 @@ needs gap-free state.
 ### Interactive runs (waiting_on_user)
 
 Harnesses with the `interactive` capability (Claude Code via its bidirectional
-stream-json control protocol) can raise typed user questions mid-run. The
+stream-json control protocol) can raise typed user questions mid-run; the
+orchestrator OFFERS the interaction channel only to routes whose manifest
+declares `interactive`. The
 engine emits `interaction.requested` (questions, options, timeout deadline),
 parks ONLY that attempt, and the daemon registry exposes the pending question
 via `GET /runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers

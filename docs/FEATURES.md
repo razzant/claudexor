@@ -12,7 +12,7 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **133** (broken: 4, dead: 4, half-baked: 11, suspicious: 8, works-with-caveats: 106)
+Rows: **131** (broken: 4, dead: 2, half-baked: 11, suspicious: 8, works-with-caveats: 106)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|
@@ -20,8 +20,6 @@ Rows: **133** (broken: 4, dead: 4, half-baked: 11, suspicious: 8, works-with-cav
 | engine/schema | SCH-RUNSCOPE-DEEP | broken | (no-op knob) | packages/schema/src/control.ts:30-31,38; packages/cli/src/claudexord.ts:160-163; packages/orchestrator/src/orchestrator.ts:815,947,1243; apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift:236,708,751 | v0.15 P2 |
 | harness adapters | F20 validateModel + known_models | broken | pure check; empty list → ok | `core/src/model.ts:23-39`; only call sites `orchestrator.ts:709`, `cli/src/cli.ts:1665,1680` | v0.15 P2 |
 | macos app | composer.model | broken | Picker only if enumerable (never true for chat harnesses today) else free text; cleared on primary/thread change; **applied server-side to the whole pool** | ThreadsScreen.swift:34, 735-760, 482-485; orchestrator.ts:1664 | v0.15 P2 |
-| engine/orchestrator | F55 reviewMatrix | dead | Exported but has zero callers in repo or tests; comment admits "No in-repo caller today". | reviewEngine.ts:1456-1508, 1470-1481 | backlog |
-| engine/orchestrator | F56 DoctorSpec.deep | dead | Declared on the interface; zero producers and zero consumers anywhere. | core/adapter.ts:14-15 | backlog |
 | engine/orchestrator | F57 orchestrate max_tool_calls | dead | Executor checks it, but the only producer hardcodes `null`; unreachable. | orchestrator.ts:4831, 5788, 5819-5826 | backlog |
 | macos app | threads.rename-archive | dead | Wire DTO supports `title`/`state` but NO UI invokes it (no context menu, no edit affordance) | Models.swift:280-304; only callers pass primary/pool: AppModel.swift:1052,1070 | v0.15 P2 |
 | cli/daemon/api | CLI-auth-login | half-baked | Prints a static hint string per harness; no action; ignores `--json` | packages/cli/src/cli.ts:1377-1395 | backlog |

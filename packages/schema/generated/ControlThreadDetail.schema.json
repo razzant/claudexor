@@ -66,20 +66,6 @@
               },
               "default": []
             },
-            "portfolio": {
-              "type": "string",
-              "enum": [
-                "daily-rich",
-                "balanced",
-                "cheapest",
-                "strongest",
-                "burn",
-                "subscription-first",
-                "api-overflow",
-                "conserve-claude",
-                "conserve-codex"
-              ]
-            },
             "state": {
               "type": "string",
               "enum": [
@@ -137,20 +123,6 @@
               },
               "harnessId": {
                 "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
-              },
-              "providerFamily": {
-                "type": "string",
-                "enum": [
-                  "openai",
-                  "anthropic",
-                  "google",
-                  "cursor",
-                  "opencode",
-                  "xai",
-                  "local",
-                  "unknown"
-                ],
-                "default": "unknown"
               },
               "nativeSessionId": {
                 "type": [

@@ -224,12 +224,3 @@ export async function runCapture(
   return { code, signal, stdout, stderr };
 }
 
-/** True if a command is runnable (resolves a --version or --help without ENOENT). */
-export async function commandAvailable(cmd: string, versionArgs: string[] = ["--version"]): Promise<boolean> {
-  try {
-    await runCapture(cmd, versionArgs, { timeoutMs: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-}

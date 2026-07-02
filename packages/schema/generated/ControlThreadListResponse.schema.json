@@ -68,20 +68,6 @@
                 },
                 "default": []
               },
-              "portfolio": {
-                "type": "string",
-                "enum": [
-                  "daily-rich",
-                  "balanced",
-                  "cheapest",
-                  "strongest",
-                  "burn",
-                  "subscription-first",
-                  "api-overflow",
-                  "conserve-claude",
-                  "conserve-codex"
-                ]
-              },
               "state": {
                 "type": "string",
                 "enum": [

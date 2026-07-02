@@ -11,9 +11,7 @@ export interface RunPaths {
   findingsDir: string;
   arbitrationDir: string;
   finalDir: string;
-  harnessesDir: string;
   eventsPath: string;
-  budgetPath: string;
 }
 
 /**
@@ -47,9 +45,7 @@ export class ArtifactStore {
       findingsDir: join(root, "findings"),
       arbitrationDir: join(root, "arbitration"),
       finalDir: join(root, "final"),
-      harnessesDir: join(root, "harnesses"),
       eventsPath: join(root, "events.jsonl"),
-      budgetPath: join(root, "budget.jsonl"),
     };
   }
 
@@ -64,7 +60,6 @@ export class ArtifactStore {
       paths.findingsDir,
       paths.arbitrationDir,
       paths.finalDir,
-      paths.harnessesDir,
     ]) {
       ensureDir(dir);
     }

@@ -27,7 +27,10 @@ import { OrchestrateAutonomy, OrchestratePlanProgress } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
 import { ProtectedPathApproval } from "./task.js";
 
-export const RunScopeContext = z.enum(["auto", "deep"]);
+/** Project context depth. The "deep" tier never shipped a distinct behavior
+ * (v0.15 triage): auto is the only mode; off exists solely on projections of
+ * no-project runs. */
+export const RunScopeContext = z.enum(["auto"]);
 export type RunScopeContext = z.infer<typeof RunScopeContext>;
 
 export const RunScope = z.discriminatedUnion("kind", [
@@ -109,7 +112,6 @@ export const ControlRunStartRequest = z
     /** Typed per-run approval for changing auto-protected gate/test paths. This
      * does not bypass built-in critical/security path human gates. */
     protectedPathApprovals: z.array(ProtectedPathApproval).optional(),
-    envProfile: z.string().optional(),
     specPath: NonBlankString.optional(),
     specId: z.string().optional(),
     specHash: ContentHash.optional(),
@@ -189,7 +191,9 @@ export const ControlSetupJobEvent = z
     jobId: Id,
     seq: z.number().int().nonnegative(),
     time: z.string(),
-    kind: z.enum(["status", "log", "end"]),
+    /** Only "status" is ever produced (v0.15 triage: the log/end kinds had no
+     * producer; SSE stream end is a transport frame, not a payload kind). */
+    kind: z.enum(["status"]),
     state: ControlSetupJobState.optional(),
     message: z.string(),
   })
@@ -310,7 +314,7 @@ export const ControlProjectMetadata = z.object({
   kind: z.enum(["project", "none"]).default("none"),
   root: z.string().nullable().default(null),
   projectName: z.string().nullable().default(null),
-  context: z.enum(["off", "auto", "deep"]).default("off"),
+  context: z.enum(["off", "auto"]).default("off"),
 });
 export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
 
@@ -658,7 +662,6 @@ export const ControlThread = z.object({
   primaryHarness: z.string().nullable().default(null),
   /** Sticky eligible pool for the thread (empty => engine auto-pools). */
   eligibleHarnesses: z.array(z.string()).default([]),
-  portfolio: Portfolio.optional(),
   state: ThreadState.default("active"),
   runIds: z.array(Id).default([]),
   headRunId: Id.nullable().default(null),
@@ -673,7 +676,6 @@ export const ControlSession = z.object({
   id: Id,
   threadId: Id,
   harnessId: Id,
-  providerFamily: ProviderFamily.default("unknown"),
   nativeSessionId: z.string().nullable().default(null),
   observedModel: z.string().nullable().default(null),
   state: z.enum(["live", "stale", "rebound"]).default("live"),
@@ -867,7 +869,6 @@ export const ControlSettingsSnapshot = z.object({
         toolsDeny: z.array(z.string()).default([]),
         fallbackModel: z.string().nullable().default(null),
         web: ExternalContextPolicy.default("auto"),
-        nativeOptions: z.record(z.string(), z.unknown()).default({}),
         authPreference: AuthPreference.default("auto"),
       }),
     )
@@ -921,13 +922,13 @@ export const ControlSettingsUpdateRequest = z
   });
 export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;
 
+/** Secret list row: exactly what the store's list() can honestly produce
+ * (the never-populated harnesses/env/description fields were retired in the
+ * v0.15 triage). */
 export const SecretMetadata = z.object({
   name: z.string(),
   backend: z.enum(["keychain", "file"]),
   present: z.boolean().default(true),
-  harnesses: z.array(z.string()).default([]),
-  env: z.string().optional(),
-  description: z.string().optional(),
 });
 export type SecretMetadata = z.infer<typeof SecretMetadata>;
 

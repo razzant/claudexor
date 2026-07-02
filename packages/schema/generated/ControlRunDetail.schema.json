@@ -158,8 +158,7 @@
                   "type": "string",
                   "enum": [
                     "off",
-                    "auto",
-                    "deep"
+                    "auto"
                   ],
                   "default": "off"
                 }

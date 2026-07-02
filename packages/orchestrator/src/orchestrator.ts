@@ -56,6 +56,8 @@ import { loadConfig } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
+import { assertRouteModelsAllowed } from "./modelGovernance.js";
+import { interactionChannelFor } from "./interaction.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import {
@@ -151,7 +153,7 @@ export interface RunInput {
    */
   browser?: boolean;
   mode?: ModeKind;
-  contextMode?: "off" | "auto" | "deep";
+  contextMode?: "off" | "auto";
   harnesses?: string[];
   primaryHarness?: string;
   portfolio?: Portfolio;
@@ -191,7 +193,6 @@ export interface RunInput {
   specId?: string;
   specHash?: string;
   specPath?: string;
-  envProfile?: string;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
@@ -397,6 +398,9 @@ interface RoutedAdapter {
   effortLevels: readonly EffortHint[];
   /** Manifest model truth source (used when the adapter has no live models()). */
   knownModels: readonly string[];
+  /** Manifest `interactive` capability: only such routes are OFFERED an
+   * InteractionChannel (A2 gate). */
+  supportsInteractive: boolean;
   settings: HarnessRouteSettings | null;
 }
 
@@ -1195,6 +1199,7 @@ export class Orchestrator {
           supportsBrowser: manifest.capabilities.browser_tool,
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
+          supportsInteractive: manifest.capabilities.interactive,
           settings: cfgEntry
             ? {
                 defaultModel: cfgEntry.default_model,
@@ -1223,49 +1228,9 @@ export class Orchestrator {
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
-    await this.assertRouteModelsAllowed(out, input);
+    // Strict pre-run model gate (D3/INV-104) — see modelGovernance.ts.
+    await assertRouteModelsAllowed(out, input.models, this.execRootOf(input));
     return out;
-  }
-
-  /**
-   * STRICT run-preflight model gate (D3/INV-104): every route that resolved an
-   * explicit model (per-run map or per-harness settings default) must pass its
-   * harness's model truth source — the live `models()` inventory when the
-   * adapter has one, else the manifest `known_models` list. A violation throws
-   * a typed error BEFORE any vendor CLI spawns; callers surface it through the
-   * routing-failure path, so failure.yaml names harness, model, and truth
-   * source. Fallback models get the same gate: a downgrade target that cannot
-   * run is a config bug better caught before the run than mid-run.
-   */
-  private async assertRouteModelsAllowed(routes: RoutedAdapter[], input: RunInput): Promise<void> {
-    const checked = new Set<string>();
-    for (const routed of routes) {
-      const id = routed.adapter.id;
-      if (checked.has(id)) continue;
-      checked.add(id);
-      const resolved = input.models?.[id] ?? routed.settings?.defaultModel ?? null;
-      const candidates = [
-        { role: "model", model: resolved },
-        { role: "fallback_model", model: routed.settings?.fallbackModel ?? null },
-      ].filter((c): c is { role: string; model: string } => Boolean(c.model));
-      if (candidates.length === 0) continue;
-      let truth: { list: readonly string[]; source: "api" | "manifest" };
-      if (typeof routed.adapter.models === "function") {
-        const inventory = await routed.adapter.models({ cwd: this.execRootOf(input) });
-        truth = { list: inventory.map((m) => m.id), source: "api" };
-      } else {
-        truth = { list: routed.knownModels, source: "manifest" };
-      }
-      for (const { role, model } of candidates) {
-        const check = validateModel(model, truth.list, truth.source);
-        if (check.status !== "ok") {
-          throw new HarnessUnavailableError(
-            `harness '${id}' refused ${role} '${model}' (truth source: ${truth.source}): ${check.message}; ` +
-              `run \`claudexor models --harness ${id}\``,
-          );
-        }
-      }
-    }
   }
 
   /**
@@ -1540,12 +1505,11 @@ export class Orchestrator {
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
       spec:
-        input.specId || input.specHash || input.specPath || input.envProfile
+        input.specId || input.specHash || input.specPath
           ? {
               id: input.specId,
               hash: input.specHash,
               path: input.specPath,
-              env_profile: input.envProfile,
             }
           : undefined,
       ...specFields,
@@ -2136,13 +2100,6 @@ export class Orchestrator {
     };
   }
 
-  /**
-   * Per-attempt interaction channel. Emits the typed lifecycle events
-   * (`interaction.requested` / `interaction.answered` / `interaction.timeout`)
-   * around the caller-provided answer surface, enforcing the wait budget so a
-   * run can never hang forever on an unanswered question. Undefined when the
-   * caller provides no surface — the adapter then runs non-interactive.
-   */
   private interactionChannelFor(
     input: RunInput,
     log: EventLog,
@@ -2150,78 +2107,19 @@ export class Orchestrator {
     taskId: string,
     attemptId: string,
     harnessId: string,
+    supportsInteractive = true,
   ): InteractionChannel | undefined {
-    const handler = input.onInteraction;
-    if (!handler) return undefined;
-    const timeoutMs = input.interactionTimeoutMs ?? DEFAULT_INTERACTION_TIMEOUT_MS;
-    return {
-      request: async (request: InteractionRequest): Promise<InteractionAnswerSet | null> => {
-        const requestedAt = nowIso();
-        const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
-        // Invoke the answer surface BEFORE announcing the event: handlers
-        // register the pending question synchronously (daemon
-        // InteractionRegistry), so any subscriber that reacts to
-        // interaction.requested — `claudexor follow` checks pendingInteractions
-        // before prompting — finds the registry already populated. The reverse
-        // order would make that guarantee depend on event-loop timing.
-        const answersPromise = handler({
-          runId,
-          taskId,
-          attemptId,
-          harnessId,
-          request,
-          requestedAt,
-          timeoutAt,
-        }).catch(() => null);
-        log.emit("interaction.requested", {
-          interaction_id: request.interaction_id,
-          attempt_id: attemptId,
-          harness_id: harnessId,
-          source_tool: request.source_tool,
-          questions: request.questions,
-          requested_at: requestedAt,
-          timeout_at: timeoutAt,
-        });
-        let timer: NodeJS.Timeout | undefined;
-        let onAbort: (() => void) | undefined;
-        const startedWaiting = Date.now();
-        const answers = await Promise.race([
-          answersPromise,
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), timeoutMs);
-            timer.unref?.();
-          }),
-          // A cancelled run must release the interaction wait IMMEDIATELY —
-          // the abort already kills the harness process, and sitting out the
-          // remaining timeout would park a dead run in waiting_on_user.
-          new Promise<null>((resolve) => {
-            if (!input.signal) return;
-            if (input.signal.aborted) return resolve(null);
-            onAbort = () => resolve(null);
-            input.signal.addEventListener("abort", onAbort, { once: true });
-          }),
-        ]);
-        if (timer) clearTimeout(timer);
-        if (onAbort) input.signal?.removeEventListener("abort", onAbort);
-        if (answers && answers.answers.length > 0) {
-          log.emit("interaction.answered", {
-            interaction_id: request.interaction_id,
-            attempt_id: attemptId,
-            harness_id: harnessId,
-            answer_count: answers.answers.length,
-          });
-          return answers;
-        }
-        log.emit("interaction.timeout", {
-          interaction_id: request.interaction_id,
-          attempt_id: attemptId,
-          harness_id: harnessId,
-          waited_ms: Date.now() - startedWaiting,
-          ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
-        });
-        return null;
-      },
-    };
+    // Thin delegate — the channel mechanics live in interaction.ts.
+    return interactionChannelFor(
+      input,
+      log,
+      runId,
+      taskId,
+      attemptId,
+      harnessId,
+      supportsInteractive,
+      DEFAULT_INTERACTION_TIMEOUT_MS,
+    );
   }
 
   /**
@@ -2547,7 +2445,7 @@ export class Orchestrator {
           this.candidateIntent(input),
           log,
           effectiveWeb,
-          this.interactionChannelFor(input, log, runId, taskId, slot.attemptId, adapter.id),
+          this.interactionChannelFor(input, log, runId, taskId, slot.attemptId, adapter.id, slot.routed.supportsInteractive),
           (streamedUsd) => {
             const lg = slotLedger(slot);
             lg.updateHold(slot.leaseId, streamedUsd);
@@ -2864,7 +2762,7 @@ export class Orchestrator {
             "synthesize",
             log,
             effectiveWeb,
-            this.interactionChannelFor(input, log, runId, taskId, "synth", synthAdapter.id),
+            this.interactionChannelFor(input, log, runId, taskId, "synth", synthAdapter.id, synthRouted.supportsInteractive),
             undefined,
             input,
           );
@@ -3835,7 +3733,7 @@ export class Orchestrator {
             "repair",
             log,
             effectiveWeb,
-            this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id),
+            this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id, routed.supportsInteractive),
             (streamedUsd) => {
               const lg = this.harnessLedger(harnessLedgers, ledger, routed);
               lg.updateHold(lease.lease?.lease_id ?? "", streamedUsd);
@@ -4506,6 +4404,7 @@ export class Orchestrator {
           taskId,
           attemptId,
           adapter.id,
+          routed.supportsInteractive,
         );
         if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
         const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
@@ -5215,6 +5114,7 @@ export class Orchestrator {
         taskId,
         attemptId,
         adapter.id,
+        routed.supportsInteractive,
       );
       if (reportInteraction) spec.extra["interactionChannel"] = reportInteraction;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");

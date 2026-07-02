@@ -55,9 +55,10 @@ process below. Never paper over the conflict.
 ## 2. Harnesses Are Not Roles
 
 - **INV-010** Codex, Claude Code, Cursor, OpenCode, raw APIs, and future
-  adapters are harnesses. Roles are intents (`explain`, `plan`, `implement`,
-  `repair`, `review`, `verify`, `compare`, `synthesize`, `arbitrate`,
-  `audit`, `orchestrate`). No harness is privileged and no semantic role is
+  adapters are harnesses. Roles are intents (`explain`, `plan`, `spec`,
+  `implement`, `create_from_scratch`, `repair`, `review`, `verify`,
+  `synthesize`, `audit`, `orchestrate` — the canonical `Intent` enum in
+  `packages/schema`). No harness is privileged and no semantic role is
   hardcoded to a harness id. verify: grep for harness-id conditionals in
   orchestration logic; review question.
 - **INV-011** A harness can play an intent only when discovery + doctor +

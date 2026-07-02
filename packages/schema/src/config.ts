@@ -107,7 +107,6 @@ export const GlobalConfig = z
             tools_deny: z.array(z.string()).default([]),
             fallback_model: z.string().nullable().default(null),
             web: ExternalContextPolicy.default("auto"),
-            native_options: z.record(z.string(), z.unknown()).default({}),
             /** Per-harness auth route preference; overrides routing.auth_preference. */
             auth_preference: AuthPreference.default("auto"),
           })

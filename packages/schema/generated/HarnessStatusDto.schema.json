@@ -61,162 +61,6 @@
                 "capability_profile": {
                   "type": "object",
                   "properties": {
-                    "execution_surfaces": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "cli_one_shot",
-                              "stdin_stream_session",
-                              "background_session",
-                              "local_http_server",
-                              "acp_stdio_jsonrpc"
-                            ]
-                          },
-                          "input": {
-                            "type": "string",
-                            "enum": [
-                              "prompt_arg",
-                              "stdin_once",
-                              "stdin_stream",
-                              "json_rpc",
-                              "http"
-                            ],
-                            "default": "prompt_arg"
-                          },
-                          "output": {
-                            "type": "string",
-                            "enum": [
-                              "text",
-                              "json",
-                              "ndjson",
-                              "sse",
-                              "json_rpc"
-                            ],
-                            "default": "text"
-                          },
-                          "event_schema": {
-                            "type": "string",
-                            "enum": [
-                              "none",
-                              "native",
-                              "normalized",
-                              "versioned"
-                            ],
-                            "default": "none"
-                          },
-                          "supports_followup": {
-                            "type": "boolean",
-                            "default": false
-                          },
-                          "supports_interrupt": {
-                            "type": "boolean",
-                            "default": false
-                          },
-                          "supports_permission_reply": {
-                            "type": "boolean",
-                            "default": false
-                          }
-                        },
-                        "required": [
-                          "kind"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "default": []
-                    },
-                    "session": {
-                      "type": "object",
-                      "properties": {
-                        "native_session_id_emitted": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "resume_latest": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "resume_by_id": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "fork": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "list": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "logs": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "attach_tui": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "export": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "diff": {
-                          "type": "boolean",
-                          "default": false
-                        }
-                      },
-                      "additionalProperties": false,
-                      "default": {}
-                    },
-                    "output": {
-                      "type": "object",
-                      "properties": {
-                        "ndjson_events": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "partial_deltas": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "tool_lifecycle": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "file_changes": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "final_json": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "json_schema_final": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "usage_signal": {
-                          "type": "string",
-                          "enum": [
-                            "exact",
-                            "native",
-                            "observed",
-                            "manual",
-                            "unknown"
-                          ],
-                          "default": "unknown"
-                        },
-                        "cost_signal": {
-                          "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
-                          "default": "unknown"
-                        }
-                      },
-                      "additionalProperties": false,
-                      "default": {}
-                    },
                     "auth": {
                       "type": "object",
                       "properties": {
@@ -226,11 +70,9 @@
                             "type": "string",
                             "enum": [
                               "native_session",
-                              "browser_login",
                               "api_key_env",
                               "api_key_flag",
                               "provider_auth_file",
-                              "project_env",
                               "none"
                             ]
                           },
@@ -246,20 +88,6 @@
                             }
                           ],
                           "default": null
-                        },
-                        "probe_command": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        },
-                        "env_vars": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
                         },
                         "credential_transports": {
                           "type": "array",
@@ -292,17 +120,6 @@
                                   ]
                                 },
                                 "default": []
-                              },
-                              "requires_user_session": {
-                                "type": "boolean",
-                                "default": false
-                              },
-                              "bypass_env_vars": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string"
-                                },
-                                "default": []
                               }
                             },
                             "required": [
@@ -320,25 +137,6 @@
                     "access_control": {
                       "type": "object",
                       "properties": {
-                        "readonly": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "workspace_write": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "full": {
-                          "type": "boolean",
-                          "default": false
-                        },
-                        "mechanism": {
-                          "type": [
-                            "string",
-                            "null"
-                          ],
-                          "default": null
-                        },
                         "readonly_mechanism": {
                           "type": "string",
                           "enum": [
@@ -348,10 +146,6 @@
                             "none"
                           ],
                           "default": "none"
-                        },
-                        "conformance_required": {
-                          "type": "boolean",
-                          "default": true
                         }
                       },
                       "additionalProperties": false,
@@ -360,14 +154,6 @@
                     "isolation": {
                       "type": "object",
                       "properties": {
-                        "path_redirect_sufficient": {
-                          "type": "boolean",
-                          "default": true
-                        },
-                        "requires_user_session": {
-                          "type": "boolean",
-                          "default": false
-                        },
                         "supported_containment": {
                           "type": "array",
                           "items": {
@@ -409,19 +195,11 @@
                       "type": "boolean",
                       "default": false
                     },
-                    "spec": {
-                      "type": "boolean",
-                      "default": false
-                    },
                     "implement": {
                       "type": "boolean",
                       "default": false
                     },
                     "create_from_scratch": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "repair": {
                       "type": "boolean",
                       "default": false
                     },
@@ -433,15 +211,7 @@
                       "type": "boolean",
                       "default": false
                     },
-                    "compare": {
-                      "type": "boolean",
-                      "default": false
-                    },
                     "synthesize": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "shell": {
                       "type": "boolean",
                       "default": false
                     },
@@ -449,47 +219,7 @@
                       "type": "boolean",
                       "default": false
                     },
-                    "edit_files": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "apply_patch": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "structured_events": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "structured_output": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "json_schema_output": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "resume": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "cancel": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "mcp": {
-                      "type": "boolean",
-                      "default": false
-                    },
                     "browser_tool": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "plugins": {
-                      "type": "boolean",
-                      "default": false
-                    },
-                    "worktree_native": {
                       "type": "boolean",
                       "default": false
                     },
@@ -520,11 +250,18 @@
                       "default": false
                     },
                     "quota_signal": {
-                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
+                      "type": "string",
+                      "enum": [
+                        "exact",
+                        "native",
+                        "observed",
+                        "manual",
+                        "unknown"
+                      ],
                       "default": "unknown"
                     },
                     "usage_signal": {
-                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capability_profile/properties/output/properties/usage_signal",
+                      "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capabilities/properties/quota_signal",
                       "default": "unknown"
                     },
                     "effort_levels": {

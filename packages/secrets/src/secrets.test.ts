@@ -56,17 +56,11 @@ describe("SecretStore (file backend)", () => {
   });
 });
 
-describe("resolveSecret precedence", () => {
-  it("env var beats helper beats store", () => {
+describe("resolveSecret", () => {
+  it("resolves the stored value (the env/helper indirections were retired)", () => {
     const store = new SecretStore("file");
     store.set("KEY", "from-store");
-
     expect(resolveSecret("KEY", { store })).toBe("from-store");
-    expect(resolveSecret("KEY", { store, helperCommand: "printf helper-value" })).toBe("helper-value");
-
-    process.env.MY_API_KEY = "from-env";
-    expect(resolveSecret("KEY", { store, envVar: "MY_API_KEY", helperCommand: "printf helper-value" })).toBe(
-      "from-env",
-    );
+    expect(resolveSecret("MISSING", { store })).toBeNull();
   });
 });

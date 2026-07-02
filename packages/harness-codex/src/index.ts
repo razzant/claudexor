@@ -343,30 +343,15 @@ export function createCodexAdapter(): HarnessAdapter {
         provider_family: "openai",
         capabilities: {
           plan: true,
-          spec: true,
           implement: true,
           create_from_scratch: true,
-          repair: true,
           review: true,
           verify: true,
-          compare: true,
           synthesize: true,
           orchestrate: true,
-          shell: true,
           read_files: true,
-          edit_files: true,
-          apply_patch: true,
-          structured_events: true,
-          structured_output: true,
-          json_schema_output: false,
-          resume: true,
-          cancel: true,
-          mcp: true,
-          // Codex is an MCP client; we inject Playwright MCP as `-c
           // mcp_servers.browser.*` overrides (live-verified) — gated on web policy.
           browser_tool: true,
-          plugins: true,
-          worktree_native: false,
           web_policy: "native",
           quota_signal: "observed",
           usage_signal: "native",
@@ -388,24 +373,17 @@ export function createCodexAdapter(): HarnessAdapter {
           known_models_verified_against: "0.137.0",
         },
         capability_profile: {
-          execution_surfaces: [
-            { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_followup: true },
-          ],
-          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
-          output: { ndjson_events: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "native", cost_signal: "observed" },
           auth: {
             supported_sources: ["native_session", "api_key_env", "provider_auth_file"],
             preferred_source: apiKey ? "provider_auth_file" : authed ? "native_session" : null,
-            probe_command: ["codex", "login", "status"],
-            env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"],
             credential_transports: [
-              { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: [] },
-              { source: "provider_auth_file", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: [] },
-              { source: "api_key_env", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: ["CODEX_API_KEY", "OPENAI_API_KEY"] },
+              { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
+              { source: "provider_auth_file", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
+              { source: "api_key_env", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
             ],
           },
-          access_control: { readonly: true, workspace_write: true, full: true, mechanism: "codex exec --sandbox", readonly_mechanism: "fs_sandbox" },
-          isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
+          access_control: { readonly_mechanism: "fs_sandbox" },
+          isolation: { supported_containment: ["env_or_file_injection"] },
           // Codex accepts images via `codex exec -i/--image <FILE>` (file path; remote URLs rejected).
           image_input: "file_path",
         },
@@ -433,7 +411,7 @@ export function createCodexAdapter(): HarnessAdapter {
       const nativeReady = authed && nativeCodexSeedable();
       const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
       const ok = nativeReady || smoke.ok;
-      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit", "orchestrate"];
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "synthesize", "explain", "audit", "orchestrate"];
       return ConformanceReportSchema.parse({
         harness_id: "codex",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",

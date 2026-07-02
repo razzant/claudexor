@@ -231,11 +231,6 @@
                 ],
                 "default": "auto"
               },
-              "native_options": {
-                "type": "object",
-                "additionalProperties": {},
-                "default": {}
-              },
               "auth_preference": {
                 "$ref": "#/definitions/GlobalConfig/properties/routing/properties/auth_preference",
                 "default": "auto"

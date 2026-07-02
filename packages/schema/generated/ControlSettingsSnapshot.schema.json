@@ -227,11 +227,6 @@
                 ],
                 "default": "auto"
               },
-              "nativeOptions": {
-                "type": "object",
-                "additionalProperties": {},
-                "default": {}
-              },
               "authPreference": {
                 "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/authPreference",
                 "default": "auto"

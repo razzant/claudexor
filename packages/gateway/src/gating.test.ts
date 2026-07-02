@@ -18,7 +18,6 @@ function manifest(): HarnessManifest {
       repair: true,
       review: true,
       verify: true,
-      compare: true,
       synthesize: true,
       shell: true,
       read_files: true,
@@ -53,10 +52,9 @@ function report(status: ConformanceReport["status"], extra: Partial<ConformanceR
 }
 
 describe("allowedIntents", () => {
-  it("ok grants capability intents including review/arbitrate", () => {
+  it("ok grants capability intents including review", () => {
     const intents = allowedIntents(manifest(), report("ok"));
     expect(intents).toContain("review");
-    expect(intents).toContain("arbitrate");
     expect(intents).toContain("implement");
   });
 
@@ -70,7 +68,6 @@ describe("allowedIntents", () => {
     expect(intents).toContain("implement");
     expect(intents).not.toContain("explain");
     expect(intents).not.toContain("review");
-    expect(intents).not.toContain("arbitrate");
   });
 
   it("degraded keeps a critical intent that is explicitly re-enabled", () => {

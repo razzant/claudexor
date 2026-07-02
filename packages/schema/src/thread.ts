@@ -78,7 +78,6 @@ export const Thread = z.object({
    * candidate per harness). Empty => the engine auto-pools doctor-ok harnesses.
    * primary_harness, when set, must be a member of this pool when non-empty. */
   eligible_harnesses: z.array(z.string()).default([]),
-  portfolio: Portfolio.default("subscription-first"),
   /** How turns touch files (in-place live tree vs isolated worktree). */
   workspace: ThreadWorkspace.default({}),
   /** Ordered run lineage (each run is a turn move). */
@@ -93,7 +92,6 @@ export const Session = z.object({
   id: Id,
   thread_id: Id,
   harness_id: Id,
-  provider_family: ProviderFamily.default("unknown"),
   /** The vendor CLI session id (codex thread id / claude session uuid / ...). */
   native_session_id: z.string().nullable().default(null),
   resume_kind: SessionResumeKind.default("none"),

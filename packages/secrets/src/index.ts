@@ -203,32 +203,16 @@ export class SecretStore {
 }
 
 export interface ResolveOptions {
-  envVar?: string;
-  /** Shell command that prints the secret to stdout (e.g. a vault fetch / apiKeyHelper). */
-  helperCommand?: string;
+  /** Test seam: inject a scoped store. Production callers use the default. */
   store?: SecretStore;
 }
 
 /**
- * Resolve a secret: explicit env var -> helper command -> stored value.
- * A FAILING helper command throws (fail loudly): the user explicitly configured
- * it, so silently falling through to a possibly-stale stored value would route
- * requests with the wrong credential.
+ * Resolve a stored secret by name. (The env-var and helper-command indirection
+ * options were retired in the v0.15 triage: no production caller ever passed
+ * them — adapters read their own provider env vars directly, and a vault
+ * helper belongs to a future typed config surface, not a dead parameter.)
  */
 export function resolveSecret(name: string, opts: ResolveOptions = {}): string | null {
-  if (opts.envVar && process.env[opts.envVar]) return process.env[opts.envVar] as string;
-  if (opts.helperCommand) {
-    let out: string;
-    try {
-      out = execFileSync("sh", ["-c", opts.helperCommand], { encoding: "utf8" });
-    } catch (err) {
-      throw new Error(
-        `secret helper command for '${name}' failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
-      );
-    }
-    const v = out.trim();
-    if (v) return v;
-    throw new Error(`secret helper command for '${name}' printed nothing`);
-  }
   return (opts.store ?? new SecretStore()).get(name);
 }

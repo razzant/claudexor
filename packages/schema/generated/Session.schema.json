@@ -14,20 +14,6 @@
         "harness_id": {
           "$ref": "#/definitions/Session/properties/id"
         },
-        "provider_family": {
-          "type": "string",
-          "enum": [
-            "openai",
-            "anthropic",
-            "google",
-            "cursor",
-            "opencode",
-            "xai",
-            "local",
-            "unknown"
-          ],
-          "default": "unknown"
-        },
         "native_session_id": {
           "type": [
             "string",

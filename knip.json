@@ -23,6 +23,7 @@
     }
   },
   "ignoreExportsUsedInFile": true,
+  "includeEntryExports": true,
   "rules": {
     "exports": "error",
     "types": "error",

@@ -39,35 +39,29 @@ export type HarnessKind = z.infer<typeof HarnessKind>;
 export const WebPolicySupport = z.enum(["native", "tools", "uncontrolled", "none"]);
 export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
+/**
+ * Declared capabilities the ENGINE actually consumes (intent gating, routing,
+ * knob support, disclosure). The v0.15 triage deleted every declared-but-never
+ * -read boolean (spec/repair/shell/edit_files/apply_patch/structured_events/
+ * structured_output/json_schema_output/resume/cancel/mcp/plugins/
+ * worktree_native): a capability with no consumer is the same bug class as a
+ * staged field. Re-add one only WITH its consumer in the same change.
+ */
 export const HarnessCapabilities = z.object({
   plan: z.boolean().default(false),
-  spec: z.boolean().default(false),
   implement: z.boolean().default(false),
   create_from_scratch: z.boolean().default(false),
-  repair: z.boolean().default(false),
   review: z.boolean().default(false),
+  /** Consumed by the Phase-3 FinalVerifier routing (gating pushes `verify`). */
   verify: z.boolean().default(false),
-  compare: z.boolean().default(false),
   synthesize: z.boolean().default(false),
-  shell: z.boolean().default(false),
   read_files: z.boolean().default(false),
-  edit_files: z.boolean().default(false),
-  apply_patch: z.boolean().default(false),
-  structured_events: z.boolean().default(false),
-  structured_output: z.boolean().default(false),
-  json_schema_output: z.boolean().default(false),
-  resume: z.boolean().default(false),
-  cancel: z.boolean().default(false),
-  mcp: z.boolean().default(false),
   /**
    * The adapter can inject a browser-automation MCP server (Playwright MCP) that
    * this harness drives as `browser_*` tools (navigate / screenshot / snapshot).
    * Gated on web policy: never injected under `external_context_policy:off`.
-   * Requires `mcp` to be true (injection rides the harness's MCP-client surface).
    */
   browser_tool: z.boolean().default(false),
-  plugins: z.boolean().default(false),
-  worktree_native: z.boolean().default(false),
   web_policy: WebPolicySupport.default("none"),
   /** Honors HarnessRunSpec.max_turns (e.g. claude --max-turns). */
   max_turns: z.boolean().default(false),
@@ -112,62 +106,11 @@ export const HarnessCapabilities = z.object({
 });
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
 
-export const ExecutionSurfaceKind = z.enum([
-  "cli_one_shot",
-  "stdin_stream_session",
-  "background_session",
-  "local_http_server",
-  "acp_stdio_jsonrpc",
-]);
-export type ExecutionSurfaceKind = z.infer<typeof ExecutionSurfaceKind>;
-
-export const ExecutionSurface = z.object({
-  kind: ExecutionSurfaceKind,
-  input: z.enum(["prompt_arg", "stdin_once", "stdin_stream", "json_rpc", "http"]).default("prompt_arg"),
-  output: z.enum(["text", "json", "ndjson", "sse", "json_rpc"]).default("text"),
-  event_schema: z.enum(["none", "native", "normalized", "versioned"]).default("none"),
-  supports_followup: z.boolean().default(false),
-  supports_interrupt: z.boolean().default(false),
-  supports_permission_reply: z.boolean().default(false),
-});
-export type ExecutionSurface = z.infer<typeof ExecutionSurface>;
-
-export const SessionCapabilities = z
-  .object({
-    native_session_id_emitted: z.boolean().default(false),
-    resume_latest: z.boolean().default(false),
-    resume_by_id: z.boolean().default(false),
-    fork: z.boolean().default(false),
-    list: z.boolean().default(false),
-    logs: z.boolean().default(false),
-    attach_tui: z.boolean().default(false),
-    export: z.boolean().default(false),
-    diff: z.boolean().default(false),
-  })
-  .default({});
-export type SessionCapabilities = z.infer<typeof SessionCapabilities>;
-
-export const OutputCapabilities = z
-  .object({
-    ndjson_events: z.boolean().default(false),
-    partial_deltas: z.boolean().default(false),
-    tool_lifecycle: z.boolean().default(false),
-    file_changes: z.boolean().default(false),
-    final_json: z.boolean().default(false),
-    json_schema_final: z.boolean().default(false),
-    usage_signal: SignalQuality.default("unknown"),
-    cost_signal: SignalQuality.default("unknown"),
-  })
-  .default({});
-export type OutputCapabilities = z.infer<typeof OutputCapabilities>;
-
 export const AuthSourceKind = z.enum([
   "native_session",
-  "browser_login",
   "api_key_env",
   "api_key_flag",
   "provider_auth_file",
-  "project_env",
   "none",
 ]);
 export type AuthSourceKind = z.infer<typeof AuthSourceKind>;
@@ -182,8 +125,6 @@ export const CredentialTransport = z.object({
   source: AuthSourceKind,
   kind: CredentialTransportKind,
   relocatable_by: z.array(CredentialRelocation).default([]),
-  requires_user_session: z.boolean().default(false),
-  bypass_env_vars: z.array(z.string()).default([]),
 });
 export type CredentialTransport = z.infer<typeof CredentialTransport>;
 
@@ -191,8 +132,6 @@ export const AuthCapabilities = z
   .object({
     supported_sources: z.array(AuthSourceKind).default([]),
     preferred_source: AuthSourceKind.nullable().default(null),
-    probe_command: z.array(z.string()).default([]),
-    env_vars: z.array(z.string()).default([]),
     credential_transports: z.array(CredentialTransport).default([]),
   })
   .default({});
@@ -203,8 +142,6 @@ export type ContainmentKind = z.infer<typeof ContainmentKind>;
 
 export const IsolationCapabilities = z
   .object({
-    path_redirect_sufficient: z.boolean().default(true),
-    requires_user_session: z.boolean().default(false),
     supported_containment: z.array(ContainmentKind).default(["env_or_file_injection"]),
   })
   .default({});
@@ -215,21 +152,21 @@ export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
 
 export const AccessControlCapabilities = z
   .object({
-    readonly: z.boolean().default(false),
-    workspace_write: z.boolean().default(false),
-    full: z.boolean().default(false),
-    mechanism: z.string().nullable().default(null),
     readonly_mechanism: ReadonlyMechanism.default("none"),
-    conformance_required: z.boolean().default(true),
   })
   .default({});
 export type AccessControlCapabilities = z.infer<typeof AccessControlCapabilities>;
 
+/**
+ * Structured per-harness facts the engine consumes: auth routing (scoped-home
+ * keychain bridging), isolation containment, honest readonly mechanism, and
+ * vision input. The v0.15 triage deleted the never-consumed subtrees
+ * (execution_surfaces, session, output, probe/env metadata, access booleans):
+ * a declared capability with no consumer is a staged field. Re-add a branch
+ * only WITH its consumer in the same change.
+ */
 export const HarnessCapabilityProfile = z
   .object({
-    execution_surfaces: z.array(ExecutionSurface).default([]),
-    session: SessionCapabilities,
-    output: OutputCapabilities,
     auth: AuthCapabilities,
     access_control: AccessControlCapabilities,
     isolation: IsolationCapabilities,

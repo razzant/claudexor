@@ -12,9 +12,6 @@ export interface CandidateEvidence {
   findings: ReviewFinding[];
   testsPassed: number;
   testsTotal: number;
-  /** Held-out tests hidden from the implementer — authoritative when present. */
-  heldOutPassed?: number;
-  heldOutTotal?: number;
   finalReviewClean: boolean;
   reviewVerified?: boolean;
   /** Non-blocking tool hygiene warnings from the engine-owned attempt outcome. */
@@ -23,7 +20,6 @@ export interface CandidateEvidence {
   diffSize?: number;
   diffBytes?: number;
   costUsd?: number;
-  latencyMs?: number;
 }
 
 function requiredGatesPassed(c: CandidateEvidence): boolean {
@@ -51,28 +47,19 @@ function openBlockerCount(c: CandidateEvidence): number {
 }
 
 /**
- * Effective test pass-fraction. Held-out tests are authoritative when present
- * (anti-reward-hacking): a candidate that passes visible tests but fails the
- * held-out split must NOT outrank one that passes both.
- *
- * Zero configured tests is zero test EVIDENCE (0, never a vacuous 1): a
- * candidate with no tests must not score "100%" in rankings or user-facing
- * decision strings.
+ * Test pass-fraction. Zero configured tests is zero test EVIDENCE (0, never a
+ * vacuous 1): a candidate with no tests must not score "100%" in rankings or
+ * user-facing decision strings. (The held-out split axis was retired in the
+ * v0.15 triage: no producer ever populated it — re-add WITH a real held-out
+ * runner if that anti-reward-hacking design returns.)
  */
 function effectiveTestFraction(c: CandidateEvidence): number {
-  if (c.heldOutTotal && c.heldOutTotal > 0) {
-    const held = (c.heldOutPassed ?? 0) / c.heldOutTotal;
-    const visible = c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
-    // Weight held-out heavily; a held-out failure dominates.
-    return held * 0.8 + visible * 0.2;
-  }
   return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
 }
 
 /** Human label for test evidence: honest "n/a" when no tests exist at all. */
 function testEvidenceLabel(c: CandidateEvidence): string {
-  const hasHeldOut = (c.heldOutTotal ?? 0) > 0;
-  if (!hasHeldOut && c.testsTotal === 0) return "n/a";
+  if (c.testsTotal === 0) return "n/a";
   return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
 }
 
@@ -87,7 +74,6 @@ export function scoreTuple(c: CandidateEvidence): number[] {
     -(c.toolWarningsCount ?? 0), // cleaner tool hygiene
     -(c.diffSize ?? 0), // simplicity
     -(c.costUsd ?? 0), // cost
-    -(c.latencyMs ?? 0), // latency
   ];
 }
 
@@ -167,8 +153,8 @@ function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseCompariso
 
 /**
  * Evidence-first arbitration. Ranks candidates lexicographically by hard gates,
- * acceptance coverage, accepted blockers, (held-out-authoritative) tests, clean
- * review, simplicity, cost, latency. When the top two candidates are an EXACT
+ * acceptance coverage, accepted blockers, tests, clean
+ * review, simplicity, cost. When the top two candidates are an EXACT
  * tie on every evidence axis, the winner is chosen deterministically by route
  * order and that tie is DISCLOSED in the decision (final_checks) — there is no
  * hidden LLM tie-break, so the choice is never silently presented as decisive.

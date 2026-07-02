@@ -151,23 +151,19 @@ export class WorkspaceManager {
     if (dirty) {
       if (dirtyPolicy === "refuse") {
         throw new WorkspaceError(
-          "working tree is dirty; commit/stash or set a dirty_policy (include|snapshot|copy|stash)",
+          "working tree is dirty; commit/stash or set dirty_policy: snapshot",
         );
       }
-      if (dirtyPolicy === "snapshot" || dirtyPolicy === "include" || dirtyPolicy === "stash") {
-        const snap = await stashCreate(this.repoRoot);
-        if (snap) baseSha = snap;
-      }
+      // snapshot: a stash-create commit becomes the base SHA without touching
+      // the live tree. (The include/stash aliases and the untested `copy`
+      // variant were retired in the v0.15 triage.)
+      const snap = await stashCreate(this.repoRoot);
+      if (snap) baseSha = snap;
     }
 
     const path = join(base, "tree");
     const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
     await worktreeAdd(this.repoRoot, path, branch, baseSha);
-
-    // dirty "copy" brings untracked + modified files into the worktree explicitly.
-    if (dirty && dirtyPolicy === "copy") {
-      this.copyDirtyFiles(porcelain, path);
-    }
 
     return WorkspaceEnvelopeSchema.parse({
       id: newId("env"),
@@ -182,8 +178,6 @@ export class WorkspaceManager {
       home_dir: homeDir,
       harness_config_dirs: harnessConfigDirs,
       ports: { allocated: ports },
-      services: [],
-      sandbox: { mode: "none" },
       policy_profile: opts.accessProfile ?? "workspace_write",
       dirty_policy: dirtyPolicy,
       logs_dir: logsDir,
@@ -211,27 +205,6 @@ export class WorkspaceManager {
       }
     } catch {
       /* baseline unavailable -> diff() falls back to empty */
-    }
-  }
-
-  private copyDirtyFiles(porcelain: string, destRoot: string): void {
-    for (const line of porcelain.split("\n")) {
-      let rel = line.slice(3).trim();
-      if (!rel || rel.includes(" -> ")) continue; // skip renames (handled by base)
-      // git quotes unusual paths C-style ("with space\twith tab"); unquote them
-      // or the copy silently targets a literal `"name"` path.
-      if (rel.startsWith('"') && rel.endsWith('"')) {
-        try {
-          rel = JSON.parse(rel) as string;
-        } catch {
-          rel = rel.slice(1, -1);
-        }
-      }
-      try {
-        cpSync(join(this.repoRoot, rel), join(destRoot, rel), { recursive: true });
-      } catch {
-        /* file may be deleted; ignore */
-      }
     }
   }
 

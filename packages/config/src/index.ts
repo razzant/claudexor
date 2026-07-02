@@ -57,6 +57,7 @@ const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
   { path: ["budget", "max_usd_per_day"], retired: "per-day caps were removed; quota respect + per-run caps remain" },
   { path: ["routing", "default_model"], retired: "model choice is harness-scoped (INV-103); use harnesses.<id>.default_model" },
   { path: ["harnesses", "*", "auth_ref"], retired: "auth routes come from doctor + auth_preference; refs live in the SecretStore" },
+  { path: ["harnesses", "*", "native_options"], retired: "never consumed by any adapter (v0.15 triage); per-harness knobs are typed fields" },
 ];
 
 function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): unknown {

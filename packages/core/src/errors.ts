@@ -9,12 +9,6 @@ export class ClaudexorError extends Error {
   }
 }
 
-export class AdapterParseError extends ClaudexorError {}
 export class HarnessUnavailableError extends ClaudexorError {}
-export class ConformanceError extends ClaudexorError {}
-export class PolicyDeniedError extends ClaudexorError {}
-export class BudgetExhaustedError extends ClaudexorError {}
-export class ReviewStaleError extends ClaudexorError {}
 export class ContextOverflowError extends ClaudexorError {}
-export class SecretExposureRiskError extends ClaudexorError {}
 export class WorkspaceError extends ClaudexorError {}

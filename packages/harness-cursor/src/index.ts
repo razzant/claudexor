@@ -36,51 +36,16 @@ const CURSOR_API_SMOKE_CACHE_TTL_MS = 60 * 60_000;
 const CURSOR_API_SMOKE_FAILURE_CACHE_TTL_MS = 30_000;
 
 const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
-  execution_surfaces: [
-    { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" },
-  ],
-  session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
-  output: {
-    ndjson_events: true,
-    tool_lifecycle: true,
-    file_changes: true,
-    final_json: false,
-    json_schema_final: false,
-    usage_signal: "observed",
-    cost_signal: "observed",
-  },
   auth: {
     supported_sources: ["native_session", "api_key_env"],
     preferred_source: null,
-    probe_command: ["cursor-agent", "status"],
-    env_vars: ["CURSOR_API_KEY"],
     credential_transports: [
-      {
-        source: "native_session",
-        kind: "os_keychain",
-        relocatable_by: ["HOME"],
-        requires_user_session: false,
-        bypass_env_vars: [],
-      },
-      {
-        source: "api_key_env",
-        kind: "env_var",
-        relocatable_by: ["ENV"],
-        requires_user_session: false,
-        bypass_env_vars: ["CURSOR_API_KEY"],
-      },
+      { source: "native_session", kind: "os_keychain", relocatable_by: ["HOME"] },
+      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
     ],
   },
-  access_control: {
-    readonly: true,
-    workspace_write: true,
-    full: false,
-    mechanism: "cursor-agent --sandbox enabled",
-    readonly_mechanism: "fs_sandbox",
-  },
+  access_control: { readonly_mechanism: "fs_sandbox" },
   isolation: {
-    path_redirect_sufficient: false,
-    requires_user_session: false,
     supported_containment: ["scoped_home_keychain_bridge", "env_or_file_injection"],
   },
   image_input: "none",
@@ -557,29 +522,14 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         provider_family: "cursor",
         capabilities: {
           plan: true,
-          spec: true,
           implement: true,
           create_from_scratch: true,
-          repair: true,
           review: true,
           verify: true,
-          compare: true,
           synthesize: true,
-          shell: true,
           read_files: true,
-          edit_files: true,
-          apply_patch: true,
-          structured_events: true,
-          structured_output: true,
-          json_schema_output: false,
-          resume: true,
-          cancel: false,
-          mcp: true,
-          // MCP-capable, but Claudexor has not wired a browser-MCP injector for
           // cursor-agent yet — honest false until that path exists + is verified.
           browser_tool: false,
-          plugins: true,
-          worktree_native: true,
           web_policy: "uncontrolled",
           // No real rate-limit detector for cursor yet (a detector waits on a
           // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
@@ -651,14 +601,12 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         "create_from_scratch",
         "review",
         "verify",
-        "compare",
         "synthesize",
         "explain",
         "audit",
       ];
       const allIntents = [
         ...routeableIntents,
-        "arbitrate",
         "orchestrate",
       ];
       // Write-class intents run in isolated envelopes with a scoped HOME where
@@ -671,7 +619,6 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         "spec",
         "review",
         "verify",
-        "compare",
         "synthesize",
         "explain",
         "audit",

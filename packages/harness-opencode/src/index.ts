@@ -72,29 +72,14 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         provider_family: "opencode",
         capabilities: {
           plan: authReady,
-          spec: authReady,
           implement: true,
           create_from_scratch: true,
-          repair: true,
           review: true,
           verify: true,
-          compare: true,
           synthesize: true,
-          shell: true,
           read_files: true,
-          edit_files: true,
-          apply_patch: true,
-          structured_events: true,
-          structured_output: true,
-          json_schema_output: false,
-          resume: true,
-          cancel: false,
-          mcp: true,
-          // MCP-capable, but no browser-MCP injector wired for opencode yet —
           // honest false until that path exists + is verified.
           browser_tool: false,
-          plugins: true,
-          worktree_native: false,
           web_policy: "uncontrolled",
           // No real rate-limit detector for opencode yet (a detector waits on a
           // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
@@ -104,24 +89,16 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           effort_levels: [],
         },
         capability_profile: {
-          execution_surfaces: [{ kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native" }],
-          session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true, fork: true },
-          output: { ndjson_events: true, final_json: false, file_changes: false, json_schema_final: false, usage_signal: "observed", cost_signal: "observed" },
           auth: {
             supported_sources: ["api_key_env"],
             preferred_source: authReady ? "api_key_env" : null,
-            probe_command: [],
-            env_vars: [...PROVIDER_KEY_ENV],
-            credential_transports: [{ source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"], requires_user_session: false, bypass_env_vars: [...PROVIDER_KEY_ENV] }],
+            credential_transports: [{ source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] }],
           },
-          // HONEST access surface: the only permission flag the adapter drives is
-          // `--dangerously-skip-permissions` (full access). opencode exposes no
-          // CONFIRMED scoped workspace-write confinement the adapter can map to
-          // (and opencode is not installed to live-verify one), so advertising
-          // workspace_write would silently grant full. full-only until a scoped
-          // mechanism is conformance-proven.
-          access_control: { readonly: false, workspace_write: false, full: true, mechanism: "opencode --dangerously-skip-permissions (full access only; no proven scoped workspace-write)", readonly_mechanism: "none" },
-          isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
+          // HONEST access surface: the only permission flag the adapter drives
+          // is `--dangerously-skip-permissions` (full access), so there is no
+          // scoped readonly mechanism to declare (see access_profiles below).
+          access_control: { readonly_mechanism: "none" },
+          isolation: { supported_containment: ["env_or_file_injection"] },
           // No proven headless image input surface — attach is gated off until verified.
           image_input: "none",
         },
@@ -153,8 +130,8 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           { id: "isolated_smoke", status: "skip", detail: "no isolated smoke implemented for opencode yet" },
           { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
         ],
-        enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize"] : [],
-        disabled_intents: authReady ? ["explain", "audit"] : ["implement", "repair", "create_from_scratch", "verify", "compare", "synthesize", "explain", "audit"],
+        enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "synthesize"] : [],
+        disabled_intents: authReady ? ["explain", "audit"] : ["implement", "repair", "create_from_scratch", "verify", "synthesize", "explain", "audit"],
         reasons: authReady
           ? ["key present but route unproven (no isolated smoke); readonly/audit not enabled until conformance-proven"]
           : ["opencode provider auth not configured"],

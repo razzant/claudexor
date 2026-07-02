@@ -1358,7 +1358,6 @@ function projectThread(raw: unknown, needsHuman: boolean): ControlThread {
     authPreference: t["auth_preference"] ?? "auto",
     primaryHarness: t["primary_harness"] ?? null,
     eligibleHarnesses: t["eligible_harnesses"] ?? [],
-    portfolio: t["portfolio"],
     state: t["state"] ?? "active",
     runIds: t["run_ids"] ?? [],
     headRunId: t["head_run_id"] ?? null,
@@ -1374,7 +1373,6 @@ function projectSession(raw: unknown): ControlSession {
     id: s["id"],
     threadId: s["thread_id"],
     harnessId: s["harness_id"],
-    providerFamily: s["provider_family"] ?? "unknown",
     nativeSessionId: s["native_session_id"] ?? null,
     observedModel: s["last_observed_model"] ?? null,
     state: s["state"] ?? "live",
@@ -1507,15 +1505,14 @@ export function normalizeRunStartRequest(raw: unknown): ControlRunStartRequest {
   return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}));
 }
 
-function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" | "deep" } {
+function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" } {
   const p = paramsRecord(rec);
   const scope = p["scope"];
   if (scope && typeof scope === "object" && !Array.isArray(scope)) {
     const s = scope as Record<string, unknown>;
     if (s["kind"] === "none") return { kind: "none", root: null, projectName: null, context: "off" };
     if (s["kind"] === "project" && typeof s["root"] === "string") {
-      const context = s["context"] === "deep" ? "deep" : "auto";
-      return { kind: "project", root: s["root"], projectName: basename(s["root"]), context };
+      return { kind: "project", root: s["root"], projectName: basename(s["root"]), context: "auto" };
     }
   }
   const repoRoot = runRepoRoot(rec);

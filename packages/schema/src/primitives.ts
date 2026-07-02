@@ -66,7 +66,10 @@ export type ProviderFamily = z.infer<typeof ProviderFamily>;
 export const ModeKind = z.enum(["ask", "plan", "audit", "agent", "orchestrate"]);
 export type ModeKind = z.infer<typeof ModeKind>;
 
-/** Canonical intents a harness can be assigned. Roles are intents, never fixed classes. */
+/** Canonical intents a harness can be assigned. Roles are intents, never fixed
+ * classes. (`compare`/`arbitrate` were retired in the v0.15 triage: no run
+ * site ever requested them — comparison/arbitration are engine phases, not
+ * harness assignments. `verify` stays for the FinalVerifier.) */
 export const Intent = z.enum([
   "plan",
   "spec",
@@ -75,9 +78,7 @@ export const Intent = z.enum([
   "repair",
   "review",
   "verify",
-  "compare",
   "synthesize",
-  "arbitrate",
   "explain",
   "audit",
   "orchestrate",
@@ -85,13 +86,13 @@ export const Intent = z.enum([
 export type Intent = z.infer<typeof Intent>;
 
 /**
- * How a dirty working tree is handled when creating an envelope.
- * `include` and `stash` are ALIASES of `snapshot` in the current
- * WorkspaceManager (a stash-create snapshot becomes the base SHA without
- * touching the live tree); `copy` additionally copies dirty files into the
- * worktree; `refuse` fails loudly.
+ * How a dirty working tree is handled when creating an envelope: `snapshot`
+ * captures the dirty state as the base SHA without touching the live tree;
+ * `refuse` fails loudly. (The `include`/`stash` aliases and the untested
+ * `copy` variant were retired in the v0.15 triage — every production call
+ * site passes `snapshot`.)
  */
-export const DirtyPolicy = z.enum(["refuse", "include", "stash", "copy", "snapshot"]);
+export const DirtyPolicy = z.enum(["refuse", "snapshot"]);
 export type DirtyPolicy = z.infer<typeof DirtyPolicy>;
 
 /**

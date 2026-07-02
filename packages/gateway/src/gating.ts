@@ -8,7 +8,6 @@ export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   if (caps.create_from_scratch) intents.push("create_from_scratch");
   if (caps.review) intents.push("review");
   if (caps.verify) intents.push("verify");
-  if (caps.compare) intents.push("compare", "arbitrate");
   if (caps.synthesize) intents.push("synthesize");
   if (caps.read_files) intents.push("explain", "audit");
   if (caps.orchestrate) intents.push("orchestrate");

@@ -14,24 +14,16 @@ const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
 
 const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
-  execution_surfaces: [
-    { kind: "cli_one_shot", input: "prompt_arg", output: "ndjson", event_schema: "native", supports_interrupt: true },
-    { kind: "stdin_stream_session", input: "stdin_stream", output: "ndjson", event_schema: "native", supports_interrupt: true, supports_permission_reply: true, supports_followup: true },
-  ],
-  session: { native_session_id_emitted: true, resume_latest: true, resume_by_id: true },
-  output: { ndjson_events: true, partial_deltas: true, tool_lifecycle: true, final_json: false, json_schema_final: false, usage_signal: "exact", cost_signal: "exact" },
   auth: {
     supported_sources: ["native_session", "api_key_env"],
     preferred_source: null,
-    probe_command: ["claude", "auth", "status"],
-    env_vars: ["ANTHROPIC_API_KEY"],
     credential_transports: [
-      { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"], requires_user_session: false, bypass_env_vars: ["CLAUDE_CODE_OAUTH_TOKEN"] },
-      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"], requires_user_session: false, bypass_env_vars: ["ANTHROPIC_API_KEY"] },
+      { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
+      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
     ],
   },
-  access_control: { readonly: true, workspace_write: true, full: true, mechanism: "claude --allowedTools/--disallowedTools", readonly_mechanism: "tool_allowlist" },
-  isolation: { path_redirect_sufficient: true, requires_user_session: false, supported_containment: ["env_or_file_injection"] },
+  access_control: { readonly_mechanism: "tool_allowlist" },
+  isolation: { supported_containment: ["env_or_file_injection"] },
   image_input: "base64_stream",
 });
 
@@ -195,29 +187,14 @@ export function createClaudeAdapter(): HarnessAdapter {
         provider_family: "anthropic",
         capabilities: {
           plan: true,
-          spec: true,
           implement: true,
           create_from_scratch: true,
-          repair: true,
           review: true,
           verify: true,
-          compare: true,
           synthesize: true,
-          shell: true,
           read_files: true,
-          edit_files: true,
-          apply_patch: true,
-          structured_events: true,
-          structured_output: true,
-          json_schema_output: false,
-          resume: true,
-          cancel: true,
-          mcp: true,
-          // Claude is an MCP client; we inject Playwright MCP via `--mcp-config`
           // inline JSON (no disk write) — gated on web policy.
           browser_tool: true,
-          plugins: true,
-          worktree_native: true,
           web_policy: "tools",
           max_turns: true,
           tool_lists: true,
@@ -279,7 +256,7 @@ export function createClaudeAdapter(): HarnessAdapter {
       const nativeReady = (authed && nativeClaudeSeedable()) || claudeOAuthToken() !== null;
       const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
       const ok = nativeReady || smoke.ok;
-      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "compare", "arbitrate", "synthesize", "explain", "audit", "orchestrate"];
+      const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "synthesize", "explain", "audit", "orchestrate"];
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",

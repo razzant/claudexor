@@ -73,8 +73,7 @@
                 "context": {
                   "type": "string",
                   "enum": [
-                    "auto",
-                    "deep"
+                    "auto"
                   ],
                   "default": "auto"
                 }
@@ -295,9 +294,6 @@
             ],
             "additionalProperties": false
           }
-        },
-        "envProfile": {
-          "type": "string"
         },
         "specPath": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"

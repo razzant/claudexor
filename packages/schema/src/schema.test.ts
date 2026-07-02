@@ -43,7 +43,6 @@ describe("TaskContract", () => {
     expect(tc.budget.portfolio).toBe("subscription-first");
     expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
-    expect(tc.context_policy.no_silent_truncation).toBe(true);
   });
 });
 
@@ -349,15 +348,17 @@ describe("Control API schemas", () => {
     // strict scope without it 400'd /spec/questions before grounding ran).
     const specWithCtx = ControlSpecQuestionsRequest.parse({
       prompt: "x",
-      scope: { kind: "project", root: "/repo", context: "deep" },
+      scope: { kind: "project", root: "/repo", context: "auto" },
     });
-    expect(specWithCtx.scope.context).toBe("deep");
-    expect(
+    expect(specWithCtx.scope.context).toBe("auto");
+    // "deep" was retired in the v0.15 triage — it never had distinct behavior;
+    // an old client sending it must fail loudly, not silently rewrite.
+    expect(() =>
       ControlSpecFreezeRequest.parse({
         prompt: "x",
         scope: { kind: "project", root: "/repo", context: "deep" },
-      }).scope.context,
-    ).toBe("deep");
+      }),
+    ).toThrow();
     expect(() =>
       ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" }),
     ).toThrow();
@@ -389,7 +390,6 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     });
     expect(t.state).toBe("active");
     expect(t.auth_preference).toBe("auto");
-    expect(t.portfolio).toBe("subscription-first");
     expect(t.repo).toBeNull();
     expect(t.run_ids).toEqual([]);
   });

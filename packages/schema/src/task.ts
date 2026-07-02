@@ -104,7 +104,6 @@ export const TaskContract = z.object({
       id: Id.optional(),
       hash: z.string().optional(),
       path: z.string().optional(),
-      env_profile: z.string().optional(),
     })
     .optional(),
   success_criteria: z.array(SuccessCriterion).default([]),
@@ -151,8 +150,5 @@ export const TaskContract = z.object({
    * builder reads; empty = every route uses its per-harness settings default. */
   routing_models: z.record(z.string(), z.string()).default({}),
   convergence: ConvergencePredicate.default({}),
-  context_policy: z
-    .object({ no_silent_truncation: z.boolean().default(true) })
-    .default({ no_silent_truncation: true }),
 });
 export type TaskContract = z.infer<typeof TaskContract>;

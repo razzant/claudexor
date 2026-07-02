@@ -32,9 +32,6 @@
               "type": "string",
               "enum": [
                 "refuse",
-                "include",
-                "stash",
-                "copy",
                 "snapshot"
               ],
               "default": "refuse"
@@ -90,9 +87,6 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
-            },
-            "env_profile": {
               "type": "string"
             }
           },
@@ -415,19 +409,6 @@
           },
           "additionalProperties": false,
           "default": {}
-        },
-        "context_policy": {
-          "type": "object",
-          "properties": {
-            "no_silent_truncation": {
-              "type": "boolean",
-              "default": true
-            }
-          },
-          "additionalProperties": false,
-          "default": {
-            "no_silent_truncation": true
-          }
         }
       },
       "required": [

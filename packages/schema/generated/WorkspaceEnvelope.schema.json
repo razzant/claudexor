@@ -70,9 +70,6 @@
           "type": "string",
           "enum": [
             "refuse",
-            "include",
-            "stash",
-            "copy",
             "snapshot"
           ],
           "default": "refuse"

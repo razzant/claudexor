@@ -144,6 +144,10 @@ function jsonText(value: unknown): string {
 function generatedMcpEnv(runtime: RuntimePaths): Record<string, string> {
   return {
     CLAUDEXOR_CONFIG_DIR: runtime.configDir,
+    // MANAGED/VERSION are drift-detection CONTENT, not runtime env the MCP
+    // server reads: they version the generated artifact text so status/doctor
+    // can flag stale installs (checkArtifacts compares regenerated vs on-disk).
+    // A live version-skew warning consumer lands with the Phase-5 MCP upgrade.
     CLAUDEXOR_MANAGED: MARKER,
     CLAUDEXOR_PLUGIN_VERSION: CLAUDEXOR_VERSION,
   };
