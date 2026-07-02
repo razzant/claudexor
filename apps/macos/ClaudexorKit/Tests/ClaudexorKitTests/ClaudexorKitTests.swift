@@ -833,6 +833,23 @@ import Testing
         #expect(clear.defaultModel == .some(Optional<String>.none))   // explicit null clear rides
     }
 
+    @Test func modelFieldStateCoversAllCatalogOutcomes() {
+        // Pure branch selection for the model-override control: a transport
+        // failure must NEVER produce a truth-source claim (refused/default-only).
+        func answered(_ source: String, _ ids: [String]) -> HarnessModelsResponse {
+            HarnessModelsResponse(harnessId: "codex",
+                                  models: ids.map { HarnessModel(id: $0, label: nil, contextWindow: nil) },
+                                  source: source)
+        }
+        #expect(modelFieldState(models: answered("api", ["m1"]), modelDraft: "", loadFailed: false) == .picker)
+        #expect(modelFieldState(models: answered("none", []), modelDraft: "legacy", loadFailed: false) == .refusedLegacy)
+        #expect(modelFieldState(models: nil, modelDraft: "legacy", loadFailed: true) == .unavailableWithDraft)
+        #expect(modelFieldState(models: nil, modelDraft: "", loadFailed: true) == .unavailable)
+        #expect(modelFieldState(models: answered("none", []), modelDraft: "", loadFailed: false) == .defaultOnly)
+        // Mid-retry (loadFailed reset, catalog still nil): no stale failure copy.
+        #expect(modelFieldState(models: nil, modelDraft: "", loadFailed: false) == .defaultOnly)
+    }
+
     @Test func harnessSaveDoesNotSettleWhenNewerEditRacedIn() {
         // The field-revert bug: a typed value must SURVIVE a settings refresh until
         // its OWN save settles. An older in-flight save (captured an earlier gen)

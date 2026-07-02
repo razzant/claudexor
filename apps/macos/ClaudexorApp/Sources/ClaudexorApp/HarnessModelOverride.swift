@@ -28,7 +28,26 @@ struct HarnessModelOverrideField: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let models, models.canEnumerate {
+        switch modelFieldState(models: models, modelDraft: modelDraft, loadFailed: loadFailed) {
+        case .picker:
+            picker
+        case .refusedLegacy:
+            refusedLegacy
+        case .unavailableWithDraft:
+            unavailableWithDraft
+        case .unavailable:
+            unavailableNoDraft
+        case .defaultOnly:
+            LabeledContent("Model") {
+                Text("Harness default only")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .help(modelFallbackHelp)
+        }
+    }
+
+    @ViewBuilder private var picker: some View {
+        if let models {
             Picker("Model override", selection: $modelDraft) {
                 Text("Harness default").tag("")
                 // A stored override the truth source no longer lists (legacy value)
@@ -43,11 +62,14 @@ struct HarnessModelOverrideField: View {
             }
             .labelsHidden()
             .help(modelPickerHelp(models))
-        } else if !modelDraft.isEmpty, models != nil {
-            // The harness ANSWERED with no truth source: a stored legacy
-            // override will be refused at preflight, so SHOW it and offer the
-            // only meaningful action — clearing it (explicit null on save).
-            LabeledContent("Model") {
+        }
+    }
+
+    /// The harness ANSWERED with no truth source: a stored legacy override
+    /// will be refused at preflight, so SHOW it and offer the only
+    /// meaningful action — clearing it (explicit null on save).
+    private var refusedLegacy: some View {
+        LabeledContent("Model") {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text("\(modelDraft) — refused (no truth source)")
                         .font(.caption).foregroundStyle(.orange)
@@ -57,11 +79,12 @@ struct HarnessModelOverrideField: View {
                 }
             }
             .help(modelFallbackHelp)
-        } else if !modelDraft.isEmpty {
-            // Catalog request failed (engine offline / transient): do NOT
-            // claim the override is refused — we could not check it. Retry
-            // clears the nil result so loadModels() refetches.
-            LabeledContent("Model") {
+    }
+
+    /// Catalog request failed (engine offline / transient): do NOT claim the
+    /// override is refused — we could not check it. Retry refetches.
+    private var unavailableWithDraft: some View {
+        LabeledContent("Model") {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text("\(modelDraft) — model catalog unavailable")
                         .font(.caption).foregroundStyle(.secondary)
@@ -71,10 +94,12 @@ struct HarnessModelOverrideField: View {
                 }
             }
             .help("Could not load the \(family.label) model catalog; the override stays as-is. Retry after reconnecting to verify it.")
-        } else if loadFailed {
-            // Catalog fetch failed with no stored override: offer Retry and do
-            // NOT claim the harness has no truth source — we don't know yet.
-            LabeledContent("Model") {
+    }
+
+    /// Catalog fetch failed with no stored override: offer Retry and do NOT
+    /// claim the harness has no truth source — we don't know yet.
+    private var unavailableNoDraft: some View {
+        LabeledContent("Model") {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text("Model catalog unavailable")
                         .font(.caption).foregroundStyle(.secondary)
@@ -84,13 +109,6 @@ struct HarnessModelOverrideField: View {
                 }
             }
             .help("Could not load the \(family.label) model catalog. Retry after reconnecting.")
-        } else {
-            LabeledContent("Model") {
-                Text("Harness default only")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .help(modelFallbackHelp)
-        }
     }
 
     private func modelMenuLabel(_ m: HarnessModel) -> String {
@@ -113,6 +131,7 @@ struct HarnessModelOverrideField: View {
         if force { models = nil }
         guard models == nil, !loadingModels else { return }
         loadingModels = true
+        loadFailed = false
         defer { loadingModels = false }
         models = await fetch(family)
         loadFailed = models == nil

@@ -60,3 +60,33 @@ public func buildHarnessPatch(
 public func harnessSaveShouldSettle(capturedGen: Int, currentGen: Int) -> Bool {
     capturedGen == currentGen
 }
+
+/// Which rendering the harness model-override control shows. Pure so the
+/// branch selection is unit-testable (the SwiftUI body just switches on it).
+public enum ModelFieldState: Equatable {
+    /// Truth source answered and enumerates: show the strict Picker.
+    case picker
+    /// Truth source ANSWERED "none" and a legacy override is stored: it will
+    /// be refused at preflight — show it with the only useful action (Clear).
+    case refusedLegacy
+    /// Catalog fetch failed (offline/transient) with a stored override: we
+    /// could NOT check it — neutral copy + Retry, never a refusal claim.
+    case unavailableWithDraft
+    /// Catalog fetch failed with no stored override: Retry, no truth claim.
+    case unavailable
+    /// Truth source answered "none" and nothing is stored: default only.
+    case defaultOnly
+}
+
+public func modelFieldState(
+    models: HarnessModelsResponse?,
+    modelDraft: String,
+    loadFailed: Bool
+) -> ModelFieldState {
+    if let models, models.canEnumerate { return .picker }
+    let hasDraft = !modelDraft.isEmpty
+    if hasDraft, models != nil { return .refusedLegacy }
+    if hasDraft { return .unavailableWithDraft }
+    if loadFailed { return .unavailable }
+    return .defaultOnly
+}
