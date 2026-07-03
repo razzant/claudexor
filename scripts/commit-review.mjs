@@ -32,8 +32,24 @@ const logsDir = join(repoRoot, ".claudexor", "logs");
 const bypassLog = join(logsDir, "review-bypass.jsonl");
 const bypassMarker = join(logsDir, ".last-bypass");
 
+// TWO git env flavors, deliberately:
+// - INDEX-honest (inherited env): `diff --cached` / `write-tree` MUST read the
+//   exact index git exposed to this hook (GIT_INDEX_FILE) — that IS the commit
+//   being reviewed (partial commits expose an alternate index).
+// - SCRUBBED (worktree ops + reviewer children): hook-exported
+//   GIT_INDEX_FILE/GIT_DIR leak into `git worktree add` and child git calls
+//   and break them ("index file open failed") — repo-binding vars are
+//   stripped there; those operations are index-independent by design.
+const scrubbedGitEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !/^GIT_(INDEX_FILE|DIR|WORK_TREE|PREFIX|OBJECT_DIRECTORY|COMMON_DIR)$/.test(k)),
+);
+
 function git(args) {
   return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+}
+
+function gitScrubbed(args) {
+  return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: scrubbedGitEnv });
 }
 
 function loadPanelConfig() {
@@ -146,14 +162,14 @@ async function main() {
     const commitSha = git(["commit-tree", treeSha, "-m", "claudexor commit-review index snapshot"]).trim();
     snapshotDir = join(logsDir, `.index-snapshot-${process.pid}`);
     rmSync(snapshotDir, { recursive: true, force: true });
-    git(["worktree", "add", "--detach", snapshotDir, commitSha]);
+    gitScrubbed(["worktree", "add", "--detach", snapshotDir, commitSha]);
   } catch (err) {
     console.error(`commit-review: could not materialize the index snapshot (${err instanceof Error ? err.message : String(err)}) — commit blocked (fail closed)`);
     return 1;
   }
   const cleanupSnapshot = () => {
     try {
-      git(["worktree", "remove", "--force", snapshotDir]);
+      gitScrubbed(["worktree", "remove", "--force", snapshotDir]);
     } catch {
       try {
         rmSync(snapshotDir, { recursive: true, force: true });
@@ -174,6 +190,7 @@ async function main() {
       encoding: "utf8",
       timeout: cfg.budgetSeconds * 1000,
       maxBuffer: 64 * 1024 * 1024,
+      env: scrubbedGitEnv, // hook git env must not leak into reviewer children
     });
     if (res.status === null) {
       // spawnSync timeout: status is null — say so LOUDLY, then fall back.

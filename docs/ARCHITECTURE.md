@@ -718,6 +718,45 @@ the cap BEFORE usage streams; a slot whose estimate does not fit remaining
 headroom is a typed `estimate_headroom` lease denial (already-granted work
 continues — only a tripped hard cap stops everything).
 
+Quota is a TYPED event, never scraped prose (D7): codex reports its own
+rate-window record (`token_count.rate_limits` in the rollout transcript, the
+same native source route proof uses) as `HarnessEvent.quota{used_percent,
+resets_at}`; claude has no machine-readable subscription-quota surface, so it
+honestly emits nothing. The budget layer maps quota to a native-quality
+`used_percent` observation; `headroom()` consumes it, pool ordering multiplies
+by it, and the run log discloses `budget.quota_pressure` at >=50% window burn.
+Portfolio routing runs on REAL metrics: per-harness EMA averages of settled
+attempt cost/duration persisted under the config dir
+(`telemetry/harness-metrics.json`; one producer — attempt settlement) fill
+`costPerCall`/`latencyMs`, and operator-declared per-family priors
+(`routing.quality_priors`, 0..1) fill `qualityForIntent` — so
+cheapest/strongest/balanced genuinely differentiate.
+
+Structured output (D10): routes whose manifest declares `json_schema_output`
+receive `HarnessRunSpec.output_schema` — today the orchestrate BRAIN passes
+the OrchestratePlan JSON Schema computed from the live Zod shape, strictified
+for vendor strict modes (every object: `required` = all keys,
+`additionalProperties: false`; inline root — both live-verified: codex
+`--output-schema <FILE>` written into the scoped CODEX_HOME, claude
+`--json-schema <inline JSON>`). Plan parsing is structured-first (a bare-JSON
+final message parses directly; fenced JSON stays the fallback for
+non-capable routes). Live plan checklists (D14) ride typed
+`HarnessEvent.plan_progress` (codex `todo_list` items; claude
+TaskCreate/TaskUpdate accumulation — TodoWrite kept for older CLIs), forwarded
+as last-wins `plan.progress` run events and projected on the run detail as
+`planProgress`; per-candidate evidence cards (D13) are projected on the run
+detail as `candidates` from attempt/review/decision artifacts.
+
+Per-commit review gate for this repository (D18): `claudexor review --diff
+<file>` reviews a diff through the engine's reviewer machinery (fail-closed:
+the pass bar is cross-family healthy AND verified with no
+INSUFFICIENT_EVIDENCE); `scripts/commit-review.mjs` runs it against an
+INDEX-SNAPSHOT worktree with a secret fence and a HEAD-read panel config
+(`.claudexor/review-panel.yaml` — versioned, chooses reviewers only), falling
+back to an OpenRouter triad-lite with strict finding-shape quorum; bypasses
+are audited (`review-bypass.jsonl` + commit-body disclosure). Hooks are
+opt-in via `scripts/install-hooks.sh`.
+
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)
 into typed `transient` `HarnessEvent`s; the orchestrator may retry only within the bounded

@@ -3,6 +3,18 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **Unreleased (v0.15 program, phase 4)** — routing/output reality: typed
+  quota events (codex rollout rate-window -> used_percent observations ->
+  headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude
+  fail-honest), portfolio metrics with real producers (per-harness EMA
+  cost/latency under the config dir + operator `routing.quality_priors`),
+  structured output live on both CLIs (codex `--output-schema`, claude
+  `--json-schema`; strictified inline OrchestratePlan schema; structured-first
+  plan parsing), live plan checklists (`plan.progress` from codex todo_list /
+  claude TaskCreate+TaskUpdate) and per-candidate evidence cards projected on
+  run detail (macOS Candidates/Plan tabs live), and the per-commit review
+  gate (`claudexor review` + `scripts/commit-review.mjs` with audited
+  bypasses; opt-in hooks).
 - **Unreleased (v0.15 program, phase 3)** — run honesty: every announced run
   now ends with a terminal event on every path (throw/cancel/daemon restart);
   a silent harness stream is killed by an inactivity watchdog
