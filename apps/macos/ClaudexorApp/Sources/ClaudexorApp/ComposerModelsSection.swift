@@ -64,11 +64,21 @@ struct ComposerModelsSection: View {
             .labelsHidden()
             .fixedSize()
             .help(pickerHelp(family, catalog))
-        } else {
+        } else if catalogs[id] != nil {
+            // A LOADED catalog that cannot enumerate (source: none) — the
+            // server's answer, honestly rendered.
             Text("Harness default only")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .help("\(family.label) exposes no model truth source, so this turn uses its default model; an explicit model would be refused (strict model governance).")
+        } else {
+            // Not loaded yet (or the fetch failed) — do NOT claim the harness
+            // has no truth source; that is the server's call, not a network
+            // hiccup's.
+            Text("Loading models…")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("Fetching \(family.label)'s model truth source; if this persists, the models endpoint is unreachable.")
         }
     }
 

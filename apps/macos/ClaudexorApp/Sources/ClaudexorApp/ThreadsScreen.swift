@@ -1000,8 +1000,10 @@ struct ThreadsScreen: View {
               let runId = model.selectedHeadRunId else { return }
         stopping = true
         Task {
+            // defer: the button must re-enable on EVERY exit (incl. task
+            // cancellation mid-await), never park as "Stopping...".
+            defer { stopping = false }
             await model.cancel(runId)
-            stopping = false
         }
     }
 }

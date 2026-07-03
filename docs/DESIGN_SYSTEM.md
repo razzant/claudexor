@@ -320,10 +320,10 @@ views in the shared design-system files; screens compose them.
     candidate, colored by `harness/*`, showing that candidate's deterministic
     gates, cost (with the estimated-vs-exact badge), and review state, with the
     winner emphasized (`CandidateCard(strokeColor:)`). They live on a race turn
-    and in the Run Detail Candidates tab. Honest current state: live runs do
-    not yet project per-candidate data into this tab (it shows an honest empty
-    state; sample data demonstrates the contract) — the live
-    pipeline lands in v0.15 Phase 4.
+    and in the Run Detail Candidates tab, projected LIVE from the run
+    detail's `candidates` DTO (per-attempt gates/cost/diffstat/review
+    evidence; candidate glyphs inherit the run terminal so a clean loser card
+    in a failed run never renders green).
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
     Money values are typed currency fields when editable; never use a slider for dollar input.
     The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
@@ -447,8 +447,8 @@ views in the shared design-system files; screens compose them.
   then re-run the harness doctor; a job stuck on "running" forever in the UI is
   a defect, not a state.
 - **Race / candidates.** Per-family candidate lanes; the best-of-N
-  "attempts/re-roll" primitive. (See the Candidate cards contract above for the
-  honest live-data status of the Candidates tab.)
+  "attempts/re-roll" primitive. (See the Candidate cards contract above — the
+  Candidates tab renders live server-projected evidence.)
 - **Cross-family review (inline, per turn).** Review/findings are NOT a separate
   Review-Queue screen — they live on the turn that produced them and in the run
   inspector's Review tab: severity, finding, reviewer, evidence, and state, on solid
