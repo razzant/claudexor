@@ -129,6 +129,9 @@ export class AcpServer {
           protocolVersion: ACP_PROTOCOL_VERSION,
           agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "dev" },
           agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
+          // ACP v1 InitializeResponse carries authMethods; strict clients
+          // deserialize it. Claudexor needs no editor-side auth: empty list.
+          authMethods: [],
         });
         return;
       case "session/new": {
@@ -384,10 +387,28 @@ export class AcpServer {
         declinedFreeText = true;
         continue;
       }
+      // Announce the tool_call the permission request will reference —
+      // clients that JOIN permissions to tool calls otherwise render an
+      // orphan (the id must exist in the session's tool-call timeline).
+      const toolCallId = String(request?.interaction_id ?? "interaction");
+      this.notify("session/update", {
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId,
+          title: String(q?.question ?? "Question"),
+          kind: "other",
+          status: "pending",
+        },
+      });
       const response = await this.request("session/request_permission", {
         sessionId,
-        toolCall: { toolCallId: String(request?.interaction_id ?? "interaction"), title: String(q?.question ?? "Question") },
+        toolCall: { toolCallId, title: String(q?.question ?? "Question") },
         options,
+      });
+      this.notify("session/update", {
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
       });
       const optionId = response?.outcome?.optionId ?? response?.optionId;
       const picked = typeof optionId === "string" ? options.find((o: any) => o.optionId === optionId) : undefined;
@@ -515,6 +536,10 @@ function validateRunControls(params: unknown): string | null {
     "reviewerEfforts",
   ]);
   for (const key of Object.keys(params)) {
+    // `_meta` is the PROTOCOL's forward-compat envelope (other parties'
+    // standard field), not a Claudexor knob — tolerate it, reject the rest.
+    // Unknown CLAUDEXOR fields still fail loudly (typo'd knobs never no-op).
+    if (key === "_meta") continue;
     if (!allowedKeys.has(key)) return `unknown session/prompt field: ${key}`;
   }
   if (params.mode !== undefined && (typeof params.mode !== "string" || !ModeKind.safeParse(params.mode).success)) {

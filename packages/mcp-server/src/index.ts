@@ -1,115 +1,186 @@
-import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
-import { AccessProfile, EffortHint, ExternalContextPolicy, ProviderFamily } from "@claudexor/schema";
+import {
+  McpServer as SdkMcpServer,
+  MissingRequiredClientCapabilityError,
+  fromJsonSchema,
+} from "@modelcontextprotocol/server";
+import { StdioServerTransport, serveStdio, type ServeStdioOptions } from "@modelcontextprotocol/server/stdio";
+import {
+  AccessProfile,
+  EffortHint,
+  ExternalContextPolicy,
+  ProviderFamily,
+  type InteractionAnswer,
+  type InteractionQuestion,
+} from "@claudexor/schema";
 import { assertNoInlineSecretValues } from "@claudexor/util";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export const MCP_PROTOCOL_VERSION = "2025-06-18";
+/**
+ * Claudexor's MCP surface on the official TypeScript SDK v2 (D27).
+ *
+ * The SDK owns the protocol core: version negotiation (2025-11-25 down to
+ * 2024-10-07 — Cursor's 2025-06-18 handshake keeps working), CONCURRENT
+ * request dispatch (a multi-minute race no longer blocks ping/tools/list —
+ * the old hand-rolled loop awaited every call inline), structural argument
+ * validation against the declared JSON Schemas, and elicitation round-trips.
+ * This module stays a THIN surface: tool descriptors, Claudexor's semantic
+ * argument checks (the parts a JSON Schema cannot express), and translation
+ * between runner results/interactions and MCP shapes. No business logic.
+ */
+
+export interface McpToolContext {
+  /**
+   * Ask the user the engine's interactive questions through MCP elicitation.
+   * Resolves null when the host lacks the elicitation capability or declines
+   * — the engine's timeout-decline fallback stays the honest default.
+   */
+  elicit: ((request: { interaction_id: string; questions: InteractionQuestion[] }) => Promise<InteractionAnswer[] | null>) | null;
+}
 
 export interface McpTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: any) => Promise<string>;
+  handler: (args: any, ctx: McpToolContext) => Promise<string>;
 }
 
 export interface McpServerOptions {
   name?: string;
   version?: string;
   tools: McpTool[];
-  transport: { read: Readable; write: Writable };
+  /** Custom stdio streams (tests, socket bindings); defaults to process stdio. */
+  transport?: { read: Readable; write: Writable };
+}
+
+/** Build the SDK server with Claudexor's tools registered (one era-agnostic factory). */
+export function buildMcpServer(opts: { name?: string; version?: string; tools: McpTool[] }): SdkMcpServer {
+  const server = new SdkMcpServer({
+    name: opts.name ?? "claudexor",
+    version: opts.version ?? "dev",
+  });
+  for (const tool of opts.tools) {
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: fromJsonSchema(tool.inputSchema as any) as any,
+      },
+      (async (args: unknown, ctx: any) => {
+        const provided = (args ?? {}) as Record<string, unknown>;
+        // Semantic checks a JSON Schema cannot express (absolute paths, the
+        // secret fence, cross-field equality). Structural validation already
+        // happened in the SDK against the same schema.
+        const validation = validateToolArguments(tool, provided);
+        if (validation) {
+          // The official SDK's contract: tool-argument failures surface as
+          // isError:true TOOL results (its own structural validation does the
+          // same), not JSON-RPC protocol errors — a thrown handler error maps
+          // there. The old hand-rolled -32602 contract is retired with it.
+          throw new Error(validation);
+        }
+        // Offer the elicitation bridge ONLY when the client declared the
+        // capability — otherwise the ENGINE must not think an interactive
+        // channel exists (it would offer the harness a channel whose every
+        // question dies as a decline).
+        const canElicit = Boolean(server.server.getClientCapabilities()?.elicitation);
+        const text = await tool.handler(provided, { elicit: canElicit ? elicitBridge(ctx) : null });
+        return { content: [{ type: "text" as const, text }] };
+      }) as any,
+    );
+  }
+  return server;
 }
 
 /**
- * Minimal MCP server over a newline-delimited JSON-RPC 2.0 stdio transport.
- * Implements initialize / tools/list / tools/call / ping. Tools call injected
- * handlers (the same orchestrator path the CLI uses).
+ * Serve Claudexor over stdio. The SDK entry owns the era decision per
+ * connection; the factory registers the same tools for every era.
  */
-export class McpServer {
-  private readonly tools: Map<string, McpTool>;
+export function serveClaudexorMcp(opts: McpServerOptions): { close(): Promise<void> } {
+  warnOnPluginVersionSkew(opts.version);
+  const serveOpts: ServeStdioOptions = {
+    ...(opts.transport ? { transport: new StdioServerTransport(opts.transport.read, opts.transport.write) } : {}),
+    // Out-of-band transport errors go to stderr — stdout is the wire.
+    onerror: (err) => process.stderr.write(`claudexor mcp: ${err.message}\n`),
+  };
+  return serveStdio(() => buildMcpServer(opts), serveOpts);
+}
 
-  constructor(private readonly opts: McpServerOptions) {
-    this.tools = new Map(opts.tools.map((t) => [t.name, t]));
+/**
+ * Installed host plugins export CLAUDEXOR_PLUGIN_VERSION into the server env
+ * (plugins.ts). A mismatch with the running CLI means the host is driving a
+ * NEWER/OLDER runtime than the artifacts it discovered — tool schemas may be
+ * stale until `claudexor plugin repair`. Disclose on stderr (the wire stays
+ * clean); this is the env var's first real reader (T7 finding 8).
+ */
+function warnOnPluginVersionSkew(serverVersion: string | undefined): void {
+  const pluginVersion = process.env["CLAUDEXOR_PLUGIN_VERSION"];
+  if (pluginVersion && serverVersion && pluginVersion !== serverVersion) {
+    process.stderr.write(
+      `claudexor mcp: plugin artifacts are version ${pluginVersion} but the CLI is ${serverVersion}; ` +
+        `run \`claudexor plugin repair all\` and reload the host to refresh cached tool schemas\n`,
+    );
   }
+}
 
-  async serve(): Promise<void> {
-    const rl = createInterface({ input: this.opts.transport.read });
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let msg: any;
+/**
+ * Map the SDK's server-initiated elicitation onto the engine's typed
+ * interaction questions. One elicitation per QUESTION (MCP forms are flat);
+ * a missing client capability resolves null so the engine's timeout-decline
+ * fallback applies — never a fake answer.
+ */
+function elicitBridge(ctx: any): McpToolContext["elicit"] {
+  const elicitInput = ctx?.mcpReq?.elicitInput;
+  if (typeof elicitInput !== "function") return null;
+  return async ({ questions }) => {
+    const answers: InteractionAnswer[] = [];
+    for (const q of questions) {
+      const hasOptions = q.options.length > 0;
+      const property: Record<string, unknown> = hasOptions
+        ? q.multi_select
+          ? { type: "array", items: { type: "string", enum: q.options.map((o) => o.label) }, description: optionLegend(q) }
+          : { type: "string", enum: q.options.map((o) => o.label), description: optionLegend(q) }
+        : { type: "string", description: "Free-text answer" };
+      let result: any;
       try {
-        msg = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-      if (msg.id === undefined || msg.id === null) continue; // notification: no response
-      await this.handle(msg);
-    }
-  }
-
-  private write(obj: unknown): void {
-    this.opts.transport.write.write(JSON.stringify(obj) + "\n");
-  }
-
-  private reply(id: unknown, result: unknown): void {
-    this.write({ jsonrpc: "2.0", id, result });
-  }
-
-  private error(id: unknown, code: number, message: string): void {
-    this.write({ jsonrpc: "2.0", id, error: { code, message } });
-  }
-
-  async handle(msg: any): Promise<void> {
-    const { id, method, params } = msg;
-    switch (method) {
-      case "initialize":
-        this.reply(id, {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "dev" },
+        result = await ctx.mcpReq.elicitInput({
+          message: q.header ? `${q.header}: ${q.question}` : q.question,
+          requestedSchema: {
+            type: "object",
+            properties: { answer: property },
+            required: ["answer"],
+          },
         });
-        return;
-      case "ping":
-        this.reply(id, {});
-        return;
-      case "tools/list":
-        this.reply(id, {
-          tools: [...this.tools.values()].map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-          })),
-        });
-        return;
-      case "tools/call": {
-        const tool = this.tools.get(params?.name);
-        if (!tool) {
-          this.error(id, -32602, `unknown tool: ${params?.name}`);
-          return;
-        }
-        const validation = validateToolArguments(tool, params?.arguments ?? {});
-        if (validation) {
-          this.error(id, -32602, validation);
-          return;
-        }
-        try {
-          const text = await tool.handler(params?.arguments ?? {});
-          this.reply(id, { content: [{ type: "text", text }] });
-        } catch (err) {
-          this.reply(id, {
-            content: [{ type: "text", text: `error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          });
-        }
-        return;
+      } catch (err) {
+        if (err instanceof MissingRequiredClientCapabilityError) return null;
+        throw err;
       }
-      default:
-        this.error(id, -32601, `method not found: ${method}`);
+      if (result?.action !== "accept" || !result?.content || typeof result.content !== "object") {
+        // Decline/cancel any single question = decline the whole interaction
+        // (the engine treats partial answer sets as declines anyway).
+        return null;
+      }
+      const answer = (result.content as Record<string, unknown>)["answer"];
+      if (hasOptions && q.multi_select && Array.isArray(answer)) {
+        answers.push({ question_id: q.id, selected_labels: answer.map(String), free_text: null });
+      } else if (hasOptions && typeof answer === "string") {
+        answers.push({ question_id: q.id, selected_labels: [answer], free_text: null });
+      } else if (typeof answer === "string" && answer.trim()) {
+        answers.push({ question_id: q.id, selected_labels: [], free_text: answer });
+      } else {
+        return null;
+      }
     }
-  }
+    return answers;
+  };
+}
+
+function optionLegend(q: InteractionQuestion): string {
+  const withDetail = q.options.filter((o) => o.description);
+  if (withDetail.length === 0) return "Choose from the listed options";
+  return withDetail.map((o) => `${o.label}: ${o.description}`).join("; ");
 }
 
 function validateToolArguments(tool: McpTool, args: unknown): string | null {
@@ -268,24 +339,37 @@ function validateOptionalNonEmptyString(value: unknown, name: string): string | 
   return null;
 }
 
-export type RunnerFn = (params: any) => Promise<unknown>;
+export interface RunnerHooks {
+  /** Interactive question surface; resolve with answers or null to decline. */
+  onInteraction?: (ctx: any) => Promise<any | null>;
+}
+
+export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
 
 /**
- * Reduce a run result to the human-readable text an MCP host should show. Mirrors
- * the ACP server's summarizeResult: the orchestrator returns an OrchestratorResult
- * whose `summary` is the primary output; prefer it over dumping the whole internal
- * run object. Falls back to a compact JSON string only when no summary/answer/text
- * field is present.
+ * Render a run result for an MCP host: the human-readable summary FIRST, then
+ * the artifact handles (runId/artifacts/status) so the host can inspect,
+ * apply, follow, or unblock the run through the CLI — the old surface dropped
+ * the runId and left hosts with no handle at all (T7 finding 2).
  */
-function summarizeResult(result: unknown): string {
+function formatRunResult(result: unknown): string {
   if (typeof result === "string") return result.trim();
   if (result && typeof result === "object") {
     const r = result as Record<string, unknown>;
+    let summary = "";
     for (const key of ["summary", "answer", "text"]) {
       const v = r[key];
-      if (typeof v === "string" && v.trim()) return v.trim();
+      if (typeof v === "string" && v.trim()) {
+        summary = v.trim();
+        break;
+      }
     }
-    return JSON.stringify(result);
+    const trailer: string[] = [];
+    if (typeof r["runId"] === "string" && r["runId"]) trailer.push(`runId: ${r["runId"]}`);
+    if (typeof r["runDir"] === "string" && r["runDir"]) trailer.push(`artifacts: ${r["runDir"]}`);
+    if (typeof r["status"] === "string" && r["status"]) trailer.push(`status: ${r["status"]}`);
+    if (!summary && trailer.length === 0) return JSON.stringify(result);
+    return trailer.length > 0 ? `${summary ? `${summary}\n\n` : ""}${trailer.join("\n")}` : summary;
   }
   return result === undefined || result === null ? "" : String(result);
 }
@@ -368,14 +452,31 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     name,
     description,
     inputSchema: promptSchema(minN),
-    // Return the run SUMMARY / primary output, not the raw internal run object
-    // (parity with the ACP server — MCP hosts should not see raw JSON dumps).
-    handler: async (args) => summarizeResult(await runner({ ...args, ...params })),
+    // Summary first, then the runId/artifacts trailer (hosts get a handle).
+    // The elicitation bridge rides the hooks: the runner surfaces the engine's
+    // interactive questions and this tool answers them via the host.
+    handler: async (args, ctx) =>
+      formatRunResult(
+        await runner(
+          { ...args, ...params },
+          ctx.elicit
+            ? {
+                onInteraction: async (ictx: any) => {
+                  const answers = await ctx.elicit!({
+                    interaction_id: ictx?.request?.interaction_id ?? "",
+                    questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
+                  });
+                  return answers ? { answers } : null;
+                },
+              }
+            : undefined,
+        ),
+      ),
   });
   return [
     mk("claudexor_ask", "One-shot read-only answer through Claudexor; returns final output, not a live thread.", { mode: "ask" }),
     mk("claudexor_explore", "One-shot bounded read-only exploration and synthesis through Claudexor.", { mode: "audit", swarm: true }),
-    mk("claudexor_run", "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary.", { mode: "agent" }),
+    mk("claudexor_run", "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary plus runId.", { mode: "agent" }),
     mk("claudexor_race", "One-shot best-of-N Claudexor race with cross-family review.", { mode: "agent", race: true }, 2),
     mk("claudexor_plan", "One-shot read-only Claudexor implementation plan.", { mode: "plan" }),
     mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", { mode: "agent", create: true }),
@@ -384,7 +485,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       name: "claudexor_status",
       description: "Return doctor-backed Claudexor runtime status for this MCP server.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
-      handler: async () => summarizeResult(await runner({ mode: "__status" })),
+      handler: async () => formatRunResult(await runner({ mode: "__status" })),
     },
   ];
 }

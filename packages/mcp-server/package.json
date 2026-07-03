@@ -17,7 +17,8 @@
   ],
   "dependencies": {
     "@claudexor/schema": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/util": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0-beta.1"
   },
   "scripts": {
     "build": "tsc",

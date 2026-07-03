@@ -3,6 +3,25 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **Unreleased (v0.15 program, phase 5, in progress)** — MCP/ACP surface
+  upgrade: the MCP server rides the official TypeScript SDK v2
+  (`@modelcontextprotocol/server` 2.0.0-beta.1) — concurrent dispatch
+  (ping/tools/list answer during a long race; the hand-rolled loop was
+  strictly sequential), protocol-era negotiation (2025-11-25 down to
+  2024-10-07), SDK-validated arguments over the same JSON Schemas (semantic
+  checks stay as handler preflight; argument failures are `isError` tool
+  results per the SDK contract, not -32602). MCP MUTATING verbs
+  (run/race/create) are DAEMON-TRACKED via the control API (auto-start):
+  `GET /runs` lists MCP runs, cancel/decision work, and every result carries
+  a runId/artifacts/status trailer (live-verified). Read-only verbs stay
+  in-process (CLI doctrine). Engine questions bridge to MCP ELICITATION when
+  the host declares the capability (pendingInteractions polling + typed
+  answer endpoint); timeout-decline stays the fallback. `mcp serve` warns on
+  stderr when `CLAUDEXOR_PLUGIN_VERSION` (installed artifacts) differs from
+  the CLI (the env var's first reader). ACP: initialize carries
+  `authMethods: []`, the protocol `_meta` envelope is tolerated (unknown
+  Claudexor knobs still fail loudly), and permission requests announce their
+  tool_call first (no orphan ids). Host plugins regenerated + repaired.
 - **Unreleased (v0.15 program, phase 4)** — routing/output reality: typed
   quota events (codex rollout rate-window -> used_percent observations ->
   headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude

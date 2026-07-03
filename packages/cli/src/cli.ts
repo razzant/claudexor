@@ -23,7 +23,7 @@ import {
   writeJson,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
-import { McpServer, defaultClaudexorTools } from "@claudexor/mcp-server";
+import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
@@ -80,6 +80,7 @@ import {
   type PluginVerb,
 } from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { mcpSurfaceRunner, orchestratorRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { trustCommand } from "./trust-command.js";
 import {
@@ -103,70 +104,6 @@ import {
 } from "./run-options.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function orchestratorRunner() {
-  const registry = buildRegistry();
-  const orch = new Orchestrator({ registry });
-  return async (
-    p: any,
-    hooks?: {
-      onEvent?: (event: any) => void;
-      onInteraction?: (ctx: any) => Promise<any | null>;
-      signal?: AbortSignal;
-    },
-  ) => {
-    if (p?.mode === "__status") {
-      // Doctor-backed truth (probe-cheap): fakes and unavailable harnesses are
-      // never presented as available tools to an MCP host.
-      const statuses = await buildGateway({ includeFakes: false }).statusAll({
-        cwd: process.cwd(),
-      });
-      return {
-        harnesses: statuses.map((s) => ({ id: s.id, status: s.status, intents: s.enabledIntents })),
-        available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
-      };
-    }
-    const reviewerPanel = Array.isArray(p?.reviewerPanel) ? p.reviewerPanel : undefined;
-    const reviewerModels =
-      p?.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined;
-    const reviewerEfforts =
-      p?.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined;
-    const runner =
-      reviewerPanel || reviewerModels || reviewerEfforts
-        ? new Orchestrator({
-            registry,
-            reviewerPanel,
-            reviewerModels,
-            reviewerEfforts,
-          })
-        : orch;
-    return runner.run({
-      repoRoot: typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd(),
-      prompt: String(p?.prompt ?? ""),
-      mode: p?.mode ?? "agent",
-      harnesses: p?.harness ? [String(p.harness)] : undefined,
-      primaryHarness: p?.primaryHarness ? String(p.primaryHarness) : undefined,
-      web: p?.web ? ExternalContextPolicy.parse(String(p.web)) : undefined,
-      externalContextPolicy: p?.externalContextPolicy
-        ? ExternalContextPolicy.parse(String(p.externalContextPolicy))
-        : undefined,
-      model: p?.model ? String(p.model) : undefined,
-      effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
-      n: typeof p?.n === "number" ? p.n : p?.race === true ? 2 : undefined,
-      untilClean: p?.untilClean === true,
-      swarm: p?.swarm === true,
-      create: p?.create === true,
-      tests: Array.isArray(p?.tests) ? p.tests.map(String) : undefined,
-      maxUsd: typeof p?.maxUsd === "number" ? p.maxUsd : undefined,
-      access: p?.access ? accessProfile(parseArgs(["run", "--access", String(p.access)])) : undefined,
-      protectedPathApprovals: Array.isArray(p?.protectedPathApprovals)
-        ? p.protectedPathApprovals
-        : undefined,
-      onEvent: hooks?.onEvent,
-      onInteraction: hooks?.onInteraction,
-      signal: hooks?.signal,
-    });
-  };
-}
 
 // Single version SSOT: the generated CLAUDEXOR_VERSION constant (from the root
 // package.json) so the banner / --version can never ship stale or drift.
@@ -1380,11 +1317,15 @@ async function main(): Promise<number> {
 
     case "mcp": {
       if (args._[1] === "serve") {
-        await new McpServer({
+        // SDK-owned protocol core; mutating verbs are daemon-tracked, so a
+        // run started from an MCP host is visible/unblockable like a CLI run.
+        serveClaudexorMcp({
           version: CLAUDEXOR_VERSION,
-          tools: defaultClaudexorTools(orchestratorRunner()),
+          tools: defaultClaudexorTools(mcpSurfaceRunner()),
           transport: { read: process.stdin, write: process.stdout },
-        }).serve();
+        });
+        // Serve until stdin closes (the SDK handle owns the transport).
+        await new Promise<void>((resolve) => process.stdin.once("close", resolve));
         return 0;
       }
       return printUsageError(json, "usage: claudexor mcp serve");

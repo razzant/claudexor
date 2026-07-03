@@ -1,75 +1,102 @@
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
-import { McpServer, defaultClaudexorTools } from "./index.js";
+import { defaultClaudexorTools, serveClaudexorMcp, type McpTool, type RunnerFn } from "./index.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-describe("McpServer", () => {
-  it("handles initialize, tools/list, and tools/call", async () => {
-    const c2s = new PassThrough();
-    const s2c = new PassThrough();
-    // Runner echoes the mode into the summary so we can assert the tool ran in
-    // agent mode without relying on a raw JSON dump of the internal run object.
-    const tools = defaultClaudexorTools(async (p) => ({ ok: true, mode: p.mode, summary: `ran in ${p.mode} mode` }));
-    const server = new McpServer({ tools, transport: { read: c2s, write: s2c } });
-    const serving = server.serve();
-
-    const responses: any[] = [];
-    const rl = createInterface({ input: s2c });
-    rl.on("line", (l) => {
-      if (l.trim()) responses.push(JSON.parse(l));
+/** Drive the REAL stdio wire (newline JSON-RPC over streams) against the served factory. */
+function wire(tools: McpTool[], opts: { version?: string } = {}) {
+  const c2s = new PassThrough();
+  const s2c = new PassThrough();
+  const handle = serveClaudexorMcp({ version: opts.version ?? "0.0.0-test", tools, transport: { read: c2s, write: s2c } });
+  const responses: any[] = [];
+  const requests: any[] = [];
+  const rl = createInterface({ input: s2c });
+  rl.on("line", (l) => {
+    if (!l.trim()) return;
+    const msg = JSON.parse(l);
+    if (msg.method) requests.push(msg);
+    else responses.push(msg);
+  });
+  const send = (obj: unknown): void => {
+    c2s.write(JSON.stringify(obj) + "\n");
+  };
+  const initialize = async (extraCapabilities: Record<string, unknown> = {}): Promise<void> => {
+    send({
+      jsonrpc: "2.0",
+      id: "init",
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: extraCapabilities,
+        clientInfo: { name: "test-host", version: "1.0" },
+      },
     });
+    await sleep(80);
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    await sleep(20);
+  };
+  return { send, initialize, responses, requests, close: () => handle.close() };
+}
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
-    c2s.write(
-      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "hi" } } }) + "\n",
-    );
+describe("Claudexor MCP server (SDK v2)", () => {
+  it("negotiates the client's 2025-06-18 era, lists 8 tools, and answers PING during a slow call", async () => {
+    const tools = defaultClaudexorTools(async (p) => {
+      if (p.mode === "agent") {
+        await sleep(500);
+        return { summary: "slow done", runId: "run-slow", runDir: "/tmp/run-slow", status: "succeeded" };
+      }
+      return { summary: `ran in ${p.mode} mode` };
+    });
+    const w = wire(tools);
+    await w.initialize();
+    w.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     await sleep(60);
-    c2s.end();
-    await serving;
+    // The old hand-rolled loop awaited each call inline: a multi-minute race
+    // blocked ping/tools/list (T7 HIGH#1). The SDK dispatches concurrently —
+    // the ping MUST answer while the slow tools/call is still running.
+    w.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    await sleep(80);
+    w.send({ jsonrpc: "2.0", id: 4, method: "ping" });
+    await sleep(120);
+    expect(w.responses.some((r) => r.id === 4)).toBe(true);
+    expect(w.responses.some((r) => r.id === 3)).toBe(false); // still running
+    await sleep(500);
+    await w.close();
 
-    expect(responses.find((r) => r.id === 1)?.result?.protocolVersion).toBeTruthy();
-    expect(responses.find((r) => r.id === 2)?.result?.tools?.length).toBeGreaterThan(0);
-    const call = responses.find((r) => r.id === 3);
-    expect(call?.result?.content?.[0]?.text).toContain("agent");
+    const init = w.responses.find((r) => r.id === "init");
+    expect(init?.result?.protocolVersion).toBe("2025-06-18");
+    expect(init?.result?.serverInfo?.name).toBe("claudexor");
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(8);
+    const call = w.responses.find((r) => r.id === 3);
+    expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
 
-  it("returns the run SUMMARY (not raw JSON) as the tool_call result", async () => {
-    const c2s = new PassThrough();
-    const s2c = new PassThrough();
-    // Mirror of the ACP "emits the run SUMMARY (not raw JSON)" test: the MCP tool
-    // result must be the run's primary output, not the raw internal run object.
-    const tools = defaultClaudexorTools(async () => ({ runId: "r1", status: "succeeded", summary: "Did the thing.", winner: "A" }));
-    const server = new McpServer({ tools, transport: { read: c2s, write: s2c } });
-    const serving = server.serve();
+  it("returns the run SUMMARY plus the runId/artifacts trailer (hosts get a handle)", async () => {
+    const tools = defaultClaudexorTools(async () => ({ runId: "r1", runDir: "/tmp/r1", status: "succeeded", summary: "Did the thing.", winner: "A" }));
+    const w = wire(tools);
+    await w.initialize();
+    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    await sleep(120);
+    await w.close();
 
-    const responses: any[] = [];
-    const rl = createInterface({ input: s2c });
-    rl.on("line", (l) => {
-      if (l.trim()) responses.push(JSON.parse(l));
-    });
-
-    c2s.write(
-      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } }) + "\n",
-    );
-    await sleep(40);
-    c2s.end();
-    await serving;
-
-    const text = responses.find((r) => r.id === 1)?.result?.content?.[0]?.text;
-    expect(text).toBe("Did the thing.");
-    // Never the raw internal object.
-    expect(text).not.toContain("runId");
+    const text = w.responses.find((r) => r.id === 1)?.result?.content?.[0]?.text as string;
+    // Summary first, then the artifact handle — an MCP host must be able to
+    // inspect/apply/follow the run it just started (T7 finding 2 fix; the
+    // old "never contains runId" pin is deliberately retired).
+    expect(text.startsWith("Did the thing.")).toBe(true);
+    expect(text).toContain("runId: r1");
+    expect(text).toContain("artifacts: /tmp/r1");
+    expect(text).toContain("status: succeeded");
+    // Still never a raw JSON dump of the internal run object.
     expect(text).not.toContain("winner");
+    expect(text).not.toContain("{");
   });
 
-  it("rejects invalid tool arguments before invoking the runner", async () => {
-    const c2s = new PassThrough();
-    const s2c = new PassThrough();
+  it("rejects invalid tool arguments as isError tool results before invoking the runner", async () => {
     let calls = 0;
     const tools = defaultClaudexorTools(async () => {
       calls += 1;
@@ -83,15 +110,9 @@ describe("McpServer", () => {
     expect(raceSchema?.properties?.n?.type).toBe("integer");
     expect(raceSchema?.properties?.n?.minimum).toBe(2);
     expect(statusSchema?.additionalProperties).toBe(false);
-    const server = new McpServer({ tools, transport: { read: c2s, write: s2c } });
-    const serving = server.serve();
 
-    const responses: any[] = [];
-    const rl = createInterface({ input: s2c });
-    rl.on("line", (l) => {
-      if (l.trim()) responses.push(JSON.parse(l));
-    });
-
+    const w = wire(tools);
+    await w.initialize();
     const secretLike = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
     const invalidCalls = [
       { id: 1, name: "claudexor_run", arguments: {} },
@@ -118,18 +139,90 @@ describe("McpServer", () => {
       { id: 22, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] } },
     ];
     for (const call of invalidCalls) {
-      c2s.write(JSON.stringify({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } }) + "\n");
+      w.send({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } });
     }
-    await sleep(60);
-    c2s.end();
-    await serving;
+    await sleep(250);
+    await w.close();
 
     expect(calls).toBe(0);
-    expect(responses).toHaveLength(invalidCalls.length);
-    expect(responses.every((r) => r.error?.code === -32602)).toBe(true);
-    expect(responses.find((r) => r.id === 20)?.error?.message).toContain("secret-like value is not accepted");
-    expect(responses.find((r) => r.id === 21)?.error?.message).toContain("secret-like value is not accepted");
-    expect(responses.find((r) => r.id === 22)?.error?.message).toContain("secret-like value is not accepted");
+    const results = invalidCalls.map((c) => w.responses.find((r) => r.id === c.id));
+    expect(results.every((r) => r !== undefined)).toBe(true);
+    // The official SDK's contract: argument failures are isError TOOL results
+    // (its own structural validation behaves the same), not -32602 protocol
+    // errors. Every invalid call must be an error result either way.
+    expect(results.every((r) => r.result?.isError === true || typeof r.error?.code === "number")).toBe(true);
+    const textOf = (id: number): string => {
+      const r = w.responses.find((x) => x.id === id);
+      return String(r?.result?.content?.[0]?.text ?? r?.error?.message ?? "");
+    };
+    expect(textOf(20)).toContain("secret-like value is not accepted");
+    expect(textOf(21)).toContain("secret-like value is not accepted");
+    expect(textOf(22)).toContain("secret-like value is not accepted");
+  });
+
+  it("bridges engine interactions to MCP elicitation and maps answers back", async () => {
+    let receivedAnswers: any = null;
+    const runner: RunnerFn = async (_p, hooks) => {
+      receivedAnswers = await hooks?.onInteraction?.({
+        request: {
+          interaction_id: "int-1",
+          questions: [
+            { id: "q1", question: "Pick one", header: null, options: [{ label: "A", description: null }, { label: "B", description: "second" }], multi_select: false },
+            { id: "q2", question: "Say more", header: "Detail", options: [], multi_select: false },
+          ],
+        },
+        timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      return { summary: "asked and answered" };
+    };
+    const tools = defaultClaudexorTools(runner);
+    const w = wire(tools);
+    // Declare the elicitation capability so the SDK allows elicitInput.
+    await w.initialize({ elicitation: {} });
+    w.send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    // Answer each incoming elicitation/create server request over the wire.
+    const answered = new Set<string>();
+    for (let i = 0; i < 60; i += 1) {
+      await sleep(50);
+      for (const req of w.requests) {
+        if (req.method === "elicitation/create" && !answered.has(String(req.id))) {
+          answered.add(String(req.id));
+          const isChoice = JSON.stringify(req.params).includes("Pick one");
+          w.send({
+            jsonrpc: "2.0",
+            id: req.id,
+            result: { action: "accept", content: { answer: isChoice ? "B" : "because reasons" } },
+          });
+        }
+      }
+      if (w.responses.some((r) => r.id === 9)) break;
+    }
+    await w.close();
+
+    expect(w.responses.find((r) => r.id === 9)?.result?.content?.[0]?.text).toContain("asked and answered");
+    expect(receivedAnswers).toEqual({
+      answers: [
+        { question_id: "q1", selected_labels: ["B"], free_text: null },
+        { question_id: "q2", selected_labels: [], free_text: "because reasons" },
+      ],
+    });
+  });
+
+  it("resolves interactions as DECLINED (null) when the host lacks the elicitation capability", async () => {
+    let sawHooks: unknown = "unset";
+    const runner: RunnerFn = async (_p, hooks) => {
+      sawHooks = hooks?.onInteraction ?? null;
+      return { summary: "ok" };
+    };
+    const tools = defaultClaudexorTools(runner);
+    const w = wire(tools);
+    await w.initialize(); // no elicitation capability
+    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    await sleep(150);
+    await w.close();
+    // No capability -> no bridge is offered at all; the engine's own
+    // timeout-decline fallback stays in charge (never a fake answer).
+    expect(sawHooks).toBeNull();
   });
 
   it("exposes advanced run controls and forwards them to the runner", async () => {
@@ -162,19 +255,22 @@ describe("McpServer", () => {
     expect(schema?.properties?.access?.enum).toContain("workspace_write");
     expect(schema?.properties?.protectedPathApprovals?.items?.required).toEqual(["path"]);
 
-    await runTool?.handler({
-      prompt: "go",
-      reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
-      model: "gpt-5.5",
-      effort: "xhigh",
-      web: "live",
-      reviewerModels: { openai: "gpt-5.5" },
-      reviewerEfforts: { openai: "xhigh" },
-      tests: ["pnpm test"],
-      maxUsd: 3,
-      access: "workspace_write",
-      protectedPathApprovals: [{ path: "test/**" }],
-    });
+    await runTool?.handler(
+      {
+        prompt: "go",
+        reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
+        model: "gpt-5.5",
+        effort: "xhigh",
+        web: "live",
+        reviewerModels: { openai: "gpt-5.5" },
+        reviewerEfforts: { openai: "xhigh" },
+        tests: ["pnpm test"],
+        maxUsd: 3,
+        access: "workspace_write",
+        protectedPathApprovals: [{ path: "test/**" }],
+      },
+      { elicit: null },
+    );
 
     expect(received).toMatchObject({
       mode: "agent",
@@ -190,5 +286,25 @@ describe("McpServer", () => {
       access: "workspace_write",
       protectedPathApprovals: [{ path: "test/**" }],
     });
+  });
+
+  it("warns on stderr when the plugin artifact version does not match the CLI", async () => {
+    const prev = process.env["CLAUDEXOR_PLUGIN_VERSION"];
+    process.env["CLAUDEXOR_PLUGIN_VERSION"] = "0.1.0";
+    const chunks: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (chunk: any, ...rest: any[]) => {
+      chunks.push(String(chunk));
+      return origWrite(chunk, ...rest);
+    };
+    try {
+      const w = wire(defaultClaudexorTools(async () => "ok"), { version: "0.2.0" });
+      await w.close();
+    } finally {
+      (process.stderr as any).write = origWrite;
+      if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
+      else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
+    }
+    expect(chunks.join("")).toContain("plugin artifacts are version 0.1.0 but the CLI is 0.2.0");
   });
 });

@@ -683,3 +683,98 @@ describe("AcpServer", () => {
     expect(completions.find((u) => u.toolCallId === startedIds[1])?.status).toBe("failed");
   });
 });
+
+/** Wire helper for the Phase-5 conformance tests: real streams, split
+ * responses vs server->client requests, captured session/update notifications. */
+function startServer(runner: (p: any, hooks?: any) => Promise<unknown>, updates: any[] = []) {
+  const c2s = new PassThrough();
+  const s2c = new PassThrough();
+  const server = new AcpServer({ runner, transport: { read: c2s, write: s2c } });
+  const serving = server.serve();
+  const responses: any[] = [];
+  const requests: any[] = [];
+  const rl = createInterface({ input: s2c });
+  rl.on("line", (l) => {
+    if (!l.trim()) return;
+    const msg = JSON.parse(l);
+    if (msg.method === "session/update") updates.push(msg.params);
+    else if (msg.method) requests.push(msg);
+    else responses.push(msg);
+  });
+  return { c2s, s2c, responses, requests, serving };
+}
+
+describe("ACP conformance fixes (Phase 5)", () => {
+  it("initialize includes authMethods: [] (strict ACP clients deserialize it)", async () => {
+    const { c2s, responses, serving } = startServer(async () => "ok");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } }) + "\n");
+    await sleep(40);
+    c2s.end();
+    await serving;
+    expect(responses.find((r) => r.id === 1)?.result?.authMethods).toEqual([]);
+  });
+
+  it("session/prompt tolerates the protocol's _meta envelope but still rejects unknown Claudexor knobs", async () => {
+    const { c2s, responses, serving } = startServer(async () => "ok");
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(40);
+    const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0", id: 2, method: "session/prompt",
+        params: { sessionId, prompt: "go", mode: "ask", _meta: { "vendor/trace": "abc" } },
+      }) + "\n",
+    );
+    await sleep(60);
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0", id: 3, method: "session/prompt",
+        params: { sessionId, prompt: "go", mode: "ask", tpyoKnob: true },
+      }) + "\n",
+    );
+    await sleep(60);
+    c2s.end();
+    await serving;
+    expect(responses.find((r) => r.id === 2)?.result?.stopReason).toBe("end_turn");
+    expect(responses.find((r) => r.id === 3)?.error?.message).toContain("unknown session/prompt field: tpyoKnob");
+  });
+
+  it("announces a tool_call before session/request_permission and completes it after (no orphan ids)", async () => {
+    const updates: any[] = [];
+    const { c2s, responses, requests, serving } = startServer(async (_p: any, hooks: any) => {
+      const answers = await hooks?.onInteraction?.({
+        request: {
+          interaction_id: "int-7",
+          questions: [{ id: "q1", question: "Pick", header: null, options: [{ label: "A", description: null }], multi_select: false }],
+        },
+      });
+      return answers ? "answered" : "declined";
+    }, updates);
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(40);
+    const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    // Answer the permission request when it arrives.
+    for (let i = 0; i < 40; i += 1) {
+      await sleep(25);
+      const perm = requests.find((r) => r.method === "session/request_permission");
+      if (perm) {
+        c2s.write(JSON.stringify({ jsonrpc: "2.0", id: perm.id, result: { outcome: { outcome: "selected", optionId: "opt-1" } } }) + "\n");
+        break;
+      }
+    }
+    await sleep(120);
+    c2s.end();
+    await serving;
+    const perm = requests.find((r) => r.method === "session/request_permission");
+    expect(perm).toBeTruthy();
+    const announcedId = perm?.params?.toolCall?.toolCallId;
+    const toolCallUpdates = updates.filter((u) => u?.update?.sessionUpdate === "tool_call" || u?.update?.sessionUpdate === "tool_call_update");
+    const announce = toolCallUpdates.find((u) => u.update.sessionUpdate === "tool_call" && u.update.toolCallId === announcedId);
+    const complete = toolCallUpdates.find((u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === announcedId && u.update.status === "completed");
+    expect(announce).toBeTruthy();
+    expect(complete).toBeTruthy();
+    // Announce BEFORE the permission request hit the wire.
+    expect(updates.indexOf(announce)).toBeGreaterThanOrEqual(0);
+  });
+});

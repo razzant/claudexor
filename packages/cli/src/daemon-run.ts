@@ -165,7 +165,14 @@ export async function enqueueAndAwait(
   client: DaemonClientType,
   addr: ControlApiAddress,
   body: Record<string, unknown>,
-  opts: { waitForTerminal: boolean; startTimeoutMs?: number } = { waitForTerminal: true },
+  opts: {
+    waitForTerminal: boolean;
+    startTimeoutMs?: number;
+    /** Invoked each terminal-wait iteration once the run is bound (MCP uses
+     * this to bridge pendingInteractions -> host elicitation). Awaited: a
+     * long answer round-trip pauses status polling, never the run itself. */
+    onPollTick?: (info: { runId: string }) => void | Promise<void>;
+  } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
   const startRes = await fetch(`${addr.baseUrl}/runs`, {
     method: "POST",
@@ -246,6 +253,7 @@ export async function enqueueAndAwait(
       if (TERMINAL_STATES.has(rec.state)) {
         return { runId: rec.runId ?? runId, runDir: rec.runDir ?? runDir, status: rec.state, jobId, error: rec.error };
       }
+      if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });
       await sleep(250);
     }
   } finally {

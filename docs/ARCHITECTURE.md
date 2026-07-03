@@ -125,7 +125,16 @@ are NOT aliases: they hard-error at every wire boundary.
   skill/MCP artifacts and command artifacts where hosts support them. Plugin
   lifecycle state is user-level local setup state, not a schema/control-api
   contract.
-- `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces.
+- `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
+  MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
+  negotiation down to 2024-10-07, schema-validated arguments, elicitation);
+  its MUTATING verbs (run/race/create) enqueue through the DAEMON — MCP runs
+  appear in `GET /runs`, are cancellable/unblockable, and every result
+  carries a runId/artifacts trailer. Read-only verbs stay in-process (same
+  doctrine as the CLI). Engine questions bridge to MCP elicitation when the
+  host declares the capability; otherwise the timeout-decline fallback holds.
+  ACP replies `authMethods: []`, tolerates the protocol's `_meta` envelope,
+  and announces a `tool_call` before every `session/request_permission`.
 - `benchmarks/runner`: benchmark scaffolds (SWE-bench Verified et al.).
 - `apps/macos`: native app; displays/edits what the engine exposes.
 

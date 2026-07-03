@@ -99,27 +99,39 @@ The MCP server is a thin surface over the same engine and run artifacts. Keep MC
 clients honest: read-only modes stay read-only, unavailable harnesses fail
 loudly, and apply/delivery state comes from server-owned artifacts.
 
-MCP is one-shot in this release. A host receives the final Claudexor output
-from the eight implemented tools — `claudexor_ask`, `claudexor_explore`,
-`claudexor_run`, `claudexor_race`, `claudexor_plan`, `claudexor_create`,
-`claudexor_orchestrate`, and `claudexor_status` — and does not gain live
-Claudexor thread parity through MCP.
+The server runs on the official MCP TypeScript SDK v2: it negotiates the
+client's protocol revision (2025-11-25 down to 2024-10-07; Cursor's
+2025-06-18 handshake included), dispatches requests CONCURRENTLY (ping and
+tools/list answer while a long race runs), and validates arguments against
+the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
+the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
+and surface as `isError` tool results.
 
-Honest operational caveats of the current MCP surface (fixes for all of
-these are scheduled in the v0.15 MCP upgrade):
+MCP is one-shot: a host receives the final Claudexor output from the eight
+implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
+`claudexor_race`, `claudexor_plan`, `claudexor_create`,
+`claudexor_orchestrate`, and `claudexor_status` — not live thread parity.
 
-- Requests are handled strictly sequentially: a long tool call (a race can run
-  for many minutes) blocks subsequent requests, including pings, so hosts with
-  aggressive timeouts may drop the call.
-- Tool results carry the final output text but no run id — MCP is launch-only;
-  correlate artifacts through the CLI (`claudexor inspect`) or the run
-  directory if you need the run's evidence.
-- There is no interaction/elicitation channel: a mid-run harness question
-  cannot reach the MCP host and declines benignly after the configurable
-  `interaction_timeout_ms`.
-- MCP runs execute in-process in the MCP server, not through the daemon:
-  `GET /runs` does not list them. Artifacts still land under
-  `.claudexor/runs/` as usual.
+Current operational behavior:
+
+- MUTATING verbs (`claudexor_run`, `claudexor_race`, `claudexor_create`) are
+  DAEMON-TRACKED: the server auto-starts the local daemon and enqueues
+  through the control API, so `GET /runs` lists MCP-started runs and
+  `claudexor decision` can unblock a blocked one. Read-only verbs
+  (ask/explore/plan/orchestrate) run in-process — nothing to apply or
+  unblock (same doctrine as the CLI).
+- Every run result ends with a `runId:`/`artifacts:`/`status:` trailer — the
+  host has a handle for `claudexor inspect`, `follow`, `apply`, `decision`.
+- Mid-run harness questions bridge to MCP ELICITATION when the host declares
+  the capability (Cursor does): each engine question becomes one
+  `elicitation/create` round-trip. Hosts without elicitation keep the honest
+  fallback — the question declines benignly after `interaction_timeout_ms`.
+- A version skew between installed plugin artifacts
+  (`CLAUDEXOR_PLUGIN_VERSION`) and the running CLI is disclosed on stderr at
+  serve time; run `claudexor plugin repair all` and reload the host.
+- Long blocking calls remain subject to HOST tool timeouts (a race can run
+  many minutes). The runId trailer plus daemon tracking make the run
+  recoverable even if the host abandons the call.
 
 ## Host Plugins
 
