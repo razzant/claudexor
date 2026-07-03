@@ -53,6 +53,27 @@ node scripts/complexity-ratchet.mjs
 pnpm canary
 ```
 
+Run the per-commit review gate (D18) on your staged diff:
+
+```bash
+node scripts/commit-review.mjs
+```
+
+It reviews ONLY the staged diff with a multi-model panel — PRIMARY route is
+the engine's own reviewer machinery (`claudexor review --diff`,
+subscription-first dogfood), FALLBACK is an OpenRouter triad-lite (needs
+`OPENROUTER_API_KEY`). The panel lives in the committed
+`.claudexor/review-panel.yaml` (it chooses reviewers only — it cannot grant
+powers; panel changes are reviewed like code). Blocking findings, quorum
+failures, and unavailable routes BLOCK the commit (fail closed). The audited
+bypass is `SKIP_COMMIT_REVIEW="<reason>" git commit ...` — every bypass is
+appended to `.claudexor/logs/review-bypass.jsonl` and echoed into the commit
+body by the `prepare-commit-msg` hook. Local hooks are opt-in:
+
+```bash
+bash scripts/install-hooks.sh   # pre-commit review + bypass disclosure
+```
+
 Then self-check, honestly, in the commit body:
 
 - Which Bible invariants does this change touch, and how?

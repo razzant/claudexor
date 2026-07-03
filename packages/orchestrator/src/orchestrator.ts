@@ -88,6 +88,7 @@ import {
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
 import { blockedDecisionOverride, finalVerifyBlocks, finalVerifyPatch } from "./finalVerifier.js";
+import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type AttemptTelemetry,
   type ToolErrorRecord,
@@ -460,6 +461,16 @@ export class Orchestrator {
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.gateway = new HarnessGateway(deps.registry);
+  }
+
+  /** Scoped DIFF review (D18) — thin delegate; mechanics live in diffReview.ts. */
+  async reviewDiff(input: DiffReviewInput): Promise<DiffReviewResult> {
+    return runDiffReview(input, {
+      resolveReviewers: (root, pref) => this.resolveReviewers(root, pref),
+      reviewScoped: (i) => this.reviewScoped(i),
+      execRootOf: (root) => this.execRootOf({ repoRoot: root } as RunInput),
+      envInheritance: (root) => envInheritance(this.config(root)),
+    });
   }
 
   async run(input: RunInput): Promise<OrchestratorResult> {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -28,6 +28,7 @@ import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
 import {
+  isBlocking,
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,
@@ -58,6 +59,7 @@ import {
 } from "./args.js";
 import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
+import { reviewCommand } from "./review-command.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import {
@@ -185,6 +187,7 @@ Usage:
   claudexor create "<prompt>"             Create-from-scratch (agent --create)
   claudexor audit | map                   Read-only repo audit / map
   claudexor explore "<question>"          Read-only research swarm (audit --swarm)
+  claudexor review --diff <file>          Reviewer-panel review of a diff file (per-commit gate)
   claudexor inspect <run_id>              Inspect a run's decision + artifacts
   claudexor follow <run_id> [--json]      Live-tail a daemon run (replay + push; answer questions in the TTY)
   claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
@@ -224,6 +227,9 @@ Options:
   --allow-protected-path <glob[,glob...]>  Explicitly approve protected gate/test path changes for this run
   --max-usd <amount>       Hard per-run spend cap (USD)
   --max-tool-calls <n>     Orchestrate executor: cap on plan tool calls
+  --diff <file>            Diff file for the review verb (per-commit gate)
+  --intent "<text>"        Review intent context for the review verb
+  --tests "<evidence>"     Test evidence text for the review verb
   --reviewer-panel <list>  Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
   --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
   --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
@@ -1134,6 +1140,10 @@ const KNOWN_FLAGS = new Set([
   "feedback",
   "help",
   "version",
+  // review verb (D18 per-commit gate)
+  "diff",
+  "intent",
+  "tests",
 ]);
 
 const VALUE_FLAGS = [
@@ -1165,6 +1175,10 @@ const VALUE_FLAGS = [
   "backend",
   "apply-mode",
   "feedback",
+  // review verb (D18 per-commit gate)
+  "diff",
+  "intent",
+  "tests",
 ];
 
 const PLUGIN_FLAGS = ["json", "dry-run", "force", "help", "version"];
@@ -1396,6 +1410,9 @@ async function main(): Promise<number> {
       }
       return followRun(runId, json);
     }
+
+    case "review":
+      return reviewCommand(args, json);
 
     case "inspect": {
       const runId = args._[1];

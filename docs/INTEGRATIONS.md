@@ -8,7 +8,7 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint for init/ask/explore/run/race/plan/spec/create/audit (alias map)/orchestrate/inspect/follow/apply/decision/models/harness/doctor/plugin/daemon/auth/secrets/settings/trust/release flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint for init/ask/explore/run/race/plan/spec/create/audit (alias map)/orchestrate/inspect/follow/apply/decision/review/models/harness/doctor/plugin/daemon/auth/secrets/settings/trust/release flows. | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |

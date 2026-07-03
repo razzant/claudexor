@@ -13,6 +13,8 @@ coverage/
 .claudexor/*
 !.claudexor/
 !.claudexor/config.yaml
+# Versioned per-commit review panel (D18): chooses reviewers only, reviewed like code.
+!.claudexor/review-panel.yaml
 .claudexor/runs/
 .claudexor/workspaces/
 .claudexor/cache/

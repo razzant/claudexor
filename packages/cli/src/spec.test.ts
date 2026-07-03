@@ -361,3 +361,27 @@ Review blocked on evidence.
     expect(parsed.answers[0]?.question_id).toBe("q1");
   });
 });
+
+describe("commit-review panel lib (D18)", () => {
+  it("isBlockingSeverity accepts both the gate vocabulary and Claudexor-native blocking severities", async () => {
+    const { isBlockingSeverity } = await import("../../../scripts/lib/openrouter-panel.mjs");
+    for (const s of ["FAIL", "fail", "BLOCK", "FIX_FIRST", "NEEDS_HUMAN"]) expect(isBlockingSeverity(s)).toBe(true);
+    for (const s of ["WARN", "NIT", "", undefined]) expect(isBlockingSeverity(s)).toBe(false);
+  });
+
+  it("parseFindingsArray handles bare arrays, tight fences, and garbage", async () => {
+    const { parseFindingsArray } = await import("../../../scripts/lib/openrouter-panel.mjs");
+    expect(parseFindingsArray('[{"severity":"FAIL","finding":"x"}]').findings).toHaveLength(1);
+    // Standard markdown WITHOUT trailing newline before the closing fence.
+    expect(parseFindingsArray('```json\n[{"severity":"WARN","finding":"y"}]```').findings).toHaveLength(1);
+    expect(parseFindingsArray("no json at all").findings).toBeNull();
+    expect(parseFindingsArray('```json\n{"not":"array"}\n```').findings).toBeNull();
+    // Quorum shape: junk arrays are UNUSABLE, empty arrays are a clean pass,
+    // and finding-shaped items survive filtering.
+    expect(parseFindingsArray('[{"unrelated":"junk"},{"foo":1}]').findings).toBeNull();
+    // STRICT: half-junk arrays are unusable too (a mixed response is untrustworthy).
+    expect(parseFindingsArray('[{"severity":"WARN","finding":"real"},{"junk":1}]').findings).toBeNull();
+    expect(parseFindingsArray("[]").findings).toEqual([]);
+    expect(parseFindingsArray('[{"severity":"WARN","claim":"uses claim key"}]').findings).toHaveLength(1);
+  });
+});
