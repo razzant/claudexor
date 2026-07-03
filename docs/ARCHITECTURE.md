@@ -188,7 +188,7 @@ gating, knob support, the interactive-channel gate) and a small structured
 `capability_profile` limited to what is actually read: auth sources and
 credential transports, isolation containment, the honest readonly mechanism,
 and vision `image_input` (the never-consumed execution-surface/session/output
-subtrees were deleted in the v0.15 triage — a declared capability with no
+subtrees were deleted in the stabilization triage — a declared capability with no
 consumer is a staged field). Capabilities are data-driven and declared by the
 adapter: `effort_levels` (a shared normalizer clamps a requested hint onto the
 nearest supported level; a requested effort on an EMPTY ladder is disclosed
