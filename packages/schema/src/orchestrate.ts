@@ -184,9 +184,34 @@ export type OrchestratePlanProgress = z.infer<typeof OrchestratePlanProgress>;
  */
 let orchestratePlanJsonSchemaCache: Record<string, unknown> | null = null;
 export function orchestratePlanJsonSchema(): Record<string, unknown> {
-  orchestratePlanJsonSchemaCache ??= zodToJsonSchema(OrchestratePlan, {
-    name: "OrchestratePlan",
-    $refStrategy: "none",
-  }) as Record<string, unknown>;
+  // INLINE root (no name/$ref wrapper): claude materializes --json-schema as
+  // a StructuredOutput TOOL whose input_schema must carry a top-level "type"
+  // — a $ref-wrapped root 400s (LIVE-VERIFIED). Codex accepts both.
+  orchestratePlanJsonSchemaCache ??= strictifyForStructuredOutput(
+    zodToJsonSchema(OrchestratePlan, { $refStrategy: "none" }) as Record<string, unknown>,
+  );
   return orchestratePlanJsonSchemaCache;
+}
+
+/**
+ * Vendor STRICT structured-output mode (LIVE-VERIFIED against codex 0.137 /
+ * the OpenAI Responses API): every object must list ALL property keys in
+ * `required` and set `additionalProperties: false` — optional-with-default
+ * fields become always-emitted (their Zod defaults make explicit values
+ * equivalent). One owner for the transform; a schema that violates this is
+ * rejected by the vendor with invalid_json_schema.
+ */
+function strictifyForStructuredOutput(node: unknown): Record<string, unknown> {
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (!value || typeof value !== "object") return value;
+    const obj = { ...(value as Record<string, unknown>) };
+    for (const key of Object.keys(obj)) obj[key] = walk(obj[key]);
+    if (obj["type"] === "object" && obj["properties"] && typeof obj["properties"] === "object") {
+      obj["required"] = Object.keys(obj["properties"] as Record<string, unknown>);
+      obj["additionalProperties"] = false;
+    }
+    return obj;
+  };
+  return walk(node) as Record<string, unknown>;
 }

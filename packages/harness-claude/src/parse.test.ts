@@ -313,6 +313,29 @@ describe("parseClaudeEvent", () => {
 });
 
 describe("plan progress (D14)", () => {
+  it("accumulates TaskCreate/TaskUpdate into a whole-list plan_progress (current claude surface)", () => {
+    const sid = "s-task-" + Math.random();
+    const call = (name: string, input: Record<string, unknown>) =>
+      parseClaudeEvent(
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name, input }] } },
+        sid,
+      )?.find((e) => e.type === "tool_call");
+    const c1 = call("TaskCreate", { subject: "step one", description: "d", activeForm: "doing one" });
+    expect(c1?.plan_progress?.items).toEqual([{ id: "claude-1", title: "step one", status: "pending" }]);
+    call("TaskCreate", { subject: "step two" });
+    const upd = call("TaskUpdate", { taskId: "1", status: "in_progress" });
+    expect(upd?.plan_progress?.items).toEqual([
+      { id: "claude-1", title: "step one", status: "in_progress" },
+      { id: "claude-2", title: "step two", status: "pending" },
+    ]);
+    const done = call("TaskUpdate", { taskId: "1", status: "completed" });
+    expect(done?.plan_progress?.items?.[0]?.status).toBe("completed");
+    // Unknown task id / no status change -> plain tool_call, no plan_progress.
+    const noop = call("TaskUpdate", { taskId: "99", status: "completed" });
+    expect(noop?.plan_progress).toBeUndefined();
+  });
+
+
   it("maps TodoWrite todos to the TYPED plan_progress field on the tool_call event", () => {
     const out = parseClaudeEvent(
       {

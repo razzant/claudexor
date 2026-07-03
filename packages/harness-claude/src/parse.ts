@@ -38,6 +38,46 @@ export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventP
 }
 
 /** Stateless convenience used by tests; resolves results within a single call only. */
+interface SessionTask {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed";
+}
+const sessionTasks = new Map<string, SessionTask[]>();
+const SESSION_TASKS_MAX_SESSIONS = 64;
+
+function applySessionTask(sessionId: string, tool: string, input: Record<string, unknown>): boolean {
+  if (!sessionTasks.has(sessionId) && sessionTasks.size >= SESSION_TASKS_MAX_SESSIONS) {
+    const oldest = sessionTasks.keys().next().value;
+    if (oldest !== undefined) sessionTasks.delete(oldest);
+  }
+  const list = sessionTasks.get(sessionId) ?? [];
+  if (tool === "TaskCreate") {
+    const title = typeof input["subject"] === "string" ? input["subject"] : null;
+    if (!title) return false;
+    list.push({ id: String(list.length + 1), title, status: "pending" });
+    sessionTasks.set(sessionId, list);
+    return true;
+  }
+  // TaskUpdate: {taskId, status?} — ids are 1-based creation order (the CLI's
+  // own numbering, observed live).
+  const taskId = typeof input["taskId"] === "string" ? input["taskId"] : null;
+  if (!taskId) return false;
+  const task = list.find((t) => t.id === taskId);
+  if (!task) return false;
+  const status = input["status"];
+  if (status === "completed" || status === "in_progress" || status === "pending") {
+    task.status = status;
+    sessionTasks.set(sessionId, list);
+    return true;
+  }
+  return false;
+}
+
+function sessionTaskItems(sessionId: string): SessionTask[] {
+  return (sessionTasks.get(sessionId) ?? []).map((t) => ({ id: `claude-${t.id}`, title: t.title, status: t.status }));
+}
+
 export function parseClaudeEvent(obj: Json, sessionId: string): HarnessEvent[] | null {
   return parseClaudeEventStateful(obj, sessionId, new Map());
 }
@@ -117,9 +157,8 @@ function parseClaudeEventStateful(
           const path = input.file_path ?? input.path ?? input.notebook_path;
           out.push({ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name, tool_use_id: block.id } });
         } else if (name === "TodoWrite" && Array.isArray(input.todos)) {
-          // Typed plan progress (D14): claude's todo list IS the live plan.
-          // Map in the parse layer (adapter knowledge of its own tool shape);
-          // status values already match pending|in_progress|completed.
+          // Typed plan progress (D14), legacy surface: older claude CLIs plan
+          // via TodoWrite (whole-list updates; statuses map 1:1).
           const items = (input.todos as Array<{ content?: unknown; status?: unknown }>).map((t, i) => ({
             id: `claude-${i}`,
             title: String(t.content ?? ""),
@@ -127,6 +166,24 @@ function parseClaudeEventStateful(
               t.status === "completed" ? ("completed" as const) : t.status === "in_progress" ? ("in_progress" as const) : ("pending" as const),
           }));
           out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, plan_progress: { items } });
+        } else if (name === "TaskCreate" || name === "TaskUpdate") {
+          // Typed plan progress (D14), current surface (LIVE-VERIFIED 2.1.165):
+          // claude plans via TaskCreate/TaskUpdate. The adapter accumulates the
+          // session's task list and re-emits the WHOLE list on every change
+          // (the run-event contract is last-wins).
+          const taskChanged = applySessionTask(sessionId, name, input);
+          if (taskChanged) {
+            out.push({
+              type: "tool_call",
+              session_id: sessionId,
+              ts,
+              text: name,
+              tool,
+              plan_progress: { items: sessionTaskItems(sessionId) },
+            });
+          } else {
+            out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, payload: { input } });
+          }
         } else if (name === "ExitPlanMode" && typeof input.plan === "string" && input.plan.trim()) {
           // The produced plan rides in ExitPlanMode's INPUT; surface it as the
           // message it is so plan-mode runs keep their work product headless.
