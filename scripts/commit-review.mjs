@@ -192,6 +192,9 @@ async function main() {
   const cliJs = join(repoRoot, "packages", "cli", "dist", "cli.js");
   if (existsSync(cliJs)) {
     const args = [cliJs, "review", "--diff", diffPath, "--intent", "Pre-commit review of the staged diff for THIS repository. Block only on concrete defects in the touched scope.", "--json"];
+    // Author-supplied test evidence for the packet (optional): reviewers
+    // otherwise flag release-scale commits as "no test evidence supplied".
+    if (process.env.CLAUDEXOR_COMMIT_TESTS) args.push("--tests", process.env.CLAUDEXOR_COMMIT_TESTS);
     if (cfg.reviewerPanel) args.push("--reviewer-panel", cfg.reviewerPanel);
     const res = spawnSync(process.execPath, args, {
       cwd: snapshotDir, // evidence root = the index snapshot, not the live tree

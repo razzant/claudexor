@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/artifact-store",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "license": "MIT",
   "description": "Files-first canonical artifact store (repo-local .claudexor/runs layout).",
   "type": "module",

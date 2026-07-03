@@ -3,7 +3,21 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **Unreleased (v0.15 program, phase 5, in progress)** — MCP/ACP surface
+- **v0.15.0** — the stabilization program ships: concept freeze
+  (numbered-invariant Bible + concept gate), model governance
+  (harness-scoped models, strict truth-source validation, settings
+  write-time refusal), run honesty (terminal nets on every path,
+  inactivity watchdog, crash GC with live-owner proof, CRLF/binary diff
+  fidelity, FinalVerifier), routing/output reality (typed quota ->
+  headroom routing, portfolio EMA metrics + operator priors, structured
+  output on both real CLIs, live plan checklists, per-candidate evidence
+  cards), the per-commit review gate (audited bypasses; release-checklist
+  consumer), and the MCP/ACP surface upgrade + integration suite below.
+  Release-grade triads on the cumulative diff (rounds 33-35, three
+  meaningful scopes, exact locked panel) + full real-harness battery
+  (PASS=82) + surface canaries in CI. Phase entries below preserve the
+  detailed history.
+- **v0.15 program, phase 5** — MCP/ACP surface
   upgrade: the MCP server rides the official TypeScript SDK v2
   (`@modelcontextprotocol/server` 2.0.0-beta.1) — concurrent dispatch
   (ping/tools/list answer during a long race; the hand-rolled loop was
@@ -40,7 +54,7 @@ Release history for Claudexor. The current version is declared in the root
   (`scripts/fixture-freshness-check.mjs --strict`); the mandatory
   pre-release IMMUNE SCAN (whole-tree audit against the Bible) is now a
   Release checklist step (D24).
-- **Unreleased (v0.15 program, phase 4)** — routing/output reality: typed
+- **v0.15 program, phase 4** — routing/output reality: typed
   quota events (codex rollout rate-window -> used_percent observations ->
   headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude
   fail-honest), portfolio metrics with real producers (per-harness EMA
@@ -52,7 +66,7 @@ Release history for Claudexor. The current version is declared in the root
   run detail (macOS Candidates/Plan tabs live), and the per-commit review
   gate (`claudexor review` + `scripts/commit-review.mjs` with audited
   bypasses; opt-in hooks).
-- **Unreleased (v0.15 program, phase 3)** — run honesty: every announced run
+- **v0.15 program, phase 3** — run honesty: every announced run
   now ends with a terminal event on every path (throw/cancel/daemon restart);
   a silent harness stream is killed by an inactivity watchdog
   (`runtime.harness_inactivity_timeout_ms`, default 20 min; waiting on a user

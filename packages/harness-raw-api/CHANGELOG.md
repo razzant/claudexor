@@ -1,5 +1,9 @@
 # @claudexor/harness-raw-api
 
+## 0.15.0
+
+See the root CHANGELOG.md v0.15.0 entry (stabilization program release: concept freeze, model governance, run honesty, routing/output reality, per-commit review gate, MCP/ACP surface upgrade + integration suite).
+
 ## 0.14.1
 
 ### Patch Changes

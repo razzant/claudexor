@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
 that declares the capability can be assigned the intent.
 
-Current status: **v0.14.1 beta**. This is a breaking preview: old mode ids are
+Current status: **v0.15.0 beta**. This is a breaking preview: old mode ids are
 intentionally not supported.
 
 ## Quickstart
@@ -427,7 +427,7 @@ cd ../ClaudexorApp && swift build
 
 ## Version History
 
-The current version is **v0.14.1** (the root `package.json` is the version
+The current version is **v0.15.0** (the root `package.json` is the version
 SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
