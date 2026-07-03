@@ -140,7 +140,7 @@ import {
   BudgetLedger,
   type RouterCandidate,
   loadHarnessMetrics,
-  observationFromEvent,
+  observationsFromEvent,
   recordHarnessMetric,
   promptFingerprint,
   selectHarness,
@@ -1712,9 +1712,10 @@ export class Orchestrator {
             ) {
               pushUniqueText(messageParts, safeEv.text);
             }
-            // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
-            const obs = observationFromEvent(adapter.id, safeEv);
-            if (obs) {
+            // Observe ALL budget/quota signals from this event (one codex
+            // usage event carries BOTH spend and quota) so the router/loop
+            // can react.
+            for (const obs of observationsFromEvent(adapter.id, safeEv)) {
               ledger.observe(obs);
               // D7 disclosure: a harness burning >=50% of its rate window is
               // routing-relevant NOW (pool ordering multiplies by headroom).

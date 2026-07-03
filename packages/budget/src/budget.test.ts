@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderFamily } from "@claudexor/schema";
 import { BudgetLedger, promptFingerprint } from "./ledger.js";
-import { observationFromEvent } from "./observe.js";
+import { observationsFromEvent } from "./observe.js";
 import { type RouterCandidate, selectHarness } from "./router.js";
 
 describe("BudgetLedger", () => {
@@ -110,7 +110,7 @@ describe("router", () => {
 
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {
     const led = new BudgetLedger();
-    const obs = observationFromEvent("codex", {
+    const [obs] = observationsFromEvent("codex", {
       type: "error",
       session_id: "s",
       ts: new Date().toISOString(),
@@ -127,10 +127,10 @@ describe("router", () => {
     const ts = new Date().toISOString();
     // Error PROSE alone never trips a cooldown here — detection is the adapter's
     // job and arrives as the typed field; the budget layer just projects it.
-    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })).toBeNull();
-    expect(observationFromEvent("x", { type: "error", session_id: "s", ts, error: "received 429 items" })).toBeNull();
+    expect(observationsFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })).toEqual([]);
+    expect(observationsFromEvent("x", { type: "error", session_id: "s", ts, error: "received 429 items" })).toEqual([]);
     // The typed field drives the observation; a retry_delay_ms becomes the cooldown.
-    const obs = observationFromEvent("x", {
+    const [obs] = observationsFromEvent("x", {
       type: "error",
       session_id: "s",
       ts,
@@ -187,10 +187,10 @@ describe("DD-27 wave guard (estimate holds)", () => {
 
 describe("quota observation (D7)", () => {
   it("maps a typed HarnessEvent.quota to a native used_percent observation that drives headroom()", async () => {
-    const { observationFromEvent } = await import("./observe.js");
+    const { observationsFromEvent } = await import("./observe.js");
     const { BudgetLedger } = await import("./ledger.js");
     const ts = new Date().toISOString();
-    const obs = observationFromEvent("codex", {
+    const [obs] = observationsFromEvent("codex", {
       type: "usage",
       session_id: "s",
       ts,

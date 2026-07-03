@@ -255,23 +255,28 @@ async function main() {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const artifactsDir = join(logsDir, "commit-review", stamp);
     mkdirSync(artifactsDir, { recursive: true });
+    // Per-reviewer telemetry (review-gate contract): requested/observed
+    // model, status, timings, FULL raw output, parse errors — a verdict
+    // without durable per-reviewer evidence is indistinguishable from a hang.
+    panel.actors.forEach((a, i) => {
+      const dir = join(artifactsDir, `${String(i + 1).padStart(2, "0")}-${a.model.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "metadata.json"), JSON.stringify({
+        requested_model: a.model,
+        observed_model: a.observedModel ?? null,
+        route_proof: "openrouter:/api/v1/chat/completions",
+        status: a.status,
+        ms: a.ms ?? null,
+        parse_error: a.parseError ?? null,
+        error: a.error ?? null,
+      }, null, 2) + "\n");
+      writeFileSync(join(dir, "raw-output.txt"), typeof a.raw === "string" ? a.raw : "");
+      writeFileSync(join(dir, "findings.json"), JSON.stringify(a.findings ?? null, null, 2) + "\n");
+    });
     writeFileSync(
       join(artifactsDir, "fallback-panel.json"),
       JSON.stringify(
-        {
-          models: cfg.fallbackModels,
-          quorum: cfg.quorum,
-          quorum_met: panel.quorumMet,
-          actors: panel.actors.map((a) => ({
-            model: a.model,
-            observed_model: a.observedModel ?? null,
-            status: a.status,
-            ms: a.ms ?? null,
-            parse_error: a.parseError ?? null,
-            raw: typeof a.raw === "string" ? a.raw.slice(0, 200_000) : "",
-          })),
-          findings: panel.findings,
-        },
+        { models: cfg.fallbackModels, quorum: cfg.quorum, quorum_met: panel.quorumMet, findings: panel.findings },
         null,
         2,
       ) + "\n",

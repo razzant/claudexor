@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"th-plan-fixture"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"todo_list","items":[{"text":"step one","completed":false},{"text":"step two","completed":false}]}}
+{"type":"item.completed","item":{"type":"agent_message","text":"working"}}
+{"type":"item.started","item":{"id":"i-fail","type":"command_execution","command":"pnpm test"}}
+{"type":"item.completed","item":{"id":"i-fail","type":"command_execution","command":"pnpm test","exit_code":1,"status":"failed","aggregated_output":"1 test failed"}}
+{"type":"item.started","item":{"id":"i-ok","type":"command_execution","command":"pnpm test"}}
+{"type":"item.completed","item":{"id":"i-ok","type":"command_execution","command":"pnpm test","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"todo_list","items":[{"text":"step one","completed":true},{"text":"step two","completed":false}]}}
+{"type":"turn.completed","usage":{"input_tokens":50,"output_tokens":20}}

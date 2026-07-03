@@ -262,6 +262,20 @@ the remaining headroom), a plan of N steps can never spend N times the cap,
 and exhausting the cap is a disclosed failure — a cut-short plan never
 reads as a clean success.
 
+Quota and routing run on evidence, not vibes. A harness's own
+machine-readable rate-window record (codex's rollout `rate_limits`) becomes
+a typed quota event; a harness with no such surface honestly emits nothing.
+Quota burn feeds pool ordering (headroom-aware routing) and is disclosed in
+the run log at pressure. Portfolio choices (cheapest/strongest/…) rank on
+REAL observed metrics — rolling per-harness cost and latency averages from
+settled attempts plus operator-declared quality priors — never invented
+benchmark numbers. Schema-capable harnesses are constrained to typed output
+where the deliverable IS the typed artifact (the orchestrate brain's plan),
+and live plan checklists + per-candidate evidence cards ride typed events
+into the UI. This repository also gates its OWN commits: a staged diff is
+reviewed by a cross-family panel (with an audited, commit-body-disclosed
+bypass) before it lands.
+
 Runs cannot hang silently, and crashes do not leak. Every announced run ends
 with a terminal event on every path (throw, cancel, daemon restart); a
 harness stream that goes silent past the inactivity window is killed with a

@@ -10,7 +10,7 @@ import type { AuthPreference, ProviderFamily, ReviewFinding } from "@claudexor/s
 import { HarnessUnavailableError } from "@claudexor/core";
 import { revalidateFindings, type ReviewerSpec, type reviewCandidate } from "@claudexor/review";
 import { writeEvidencePacket } from "@claudexor/context";
-import { redactSecrets } from "@claudexor/util";
+import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
 
 export interface DiffReviewInput {
   repoRoot: string;
@@ -45,6 +45,12 @@ export interface DiffReviewDeps {
 export async function runDiffReview(input: DiffReviewInput, deps: DiffReviewDeps): Promise<DiffReviewResult> {
   if (!input.diff.trim()) {
     throw new Error("reviewDiff: the diff is empty — nothing to review");
+  }
+  // INV-062: raw secrets must never become review artifacts. The fence lives
+  // HERE so every caller (CLI verb, commit gate, future surfaces) is covered
+  // before any evidence write or reviewer call.
+  if (containsSecretLikeToken(input.diff)) {
+    throw new Error("reviewDiff: the diff contains a secret-like token; refusing review (remove the secret first)");
   }
   const reviewers = await deps.resolveReviewers(input.repoRoot, input.authPreference);
   if (reviewers.length === 0) {

@@ -10,27 +10,38 @@ const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
  * legitimate) and arrives here as the typed `HarnessEvent.rate_limit` field.
  * Subscription balancing remains honest "observed best-effort", never exact-claimed.
  */
-export function observationFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation | null {
+/**
+ * ONE event can carry SEVERAL budget signals (a codex usage event carries
+ * both an estimated cost AND its rollout quota record) — returning a single
+ * observation dropped the quota for exactly the real codex shape. Callers
+ * observe every entry.
+ */
+export function observationsFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation[] {
+  const out: BudgetObservation[] = [];
   if (ev.type === "usage" && typeof ev.usage?.cost_usd === "number" && ev.usage.cost_usd > 0) {
     // Token-derived costs (e.g. codex) are honest estimates -> "observed"; only
     // natively-reported costs (e.g. claude) are "exact".
     const quality = ev.usage.estimated ? "observed" : "exact";
-    return { harness_id: harnessId, ts: nowIso(), quality, kind: "spend", usd: ev.usage.cost_usd };
+    out.push({ harness_id: harnessId, ts: nowIso(), quality, kind: "spend", usd: ev.usage.cost_usd });
   }
-
   if (ev.quota) {
     // The CLI's own machine-readable window record (codex rollout
     // token_count.rate_limits) -> "native" quality used_percent observation.
-    return {
+    out.push({
       harness_id: harnessId,
       ts: nowIso(),
       quality: "native",
       kind: "used_percent",
       used_percent: ev.quota.used_percent,
       resets_at: ev.quota.resets_at ?? null,
-    };
+    });
   }
+  const single = singleObservationFromEvent(harnessId, ev);
+  if (single) out.push(single);
+  return out;
+}
 
+function singleObservationFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation | null {
   if (ev.rate_limit) {
     const resets = ev.rate_limit.resets_at ?? null;
     const delay = ev.rate_limit.retry_delay_ms ?? null;

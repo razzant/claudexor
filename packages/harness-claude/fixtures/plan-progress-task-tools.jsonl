@@ -1,0 +1,14 @@
+{"type":"system","subtype":"init","model":"claude-opus-4-8","tools":["TaskCreate","TaskUpdate","Write"]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_tc1","name":"TaskCreate","input":{"subject":"Create a.txt","description":"write a.txt","activeForm":"Creating a.txt"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_tc1","content":"Created task 1"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_tc2","name":"TaskCreate","input":{"subject":"Create b.txt","activeForm":"Creating b.txt"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_tc2","content":"Created task 2"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_tu1","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_tu1","content":"Updated"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_w1","name":"Write","input":{"file_path":"a.txt","content":"a"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_w1","is_error":true,"content":"permission denied"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_w2","name":"Write","input":{"file_path":"a.txt","content":"a"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_w2","content":"ok"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_tu2","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_tu2","content":"Updated"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50},"modelUsage":{"claude-opus-4-8":{"inputTokens":100,"outputTokens":50}}}

@@ -130,6 +130,25 @@ describe("DaemonControlApiServer", () => {
       ].join("\n"),
     );
     writeFileSync(
+      join(runDir, "reviews", "a02.yaml"),
+      [
+        "review_verified: false",
+        "findings:",
+        "  - id: f-block",
+        "    severity: BLOCK",
+        "    status: accepted",
+        "    category: correctness",
+        "    claim: broken thing",
+        "    evidence:",
+        "      files:",
+        "        - path: src/app.ts",
+        "          lines: '1'",
+        "    reviewer:",
+        "      harness_id: codex",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
       join(runDir, "attempts", "a02", "attempt.yaml"),
       [
         "attempt_id: a02",
@@ -2281,7 +2300,8 @@ describe("DaemonControlApiServer", () => {
         gatesPassed: 0,
         gatesTotal: 1,
         winner: false,
-        finalReviewClean: null, // no review artifact for the errored loser
+        blockers: 1, // the accepted BLOCK finding counts via the schema's isBlocking
+        finalReviewClean: false,
       });
     });
   });

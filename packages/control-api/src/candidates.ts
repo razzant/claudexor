@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ControlCandidate, type DecisionRecord } from "@claudexor/schema";
+import { ControlCandidate, ReviewFinding, isBlocking, type DecisionRecord } from "@claudexor/schema";
 
 interface RawAttempt {
   attempt_id?: unknown;
@@ -21,7 +21,7 @@ interface RawAttempt {
 
 interface RawReview {
   review_verified?: unknown;
-  findings?: Array<{ severity?: unknown; status?: unknown }>;
+  findings?: unknown[];
 }
 
 export function candidatesFor(runDir: string, decision: DecisionRecord | null): ControlCandidate[] {
@@ -32,12 +32,14 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
     const raw = readYamlMaybe<RawAttempt>(join(attemptsDir, attemptId, "attempt.yaml"));
     if (!raw || typeof raw.attempt_id !== "string" || typeof raw.harness_id !== "string") continue;
     const review = readYamlMaybe<RawReview>(join(runDir, "reviews", `${attemptId}.yaml`));
-    const findings = Array.isArray(review?.findings) ? review.findings : [];
-    // Blocking = accepted FAIL/NEEDS_HUMAN findings (mirror of isBlocking's
-    // severity set; status field distinguishes revalidation-accepted ones).
-    const blockers = findings.filter(
-      (f) => (f.severity === "FAIL" || f.severity === "NEEDS_HUMAN") && f.status !== "rejected",
-    ).length;
+    const rawFindings = Array.isArray(review?.findings) ? review.findings : [];
+    // Blocking is the SCHEMA's judgment (isBlocking: accepted
+    // BLOCK/FIX_FIRST with evidence, or NEEDS_HUMAN) — never a projection-
+    // local severity list that can drift from the contract.
+    const blockers = rawFindings.filter((f) => {
+      const parsed = ReviewFinding.safeParse(f);
+      return parsed.success && isBlocking(parsed.data);
+    }).length;
     const gates = Array.isArray(raw.gates) ? (raw.gates as Array<{ status?: unknown }>) : [];
     const parsed = ControlCandidate.safeParse({
       attemptId: raw.attempt_id,

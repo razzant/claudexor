@@ -22,9 +22,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
+    "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.1"
-  }
+  },
+  "devDependencies": {}
 }
