@@ -97,6 +97,9 @@ jobs:
       - name: Model-hints freshness (manifest known_models vs installed CLIs)
         run: node scripts/model-hints-freshness.mjs
 
+      - name: MCP-CLI capability parity (tool args vs run-control flags)
+        run: node scripts/mcp-cli-parity-check.mjs
+
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary
 

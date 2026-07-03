@@ -165,10 +165,18 @@ Current host layouts:
   skill, command, and `mcp.json`.
 - OpenCode: global skill, command, `experimental.chat.system.transform` JS
   plugin, and `mcp.claudexor` in `~/.config/opencode/opencode.json` or
-  strict-parseable `opencode.jsonc`.
+  strict-parseable `opencode.jsonc`. The generated `timeout: 5000` is
+  OpenCode's tool-DISCOVERY timeout; tool EXECUTION is capped by OpenCode's
+  global MCP execution timeout, which long verbs (run/race/create) can
+  exceed — raise `experimental.mcp_timeout` or prefer the CLI for
+  multi-minute work. The runId trailer keeps abandoned calls recoverable.
 
 `plugin doctor` checks install health and starts the local Claudexor MCP server.
-It is not harness readiness. Use `claudexor doctor` for Codex/Claude/Cursor/
+It is not harness readiness. For end-to-end verification of the Cursor chain
+(install -> registered command protocol truth -> run lifecycle + failure
+modes) run `node scripts/cursor-itest.mjs`; the real-harness battery covers
+`mcp serve` / `acp serve` smokes and the plugin lifecycle in a scratch HOME
+(phases 10-12, filterable via `CLAUDEXOR_BATTERY_PHASES=10,11,12`). Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
 Harness readiness is route/context-specific: doctor output distinguishes static

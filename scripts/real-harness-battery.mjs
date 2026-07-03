@@ -13,7 +13,8 @@
  * - keeps HOME native so real harness sessions/Keychain remain available;
  * - never prints secret values.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import {
   existsSync,
   mkdirSync,
@@ -46,6 +47,14 @@ const requestedHarnesses = (process.env.CLAUDEXOR_BATTERY_HARNESSES ?? "codex,cl
   .map((s) => s.trim())
   .filter(Boolean);
 const marker = process.env.CLAUDEXOR_BATTERY_IMAGE_MARKER ?? "CLAUDEXOR-7521";
+// Optional phase filter (e.g. "10,11,12"): an operator iterating on one
+// surface should not re-burn the whole battery. Default: every phase.
+const phaseFilter = (process.env.CLAUDEXOR_BATTERY_PHASES ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((s) => `phase${s.replace(/^phase/, "")}`);
+const phaseEnabled = (id) => phaseFilter.length === 0 || phaseFilter.includes(id);
 
 mkdirSync(configDir, { recursive: true });
 mkdirSync(resultsDir, { recursive: true });
@@ -734,7 +743,124 @@ function runOrchestratePhase() {
   }
 }
 
-function phase0() {
+/** Drive a stdio JSON-RPC server (mcp/acp serve) for one battery phase. */
+function stdioServer(args, cwd) {
+  const child = spawn(nodeBin, [cli, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const messages = [];
+  let stderr = "";
+  child.stderr.on("data", (c) => { stderr += String(c); });
+  const rl = createInterface({ input: child.stdout });
+  rl.on("line", (l) => { if (l.trim()) { try { messages.push(JSON.parse(l)); } catch { /* non-JSON noise is a finding surfaced by timeouts */ } } });
+  const send = (obj) => child.stdin.write(JSON.stringify(obj) + "\n");
+  const waitFor = async (pred, timeout) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const hit = messages.find(pred);
+      if (hit) return hit;
+      if (Date.now() > deadline) return null;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  };
+  const close = async () => {
+    child.stdin.end();
+    await new Promise((r) => setTimeout(r, 200));
+    child.kill();
+  };
+  return { send, waitFor, messages, close, stderrText: () => stderr };
+}
+
+/** Tier7 #46: MCP serve smoke against a REAL doctor-ok harness. */
+async function runMcpServePhase() {
+  const phase = "phase10";
+  const [h] = available(requestedHarnesses);
+  if (!h) { skip(phase, "mcp serve smoke", { reason: "no doctor-ok harness" }); return; }
+  const repo = makeMathRepo(`${phase}-mcp`, { addBug: true });
+  const srv = stdioServer(["mcp", "serve"], repo);
+  try {
+    srv.send({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "battery", version: "1.0" } } });
+    const init = await srv.waitFor((m) => m.id === 0, 20_000);
+    if (init?.result?.protocolVersion === "2025-06-18") pass(phase, "mcp initialize", { serverVersion: init.result?.serverInfo?.version });
+    else { fail(phase, "mcp initialize", { init, stderr: srv.stderrText().slice(-300) }); return; }
+    srv.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    srv.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const tools = await srv.waitFor((m) => m.id === 1, 15_000);
+    const names = (tools?.result?.tools ?? []).map((t) => t.name);
+    if (names.length === 8 && names.includes("claudexor_ask")) pass(phase, "mcp tools/list", { count: names.length });
+    else { fail(phase, "mcp tools/list", { names }); return; }
+    srv.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "claudexor_ask", arguments: { prompt: "Answer exactly: 4. What is 2+2?", repoPath: repo, harness: h, effort: "low", maxUsd: Number(maxUsd) } } });
+    // Host-timeout canary: ping must answer while the ask runs.
+    srv.send({ jsonrpc: "2.0", id: 3, method: "ping" });
+    const ping = await srv.waitFor((m) => m.id === 3, 15_000);
+    if (ping) pass(phase, "mcp ping during call", {});
+    else fail(phase, "mcp ping during call", { stderr: srv.stderrText().slice(-300) });
+    const startedAt = Date.now();
+    const call = await srv.waitFor((m) => m.id === 2, timeoutMs);
+    const text = String(call?.result?.content?.[0]?.text ?? "");
+    if (call && !call.result?.isError && text.includes("runId: ")) {
+      pass(phase, "mcp ask result", { harness: h, ms: Date.now() - startedAt, runId: /runId: (\S+)/.exec(text)?.[1] });
+    } else {
+      fail(phase, "mcp ask result", { isError: call?.result?.isError, head: text.slice(0, 200), stderr: srv.stderrText().slice(-300) });
+    }
+  } finally {
+    await srv.close();
+  }
+}
+
+/** Tier7 #46: ACP serve smoke against a REAL doctor-ok harness. */
+async function runAcpServePhase() {
+  const phase = "phase11";
+  const [h] = available(requestedHarnesses);
+  if (!h) { skip(phase, "acp serve smoke", { reason: "no doctor-ok harness" }); return; }
+  const repo = makeMathRepo(`${phase}-acp`, { addBug: true });
+  const srv = stdioServer(["acp", "serve"], repo);
+  try {
+    srv.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } });
+    const init = await srv.waitFor((m) => m.id === 1, 20_000);
+    if (init?.result?.protocolVersion === 1 && Array.isArray(init.result?.authMethods)) pass(phase, "acp initialize", { authMethods: init.result.authMethods.length });
+    else { fail(phase, "acp initialize", { init }); return; }
+    srv.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: repo } });
+    const sess = await srv.waitFor((m) => m.id === 2, 15_000);
+    if (!sess?.result?.sessionId) { fail(phase, "acp session/new", { sess }); return; }
+    pass(phase, "acp session/new", {});
+    srv.send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: sess.result.sessionId, prompt: "Answer exactly: 4. What is 2+2?", mode: "ask", harness: h, effort: "low", maxUsd: Number(maxUsd) } });
+    const done = await srv.waitFor((m) => m.id === 3, timeoutMs);
+    const chunk = srv.messages.find((m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "agent_message_chunk");
+    if (done?.result?.stopReason === "end_turn" && chunk) pass(phase, "acp prompt round-trip", { harness: h });
+    else fail(phase, "acp prompt round-trip", { stopReason: done?.result?.stopReason, sawChunk: Boolean(chunk) });
+  } finally {
+    await srv.close();
+  }
+}
+
+/** Tier7 #46: plugin lifecycle in a SCRATCH HOME (never the real one). */
+function runPluginLifecyclePhase() {
+  const phase = "phase12";
+  const scratchHome = join(batteryRoot, "plugin-home");
+  mkdirSync(scratchHome, { recursive: true });
+  const scratchEnv = { ...env, HOME: scratchHome };
+  const runPlugin = (args, name) => {
+    const out = spawnSync(nodeBin, [cli, "plugin", ...args, "--json"], { env: scratchEnv, cwd: batteryRoot, encoding: "utf8", timeout: 120_000 });
+    const stdout = out.stdout ?? "";
+    let json = null;
+    try { json = JSON.parse(stdout.slice(stdout.indexOf("{"))); } catch { /* non-JSON output is the failure the caller reports */ }
+    writeFileSync(logPath(`${phase}-${name}`), redactSecrets(stdout + (out.stderr ?? "")));
+    return { code: out.status, json };
+  };
+  const install = runPlugin(["install", "all"], "install");
+  if (install.code === 0 && install.json?.ok) pass(phase, "plugin install all (scratch HOME)", { hosts: (install.json.results ?? []).map((r) => `${r.host}:${r.state}`) });
+  else { fail(phase, "plugin install all (scratch HOME)", { exit: install.code, ok: install.json?.ok }); return; }
+  const doctor = runPlugin(["doctor", "all"], "doctor");
+  if (doctor.code === 0 && doctor.json?.ok) pass(phase, "plugin doctor all", {});
+  else fail(phase, "plugin doctor all", { exit: doctor.code, ok: doctor.json?.ok });
+  const uninstall = runPlugin(["uninstall", "all"], "uninstall");
+  if (uninstall.code === 0 && uninstall.json?.ok) pass(phase, "plugin uninstall all", {});
+  else fail(phase, "plugin uninstall all", { exit: uninstall.code, ok: uninstall.json?.ok });
+  const cursorManifest = join(scratchHome, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json");
+  if (!existsSync(cursorManifest)) pass(phase, "owned artifacts removed", {});
+  else fail(phase, "owned artifacts removed", { survivor: cursorManifest });
+}
+
+function phase0(harnessPhasesRequested = true) {
   const phase = "phase0";
   const version = runCliText(["--version"], { name: "version" });
   evidence.version = version.stdout.trim();
@@ -751,17 +877,23 @@ function phase0() {
     if (s?.status === "ok") {
       evidence.okHarnesses.push(h);
       pass(phase, `${h} doctor-ok`, { intents: s.enabledIntents ?? s.enabled_intents ?? [] });
-    } else {
+    } else if (harnessPhasesRequested) {
       fail(phase, `${h} doctor-ok`, { status: s?.status ?? "missing", reasons: s?.reasons ?? [] });
+    } else {
+      // Only harness-INDEPENDENT phases were requested (e.g. PHASES=12):
+      // a missing real harness is context, not a battery failure.
+      skip(phase, `${h} doctor-ok`, { status: s?.status ?? "missing" });
     }
   }
   evidence.okHarnesses = [...new Set(evidence.okHarnesses)];
   const auth = runCliJson(["auth", "status"], { name: "auth-status" });
   if (auth.code === 0) pass(phase, "auth status", { harnesses: (auth.json?.harnesses ?? []).length });
   else fail(phase, "auth status", { exit: auth.code, log: rel(auth.log) });
-  const models = runCliJson(["models", "--harness", requestedHarnesses.join(",")], { name: "models" });
-  if (models.code === 0) pass(phase, "models", { harnesses: (models.json?.harnesses ?? []).map((h) => `${h.harnessId}:${h.source}`) });
-  else fail(phase, "models", { exit: models.code, log: rel(models.log) });
+  if (harnessPhasesRequested) {
+    const models = runCliJson(["models", "--harness", requestedHarnesses.join(",")], { name: "models" });
+    if (models.code === 0) pass(phase, "models", { harnesses: (models.json?.harnesses ?? []).map((h) => `${h.harnessId}:${h.source}`) });
+    else fail(phase, "models", { exit: models.code, log: rel(models.log) });
+  }
   return evidence.okHarnesses.length > 0;
 }
 
@@ -772,20 +904,28 @@ const state = { verifiedRuns: [], multiRace: null };
 
 async function main() {
   process.stdout.write(`Claudexor real-harness battery\nroot=${batteryRoot}\nconfig=${configDir}\nharnesses=${requestedHarnesses.join(",")}\nmaxUsd=${maxUsd}\n\n`);
-  const ready = phase0();
-  if (!ready) {
-    fail("phase0", "readiness gate", { reason: "no requested harness is doctor-ok; battery cannot proceed" });
-  } else {
-    runReadonlyPhase();
-    runWritePhase();
-    runMultiWritePhase();
-    runLifecyclePhase();
-    runCreatePhase();
-    runVisionPhase();
-    runWebPhase();
-    runSpecPhase();
-    runOrchestratePhase();
+  // Phase 12 (plugin lifecycle in a scratch HOME) needs NO real harness —
+  // the readiness gate applies only to harness-dependent phases.
+  const harnessPhasesRequested =
+    phaseFilter.length === 0 || phaseFilter.some((p) => p !== "phase12");
+  const ready = phase0(harnessPhasesRequested);
+  if (!ready && harnessPhasesRequested) {
+    fail("phase0", "readiness gate", { reason: "no requested harness is doctor-ok; harness-dependent phases cannot proceed" });
   }
+  if (ready) {
+    if (phaseEnabled("phase1")) runReadonlyPhase();
+    if (phaseEnabled("phase2")) runWritePhase();
+    if (phaseEnabled("phase3")) runMultiWritePhase();
+    if (phaseEnabled("phase4")) runLifecyclePhase();
+    if (phaseEnabled("phase5")) runCreatePhase();
+    if (phaseEnabled("phase6")) runVisionPhase();
+    if (phaseEnabled("phase7")) runWebPhase();
+    if (phaseEnabled("phase8")) runSpecPhase();
+    if (phaseEnabled("phase9")) runOrchestratePhase();
+    if (phaseEnabled("phase10")) await runMcpServePhase();
+    if (phaseEnabled("phase11")) await runAcpServePhase();
+  }
+  if (phaseEnabled("phase12")) runPluginLifecyclePhase();
   runCliText(["daemon", "stop"], { name: "daemon-stop" });
   const summary = {
     generatedAt: new Date().toISOString(),

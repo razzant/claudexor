@@ -174,6 +174,20 @@ pnpm test
   stale local `apps/macos/dist` artifacts.
 - GitHub release notes summarize shipped behavior; they do not publish private
   planning notes or review scratch.
+- Cursor E2E when MCP/plugin surfaces changed: `node scripts/cursor-itest.mjs`
+  (scripted phases A/C/D + failure modes) passes, then the two MANUAL phases:
+  - Phase B (Cursor discovery): `claudexor plugin repair cursor`, reload
+    Cursor, then verify the project-scoped descriptor store
+    (`~/.cursor/projects/<proj>/mcps/plugin-claudexor-claudexor/tools/*.json`)
+    exposes the CURRENT tool schemas (spot-check `claudexor_run` has
+    `model`/`effort`/`web`/`reviewerPanel`) — Cursor refreshes tool schemas
+    only on reconnect (no listChanged support), so a stale cache after an
+    upgrade is the expected failure mode this step catches.
+  - Phase E (agent-in-the-loop): in Cursor, in a fixture workspace, prompt
+    "Use the claudexor skill to check harness status, then get a read-only
+    plan for fixing add()" — the agent must call `claudexor_status` then
+    `claudexor_plan` with an explicit `repoPath`, and the run dir must appear
+    in the fixture repo (not Cursor's cwd).
 
 ## Review Protocol
 

@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+/**
+ * MCP <-> CLI capability parity gate (Tier7 #48).
+ *
+ * The class of bug this pins: the MCP tool schema silently lagging the CLI's
+ * run controls (pre-0.14 the cached Cursor descriptors exposed only
+ * prompt/harness/n/repoPath while the CLI had grown 12 more knobs — agents
+ * simply could not pass them). Every MCP tool argument must map to a CLI
+ * run-control flag and vice versa, or carry an EXPLICIT exemption with a
+ * reason. An unmapped addition on either side fails CI loudly.
+ */
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// The MCP side: the DECLARED tool schema (dist — the artifact hosts consume).
+const { defaultClaudexorTools } = await import(join(root, "packages/mcp-server/dist/index.js"));
+const tools = defaultClaudexorTools(async () => "");
+const runTool = tools.find((t) => t.name === "claudexor_run");
+if (!runTool) {
+  console.error("mcp-cli-parity: claudexor_run tool missing from defaultClaudexorTools");
+  process.exit(1);
+}
+const mcpArgs = Object.keys(runTool.inputSchema.properties ?? {}).sort();
+
+// The CLI side: the run-control VALUE_FLAGS block in cli.ts source (same
+// source-extraction pattern as docs-truth-check; a refactor that breaks the
+// idiom fails loudly here rather than silently passing).
+const cliSrc = readFileSync(join(root, "packages/cli/src/cli.ts"), "utf8");
+const valueFlagsMatch = /const VALUE_FLAGS = \[([\s\S]*?)\];/.exec(cliSrc);
+if (!valueFlagsMatch) {
+  console.error("mcp-cli-parity: could not locate the VALUE_FLAGS block in packages/cli/src/cli.ts");
+  process.exit(1);
+}
+const cliValueFlags = [...valueFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+
+// MCP argument -> CLI flag mapping. Every MCP arg must appear here.
+const MCP_TO_CLI = {
+  prompt: { cli: null, reason: "the CLI positional argument, not a flag" },
+  harness: { cli: "harness" },
+  primaryHarness: { cli: "primary-harness" },
+  model: { cli: "model" },
+  effort: { cli: "effort" },
+  web: { cli: "web" },
+  externalContextPolicy: { cli: "web", reason: "control-api parity alias of web" },
+  n: { cli: "n" },
+  repoPath: { cli: null, reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly" },
+  tests: { cli: "test" },
+  maxUsd: { cli: "max-usd" },
+  access: { cli: "access" },
+  reviewerPanel: { cli: "reviewer-panel" },
+  reviewerModels: { cli: "reviewer-model" },
+  reviewerEfforts: { cli: "reviewer-effort" },
+  protectedPathApprovals: { cli: "allow-protected-path" },
+};
+
+// CLI run-control flags with NO MCP argument: each needs a stated reason.
+// (Non-run-control CLI flags — subcommand plumbing — are structurally exempt.)
+const CLI_ONLY_EXEMPT = {
+  mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/race/...)",
+  attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
+  synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",
+  "max-tool-calls": "orchestrate executor cap; MCP orchestrate is suggest-mode (plan only)",
+  autonomy: "orchestrate executor autonomy; MCP orchestrate is suggest-mode (plan only)",
+  portfolio: "portfolio routing preset; MCP callers pick explicit harness/primaryHarness",
+  answers: "spec-interview plumbing (CLI spec flow only)",
+  previous: "spec-interview plumbing (CLI spec flow only)",
+  spec: "spec-file attach (CLI spec flow only)",
+  attach: "attachment plumbing (CLI flow; MCP hosts embed context in the prompt)",
+  image: "attachment plumbing (CLI flow)",
+  "from-env": "secrets subcommand flag, not a run control",
+  backend: "secrets subcommand flag, not a run control",
+  "apply-mode": "decision subcommand flag, not a run control",
+  feedback: "decision subcommand flag, not a run control",
+  diff: "review verb flag, not a run control",
+  intent: "review verb flag, not a run control",
+  tests: "review verb flag (plural); the run control is --test, mapped above",
+};
+
+const failures = [];
+
+for (const arg of mcpArgs) {
+  const mapping = MCP_TO_CLI[arg];
+  if (!mapping) {
+    failures.push(`MCP arg '${arg}' has no declared CLI mapping — add it to MCP_TO_CLI (or the CLI flag itself)`);
+    continue;
+  }
+  if (mapping.cli && !cliValueFlags.includes(mapping.cli)) {
+    failures.push(`MCP arg '${arg}' maps to CLI flag '--${mapping.cli}' which is not in VALUE_FLAGS`);
+  }
+}
+for (const declared of Object.keys(MCP_TO_CLI)) {
+  if (!mcpArgs.includes(declared)) {
+    failures.push(`MCP_TO_CLI declares '${declared}' but the claudexor_run schema does not expose it — stale mapping`);
+  }
+}
+
+const mappedCliFlags = new Set(
+  Object.values(MCP_TO_CLI)
+    .map((m) => m.cli)
+    .filter(Boolean),
+);
+for (const flag of cliValueFlags) {
+  if (mappedCliFlags.has(flag)) continue;
+  if (flag in CLI_ONLY_EXEMPT) continue;
+  failures.push(`CLI value flag '--${flag}' has no MCP argument and no exemption — grow the MCP schema or add a justified exemption`);
+}
+for (const exempt of Object.keys(CLI_ONLY_EXEMPT)) {
+  if (!cliValueFlags.includes(exempt)) {
+    failures.push(`CLI_ONLY_EXEMPT lists '--${exempt}' which is no longer a CLI value flag — stale exemption`);
+  }
+}
+
+if (failures.length > 0) {
+  console.error("mcp-cli-parity check FAILED:\n");
+  for (const f of failures) console.error(`  - ${f}`);
+  process.exit(1);
+}
+console.log(`mcp-cli-parity check passed (${mcpArgs.length} MCP args, ${cliValueFlags.length} CLI value flags, ${Object.keys(CLI_ONLY_EXEMPT).length} exemptions)`);

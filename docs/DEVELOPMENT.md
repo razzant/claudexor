@@ -66,6 +66,7 @@ node scripts/validate-generated-schemas.mjs   # ajv-compiles every generated sch
 pnpm docs:check    # docs-truth gate (endpoints / mode ids / CLI flags vs source)
 pnpm staged:check  # staged-field gate (comments do not count as consumers)
 pnpm knip          # dead exports / unused files / unused dependencies gate
+node scripts/mcp-cli-parity-check.mjs # MCP tool args <-> CLI run-control flags parity (stale-schema class)
 node scripts/complexity-ratchet.mjs   # readability ratchet: tracked files may only shrink
 node scripts/model-hints-freshness.mjs # manifest known_models vs installed vendor CLIs (release: --strict)
 pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)

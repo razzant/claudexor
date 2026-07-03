@@ -22,6 +22,14 @@ Release history for Claudexor. The current version is declared in the root
   `authMethods: []`, the protocol `_meta` envelope is tolerated (unknown
   Claudexor knobs still fail loudly), and permission requests announce their
   tool_call first (no orphan ids). Host plugins regenerated + repaired.
+  Integration test suite: surface canaries in CI (MCP daemon-tracked run
+  E2E over stdio, plugin lifecycle in a scratch HOME, ACP conformance
+  smoke), the MCP<->CLI capability parity gate
+  (`scripts/mcp-cli-parity-check.mjs`, CI — pins the stale-tool-schema
+  class), `scripts/cursor-itest.mjs` (Cursor chain phases A/C/D + failure
+  modes scripted; manual B/E in CHECKLISTS), and real-harness battery
+  phases 10-12 (`mcp serve` / `acp serve` smokes + plugin lifecycle;
+  `CLAUDEXOR_BATTERY_PHASES` filter) — live-run green on codex.
 - **Unreleased (v0.15 program, phase 4)** — routing/output reality: typed
   quota events (codex rollout rate-window -> used_percent observations ->
   headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude
