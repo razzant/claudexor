@@ -45,9 +45,10 @@ single-candidate turn mutates the thread's live execution tree directly (the
 project for an `in_place` thread, or the thread's persistent worktree for an
 `isolated` thread) and resumes the native vendor session; a race (`--n` > 1)
 runs candidates in isolated throwaway envelopes and auto-adopts the winner's
-patch into the live tree. `session.rebound` is emitted only when a thread
-re-hosts onto a different harness (the native session is not portable), not on
-every write turn. Modes collapsed to five intents (`ask`, `plan`, `audit`, `agent`,
+patch into the live tree. `session.rebound` is the typed disclosure for turns that
+cannot resume the native session in place — isolated-envelope candidates (race
+lanes included) and re-hosting onto a different harness; plain in-place turns
+resume natively with no rebound event. Modes collapsed to five intents (`ask`, `plan`, `audit`, `agent`,
 `orchestrate`); engine strategies (race width, attempt caps, repair-to-clean,
 research swarm, create-from-scratch) are flags on a mode, never modes.
 

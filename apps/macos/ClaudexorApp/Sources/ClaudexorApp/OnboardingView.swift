@@ -1,11 +1,9 @@
 import SwiftUI
-import AppKit
 
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @Binding var completed: Bool
     @State private var step = 0
-    @State private var projectRootDraft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -14,8 +12,7 @@ struct OnboardingView: View {
             Group {
                 switch step {
                 case 0: nativeAuth
-                case 1: projectRoot
-                case 2: apiKeys
+                case 1: apiKeys
                 default: defaults
                 }
             }
@@ -27,7 +24,6 @@ struct OnboardingView: View {
         .frame(width: 620, height: 520)
         .background(Theme.surfaceBase)
         .task {
-            projectRootDraft = model.projectRoot
             await model.refreshHarnesses()
             await model.refreshSecrets()
         }
@@ -72,30 +68,6 @@ struct OnboardingView: View {
         }
     }
 
-    private var projectRoot: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Current project", systemImage: "folder")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Theme.accent)
-            Text("Pick the repo Claudexor should read and mutate. Ask can run without a project; Agent, Plan, Audit, and Race require a Current Project.")
-                .font(.callout).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                HStack(spacing: Theme.Spacing.sm) {
-                    TextField("Project root", text: $projectRootDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.callout, design: .monospaced))
-                    Button { chooseProjectRoot() } label: { Label("Choose / Create", systemImage: "folder.badge.plus") }
-                        .buttonStyle(.bordered)
-                }
-                KeyValueRow(key: "Config", value: ".claudexor/config.yaml", mono: true)
-                KeyValueRow(key: "Docs", value: "CLAUDEXOR_BIBLE.md, docs/ARCHITECTURE.md", mono: true)
-            }
-            .padding(Theme.Spacing.lg)
-            .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).stroke(Theme.separator, lineWidth: 1))
-        }
-    }
-
     private var apiKeys: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             Label("API-key fallback", systemImage: "key")
@@ -130,7 +102,7 @@ struct OnboardingView: View {
             Label("Ready", systemImage: "checkmark.seal")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.status(.succeeded))
-            Text("Everything happens in one chat. On a project thread the composer opens in Agent for direct edits (Ask is the fallback with no project); switch to Race to run the harness pool against each other, or Plan to draft an approach you can then implement in the same thread.")
+            Text("Everything happens in one chat. Pick your project in the composer's project chip (the only place projects are selected); the composer opens in Agent for direct edits (Ask is the fallback with no project); switch to Race to run the harness pool against each other, or Plan to draft an approach you can then implement in the same thread.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 KeyValueRow(key: "Settings", value: "Cmd+,")
@@ -177,7 +149,7 @@ struct OnboardingView: View {
             Button {
                 Task { await advance() }
             } label: {
-                Label(step == 3 ? "Finish" : "Continue", systemImage: step == 3 ? "checkmark" : "chevron.right")
+                Label(step == 2 ? "Finish" : "Continue", systemImage: step == 2 ? "checkmark" : "chevron.right")
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.accent)
@@ -186,10 +158,7 @@ struct OnboardingView: View {
     }
 
     private func advance() async {
-        if step == 1 {
-            model.projectRoot = projectRootDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if step >= 3 { completed = true }
+        if step >= 2 { completed = true }
         else { step += 1 }
     }
 
@@ -226,16 +195,4 @@ struct OnboardingView: View {
         }
     }
 
-    private func chooseProjectRoot() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose / Create"
-        if panel.runModal() == .OK, let url = panel.url {
-            projectRootDraft = url.path
-            model.projectRoot = url.path
-        }
-    }
 }

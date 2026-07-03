@@ -1324,6 +1324,60 @@ describe("Orchestrator", () => {
     expect(observedAttachments).toEqual([attachment]);
   });
 
+  it("vision gate (INV-065): a blind harness is refused for an image run when explicit, dropped from auto-pools", async () => {
+    const repo = await initRepo();
+    const image = join(repo, "shot.png");
+    writeFileSync(image, "png-bytes\n");
+    const attachment = { id: "att-img", kind: "image" as const, mime: "image/png", name: "shot.png", path: image };
+    const mk = (id: string, imageInput: "none" | "file_path"): HarnessAdapter => ({
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: id === "blind" ? "openai" : "anthropic",
+          capabilities: { read_files: true },
+          capability_profile: { image_input: imageInput },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["explain"] });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: `answered by ${id}` };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    });
+    const registry = new Map<string, HarnessAdapter>([
+      ["blind", mk("blind", "none")],
+      ["sighted", mk("sighted", "file_path")],
+    ]);
+    // EXPLICIT pool naming a blind harness: loud typed refusal naming the gap.
+    const explicit = await new Orchestrator({ registry, reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "what is in this image?",
+      mode: "ask",
+      harnesses: ["blind"],
+      attachments: [attachment],
+    });
+    expect(explicit.status).toBe("failed");
+    expect(explicit.summary).toMatch(/cannot accept image attachments|image_input=none/);
+    // AUTO pool: the blind harness is silently-but-honestly DROPPED; the
+    // sighted one carries the run.
+    const auto = await new Orchestrator({ registry, reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "what is in this image?",
+      mode: "ask",
+      attachments: [attachment],
+    });
+    expect(auto.status).toBe("success");
+    expect(auto.summary).toContain("answered by sighted");
+  });
+
   it("blocks ask success when an attempted WebSearch tool_result errors without recovery", async () => {
     const repo = await initRepo();
     const adapter = askAdapter("web-bad", function* (sessionId) {
@@ -4770,6 +4824,30 @@ describe("strict structured-output schema (critic findings)", () => {
     const nullElement = extractOrchestratePlan(JSON.stringify({ tool_calls: [null] }));
     expect(nullElement.plan).toBeNull();
     expect(nullElement.error).not.toBe("");
+  });
+});
+
+describe("browser gate (INV-066): every unmet condition disarms; fully-armed injects", () => {
+  it("browserSpecFor is null for opt-out/incapable/web-off/non-full-access; a spec appears only fully armed", async () => {
+    const { Orchestrator: Orch } = await import("./orchestrator.js");
+    const orch = new Orch({ registry: new Map(), reviewers: [] }) as any;
+    const paths = { root: "/tmp/run-root" };
+    const routedWith = (supportsBrowser: boolean) => ({ supportsBrowser });
+    const base = { browser: true };
+    // 1) run did not opt in
+    expect(orch.browserSpecFor({ browser: false }, routedWith(true), "auto", "full", paths)).toBeNull();
+    // 2) harness lacks browser_tool
+    expect(orch.browserSpecFor(base, routedWith(false), "auto", "full", paths)).toBeNull();
+    // 3) web policy off (the browser is live egress riding external context policy)
+    expect(orch.browserSpecFor(base, routedWith(true), "off", "full", paths)).toBeNull();
+    // 4) access below full (workspace-write sandboxes cancel navigation — live-verified)
+    expect(orch.browserSpecFor(base, routedWith(true), "auto", "workspace_write", paths)).toBeNull();
+    expect(orch.browserSpecFor(base, routedWith(true), "auto", "readonly", paths)).toBeNull();
+    // FULLY ARMED: opt-in + capability + web + full access -> headed spec into the run tree.
+    const armed = orch.browserSpecFor(base, routedWith(true), "auto", "full", paths);
+    expect(armed).toEqual({ output_dir: "/tmp/run-root/browser", headless: false });
+    const sandboxFull = orch.browserSpecFor(base, routedWith(true), "live", "external_sandbox_full", paths);
+    expect(sandboxFull).not.toBeNull();
   });
 });
 

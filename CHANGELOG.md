@@ -81,7 +81,7 @@ Release history for Claudexor. The current version is declared in the root
   typed operator decision (or its record was pruned); `--max-tool-calls` /
   `maxToolCalls` is refused outside orchestrate; orchestrate sub-runs share
   ONE aggregate budget (each sequential step gets the remaining headroom).
-- **Unreleased (v0.15 program)** — BREAKING config strictness: YAML configs
+- **v0.15 program, phases 1-2** — BREAKING config strictness: YAML configs
   (`~/.claudexor/config.yaml`, project `.claudexor/config.yaml`, trust files)
   are now parsed against STRICT schemas — an unknown/typo'd key is a loud
   `ConfigParseError` naming it, never a silent no-op. Keys that OLDER

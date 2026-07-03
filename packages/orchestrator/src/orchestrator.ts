@@ -1026,7 +1026,7 @@ export class Orchestrator {
       // Vision gate: an image-bearing run only routes to vision-capable harnesses.
       // Exclude blind ones from auto-pools; fail loud if the user explicitly chose one.
       if (needsVision && manifest.capability_profile.image_input === "none") {
-        const why = `${id} cannot accept image attachments (manifest image_input=none); choose a vision-capable harness (claude/codex/raw-api) or remove the image attachment`;
+        const why = `${id} cannot accept image attachments (manifest image_input=none); choose a vision-capable harness (see \`claudexor doctor\` — capability image_input) or remove the image attachment`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;

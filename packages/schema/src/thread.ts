@@ -16,9 +16,11 @@ import { Attachment } from "./attachment.js";
  *
  * A `Thread` is a Claudexor-owned conversation about a project; runs are "turns"
  * (moves) inside it. A `Session` is the *vendor* CLI session bound to one harness
- * for one thread — a re-hostable CACHE, not the source of truth. When a thread
- * moves to another harness the engine serializes a `SessionReboundLineage` and
- * emits a typed `session.rebound` event (honest, lossy disclosure — never silent).
+ * for one thread — a re-hostable CACHE, not the source of truth. When a turn
+ * cannot resume the native session in place (isolated-envelope candidates,
+ * race lanes included, or re-hosting onto a different harness) the engine
+ * serializes a `SessionReboundLineage` and emits a typed `session.rebound`
+ * event (honest, lossy disclosure — never silent).
  */
 
 /** A thread is open or explicitly closed (archived). "Blocked" is not a thread
@@ -119,9 +121,10 @@ export const ThreadTurn = z.object({
 export type ThreadTurn = z.infer<typeof ThreadTurn>;
 
 /**
- * The lossy payload serialized when a thread re-hosts onto a different harness
- * (the new harness has no native memory of the old session). Carried by the
- * typed `session.rebound` event; the disclosure is explicit, never silent.
+ * The lossy payload serialized when a turn cannot resume the native session
+ * in place: isolated-envelope candidates (race lanes included) and re-hosting
+ * onto a different harness (no native memory of the old session). Carried by
+ * the typed `session.rebound` event; the disclosure is explicit, never silent.
  */
 export const SessionReboundLineage = z.object({
   thread_id: Id,
