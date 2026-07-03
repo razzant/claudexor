@@ -29,7 +29,13 @@ Release history for Claudexor. The current version is declared in the root
   class), `scripts/cursor-itest.mjs` (Cursor chain phases A/C/D + failure
   modes scripted; manual B/E in CHECKLISTS), and real-harness battery
   phases 10-12 (`mcp serve` / `acp serve` smokes + plugin lifecycle;
-  `CLAUDEXOR_BATTERY_PHASES` filter) — live-run green on codex.
+  `CLAUDEXOR_BATTERY_PHASES` filter) — live-run green on codex. Fixture
+  provenance manifests (`packages/harness-*/fixtures/manifest.yaml`:
+  synthetic vs recorded + the vendor CLI version a recording proves) with
+  a CI coverage gate and a release-grade freshness check
+  (`scripts/fixture-freshness-check.mjs --strict`); the mandatory
+  pre-release IMMUNE SCAN (whole-tree audit against the Bible) is now a
+  Release checklist step (D24).
 - **Unreleased (v0.15 program, phase 4)** — routing/output reality: typed
   quota events (codex rollout rate-window -> used_percent observations ->
   headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude

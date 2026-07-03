@@ -9,14 +9,19 @@
  * run-control flag and vice versa, or carry an EXPLICIT exemption with a
  * reason. An unmapped addition on either side fails CI loudly.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // The MCP side: the DECLARED tool schema (dist — the artifact hosts consume).
-const { defaultClaudexorTools } = await import(join(root, "packages/mcp-server/dist/index.js"));
+const distEntry = join(root, "packages/mcp-server/dist/index.js");
+if (!existsSync(distEntry)) {
+  console.error("mcp-cli-parity: packages/mcp-server/dist is missing — run `pnpm build` first");
+  process.exit(1);
+}
+const { defaultClaudexorTools } = await import(distEntry);
 const tools = defaultClaudexorTools(async () => "");
 const runTool = tools.find((t) => t.name === "claudexor_run");
 if (!runTool) {

@@ -1,0 +1,16 @@
+# Fixture provenance manifest (Tier7 #49). Every stream fixture declares its
+# source; recorded fixtures carry the vendor CLI version they were captured
+# from so scripts/fixture-freshness-check.mjs can warn when the installed CLI
+# has moved on (stale recordings are a freshness smell, not a build breaker).
+cli: codex
+fixtures:
+  basic-run.jsonl:
+    source: synthetic
+  plan-progress-todo-list.jsonl:
+    source: synthetic
+  recorded-real-cli.jsonl:
+    source: recorded
+    cli_version: "0.137.0"
+    recorded_at: "2026-06-10"
+  session-resume-rate-limit.jsonl:
+    source: synthetic

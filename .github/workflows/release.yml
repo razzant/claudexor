@@ -133,6 +133,16 @@ jobs:
         # vendor CLIs report "not discoverable" and pass either way.
         run: node scripts/model-hints-freshness.mjs --strict
 
+      - name: MCP-CLI capability parity
+        run: node scripts/mcp-cli-parity-check.mjs
+
+      - name: Fixture provenance (structure; freshness needs local CLIs)
+        # The GitHub runner has no vendor CLIs, and a missing CLI with
+        # recorded fixtures is strict-FATAL by design — the STRICT run
+        # happens in the operator's `pnpm release:verify` (checklist),
+        # where the CLIs exist and re-recording is possible.
+        run: node scripts/fixture-freshness-check.mjs
+
       - name: Canary golden stories
         run: pnpm canary
 

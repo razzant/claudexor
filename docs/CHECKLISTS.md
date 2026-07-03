@@ -174,6 +174,20 @@ pnpm test
   stale local `apps/macos/dist` artifacts.
 - GitHub release notes summarize shipped behavior; they do not publish private
   planning notes or review scratch.
+- Pre-release immune scan (MANDATORY, no cron): an autonomous read-only audit
+  of the WHOLE tree against `CLAUDEXOR_BIBLE.md` — not just the release diff.
+  The auditor reads the Bible end-to-end, then verifies each invariant's
+  `verify:` note against current code/docs/gates, hunting the boiled-frog
+  drift per-commit diffs cannot show. Output is a findings list (file/line
+  evidence, invariant id, severity) — tickets or fixes BEFORE the tag, never
+  silent edits during the scan. Blocking bar: any invariant whose verify note
+  is no longer true, any gate that no longer runs where its invariant says it
+  does, any doc claim contradicting shipped behavior.
+- Fixture freshness at release grade: `node scripts/fixture-freshness-check.mjs
+  --strict` — recorded adapter fixtures must match the installed vendor CLI
+  versions (drift fails strict; re-record when stale). Synthetic-only
+  harnesses are disclosure NOTES, never strict failures — recording is gated
+  on live route availability, not the release calendar.
 - Cursor E2E when MCP/plugin surfaces changed: `node scripts/cursor-itest.mjs`
   (scripted phases A/C/D + failure modes) passes, then the two MANUAL phases:
   - Phase B (Cursor discovery): `claudexor plugin repair cursor`, reload

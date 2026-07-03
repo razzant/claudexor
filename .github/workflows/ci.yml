@@ -100,6 +100,9 @@ jobs:
       - name: MCP-CLI capability parity (tool args vs run-control flags)
         run: node scripts/mcp-cli-parity-check.mjs
 
+      - name: Fixture provenance (manifest coverage; freshness warns locally)
+        run: node scripts/fixture-freshness-check.mjs
+
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary
 

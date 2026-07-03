@@ -27,7 +27,7 @@ const check = (phase, name, ok, detail = {}) => {
 
 // SHORT base path: the daemon's AF_UNIX socket lives under the config dir and
 // macOS caps socket paths at 104 bytes — the default $TMPDIR (/var/folders/…)
-// alone burns ~49 of them (same constraint as the canary sandbox).
+// alone burns ~49 of them (the canary sandbox documents the same OS limit).
 const scratch = mkdtempSync("/tmp/cxi-");
 void tmpdir;
 const scratchHome = join(scratch, "home");
