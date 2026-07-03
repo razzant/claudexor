@@ -3,11 +3,9 @@ import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
-  AccessProfile,
-  EffortHint,
-  ExternalContextPolicy,
   ModeKind,
-  ProviderFamily,
+  validateOptionalNonEmptyString,
+  validateSurfaceRunControls,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues } from "@claudexor/util";
 
@@ -372,7 +370,7 @@ export class AcpServer {
     if (questions.length === 0) return null;
     const answers: any[] = [];
     let declinedFreeText = false;
-    for (const q of questions) {
+    for (const [qIdx, q] of questions.entries()) {
       const options = (Array.isArray(q?.options) ? q.options : []).map((o: any, idx: number) => ({
         optionId: `opt-${idx + 1}`,
         name: String(o?.label ?? `option ${idx + 1}`),
@@ -390,7 +388,9 @@ export class AcpServer {
       // Announce the tool_call the permission request will reference —
       // clients that JOIN permissions to tool calls otherwise render an
       // orphan (the id must exist in the session's tool-call timeline).
-      const toolCallId = String(request?.interaction_id ?? "interaction");
+      // UNIQUE per question: a multi-question interaction must not reuse one
+      // id across frames (joining clients would clobber/mis-associate).
+      const toolCallId = `${String(request?.interaction_id ?? "interaction")}:${String(q?.id ?? qIdx)}`;
       this.notify("session/update", {
         sessionId,
         update: {
@@ -467,47 +467,8 @@ function extractPromptText(prompt: unknown): string {
   return "";
 }
 
-const EFFORTS: ReadonlySet<string> = new Set(EffortHint.options);
-const ACCESS_PROFILES: ReadonlySet<string> = new Set(AccessProfile.options);
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function validateStringArray(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
-    return `${name} must be an array of non-empty strings`;
-  }
-  return null;
-}
-
-function validateStringMap(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!isPlainRecord(value)) return `${name} must be an object`;
-  for (const [key, child] of Object.entries(value)) {
-    if (!ProviderFamily.safeParse(key).success) {
-      return `${name} has unknown provider family key: ${key}`;
-    }
-    if (typeof child !== "string" || child.trim() === "") {
-      return `${name} must map provider family keys to non-empty strings`;
-    }
-  }
-  return null;
-}
-
-function validateEffortMap(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!isPlainRecord(value)) return `${name} must be an object`;
-  for (const [key, child] of Object.entries(value)) {
-    if (!ProviderFamily.safeParse(key).success) {
-      return `${name} has unknown provider family key: ${key}`;
-    }
-    if (typeof child !== "string" || !EFFORTS.has(child)) {
-      return `${name} must map provider family keys to valid effort values`;
-    }
-  }
-  return null;
 }
 
 function validateRunControls(params: unknown): string | null {
@@ -542,90 +503,30 @@ function validateRunControls(params: unknown): string | null {
     if (key === "_meta") continue;
     if (!allowedKeys.has(key)) return `unknown session/prompt field: ${key}`;
   }
+  // ACP-specific rules first (mode/harness/n/booleans), then the SHARED
+  // semantic run-control rules (one owner in @claudexor/schema).
   if (params.mode !== undefined && (typeof params.mode !== "string" || !ModeKind.safeParse(params.mode).success)) {
     return "mode must be a valid mode";
   }
   const harnessError = validateOptionalNonEmptyString(params.harness, "harness");
   if (harnessError) return harnessError;
-  const primaryHarnessError = validateOptionalNonEmptyString(params.primaryHarness, "primaryHarness");
-  if (primaryHarnessError) return primaryHarnessError;
-  if (params.web !== undefined && (typeof params.web !== "string" || !ExternalContextPolicy.safeParse(params.web).success)) {
-    return "web must be a valid external context policy";
-  }
-  if (
-    params.externalContextPolicy !== undefined &&
-    (typeof params.externalContextPolicy !== "string" || !ExternalContextPolicy.safeParse(params.externalContextPolicy).success)
-  ) {
-    return "externalContextPolicy must be a valid external context policy";
-  }
-  if (
-    params.web !== undefined &&
-    params.externalContextPolicy !== undefined &&
-    params.web !== params.externalContextPolicy
-  ) {
-    return "web and externalContextPolicy must be equal when both are provided";
-  }
-  const modelError = validateOptionalNonEmptyString(params.model, "model");
-  if (modelError) return modelError;
-  if (params.effort !== undefined && (typeof params.effort !== "string" || !EffortHint.safeParse(params.effort).success)) {
-    return "effort must be a valid effort value";
-  }
-  if (params.n !== undefined && (!Number.isInteger(params.n) || (params.n as number) < 1)) {
-    return "n must be an integer >= 1";
-  }
-  for (const name of ["race", "untilClean", "swarm", "create"]) {
-    if (params[name] !== undefined && typeof params[name] !== "boolean") {
-      return `${name} must be a boolean`;
+  for (const flag of ["race", "untilClean", "swarm", "create"] as const) {
+    if (params[flag] !== undefined && typeof params[flag] !== "boolean") {
+      return `${flag} must be a boolean`;
     }
   }
-  if (params.race === true && params.n !== undefined && (params.n as number) < 2) {
-    return "race n must be an integer >= 2";
-  }
-  if (params.tests !== undefined) {
-    const testsError = validateStringArray(params.tests, "tests");
-    if (testsError) return testsError;
-  }
-  if (params.maxUsd !== undefined && (typeof params.maxUsd !== "number" || !Number.isFinite(params.maxUsd) || params.maxUsd < 0)) {
-    return "maxUsd must be a non-negative number";
-  }
-  if (params.access !== undefined && (typeof params.access !== "string" || !ACCESS_PROFILES.has(params.access))) {
-    return "access must be a valid access profile";
-  }
-  if (params.reviewerPanel !== undefined) {
-    if (!Array.isArray(params.reviewerPanel) || params.reviewerPanel.length === 0) {
-      return "reviewerPanel must be a non-empty array";
-    }
-    for (const entry of params.reviewerPanel) {
-      if (!isPlainRecord(entry)) return "reviewerPanel entries must be objects";
-      const allowed = new Set(["harness", "model", "effort"]);
-      for (const key of Object.keys(entry)) if (!allowed.has(key)) return `unknown reviewerPanel field: ${key}`;
-      if (typeof entry.harness !== "string" || entry.harness.trim() === "") return "reviewerPanel[].harness must be a non-empty string";
-      if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model.trim() === "")) return "reviewerPanel[].model must be a non-empty string";
-      if (entry.effort !== undefined && (typeof entry.effort !== "string" || !EFFORTS.has(entry.effort))) return "reviewerPanel[].effort must be a valid effort value";
+  if (params.n !== undefined) {
+    // A race needs >= 2 candidates; other routes accept any positive width.
+    const min = params.race === true ? 2 : 1;
+    if (!Number.isInteger(params.n) || (params.n as number) < min) {
+      return params.race === true ? "race n must be an integer >= 2" : "n must be a positive integer";
     }
   }
-  const modelsError = validateStringMap(params.reviewerModels, "reviewerModels");
-  if (modelsError) return modelsError;
-  const effortsError = validateEffortMap(params.reviewerEfforts, "reviewerEfforts");
-  if (effortsError) return effortsError;
-  if (params.protectedPathApprovals !== undefined) {
-    if (!Array.isArray(params.protectedPathApprovals)) return "protectedPathApprovals must be an array";
-    for (const entry of params.protectedPathApprovals) {
-      if (!isPlainRecord(entry)) return "protectedPathApprovals entries must be objects";
-      const allowed = new Set(["path", "reason"]);
-      for (const key of Object.keys(entry)) if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
-      if (typeof entry.path !== "string" || entry.path.trim() === "") return "protectedPathApprovals[].path must be a non-empty string";
-      if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) return "protectedPathApprovals[].reason must be a non-empty string";
-    }
-  }
-  return validateNoInlineSecrets(params, "ACP session/prompt");
+  const shared = validateSurfaceRunControls(params);
+  if (shared) return shared;
+  return validateNoInlineSecrets(params, "ACP session/prompt params");
 }
 
-function validateOptionalNonEmptyString(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (typeof value !== "string" || value.trim() === "") return `${name} must be a non-empty string`;
-  return null;
-}
 
 function validateNoInlineSecrets(value: unknown, context: string): string | null {
   try {

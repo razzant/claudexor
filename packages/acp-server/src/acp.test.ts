@@ -791,3 +791,51 @@ describe("ACP conformance fixes (Phase 5)", () => {
     expect(completeAt).toBeGreaterThan(permAt);
   });
 });
+
+describe("multi-question permission interactions", () => {
+  it("each question gets a DISTINCT toolCallId with its own announce/permission/complete triple", async () => {
+    const updates: any[] = [];
+    const { c2s, responses, requests, arrivals, serving } = startServer(async (_p: any, hooks: any) => {
+      const answers = await hooks?.onInteraction?.({
+        request: {
+          interaction_id: "int-9",
+          questions: [
+            { id: "qa", question: "First?", header: null, options: [{ label: "A", description: null }], multi_select: false },
+            { id: "qb", question: "Second?", header: null, options: [{ label: "B", description: null }], multi_select: false },
+          ],
+        },
+      });
+      return answers ? `answered ${answers.answers.length}` : "declined";
+    }, updates);
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(40);
+    const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    // Answer BOTH permission requests as they arrive.
+    const answered = new Set<string>();
+    for (let i = 0; i < 80; i += 1) {
+      await sleep(25);
+      for (const req of requests.filter((r) => r.method === "session/request_permission")) {
+        if (answered.has(String(req.id))) continue;
+        answered.add(String(req.id));
+        c2s.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { outcome: { outcome: "selected", optionId: "opt-1" } } }) + "\n");
+      }
+      if (responses.some((r) => r.id === 2)) break;
+    }
+    await sleep(60);
+    c2s.end();
+    await serving;
+    const perms = requests.filter((r) => r.method === "session/request_permission");
+    expect(perms).toHaveLength(2);
+    const ids = perms.map((p) => p.params?.toolCall?.toolCallId);
+    expect(new Set(ids).size).toBe(2); // DISTINCT ids per question
+    expect(ids[0]).toContain("int-9:");
+    // Each id has its own announce and completion on the wire.
+    for (const id of ids) {
+      const announce = arrivals.findIndex((m) => m.params?.update?.sessionUpdate === "tool_call" && m.params?.update?.toolCallId === id);
+      const complete = arrivals.findIndex((m) => m.params?.update?.sessionUpdate === "tool_call_update" && m.params?.update?.toolCallId === id);
+      expect(announce).toBeGreaterThanOrEqual(0);
+      expect(complete).toBeGreaterThan(announce);
+    }
+  });
+});

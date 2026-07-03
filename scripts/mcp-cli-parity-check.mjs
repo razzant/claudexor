@@ -41,6 +41,26 @@ if (!valueFlagsMatch) {
 }
 const cliValueFlags = [...valueFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
 
+// BOOLEAN run-control flags (strategy switches) — parsed from args.ts's
+// BOOLEAN_FLAGS so additions surface here too.
+const argsSrc = readFileSync(join(root, "packages/cli/src/args.ts"), "utf8");
+const booleanFlagsMatch = /BOOLEAN_FLAGS[^=]*= new Set\(\[([\s\S]*?)\]\)/.exec(argsSrc);
+if (!booleanFlagsMatch) {
+  console.error("mcp-cli-parity: could not locate BOOLEAN_FLAGS in packages/cli/src/args.ts");
+  process.exit(1);
+}
+const cliBooleanFlags = [...booleanFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+
+// The ACP surface's accepted session/prompt fields (third surface of the
+// same contract) — parsed from the allowlist in acp-server.
+const acpSrc = readFileSync(join(root, "packages/acp-server/src/index.ts"), "utf8");
+const acpAllowMatch = /const allowedKeys = new Set\(\[([\s\S]*?)\]\)/.exec(acpSrc);
+if (!acpAllowMatch) {
+  console.error("mcp-cli-parity: could not locate the session/prompt allowedKeys in packages/acp-server/src/index.ts");
+  process.exit(1);
+}
+const acpFields = [...acpAllowMatch[1].matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]);
+
 // MCP argument -> CLI flag mapping. Every MCP arg must appear here.
 const MCP_TO_CLI = {
   prompt: { cli: null, reason: "the CLI positional argument, not a flag" },
@@ -59,6 +79,27 @@ const MCP_TO_CLI = {
   reviewerModels: { cli: "reviewer-model" },
   reviewerEfforts: { cli: "reviewer-effort" },
   protectedPathApprovals: { cli: "allow-protected-path" },
+};
+
+// BOOLEAN CLI strategy flags -> how MCP expresses them (or a reason).
+const BOOLEAN_FLAG_MAP = {
+  "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
+  swarm: { mcp: null, reason: "encoded in the claudexor_explore TOOL NAME" },
+  create: { mcp: null, reason: "encoded in the claudexor_create TOOL NAME" },
+  "in-place": { mcp: null, reason: "live-tree mutation is a CLI-only explicit opt-in (never a remote-ish surface default)" },
+  json: { mcp: null, reason: "CLI output shaping, not a run control" },
+  all: { mcp: null, reason: "subcommand scope flag, not a run control" },
+  "dry-run": { mcp: null, reason: "subcommand plumbing" },
+  force: { mcp: null, reason: "subcommand plumbing" },
+  "allow-full-access": { mcp: null, reason: "trust subcommand flag" },
+  "revoke-full-access": { mcp: null, reason: "trust subcommand flag" },
+  "accept-risk": { mcp: null, reason: "decision subcommand flag" },
+  override: { mcp: null, reason: "decision subcommand flag" },
+  revert: { mcp: null, reason: "decision subcommand flag" },
+  "accept-clean-patch": { mcp: null, reason: "decision subcommand flag" },
+  rerun: { mcp: null, reason: "decision subcommand flag" },
+  help: { mcp: null, reason: "CLI affordance" },
+  version: { mcp: null, reason: "CLI affordance" },
 };
 
 // CLI run-control flags with NO MCP argument: each needs a stated reason.
@@ -118,9 +159,31 @@ for (const exempt of Object.keys(CLI_ONLY_EXEMPT)) {
   }
 }
 
+for (const flag of cliBooleanFlags) {
+  if (!(flag in BOOLEAN_FLAG_MAP)) {
+    failures.push(`CLI boolean flag '--${flag}' has no declared MCP mapping/exemption in BOOLEAN_FLAG_MAP`);
+  }
+}
+for (const declared of Object.keys(BOOLEAN_FLAG_MAP)) {
+  if (declared === "until-clean-unused") continue; // documented placeholder
+  if (!cliBooleanFlags.includes(declared)) {
+    failures.push(`BOOLEAN_FLAG_MAP declares '--${declared}' which is not a CLI boolean flag — stale mapping`);
+  }
+}
+
+// ACP <-> MCP: every MCP run-control argument must be expressible over ACP
+// (same engine contract; repoPath is the ACP session cwd by design).
+const ACP_EQUIVALENT = { repoPath: "session/new cwd anchors the project" };
+for (const arg of mcpArgs) {
+  if (arg in ACP_EQUIVALENT) continue;
+  if (!acpFields.includes(arg)) {
+    failures.push(`MCP arg '${arg}' is not accepted by the ACP session/prompt allowlist — the surfaces drifted`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("mcp-cli-parity check FAILED:\n");
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log(`mcp-cli-parity check passed (${mcpArgs.length} MCP args, ${cliValueFlags.length} CLI value flags, ${Object.keys(CLI_ONLY_EXEMPT).length} exemptions)`);
+console.log(`mcp-cli-parity check passed (${mcpArgs.length} MCP args, ${cliValueFlags.length} CLI value flags, ${cliBooleanFlags.length} boolean flags, ${acpFields.length} ACP fields, ${Object.keys(CLI_ONLY_EXEMPT).length} exemptions)`);

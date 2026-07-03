@@ -7,10 +7,11 @@ import {
 } from "@modelcontextprotocol/server";
 import { StdioServerTransport, serveStdio, type ServeStdioOptions } from "@modelcontextprotocol/server/stdio";
 import {
-  AccessProfile,
   EffortHint,
   ExternalContextPolicy,
   ProviderFamily,
+  validateOptionalNonEmptyString,
+  validateSurfaceRunControls,
   type InteractionAnswer,
   type InteractionQuestion,
 } from "@claudexor/schema";
@@ -211,130 +212,13 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
   const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
   if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN)) return `n must be an integer >= ${minN}`;
-  const runControlError = validateRunControls(obj);
+  // Shared semantic run-control rules (ONE owner in @claudexor/schema).
+  const runControlError = validateSurfaceRunControls(obj);
   if (runControlError) return runControlError;
   return validateNoInlineSecrets(obj, "MCP tool arguments");
 }
 
-const EFFORTS: ReadonlySet<string> = new Set(EffortHint.options);
-const ACCESS_PROFILES: ReadonlySet<string> = new Set(AccessProfile.options);
 const PROVIDER_FAMILIES = ProviderFamily.options;
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function validateStringArray(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
-    return `${name} must be an array of non-empty strings`;
-  }
-  return null;
-}
-
-function validateStringMap(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!isPlainRecord(value)) return `${name} must be an object`;
-  for (const [key, child] of Object.entries(value)) {
-    if (!ProviderFamily.safeParse(key).success) {
-      return `${name} has unknown provider family key: ${key}`;
-    }
-    if (typeof child !== "string" || child.trim() === "") {
-      return `${name} must map provider family keys to non-empty strings`;
-    }
-  }
-  return null;
-}
-
-function validateEffortMap(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!isPlainRecord(value)) return `${name} must be an object`;
-  for (const [key, child] of Object.entries(value)) {
-    if (!ProviderFamily.safeParse(key).success) {
-      return `${name} has unknown provider family key: ${key}`;
-    }
-    if (typeof child !== "string" || !EFFORTS.has(child)) {
-      return `${name} must map provider family keys to valid effort values`;
-    }
-  }
-  return null;
-}
-
-function validateRunControls(obj: Record<string, unknown>): string | null {
-  const primaryHarnessError = validateOptionalNonEmptyString(obj.primaryHarness, "primaryHarness");
-  if (primaryHarnessError) return primaryHarnessError;
-  if (obj.web !== undefined && (typeof obj.web !== "string" || !ExternalContextPolicy.safeParse(obj.web).success)) {
-    return "web must be a valid external context policy";
-  }
-  if (
-    obj.externalContextPolicy !== undefined &&
-    (typeof obj.externalContextPolicy !== "string" || !ExternalContextPolicy.safeParse(obj.externalContextPolicy).success)
-  ) {
-    return "externalContextPolicy must be a valid external context policy";
-  }
-  if (
-    obj.web !== undefined &&
-    obj.externalContextPolicy !== undefined &&
-    obj.web !== obj.externalContextPolicy
-  ) {
-    return "web and externalContextPolicy must be equal when both are provided";
-  }
-  const modelError = validateOptionalNonEmptyString(obj.model, "model");
-  if (modelError) return modelError;
-  if (obj.effort !== undefined && (typeof obj.effort !== "string" || !EffortHint.safeParse(obj.effort).success)) {
-    return "effort must be a valid effort value";
-  }
-  const testsError = validateStringArray(obj.tests, "tests");
-  if (testsError) return testsError;
-  if (obj.maxUsd !== undefined && (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)) {
-    return "maxUsd must be a non-negative number";
-  }
-  if (obj.access !== undefined && (typeof obj.access !== "string" || !ACCESS_PROFILES.has(obj.access))) {
-    return "access must be a valid access profile";
-  }
-  if (obj.reviewerPanel !== undefined) {
-    if (!Array.isArray(obj.reviewerPanel) || obj.reviewerPanel.length === 0) {
-      return "reviewerPanel must be a non-empty array";
-    }
-    for (const entry of obj.reviewerPanel) {
-      if (!isPlainRecord(entry)) return "reviewerPanel entries must be objects";
-      const keys = Object.keys(entry);
-      const allowed = new Set(["harness", "model", "effort"]);
-      for (const key of keys) if (!allowed.has(key)) return `unknown reviewerPanel field: ${key}`;
-      if (typeof entry.harness !== "string" || entry.harness.trim() === "") {
-        return "reviewerPanel[].harness must be a non-empty string";
-      }
-      if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model.trim() === "")) {
-        return "reviewerPanel[].model must be a non-empty string";
-      }
-      if (entry.effort !== undefined && (typeof entry.effort !== "string" || !EFFORTS.has(entry.effort))) {
-        return "reviewerPanel[].effort must be a valid effort value";
-      }
-    }
-  }
-  const modelsError = validateStringMap(obj.reviewerModels, "reviewerModels");
-  if (modelsError) return modelsError;
-  const effortsError = validateEffortMap(obj.reviewerEfforts, "reviewerEfforts");
-  if (effortsError) return effortsError;
-  if (obj.protectedPathApprovals !== undefined) {
-    if (!Array.isArray(obj.protectedPathApprovals)) {
-      return "protectedPathApprovals must be an array";
-    }
-    for (const entry of obj.protectedPathApprovals) {
-      if (!isPlainRecord(entry)) return "protectedPathApprovals entries must be objects";
-      const keys = Object.keys(entry);
-      const allowed = new Set(["path", "reason"]);
-      for (const key of keys) if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
-      if (typeof entry.path !== "string" || entry.path.trim() === "") {
-        return "protectedPathApprovals[].path must be a non-empty string";
-      }
-      if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) {
-        return "protectedPathApprovals[].reason must be a non-empty string";
-      }
-    }
-  }
-  return null;
-}
 
 function validateNoInlineSecrets(value: unknown, context: string): string | null {
   try {
@@ -343,12 +227,6 @@ function validateNoInlineSecrets(value: unknown, context: string): string | null
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
   }
-}
-
-function validateOptionalNonEmptyString(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (typeof value !== "string" || value.trim() === "") return `${name} must be a non-empty string`;
-  return null;
 }
 
 export interface RunnerHooks {

@@ -5,10 +5,11 @@
  * docs/CHECKLISTS.md ("Cursor E2E"): B (Cursor discovery after reload) and
  * E (agent-in-the-loop through the Cursor UI).
  *
- * Safe by construction: installs/doctors against a SCRATCH HOME first, and
- * only READS the real `~/.cursor/plugins/local/claudexor/mcp.json` (phase C
- * drives the exact registered command; it never mutates real host state).
- * Runs are fake-harness only. Exit 1 on any failed check.
+ * Safe by construction: installs/doctors against a SCRATCH HOME first. Phase
+ * C READS the real `~/.cursor/plugins/local/claudexor/mcp.json` and EXECUTES
+ * the exact registered command — but with an ISOLATED CLAUDEXOR_CONFIG_DIR
+ * and fake harnesses only, so no real host or engine state is mutated.
+ * Exit 1 on any failed check.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";

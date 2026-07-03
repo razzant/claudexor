@@ -149,8 +149,8 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(results.every((r) => r !== undefined)).toBe(true);
     // The official SDK's contract: argument failures are isError TOOL results
     // (its own structural validation behaves the same), not -32602 protocol
-    // errors. Every invalid call must be an error result either way.
-    expect(results.every((r) => r.result?.isError === true || typeof r.error?.code === "number")).toBe(true);
+    // errors — assert the STRICT shape so a silent contract change fails.
+    expect(results.every((r) => r.result?.isError === true)).toBe(true);
     const textOf = (id: number): string => {
       const r = w.responses.find((x) => x.id === id);
       return String(r?.result?.content?.[0]?.text ?? r?.error?.message ?? "");
