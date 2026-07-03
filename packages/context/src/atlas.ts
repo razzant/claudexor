@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { extname, join, relative, sep } from "node:path";
 import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
 import { sha256 } from "@claudexor/util";
@@ -104,8 +104,18 @@ function walk(root: string, dir: string, seenDirs: Set<string> = new Set()): str
       continue;
     }
     if (l.isSymbolicLink()) {
-      // A symlinked FILE still maps (stat resolves it); a symlinked DIR is
-      // skipped — it either cycles or points outside the tree being mapped.
+      // A symlinked DIR is skipped (cycle or out-of-tree). A symlinked FILE
+      // maps ONLY when its resolved target stays INSIDE the mapped tree —
+      // `ln -s ~/.ssh/id_rsa leak.txt` must never pull host files into the
+      // ContextPack (context collection is scoped to the target tree).
+      let resolved;
+      let rootReal;
+      try {
+        rootReal = realpathSync(root);
+        resolved = realpathSync(full);
+      } catch {
+        continue;
+      }
       let s;
       try {
         s = statSync(full);
@@ -113,6 +123,8 @@ function walk(root: string, dir: string, seenDirs: Set<string> = new Set()): str
         continue;
       }
       if (s.isDirectory()) continue;
+      const insideTree = resolved === rootReal || resolved.startsWith(rootReal + sep);
+      if (!insideTree) continue;
       out.push(relative(root, full));
       continue;
     }
@@ -143,7 +155,32 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
   const atlas: ScopeAtlasEntry[] = [];
   const candidates: { rel: string; bytes: number; mandatory: boolean }[] = [];
 
+  // Symlink containment at the READ point (not just the fallback walker):
+  // `git ls-files` happily lists a TRACKED symlink like `leak.txt ->
+  // ~/.ssh/id_rsa`, and stat/readFile would follow it OUT of the tree.
+  // Context collection is scoped to the target tree — an out-of-tree
+  // symlink is accounted as excluded, never silently read.
+  let repoRootReal: string;
+  try {
+    repoRootReal = realpathSync(repoRoot);
+  } catch {
+    repoRootReal = repoRoot;
+  }
+  const escapesTree = (rel: string): boolean => {
+    try {
+      if (!lstatSync(join(repoRoot, rel)).isSymbolicLink()) return false;
+      const resolved = realpathSync(join(repoRoot, rel));
+      return resolved !== repoRootReal && !resolved.startsWith(repoRootReal + sep);
+    } catch {
+      return true; // unresolvable symlink: never read through it
+    }
+  };
+
   for (const rel of files) {
+    if (escapesTree(rel)) {
+      atlas.push({ path: rel, disposition: "excluded", reason: "symlink resolves outside the tree" });
+      continue;
+    }
     let bytes = 0;
     try {
       bytes = statSync(join(repoRoot, rel)).size;

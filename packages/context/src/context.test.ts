@@ -225,3 +225,52 @@ describe("atlas walker symlink safety (T3#7)", () => {
     rmSync(outside, { recursive: true, force: true });
   });
 });
+
+describe("atlas symlink containment (R33 gate finding)", () => {
+  it("a TRACKED symlink pointing outside the tree is excluded, never read into the pack", async () => {
+    const { mkdtempSync, writeFileSync, symlinkSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { buildScopeAtlas } = await import("./atlas.js");
+    const outside = mkdtempSync(join(tmpdir(), "cx-outside-"));
+    writeFileSync(join(outside, "host-secret.txt"), "HOST SECRET CONTENT\n");
+    const repo = mkdtempSync(join(tmpdir(), "cx-symlink-"));
+    const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    g(["init", "-q"]);
+    writeFileSync(join(repo, "real.txt"), "in-tree content\n");
+    symlinkSync(join(outside, "host-secret.txt"), join(repo, "leak.txt"));
+    symlinkSync(join(repo, "real.txt"), join(repo, "alias.txt")); // in-tree symlink: fine
+    g(["add", "-A"]);
+    g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "with symlinks"]);
+    const res = await buildScopeAtlas(repo);
+    const leak = res.atlas.find((e) => e.path === "leak.txt");
+    expect(leak?.disposition).toBe("excluded");
+    expect(leak?.reason).toContain("symlink resolves outside");
+    // The out-of-tree content never lands in any inlined file.
+    expect(JSON.stringify(res.files ?? res).includes("HOST SECRET CONTENT")).toBe(false);
+    // The in-tree symlink still maps normally.
+    const alias = res.atlas.find((e) => e.path === "alias.txt");
+    expect(alias?.disposition === "excluded" ? alias?.reason ?? "" : "").not.toContain("outside");
+  });
+});
+
+describe("atlas fallback-walker symlink containment", () => {
+  it("a NON-git tree with an out-of-tree symlink never maps it; in-tree symlinks map", async () => {
+    const { mkdtempSync, writeFileSync, symlinkSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { buildScopeAtlas } = await import("./atlas.js");
+    const outside = mkdtempSync(join(tmpdir(), "cx-w-outside-"));
+    writeFileSync(join(outside, "secret.txt"), "WALKER SECRET\n");
+    const root = mkdtempSync(join(tmpdir(), "cx-w-root-")); // NOT a git repo -> fallback walker
+    writeFileSync(join(root, "real.txt"), "content\n");
+    symlinkSync(join(outside, "secret.txt"), join(root, "leak.txt"));
+    symlinkSync(join(root, "real.txt"), join(root, "alias.txt"));
+    const res = await buildScopeAtlas(root);
+    const paths = res.atlas.map((e) => e.path);
+    expect(paths).not.toContain("leak.txt"); // walker never surfaced it
+    expect(paths).toContain("alias.txt"); // in-tree symlink maps
+    expect(JSON.stringify(res).includes("WALKER SECRET")).toBe(false);
+  });
+});

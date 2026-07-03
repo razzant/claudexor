@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
-import { isClaudexorArtifactPath } from "./artifact-paths.js";
+import { claudexorArtifactPredicate, trackedArtifactDirPaths } from "./artifact-paths.js";
 
 /** BYTE-FAITHFUL git capture (T3.2#1): raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
@@ -129,10 +129,11 @@ export async function stashCreate(repo: string): Promise<string | null> {
   // Claudexor's own run/workspace artifacts are never part of the user's dirty
   // state (concurrent envelope creation materializes `.claudexor/workspaces/...`
   // inside the repo); snapshotting them would bake run artifacts into the base.
+  const isArtifact = await claudexorArtifactPredicate(repo);
   const meaningful = status
     .split("\n")
     .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
-    .filter((p) => p.length > 0 && !isClaudexorArtifactPath(p));
+    .filter((p) => p.length > 0 && !isArtifact(p));
   if (meaningful.length === 0) return null;
   const head = await git(repo, ["rev-parse", "HEAD"]);
   if (head.code !== 0) throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
@@ -162,8 +163,24 @@ export async function stashCreate(repo: string): Promise<string | null> {
     // ignored case a clean no-op rather than an error.
     const add = await gitEnv(repo, ["add", "-A"], env);
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
+    // TRACKED files under the artifact dirs are USER STATE (versioned config)
+    // — capture them (INDEX ∪ HEAD via the shared owner: index alone misses a
+    // user-STAGED deletion, HEAD alone misses a user-staged new config) and
+    // restore the still-present ones after the bulk unstage, so a tracked
+    // .claudexor/config.yaml edit survives into the snapshot TREE while a
+    // staged deletion stays deleted. Reads the REAL index (no scratch env):
+    // the scratch index just add -A'd runtime artifacts, which must not
+    // masquerade as tracked.
+    const trackedKeep = [...(await trackedArtifactDirPaths(repo))];
     const unstage = await gitEnv(repo, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".claudexor", ".claudexor-review-evidence"], env);
     if (unstage.code !== 0) throw new WorkspaceError(`snapshot exclude .claudexor failed: ${unstage.stderr.trim()}`);
+    // Only re-add paths still PRESENT in the worktree: a deleted tracked
+    // file stays absent from the scratch index — that IS the deletion.
+    const keepPresent = trackedKeep.filter((p) => existsSync(join(repo, p)));
+    if (keepPresent.length > 0) {
+      const readd = await gitEnv(repo, ["add", "-f", "--", ...keepPresent], env);
+      if (readd.code !== 0) throw new WorkspaceError(`snapshot re-add of tracked artifact-dir files failed: ${readd.stderr.trim()}`);
+    }
     const writeTree = await gitEnv(repo, ["write-tree"], env);
     if (writeTree.code !== 0) throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
     const tree = writeTree.stdout.trim();
@@ -265,10 +282,11 @@ export async function revertWorkingTreeTo(
   // "removed" nothing while the old code still reported reverted:true.
   const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", preTurnSha, expectedPostSha]);
   if (added.code !== 0) throw new WorkspaceError(`revert diff failed: ${added.stderr.trim()}`);
+  const isArtifact = await claudexorArtifactPredicate(repo);
   const toRemove = added.stdout
     .split("\0")
     .map((l) => l.replace(/\n$/, ""))
-    .filter((p) => p.length > 0 && !isClaudexorArtifactPath(p));
+    .filter((p) => p.length > 0 && !isArtifact(p));
   // Restore every path present in the pre-turn snapshot (mods + deletions).
   const restore = await git(repo, ["checkout", preTurnSha, "--", "."]);
   if (restore.code !== 0) throw new WorkspaceError(`revert checkout failed: ${restore.stderr.trim()}`);

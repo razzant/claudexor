@@ -82,6 +82,8 @@ import {
   observeBudgetSignals,
   rotateOnStall,
   recordCleanAttemptMetrics,
+  buildEnvelopeSubInput,
+  deliverPlanAnswer,
   envInheritance,
   transientRetryPolicy,
   reviewerTimeoutMs,
@@ -481,6 +483,15 @@ export class Orchestrator {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);
     }
     const mode: ModeKind = parsedMode.data;
+    // INV-023 at the ENGINE boundary too: maxToolCalls caps the orchestrate
+    // executor's plan steps — on any other mode it would be a silent no-op
+    // knob. The CLI and control API validate this already; a direct embedder
+    // must get the same loud refusal, not quiet acceptance.
+    if (resolved.maxToolCalls !== undefined && resolved.maxToolCalls !== null && mode !== "orchestrate") {
+      throw new Error(
+        `maxToolCalls caps the orchestrate EXECUTOR's plan steps and only applies to mode=orchestrate (got mode=${mode}); drop the knob or switch modes`,
+      );
+    }
     // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
     // every mode, so the same repo state can't pass `run`/`ask` while failing
     // `audit`. No-op when the list is empty (the default) or for no-project runs.
@@ -1380,7 +1391,7 @@ export class Orchestrator {
         // configured global per-run default. ($/day caps were removed; the budget
         // priority is respecting harness-reported subscription/OAuth quota — SF3.)
         max_usd:
-          input.maxUsd ?? this.deps.maxUsd ?? resolvedCfg.global.budget.max_usd_per_run ?? null,
+          this.resolveMaxUsdCap(input.maxUsd, resolvedCfg),
       },
       // The resolved harness-scoped model map (scalar already expanded to the
       // primary by resolveRunInput). The contract is what route spec building
@@ -4838,6 +4849,11 @@ export class Orchestrator {
    * turns. Degradation contract: any 1 harness works (single-route plan); 2+
    * harnesses unlock cross-family race/review in the plan space.
    */
+  /** ONE owner of the per-run USD cap precedence: explicit input -> embedder deps -> operator config. */
+  private resolveMaxUsdCap(inputMaxUsd: number | null | undefined, cfg: ReturnType<typeof loadConfig>): number | null {
+    return inputMaxUsd ?? this.deps.maxUsd ?? cfg.global.budget.max_usd_per_run ?? null;
+  }
+
   private async runOrchestrate(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     // "Doctor-verified" must mean status ok — degraded key-present routes are
     // excluded from the pool the brain plans over (readiness honesty).
@@ -4850,10 +4866,15 @@ export class Orchestrator {
     // the executor below is its consumer. Default `suggest` (plan-only) preserves
     // the read-only contract when no autonomy is requested.
     const autonomy: OrchestrateAutonomy = input.autonomy ?? "suggest";
+    // The aggregate cap resolves the SAME chain as run(): explicit input ->
+    // orchestrator deps -> operator config default. Without the fallback an
+    // operator's max_usd_per_run capped every sub-run individually but never
+    // the aggregate (R33 finding).
+    const aggregateMaxUsd = this.resolveMaxUsdCap(input.maxUsd, this.config(input.repoRoot));
     const orchestrateContract = OrchestrateContractSchema.parse({
       thread_id: input.threadId ?? newId("th"),
       goal,
-      budget: { max_usd: input.maxUsd ?? null, max_tool_calls: input.maxToolCalls ?? null },
+      budget: { max_usd: aggregateMaxUsd, max_tool_calls: input.maxToolCalls ?? null },
       autonomy,
     });
     const brainPrompt = buildOrchestrateBrainPrompt(goal, pool, crossFamily, orchestrateContract);
@@ -5874,6 +5895,9 @@ export class Orchestrator {
     brainSpentUsd = 0,
   ): Promise<{ terminal: RunStatus; note: string }> {
     const maxToolCalls = contract?.budget.max_tool_calls ?? null;
+    // The RESOLVED aggregate cap (input -> deps -> operator config) rides the
+    // contract; raw input.maxUsd alone would ignore the config default.
+    const aggregateMaxUsd = contract?.budget.max_usd ?? input.maxUsd ?? null;
     const steps: OrchestratePlanProgressT["steps"] = plan.tool_calls.map((call, index) => ({
       index,
       tool: call.tool,
@@ -5909,9 +5933,9 @@ export class Orchestrator {
         break;
       }
       // Aggregate USD cap: stop before a step that has no headroom left.
-      if (input.maxUsd !== null && input.maxUsd !== undefined && aggregateSpentUsd >= input.maxUsd) {
+      if (aggregateMaxUsd !== null && aggregateSpentUsd >= aggregateMaxUsd) {
         step.status = "skipped";
-        step.detail = `aggregate budget exhausted (${aggregateSpentUsd.toFixed(2)} of ${input.maxUsd} USD spent)`;
+        step.detail = `aggregate budget exhausted (${aggregateSpentUsd.toFixed(2)} of ${aggregateMaxUsd} USD spent)`;
         stoppedReason = `aggregate budget exhausted after ${executed} step(s)`;
         terminal = "exhausted";
         persist();
@@ -5982,9 +6006,7 @@ export class Orchestrator {
       executed++;
       try {
         const remainingUsd =
-          input.maxUsd === null || input.maxUsd === undefined
-            ? null
-            : Math.max(0, input.maxUsd - aggregateSpentUsd);
+          aggregateMaxUsd === null ? null : Math.max(0, aggregateMaxUsd - aggregateSpentUsd);
         const r = await this.executeSafeStep(input, call, log, store, paths, remainingUsd);
         aggregateSpentUsd += r.spendUsd ?? 0;
         step.status = r.status;
@@ -6011,6 +6033,13 @@ export class Orchestrator {
         break;
       }
       persist();
+    }
+    // A FINAL step can overspend its remaining headroom (spend is charged
+    // after the step; no later pre-step check exists to trip). An overshot
+    // cap must not read "success — all steps done".
+    if (terminal === "success" && aggregateMaxUsd !== null && aggregateSpentUsd > aggregateMaxUsd) {
+      terminal = "exhausted";
+      stoppedReason = `aggregate budget overshot on the final step (${aggregateSpentUsd.toFixed(2)} of ${aggregateMaxUsd} USD)`;
     }
     persist();
     const done = steps.filter((s) => s.status === "done").length;
@@ -6043,30 +6072,9 @@ export class Orchestrator {
     switch (call.tool) {
       case "start_run":
       case "race": {
-        // Force an isolated envelope sub-run: inPlace MUST be false, no thread
-        // binding, no in-place execution root, no nested autonomy. A sub-run
-        // inherits orchestrateDepth+1 (recursion guard) and may NOT orchestrate.
-        const subInput: RunInput = {
-          repoRoot: input.repoRoot,
-          prompt: call.prompt,
-          mode: call.tool === "start_run" ? call.mode : "agent",
-          n: call.tool === "race" ? call.n : undefined,
-          harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
-          portfolio: input.portfolio,
-          // Aggregate budget (D9): the sub-run gets only the REMAINING headroom.
-          maxUsd: remainingUsd,
-          web: input.web,
-          externalContextPolicy: input.externalContextPolicy,
-          signal: input.signal,
-          // SAFETY: isolated envelope, never the live in-place thread tree.
-          inPlace: false,
-          threadId: undefined,
-          executionRoot: undefined,
-          autonomy: undefined,
-          resumeSessions: undefined,
-          onSessionObserved: undefined,
-          orchestrateDepth: (input.orchestrateDepth ?? 0) + 1,
-        };
+        // Isolated envelope sub-run (construction owned by runSupport);
+        // recursion guard via orchestrateDepth+1, may NOT orchestrate.
+        const subInput: RunInput = { ...buildEnvelopeSubInput(input, call, remainingUsd) } as RunInput;
         // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
         // isolated envelope — never a live in-place turn.
         assertEnvelopeSubRun(subInput);
@@ -6104,6 +6112,16 @@ export class Orchestrator {
             runId: call.run_id,
             detail: `run ${call.run_id} has no patch.diff to review`,
           };
+        // Aggregate honesty (D9): reviewer panels spend real money on
+        // API-keyed routes and the spend is charged AFTER the fact — with no
+        // remaining headroom the review must not start at all.
+        if (remainingUsd !== null && remainingUsd <= 0) {
+          return {
+            status: "skipped",
+            runId: call.run_id,
+            detail: "aggregate budget exhausted before the review step",
+          };
+        }
         const reviewers = await this.resolveReviewers(input.repoRoot, input.authPreference);
         if (reviewers.length === 0)
           return {
@@ -6153,39 +6171,8 @@ export class Orchestrator {
         };
       }
       case "answer_question": {
-        // Deliver typed answers to a referenced pending interaction (read-only
-        // w.r.t. the tree). The daemon owns the live registry; without an
-        // injected service this context cannot reach it, so SKIP honestly.
-        //
-        // INVARIANT: safe sub-runs are NON-interactive (subInput above omits
-        // onInteraction, so a start_run/race sub-run never raises an interaction
-        // and nothing registers under its run id). The only pending interactions
-        // therefore belong to THIS orchestrate run, so `input.runId` is the
-        // correct registry key. If sub-runs are ever made interactive, the
-        // answer_question plan call MUST carry the target sub-run id and pass it
-        // here instead of input.runId (the registry is keyed by runId+interactionId).
-        if (!input.answerInteraction) {
-          return {
-            status: "skipped",
-            runId: null,
-            detail: "no live interaction surface in this context",
-          };
-        }
-        const delivered = await input.answerInteraction(input.runId ?? "", call.interaction_id, {
-          interaction_id: call.interaction_id,
-          answers: call.answers.map((a) => ({
-            question_id: a.question_id,
-            selected_labels: a.selected_labels,
-            free_text: a.free_text,
-          })),
-        });
-        return {
-          status: delivered ? "done" : "skipped",
-          runId: null,
-          detail: delivered
-            ? `delivered answers to ${call.interaction_id}`
-            : `interaction ${call.interaction_id} not found / already resolved`,
-        };
+        // Delivery + registry-keying rationale owned by runSupport.
+        return deliverPlanAnswer(input, call);
       }
       default: {
         // FAIL-CLOSED: a risky tool (apply) must never reach the safe executor;

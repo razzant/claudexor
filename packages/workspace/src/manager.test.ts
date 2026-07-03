@@ -412,3 +412,93 @@ describe("revert with quoted/special filenames (T3.2#4)", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 });
+
+describe("tracked artifact-dir files are USER STATE (R33 hardening)", () => {
+  it("a tracked .claudexor/config.yaml edit survives into the staged diff; runtime artifacts stay out", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { stageAllExcludingArtifacts, statusPorcelainMeaningful } = await import("./artifact-paths.js");
+    const repo = mkdtempSync(join(tmpdir(), "cx-tracked-art-"));
+    const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    g(["init", "-q"]);
+    g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), "tests: []\n");
+    g(["add", ".claudexor/config.yaml"]);
+    g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "versioned config"]);
+    // The candidate edits the TRACKED config AND produces runtime artifacts.
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), 'tests: ["node --test"]\n');
+    mkdirSync(join(repo, ".claudexor", "runs", "run-x"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "runs", "run-x", "events.jsonl"), "{}\n");
+    // Dirty check counts the tracked edit, not the runtime artifact.
+    const dirty = await statusPorcelainMeaningful(repo);
+    expect(dirty.some((l) => l.includes(".claudexor/config.yaml"))).toBe(true);
+    expect(dirty.some((l) => l.includes("runs"))).toBe(false);
+    // Staging keeps the tracked edit and drops the runtime artifact.
+    await stageAllExcludingArtifacts(repo);
+    const staged = g(["diff", "--cached", "--name-only"]);
+    expect(staged).toContain(".claudexor/config.yaml");
+    expect(staged).not.toContain("runs/run-x");
+  });
+});
+
+describe("snapshot keeps tracked artifact-dir edits (R33 gate finding)", () => {
+  it("a tracked .claudexor/config.yaml edit lands in the snapshot TREE; runtime artifacts stay out", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { snapshotTree } = await import("./git.js");
+    const repo = mkdtempSync(join(tmpdir(), "cx-snap-art-"));
+    const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    g(["init", "-q"]);
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), "tests: []\n");
+    writeFileSync(join(repo, "src.txt"), "hello\n");
+    g(["add", "-A"]);
+    g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"]);
+    // The turn edits the TRACKED config and produces runtime artifacts.
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), 'tests: ["node --test"]\n');
+    mkdirSync(join(repo, ".claudexor", "runs", "run-y"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "runs", "run-y", "events.jsonl"), "{}\n");
+    const sha = await snapshotTree(repo);
+    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], { encoding: "utf8" });
+    expect(files).toContain(".claudexor/config.yaml");
+    expect(files).not.toContain("runs/run-y");
+    const content = execFileSync("git", ["-C", repo, "show", `${sha}:.claudexor/config.yaml`], { encoding: "utf8" });
+    expect(content).toContain("node --test"); // the EDIT, not the base version
+  });
+});
+
+describe("pre-STAGED deletion of a versioned artifact-dir file (R33 cycle-3)", () => {
+  it("a user-staged `git rm .claudexor/config.yaml` counts as dirty and the snapshot carries the deletion", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { snapshotTree } = await import("./git.js");
+    const { statusPorcelainMeaningful } = await import("./artifact-paths.js");
+    const repo = mkdtempSync(join(tmpdir(), "cx-staged-del-"));
+    const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    g(["init", "-q"]);
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(join(repo, ".claudexor", "config.yaml"), "tests: []\n");
+    writeFileSync(join(repo, "src.txt"), "hello\n");
+    g(["add", "-A"]);
+    g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"]);
+    // The USER stages the deletion before any run (index entry gone).
+    g(["rm", "-q", ".claudexor/config.yaml"]);
+    const dirty = await statusPorcelainMeaningful(repo);
+    expect(dirty.some((l) => l.includes(".claudexor/config.yaml"))).toBe(true);
+    const sha = await snapshotTree(repo);
+    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], { encoding: "utf8" });
+    // The snapshot tree reflects the DELETION (file absent), not HEAD's copy.
+    expect(files).not.toContain(".claudexor/config.yaml");
+    expect(files).toContain("src.txt");
+    // And it IS a snapshot, not a fall-through to HEAD.
+    const headSha = g(["rev-parse", "HEAD"]).trim();
+    expect(sha).not.toBe(headSha);
+  });
+});
