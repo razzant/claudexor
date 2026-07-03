@@ -70,6 +70,35 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
   });
 });
 
+describe("makeCancelBridge (host cancel -> typed daemon cancel)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the cancel control exactly once after the signal aborts", async () => {
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") posts.push(`${url} ${init.body}`);
+        return { ok: true, json: async () => ({}) } as never;
+      }),
+    );
+    const { makeCancelBridge } = await import("./mcp-runner.js");
+    const controller = new AbortController();
+    const bridge = makeCancelBridge(addr, controller.signal);
+    bridge({ runId: "run-9" }); // not aborted yet: no post
+    expect(posts).toHaveLength(0);
+    controller.abort();
+    bridge({ runId: "run-9" });
+    bridge({ runId: "run-9" }); // idempotent
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain("/runs/run-9/control");
+    expect(posts[0]).toContain('"kind":"cancel"');
+  });
+});
+
 describe("mcp daemon body mapping", () => {
   it("honors the externalContextPolicy alias when web is absent (schema advertises both)", async () => {
     // The alias is validated equal to web when both are present; alone it IS

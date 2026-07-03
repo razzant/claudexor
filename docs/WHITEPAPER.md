@@ -22,6 +22,18 @@ enablement, and install health is tracked separately from harness readiness.
 Ownership state is local user setup state used for safe repair/uninstall, not a
 schema contract.
 
+The MCP server itself rides the official protocol SDK and keeps the engine's
+honesty properties at the surface: requests dispatch concurrently (a
+multi-minute race never blocks a ping), MUTATING tool calls are daemon-tracked
+so the same run list, decision gate, and cancellation the CLI sees apply to
+MCP-started runs, every result carries the runId/artifacts handle instead of
+prose-only output, a mid-run harness question reaches the host through MCP
+elicitation when the host supports it (and declines benignly on a timer when
+it does not — never a fabricated answer), and host-side cancellation becomes
+the same typed daemon cancel as Ctrl-C. Version skew between installed plugin
+artifacts and the running CLI is disclosed at serve time rather than silently
+serving stale tool schemas.
+
 ## Chat/Session-First
 
 The conversation is the primary object. A Thread is the Claudexor-owned

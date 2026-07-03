@@ -213,12 +213,9 @@ jobs:
           cat > "$notes" <<EOF
           Claudexor ${version} unsigned beta build.
 
-          Highlights:
-          - macOS packaging now embeds the SwiftPM resource bundle required by
-            Bundle.module, so release artifacts launch outside the build machine.
-          - The release workflow verifies the packaged app and ZIP contain that
-            resource bundle before uploading assets.
-          - Includes the self-contained macOS app with bundled claudexord and Node.
+          Highlights: see CHANGELOG.md for this version's entry — the
+          changelog is the single source of shipped-behavior truth; these
+          draft notes are finalized from it by the operator before publishing.
 
           This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
           The macOS app, DMG, and ZIP are unsigned and not notarized for ${tag}.

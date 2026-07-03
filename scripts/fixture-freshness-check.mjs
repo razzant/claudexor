@@ -81,8 +81,24 @@ const failures = [];
 const driftWarnings = []; // strict-escalatable: recorded fixture vs installed CLI
 const disclosures = []; // never strict-fatal: synthetic-only coverage notes
 
+// A harness package with NO fixtures dir must be EXEMPT with a reason —
+// silently skipping it would let a new adapter ship with zero stream proof.
+const NO_FIXTURES_EXEMPT = {
+  "harness-fake": "the fake harnesses ARE the deterministic synthetic sources other suites consume",
+  "harness-raw-api": "no native CLI stream exists to record; the adapter consumes the OpenAI-compatible HTTP API shape directly (unit-tested in-package)",
+};
 const packagesDir = join(root, "packages");
-const harnessDirs = readdirSync(packagesDir).filter((d) => d.startsWith("harness-") && existsSync(join(packagesDir, d, "fixtures")));
+const allHarnessPkgs = readdirSync(packagesDir).filter((d) => d.startsWith("harness-"));
+for (const pkg of allHarnessPkgs) {
+  if (!existsSync(join(packagesDir, pkg, "fixtures")) && !(pkg in NO_FIXTURES_EXEMPT)) {
+    failures.push(`packages/${pkg}: no fixtures/ directory and no NO_FIXTURES_EXEMPT entry — new adapters need stream fixtures or a justified exemption`);
+  }
+}
+for (const exempt of Object.keys(NO_FIXTURES_EXEMPT)) {
+  if (!allHarnessPkgs.includes(exempt)) failures.push(`NO_FIXTURES_EXEMPT lists '${exempt}' which is not a harness package — stale exemption`);
+  else if (existsSync(join(packagesDir, exempt, "fixtures"))) failures.push(`NO_FIXTURES_EXEMPT lists '${exempt}' but it HAS a fixtures dir — drop the stale exemption`);
+}
+const harnessDirs = allHarnessPkgs.filter((d) => existsSync(join(packagesDir, d, "fixtures")));
 for (const pkg of harnessDirs) {
   const fixturesDir = join(packagesDir, pkg, "fixtures");
   const manifestPath = join(fixturesDir, "manifest.yaml");

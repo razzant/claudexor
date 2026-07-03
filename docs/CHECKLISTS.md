@@ -187,7 +187,10 @@ pnpm test
   --strict` — recorded adapter fixtures must match the installed vendor CLI
   versions (drift fails strict; re-record when stale). Synthetic-only
   harnesses are disclosure NOTES, never strict failures — recording is gated
-  on live route availability, not the release calendar.
+  on live route availability, not the release calendar. The strict leg runs
+  HERE (operator machine, via `pnpm release:verify`); the tag workflow runs
+  the STRUCTURE check only because the GitHub runner has no vendor CLIs and
+  a missing CLI with recorded fixtures is strict-fatal by design.
 - Cursor E2E when MCP/plugin surfaces changed: `node scripts/cursor-itest.mjs`
   (scripted phases A/C/D + failure modes) passes, then the two MANUAL phases:
   - Phase B (Cursor discovery): `claudexor plugin repair cursor`, reload

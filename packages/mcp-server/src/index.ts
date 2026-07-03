@@ -38,6 +38,12 @@ export interface McpToolContext {
    * — the engine's timeout-decline fallback stays the honest default.
    */
   elicit: ((request: { interaction_id: string; questions: InteractionQuestion[] }) => Promise<InteractionAnswer[] | null>) | null;
+  /**
+   * The request's cancellation signal (`notifications/cancelled` from the
+   * host) — runners abort the underlying run with it, exactly like Ctrl-C
+   * on the CLI.
+   */
+  signal?: AbortSignal;
 }
 
 export interface McpTool {
@@ -86,7 +92,10 @@ export function buildMcpServer(opts: { name?: string; version?: string; tools: M
         // channel exists (it would offer the harness a channel whose every
         // question dies as a decline).
         const canElicit = Boolean(server.server.getClientCapabilities()?.elicitation);
-        const text = await tool.handler(provided, { elicit: canElicit ? elicitBridge(ctx) : null });
+        const text = await tool.handler(provided, {
+          elicit: canElicit ? elicitBridge(ctx) : null,
+          signal: ctx?.mcpReq?.signal,
+        });
         return { content: [{ type: "text" as const, text }] };
       }) as any,
     );
@@ -118,8 +127,11 @@ export function serveClaudexorMcp(opts: McpServerOptions): { close(): Promise<vo
 function warnOnPluginVersionSkew(serverVersion: string | undefined): void {
   const pluginVersion = process.env["CLAUDEXOR_PLUGIN_VERSION"];
   if (pluginVersion && serverVersion && pluginVersion !== serverVersion) {
+    // The env value is environment-sourced: never echo arbitrary content to
+    // the log — a non-version-shaped value is disclosed generically.
+    const shown = /^[\w.+-]{1,32}$/.test(pluginVersion) ? pluginVersion : "<non-version value>";
     process.stderr.write(
-      `claudexor mcp: plugin artifacts are version ${pluginVersion} but the CLI is ${serverVersion}; ` +
+      `claudexor mcp: plugin artifacts are version ${shown} but the CLI is ${serverVersion}; ` +
         `run \`claudexor plugin repair all\` and reload the host to refresh cached tool schemas\n`,
     );
   }
@@ -342,6 +354,8 @@ function validateOptionalNonEmptyString(value: unknown, name: string): string | 
 export interface RunnerHooks {
   /** Interactive question surface; resolve with answers or null to decline. */
   onInteraction?: (ctx: any) => Promise<any | null>;
+  /** Cooperative cancellation: host `notifications/cancelled` aborts the run. */
+  signal?: AbortSignal;
 }
 
 export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
@@ -459,17 +473,20 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       formatRunResult(
         await runner(
           { ...args, ...params },
-          ctx.elicit
-            ? {
-                onInteraction: async (ictx: any) => {
-                  const answers = await ctx.elicit!({
-                    interaction_id: ictx?.request?.interaction_id ?? "",
-                    questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
-                  });
-                  return answers ? { answers } : null;
-                },
-              }
-            : undefined,
+          {
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            ...(ctx.elicit
+              ? {
+                  onInteraction: async (ictx: any) => {
+                    const answers = await ctx.elicit!({
+                      interaction_id: ictx?.request?.interaction_id ?? "",
+                      questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
+                    });
+                    return answers ? { answers } : null;
+                  },
+                }
+              : {}),
+          },
         ),
       ),
   });

@@ -225,6 +225,32 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(sawHooks).toBeNull();
   });
 
+  it("host notifications/cancelled aborts the runner's signal (typed cancel, like Ctrl-C)", async () => {
+    let sawAbort = false;
+    const runner: RunnerFn = async (_p, hooks) =>
+      new Promise((resolve) => {
+        const signal = hooks?.signal;
+        if (!signal) {
+          resolve({ summary: "no signal offered" });
+          return;
+        }
+        const timer = setTimeout(() => resolve({ summary: "never cancelled" }), 5_000);
+        signal.addEventListener("abort", () => {
+          sawAbort = true;
+          clearTimeout(timer);
+          resolve({ summary: "aborted" });
+        });
+      });
+    const w = wire(defaultClaudexorTools(runner));
+    await w.initialize();
+    w.send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    await sleep(150);
+    w.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "host cancelled" } });
+    for (let i = 0; i < 40 && !sawAbort; i += 1) await sleep(50);
+    await w.close();
+    expect(sawAbort).toBe(true);
+  });
+
   it("exposes advanced run controls and forwards them to the runner", async () => {
     let received: any = null;
     const tools = defaultClaudexorTools(async (p) => {

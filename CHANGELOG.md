@@ -22,6 +22,10 @@ Release history for Claudexor. The current version is declared in the root
   `authMethods: []`, the protocol `_meta` envelope is tolerated (unknown
   Claudexor knobs still fail loudly), and permission requests announce their
   tool_call first (no orphan ids). Host plugins regenerated + repaired.
+  Host CANCELLATION: MCP notifications/cancelled aborts the run — the SDK's
+  per-request signal rides the runner hooks; on daemon-tracked runs it
+  becomes the same typed cancel control as CLI Ctrl-C (posted once, on the
+  poll tick, after the run is bound).
   Integration test suite: surface canaries in CI (MCP daemon-tracked run
   E2E over stdio, plugin lifecycle in a scratch HOME, ACP conformance
   smoke), the MCP<->CLI capability parity gate

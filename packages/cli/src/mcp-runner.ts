@@ -115,9 +115,20 @@ export function mcpSurfaceRunner() {
       ...(Array.isArray(p?.protectedPathApprovals) ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
     };
     const interactionBridge = hooks?.onInteraction ? makeInteractionBridge(addr, hooks.onInteraction) : undefined;
+    // Host cancellation (MCP notifications/cancelled -> ctx signal) becomes
+    // the same TYPED daemon cancel the CLI's Ctrl-C path posts; the wait loop
+    // then resolves with the honest cancelled terminal.
+    const cancelBridge = hooks?.signal ? makeCancelBridge(addr, hooks.signal) : undefined;
+    const onPollTick =
+      interactionBridge || cancelBridge
+        ? async (info: { runId: string }) => {
+            cancelBridge?.(info);
+            await interactionBridge?.(info);
+          }
+        : undefined;
     const out = await enqueueAndAwait(client, addr, body, {
       waitForTerminal: true,
-      ...(interactionBridge ? { onPollTick: interactionBridge } : {}),
+      ...(onPollTick ? { onPollTick } : {}),
     });
     // The MCP result: the run's primary output as the summary (the daemon
     // outcome reason for non-success terminals), plus the artifact handle.
@@ -128,6 +139,26 @@ export function mcpSurfaceRunner() {
         ? primary.text.trim()
         : (reason ?? (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
     return { runId: out.runId, runDir: out.runDir, status: out.status, summary };
+  };
+}
+
+/**
+ * Cancel bridge: once the run is BOUND (we know its id), an aborted host
+ * signal posts the typed cancel control exactly once. Runs on the poll tick
+ * so an abort that races run-binding still lands.
+ */
+export function makeCancelBridge(addr: ControlApiAddress, signal: AbortSignal): (info: { runId: string }) => void {
+  let posted = false;
+  return ({ runId }) => {
+    if (posted || !signal.aborted || !runId) return;
+    posted = true;
+    void fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/control`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ control: { kind: "cancel", reason: "mcp host cancelled the tool call" } }),
+    }).catch(() => {
+      posted = false; // transient failure: retry on the next tick
+    });
   };
 }
 

@@ -693,15 +693,19 @@ function startServer(runner: (p: any, hooks?: any) => Promise<unknown>, updates:
   const serving = server.serve();
   const responses: any[] = [];
   const requests: any[] = [];
+  // Wire-order ledger: every server->client frame in ARRIVAL order, so
+  // ordering assertions compare real wire positions, not per-array indexes.
+  const arrivals: any[] = [];
   const rl = createInterface({ input: s2c });
   rl.on("line", (l) => {
     if (!l.trim()) return;
     const msg = JSON.parse(l);
+    arrivals.push(msg);
     if (msg.method === "session/update") updates.push(msg.params);
     else if (msg.method) requests.push(msg);
     else responses.push(msg);
   });
-  return { c2s, s2c, responses, requests, serving };
+  return { c2s, s2c, responses, requests, arrivals, serving };
 }
 
 describe("ACP conformance fixes (Phase 5)", () => {
@@ -741,7 +745,7 @@ describe("ACP conformance fixes (Phase 5)", () => {
 
   it("announces a tool_call before session/request_permission and completes it after (no orphan ids)", async () => {
     const updates: any[] = [];
-    const { c2s, responses, requests, serving } = startServer(async (_p: any, hooks: any) => {
+    const { c2s, responses, requests, arrivals, serving } = startServer(async (_p: any, hooks: any) => {
       const answers = await hooks?.onInteraction?.({
         request: {
           interaction_id: "int-7",
@@ -769,12 +773,21 @@ describe("ACP conformance fixes (Phase 5)", () => {
     const perm = requests.find((r) => r.method === "session/request_permission");
     expect(perm).toBeTruthy();
     const announcedId = perm?.params?.toolCall?.toolCallId;
-    const toolCallUpdates = updates.filter((u) => u?.update?.sessionUpdate === "tool_call" || u?.update?.sessionUpdate === "tool_call_update");
-    const announce = toolCallUpdates.find((u) => u.update.sessionUpdate === "tool_call" && u.update.toolCallId === announcedId);
-    const complete = toolCallUpdates.find((u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === announcedId && u.update.status === "completed");
-    expect(announce).toBeTruthy();
-    expect(complete).toBeTruthy();
-    // Announce BEFORE the permission request hit the wire.
-    expect(updates.indexOf(announce)).toBeGreaterThanOrEqual(0);
+    // WIRE ORDER: announce (tool_call) strictly precedes the permission
+    // request; completion (tool_call_update) strictly follows it.
+    const announceAt = arrivals.findIndex(
+      (m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "tool_call" && m.params?.update?.toolCallId === announcedId,
+    );
+    const permAt = arrivals.findIndex((m) => m.method === "session/request_permission");
+    const completeAt = arrivals.findIndex(
+      (m) =>
+        m.method === "session/update" &&
+        m.params?.update?.sessionUpdate === "tool_call_update" &&
+        m.params?.update?.toolCallId === announcedId &&
+        m.params?.update?.status === "completed",
+    );
+    expect(announceAt).toBeGreaterThanOrEqual(0);
+    expect(permAt).toBeGreaterThan(announceAt);
+    expect(completeAt).toBeGreaterThan(permAt);
   });
 });
