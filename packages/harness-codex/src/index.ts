@@ -1,4 +1,5 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
@@ -239,7 +240,7 @@ export function codexExecArgs(
   spec: Pick<HarnessRunSpec, "access" | "model_hint" | "effort_hint" | "external_context_policy" | "prompt" | "attachments" | "browser"> & {
     resume_session_id?: string | null;
   },
-  opts: { suppressNodeRepl?: boolean } = {},
+  opts: { suppressNodeRepl?: boolean; outputSchemaPath?: string | null } = {},
 ): string[] {
   // Codex.app's inherited `node_repl` MCP (its in-app-browser controller) can't
   // run in headless `codex exec` and fails every call → it used to flip an
@@ -257,6 +258,8 @@ export function codexExecArgs(
   const effort = normalizeEffort(spec.effort_hint, CODEX_EFFORT_LEVELS);
   if (spec.resume_session_id) {
     const args = ["exec", "resume", spec.resume_session_id, "--json", ...sandboxConfigArgs(spec.access), "--skip-git-repo-check"];
+    // Structured output (D10), LIVE-VERIFIED (0.137): --output-schema <FILE>.
+    if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
@@ -276,6 +279,8 @@ export function codexExecArgs(
     return args;
   }
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
+  // Structured output (D10), LIVE-VERIFIED (0.137): --output-schema <FILE>.
+  if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
@@ -352,6 +357,8 @@ export function createCodexAdapter(): HarnessAdapter {
           read_files: true,
           // mcp_servers.browser.*` overrides (live-verified) — gated on web policy.
           browser_tool: true,
+          // LIVE-VERIFIED (codex 0.137): `codex exec --output-schema <FILE>`.
+          json_schema_output: true,
           web_policy: "native",
           quota_signal: "observed",
           usage_signal: "native",
@@ -441,78 +448,9 @@ export function createCodexAdapter(): HarnessAdapter {
   };
 }
 
-/**
- * B9 / route proof: recover the model codex ACTUALLY ran from its own session
- * rollout file (`$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`,
- * `turn_context.payload.model`). This is the codex CLI's OWN record — a real
- * observation, not an argv echo — so it honestly upgrades the cross-family route
- * proof to `verified` (CLAUDEXOR_BIBLE §5) for a CLI whose `--json` stream never
- * carries the model. Best-effort: any missing/ambiguous/unreadable state returns
- * null and the proof stays unobserved (safe degradation, never throws).
- */
-export function codexTranscriptModel(codexHome: string | null | undefined, threadId: string | undefined): string | null {
-  if (!threadId) return null;
-  const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
-  const rollout = findCodexRollout(join(home, "sessions"), threadId);
-  if (!rollout) return null;
-  let observed: string | null = null;
-  try {
-    for (const line of readFileSync(rollout, "utf8").split("\n")) {
-      if (!line.includes("turn_context")) continue;
-      let obj: unknown;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const model = (obj as { payload?: { model?: unknown } })?.payload?.model;
-      // Keep the LAST turn_context, not the first: a RESUMED codex session
-      // (`exec resume <id>`) accumulates multiple turns in one rollout, so the
-      // observed model must reflect the most recent turn — the one the usage
-      // event this is attached to actually ran — not a stale earlier turn.
-      if (typeof model === "string" && model.trim()) observed = model;
-    }
-  } catch {
-    /* unreadable rollout: stay unobserved */
-  }
-  return observed;
-}
 
-/** Locate the rollout file whose name binds to this run's threadId (the id is unique per session). */
-function findCodexRollout(sessionsDir: string, threadId: string): string | null {
-  if (!existsSync(sessionsDir)) return null;
-  try {
-    for (const y of listDirsDesc(sessionsDir)) {
-      for (const m of listDirsDesc(join(sessionsDir, y))) {
-        for (const d of listDirsDesc(join(sessionsDir, y, m))) {
-          const dayDir = join(sessionsDir, y, m, d);
-          const hit = readdirSync(dayDir).find((f) => f.includes(threadId) && f.endsWith(".jsonl"));
-          if (hit) return join(dayDir, hit);
-        }
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
 
-/** Subdirectory names sorted newest-first (date partitions), directories only. */
-function listDirsDesc(dir: string): string[] {
-  try {
-    return readdirSync(dir)
-      .filter((n) => {
-        try {
-          return statSync(join(dir, n)).isDirectory();
-        } catch {
-          return false;
-        }
-      })
-      .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
-  } catch {
-    return [];
-  }
-}
+
 
 async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const nativeAuthed = await loggedIn();
@@ -609,7 +547,21 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // config codex will actually load (the resolved CODEX_HOME, else ~/.codex)
   // already defines it — never create a transport-less partial entry on a scoped
   // home (that broke codex startup, the "invalid transport" regression).
-  const args = codexExecArgs(spec, { suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]) });
+  // Structured output (D10): codex takes a FILE path; write the schema into
+  // the scoped CODEX_HOME (outside the worktree — never lands in a diff).
+  let outputSchemaPath: string | null = null;
+  if (spec.output_schema !== undefined && spec.output_schema !== null) {
+    try {
+      const home = env["CODEX_HOME"];
+      if (home) {
+        outputSchemaPath = join(home, `claudexor-output-schema-${spec.session_id}.json`);
+        writeFileSync(outputSchemaPath, JSON.stringify(spec.output_schema));
+      }
+    } catch {
+      outputSchemaPath = null; // fail-open to fenced-JSON parsing
+    }
+  }
+  const args = codexExecArgs(spec, { suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]), outputSchemaPath });
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
@@ -665,6 +617,12 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
               ev.usage.cost_usd = est;
               ev.usage.estimated = true;
             }
+          }
+          // D7 quota: attach codex's own rate-window record to the usage event
+          // (fresh read per usage — the rollout accretes as the turn ends).
+          if (ev.type === "usage" && !ev.quota) {
+            const rl = codexTranscriptRateLimits(env["CODEX_HOME"], codexThreadId);
+            if (rl) ev.quota = rl;
           }
         }
         return out;

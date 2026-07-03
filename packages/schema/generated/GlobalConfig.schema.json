@@ -71,6 +71,15 @@
                 "auto"
               ],
               "default": "auto"
+            },
+            "quality_priors": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "default": {}
             }
           },
           "additionalProperties": false,

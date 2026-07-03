@@ -184,3 +184,86 @@ describe("DD-27 wave guard (estimate holds)", () => {
     expect(second.denied).toBe("hard_cap");
   });
 });
+
+describe("quota observation (D7)", () => {
+  it("maps a typed HarnessEvent.quota to a native used_percent observation that drives headroom()", async () => {
+    const { observationFromEvent } = await import("./observe.js");
+    const { BudgetLedger } = await import("./ledger.js");
+    const ts = new Date().toISOString();
+    const obs = observationFromEvent("codex", {
+      type: "usage",
+      session_id: "s",
+      ts,
+      usage: { input_tokens: 10 },
+      quota: { used_percent: 40, resets_at: null },
+    } as never);
+    expect(obs).toMatchObject({ kind: "used_percent", used_percent: 40, quality: "native" });
+    const ledger = new BudgetLedger();
+    ledger.observe(obs!);
+    expect(ledger.headroom("codex")).toBeCloseTo(0.6, 5);
+    expect(ledger.headroom("claude")).toBe(1); // no signal -> honest unknown
+  });
+});
+
+describe("portfolio metrics (D7)", () => {
+  it("EMA metrics store: records settled samples and orders cheapest by REAL cost spread", async () => {
+    const { recordHarnessMetric, loadHarnessMetrics } = await import("./metrics.js");
+    const { selectHarness } = await import("./router.js");
+    const { BudgetLedger } = await import("./ledger.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-metrics-"));
+    try {
+      recordHarnessMetric(dir, "codex", { costUsd: 0.02, durationMs: 30_000 });
+      recordHarnessMetric(dir, "claude", { costUsd: 0.4, durationMs: 60_000 });
+      const metrics = loadHarnessMetrics(dir);
+      expect(metrics["codex"]!.avg_cost_usd).toBeCloseTo(0.02, 5);
+      expect(metrics["claude"]!.samples).toBe(1);
+      const mk = (id: string, family: "openai" | "anthropic") => ({
+        harnessId: id,
+        providerFamily: family,
+        available: true,
+        authMode: "local_session" as const,
+        costPerCall: metrics[id]!.avg_cost_usd ?? undefined,
+        latencyMs: metrics[id]!.avg_duration_ms ?? undefined,
+      });
+      const ledger = new BudgetLedger();
+      // cheapest: the 20x cost spread must pick codex.
+      const cheap = selectHarness([mk("codex", "openai"), mk("claude", "anthropic")], { portfolio: "cheapest", ledger });
+      expect(cheap?.harnessId).toBe("codex");
+      // strongest with a decisive quality prior: claude wins despite cost.
+      const strong = selectHarness(
+        [
+          { ...mk("codex", "openai"), qualityForIntent: 0.5 },
+          { ...mk("claude", "anthropic"), qualityForIntent: 0.95 },
+        ],
+        { portfolio: "strongest", ledger },
+      );
+      expect(strong?.harnessId).toBe("claude");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("quota cooldown integration: an observed rate-limit removes the harness from selection until reset", async () => {
+    const { BudgetLedger } = await import("./ledger.js");
+    const { selectHarness } = await import("./router.js");
+    const ledger = new BudgetLedger();
+    ledger.observe({
+      harness_id: "codex",
+      ts: new Date().toISOString(),
+      quality: "observed",
+      kind: "rate_limited",
+      cooldown_until: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const pick = selectHarness(
+      [
+        { harnessId: "codex", providerFamily: "openai", available: true },
+        { harnessId: "claude", providerFamily: "anthropic", available: true },
+      ],
+      { portfolio: "cheapest", ledger },
+    );
+    expect(pick?.harnessId).toBe("claude");
+  });
+});

@@ -195,6 +195,8 @@ export function createClaudeAdapter(): HarnessAdapter {
           read_files: true,
           // inline JSON (no disk write) — gated on web policy.
           browser_tool: true,
+          // LIVE-VERIFIED (claude 2.1.165): `--json-schema <schema>` (inline JSON).
+          json_schema_output: true,
           web_policy: "tools",
           max_turns: true,
           tool_lists: true,
@@ -306,6 +308,13 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
   const eff = normalizeEffort(spec.effort_hint, CLAUDE_EFFORT_LEVELS);
   if (eff) args.push("--effort", eff);
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
+  // Structured output (D10): constrain the FINAL message to the caller's JSON
+  // Schema. LIVE-VERIFIED (2.1.165): `--json-schema <inline JSON>` with
+  // --output-format stream-json. Passed only when the engine set it (the
+  // engine gates on the json_schema_output capability).
+  if (spec.output_schema !== undefined && spec.output_schema !== null) {
+    args.push("--json-schema", JSON.stringify(spec.output_schema));
+  }
   // Resume a native Claude session as a follow-up turn of the same conversation.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
   args.push(...claudeBrowserArgs(spec));

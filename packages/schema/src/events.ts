@@ -29,6 +29,7 @@ export const RunEventType = z.enum([
   "interaction.timeout",
   "interaction.answer_discarded",
   "plan.progress",
+  "budget.quota_pressure",
   "output.ready",
   "gate.started",
   "gate.completed",

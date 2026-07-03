@@ -269,6 +269,10 @@
                             "$ref": "#/definitions/ControlHarnessListResponse/properties/harnesses/items/properties/manifest/anyOf/0/properties/capabilities/properties/quota_signal",
                             "default": "unknown"
                           },
+                          "json_schema_output": {
+                            "type": "boolean",
+                            "default": false
+                          },
                           "effort_levels": {
                             "type": "array",
                             "items": {

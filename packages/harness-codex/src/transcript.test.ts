@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { codexTranscriptModel } from "./index.js";
+import { codexTranscriptModel } from "./transcript.js";
 
 // B9: codex's `--json` stream never carries the model, but the CLI records it in
 // its own rollout transcript. codexTranscriptModel reads that file so the
@@ -54,5 +54,35 @@ describe("codexTranscriptModel", () => {
       ].join("\n") + "\n",
     );
     expect(codexTranscriptModel(home, resumed)).toBe("gpt-5.5");
+  });
+});
+
+describe("codexTranscriptRateLimits (D7 quota)", () => {
+  it("reads the LAST token_count rate_limits and picks the tighter window", async () => {
+    const { codexTranscriptRateLimits } = await import("./transcript.js");
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    const day = join(home, "sessions", "2026", "07", "03");
+    mkdirSync(day, { recursive: true });
+    const threadId = "0199aaaa-bbbb-cccc-dddd-eeeeffff0000";
+    const line = (primaryUsed: number, secondaryUsed: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex",
+            primary: { used_percent: primaryUsed, window_minutes: 300, resets_at: 1782368577 },
+            secondary: { used_percent: secondaryUsed, window_minutes: 10080, resets_at: 1782387153 },
+          },
+        },
+      });
+    writeFileSync(join(day, `rollout-2026-07-03T00-00-00-${threadId}.jsonl`), [line(1, 2), line(12.5, 40)].join("\n") + "\n");
+    const rl = codexTranscriptRateLimits(home, threadId);
+    expect(rl).not.toBeNull();
+    expect(rl!.used_percent).toBe(40); // secondary is the tighter window in the LAST record
+    expect(rl!.resets_at).toBe(new Date(1782387153 * 1000).toISOString());
+    // Missing rollout -> null (fail-honest, no signal).
+    expect(codexTranscriptRateLimits(home, "unknown-thread")).toBeNull();
+    rmSync(home, { recursive: true, force: true });
   });
 });

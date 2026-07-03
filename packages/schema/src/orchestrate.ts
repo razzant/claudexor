@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { Id, ModeKind } from "./primitives.js";
 
 /**
@@ -175,3 +176,17 @@ export const OrchestratePlanProgress = z.object({
   stopped_reason: z.string().nullable().default(null),
 });
 export type OrchestratePlanProgress = z.infer<typeof OrchestratePlanProgress>;
+
+/**
+ * JSON Schema for the brain's typed plan, computed from the LIVE Zod shape
+ * (the SSOT) — passed as HarnessRunSpec.output_schema so schema-capable CLIs
+ * constrain their final message to a valid OrchestratePlan (D10).
+ */
+let orchestratePlanJsonSchemaCache: Record<string, unknown> | null = null;
+export function orchestratePlanJsonSchema(): Record<string, unknown> {
+  orchestratePlanJsonSchemaCache ??= zodToJsonSchema(OrchestratePlan, {
+    name: "OrchestratePlan",
+    $refStrategy: "none",
+  }) as Record<string, unknown>;
+  return orchestratePlanJsonSchemaCache;
+}

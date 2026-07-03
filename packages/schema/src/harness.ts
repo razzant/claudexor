@@ -82,6 +82,13 @@ export const HarnessCapabilities = z.object({
   quota_signal: SignalQuality.default("unknown"),
   usage_signal: SignalQuality.default("unknown"),
   /**
+   * The harness can constrain its FINAL message to a caller-supplied JSON
+   * Schema (codex `--output-schema <file>`, claude `--json-schema <json>`).
+   * Consumer: the engine passes HarnessRunSpec.output_schema only to routes
+   * declaring this; everything else keeps fenced-JSON parsing (D10).
+   */
+  json_schema_output: z.boolean().default(false),
+  /**
    * Ordered (weakest→strongest) reasoning-effort levels this harness actually
    * accepts. Empty = effort is not a tunable surface. The shared effort
    * normalizer clamps any requested EffortHint onto the nearest member.
@@ -298,6 +305,12 @@ export const HarnessRunSpec = z.object({
    * `browser_tool`, and web policy is not `off`.
    */
   browser: BrowserToolSpec.nullable().default(null),
+  /**
+   * JSON Schema constraining the harness's FINAL message (D10). Producers:
+   * the orchestrate brain (OrchestratePlan schema) and spec-questions
+   * grounding (InterviewQuestion block). Passed only to routes whose manifest
+   * declares `json_schema_output`; consumers add the native CLI flag.
+   */
   output_schema: z.unknown().optional(),
   extra: z.record(z.string(), z.unknown()).default({}),
 });
@@ -407,6 +420,22 @@ export const HarnessEvent = z.object({
     })
     .optional(),
   observed_model: z.string().optional(),
+  /**
+   * Typed quota/usage-window signal (D7): the harness CLI's OWN record of how
+   * much of its subscription/rate window is consumed. Producers read native
+   * machine-readable surfaces only (codex rollout `token_count.rate_limits`);
+   * a harness with no native surface emits nothing (fail-honest, never
+   * scraped from prose). The budget layer maps this to a `used_percent`
+   * observation; `headroom()` and pool ordering consume it.
+   */
+  quota: z
+    .object({
+      /** 0-100: consumed share of the binding rate window. */
+      used_percent: z.number().min(0).max(100),
+      /** Native reset moment for the window, when the CLI reports one. */
+      resets_at: z.string().nullable().default(null),
+    })
+    .optional(),
   /**
    * Typed live plan/todo progress (D14): adapters map their native plan tools
    * (codex `todo_list` items, claude `TodoWrite` todos) into this shape in

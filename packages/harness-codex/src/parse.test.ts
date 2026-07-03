@@ -184,3 +184,24 @@ describe("plan progress (D14)", () => {
     ]);
   });
 });
+
+describe("structured output flag (D10)", () => {
+  it("codexExecArgs adds --output-schema <file> in both fresh and resume branches", async () => {
+    const { codexExecArgs } = await import("./index.js");
+    const base = {
+      access: "readonly" as const,
+      model_hint: null,
+      effort_hint: null,
+      external_context_policy: "off" as const,
+      prompt: "plan it",
+      attachments: [],
+      browser: null,
+    };
+    const fresh = codexExecArgs({ ...base, resume_session_id: null } as never, { outputSchemaPath: "/tmp/s.json" });
+    expect(fresh.join(" ")).toContain("--output-schema /tmp/s.json");
+    const resume = codexExecArgs({ ...base, resume_session_id: "ses-1" } as never, { outputSchemaPath: "/tmp/s.json" });
+    expect(resume.join(" ")).toContain("--output-schema /tmp/s.json");
+    const none = codexExecArgs({ ...base, resume_session_id: null } as never, {});
+    expect(none.join(" ")).not.toContain("--output-schema");
+  });
+});

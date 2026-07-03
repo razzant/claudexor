@@ -4732,3 +4732,18 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
     expect(decision).toContain("applied_cleanly: true");
   });
 });
+
+describe("structured-first plan parsing (D10)", () => {
+  it("accepts a BARE JSON final message (schema-constrained route) and falls back to fenced JSON", async () => {
+    const { extractOrchestratePlan } = await import("./orchestrateBrain.js");
+    const plan = { tool_calls: [{ tool: "status", run_id: "run-1", why: "check" }] };
+    const bare = extractOrchestratePlan(JSON.stringify(plan));
+    expect(bare.plan).not.toBeNull();
+    expect(bare.plan!.tool_calls[0]!.tool).toBe("status");
+    const fenced = extractOrchestratePlan("Report:\n\n```json\n" + JSON.stringify(plan) + "\n```\n");
+    expect(fenced.plan).not.toBeNull();
+    const neither = extractOrchestratePlan("no plan here");
+    expect(neither.plan).toBeNull();
+    expect(neither.error).toContain("no fenced json");
+  });
+});

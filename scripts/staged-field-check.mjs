@@ -35,10 +35,6 @@ const schemaSrc = join(root, "packages", "schema", "src");
  */
 const ALLOWLIST = new Map([
   // (field name) => reason. Add ONLY with a concrete justification.
-  [
-    "output_schema",
-    "structured-output wiring lands in v0.15 Phase 4 (locked decision D10); remove this entry with that change",
-  ],
 ]);
 
 function walk(dir, acc, filter) {

@@ -65,6 +65,12 @@ export const GlobalConfig = z
         env_inheritance: z.enum(["mirror_native", "clean"]).default("mirror_native"),
         /** Default auth route preference (subscription/api_key/auto). */
         auth_preference: AuthPreference.default("auto"),
+        /**
+         * Operator-tunable per-provider-family quality priors (0..1) feeding
+         * RouterCandidate.qualityForIntent (D7). A DECLARED prior, not
+         * invented magic: unset families ride the router's neutral 0.5.
+         */
+        quality_priors: z.record(z.string(), z.number().min(0).max(1)).default({}),
       })
       .strict()
       .default({}),

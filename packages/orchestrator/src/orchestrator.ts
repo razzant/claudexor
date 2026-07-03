@@ -52,8 +52,9 @@ import {
   SCHEMA_VERSION,
   TaskContract as TaskContractSchema,
   isBlocking,
+  orchestratePlanJsonSchema,
 } from "@claudexor/schema";
-import { loadConfig, trustConfigPath } from "@claudexor/config";
+import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import { HarnessUnavailableError, summarizeDiffPaths as diffStats, validateModel, withInactivityWatchdog } from "@claudexor/core";
@@ -78,6 +79,11 @@ import {
   renderSummary,
   readRunStatus,
   readRunPatch,
+  envInheritance,
+  transientRetryPolicy,
+  reviewerTimeoutMs,
+  harnessInactivityTimeoutMs,
+  observeAuthSwitch,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
@@ -132,7 +138,9 @@ import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claude
 import {
   BudgetLedger,
   type RouterCandidate,
+  loadHarnessMetrics,
   observationFromEvent,
+  recordHarnessMetric,
   promptFingerprint,
   selectHarness,
 } from "@claudexor/budget";
@@ -393,6 +401,9 @@ interface RoutedAdapter {
   /** Manifest `interactive` capability: only such routes are OFFERED an
    * InteractionChannel (A2 gate). */
   supportsInteractive: boolean;
+  /** Manifest `json_schema_output`: only such routes receive
+   * HarnessRunSpec.output_schema (D10 gate); others keep fenced-JSON parsing. */
+  supportsJsonSchemaOutput: boolean;
   settings: HarnessRouteSettings | null;
 }
 
@@ -772,35 +783,6 @@ export class Orchestrator {
    * neither is an `auto` choice that selects a smoke-proven paid route over an
    * available native route.
    */
-  private observeAuthSwitch(
-    log: EventLog | undefined,
-    harnessId: string,
-    attemptId: string,
-    ev: HarnessEvent,
-  ): void {
-    if (!log || ev.type !== "message" || ev.payload?.["auth_switched"] !== true) return;
-    // Most auth_switched markers mean the preferred auth route was unavailable,
-    // so the default reason is `auth_unavailable`. Adapters may override with a
-    // more specific typed reason, e.g. `readiness_preferred` when auto selects a
-    // smoke-proven route for reliability/cost transparency.
-    const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
-    try {
-      log.emit(
-        "route.fallback.auth_switched",
-        RouteFallbackPayloadSchema.parse({
-          from_harness: harnessId,
-          to_harness: harnessId,
-          from_auth_mode: ev.payload?.["from_auth_mode"],
-          to_auth_mode: ev.payload?.["to_auth_mode"],
-          reason: overrideReason.success ? overrideReason.data : "auth_unavailable",
-          attempt_id: attemptId,
-        }) as unknown as Record<string, unknown>,
-      );
-    } catch {
-      /* a malformed marker must not fail the run */
-    }
-  }
-
   /**
    * Resolve candidate adapters: explicit `--harness`, else available real harnesses, then
    * **capability-gate** to those that can actually produce work for `intent` (e.g. a
@@ -1038,6 +1020,7 @@ export class Orchestrator {
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
           supportsInteractive: manifest.capabilities.interactive,
+          supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
           settings: cfgEntry
             ? {
                 defaultModel: cfgEntry.default_model,
@@ -1088,8 +1071,14 @@ export class Orchestrator {
       const routeLedger = ledger ?? new BudgetLedger();
       const portfolio = input.portfolio ?? this.deps.portfolio ?? "subscription-first";
       const byId = new Map(pool.map((r) => [r.adapter.id, r]));
+      // D7: real routing metrics — observed per-harness cost/latency averages
+      // (single producer: attempt settlement) and operator-declared per-family
+      // quality priors. Absent data rides the router's neutral defaults.
+      const metrics = loadHarnessMetrics(globalConfigDir());
+      const priors = this.config(input.repoRoot).global.routing.quality_priors;
       const remaining: RouterCandidate[] = pool.map((r) => {
         const authModes = statusById.get(r.adapter.id)?.manifest?.auth_modes ?? [];
+        const metric = metrics[r.adapter.id];
         return {
           harnessId: r.adapter.id,
           providerFamily: r.providerFamily,
@@ -1099,6 +1088,9 @@ export class Orchestrator {
             : authModes.includes("api_key")
               ? "api_key"
               : "unknown",
+          qualityForIntent: priors[r.providerFamily],
+          costPerCall: metric?.avg_cost_usd ?? undefined,
+          latencyMs: metric?.avg_duration_ms ?? undefined,
         };
       });
       const ranked: RoutedAdapter[] = [];
@@ -1241,27 +1233,6 @@ export class Orchestrator {
     return this.config(repoRoot).project;
   }
 
-  /** Resolved child-env composition mode (mirror_native|clean) from global config. */
-  private envInheritance(repoRoot: string): "mirror_native" | "clean" {
-    return this.config(repoRoot).global.routing.env_inheritance;
-  }
-
-  private transientRetryPolicy(repoRoot: string): TransientRetryPolicy {
-    const cfg = this.config(repoRoot).global.runtime.transient_retry;
-    return {
-      maxRetries: cfg.max_retries,
-      initialDelayMs: cfg.initial_delay_ms,
-      maxDelayMs: cfg.max_delay_ms,
-    };
-  }
-
-  private reviewerTimeoutMs(repoRoot: string): number {
-    return this.config(repoRoot).global.runtime.reviewer_timeout_ms;
-  }
-
-  private harnessInactivityTimeoutMs(repoRoot: string): number {
-    return this.config(repoRoot).global.runtime.harness_inactivity_timeout_ms;
-  }
 
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
@@ -1597,7 +1568,7 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       max_usd: routed.settings?.maxUsd ?? null,
-      env_inheritance: this.envInheritance(contract.repo.root),
+      env_inheritance: envInheritance(this.config(contract.repo.root)),
       ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
       ...(inPlaceEnvelope && sessionFields?.resume_session_id
         ? { resume_session_id: sessionFields.resume_session_id }
@@ -1621,14 +1592,15 @@ export class Orchestrator {
       );
     }
     if (interaction) spec.extra["interactionChannel"] = interaction;
-    const inactivityMs = this.harnessInactivityTimeoutMs(contract.repo.root);
+    const inactivityMs = harnessInactivityTimeoutMs(this.config(contract.repo.root));
 
+    const attemptStartedMs = Date.now();
     let cost = 0;
     let costEstimated = false;
     let harnessErrored = false;
     const errors: string[] = [];
     const messageParts: string[] = [];
-    const retryPolicy = this.transientRetryPolicy(contract.repo.root);
+    const retryPolicy = transientRetryPolicy(this.config(contract.repo.root));
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
       contract.external_context.web_required ||
@@ -1683,7 +1655,7 @@ export class Orchestrator {
             // deletes, so observing it would poison the thread resume map with
             // unreachable ids — skip it there.
             if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
-            this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+            observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
             // Live plan checklist (D14): forward the adapter's typed plan
             // progress as a run event (LAST WINS; the UI renders the latest).
@@ -1731,7 +1703,19 @@ export class Orchestrator {
             }
             // Observe budget/quota signals (rate-limit -> cooldown) so the router/loop can react.
             const obs = observationFromEvent(adapter.id, safeEv);
-            if (obs) ledger.observe(obs);
+            if (obs) {
+              ledger.observe(obs);
+              // D7 disclosure: a harness burning >=50% of its rate window is
+              // routing-relevant NOW (pool ordering multiplies by headroom).
+              if (obs.kind === "used_percent" && (obs.used_percent ?? 0) >= 50) {
+                log?.emit("budget.quota_pressure", {
+                  harness_id: adapter.id,
+                  attempt_id: attemptId,
+                  used_percent: obs.used_percent,
+                  resets_at: obs.resets_at ?? null,
+                });
+              }
+            }
           }
         } catch (err) {
           // A throwing adapter must not lose the cost already streamed: record the
@@ -1844,6 +1828,12 @@ export class Orchestrator {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
     store.writeText(join(attemptDir, "patch.diff"), diff);
+    // D7 routing metrics: one settled sample per attempt (advisory input for
+    // pool ordering; recording failures never fail the run).
+    recordHarnessMetric(globalConfigDir(), adapter.id, {
+      costUsd: cost > 0 ? cost : null,
+      durationMs: Date.now() - attemptStartedMs,
+    });
     const attemptDiffstat = diffStats(diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
       attempt_id: attemptId,
@@ -3217,8 +3207,8 @@ export class Orchestrator {
     const reviewHome = new WorkspaceManager(input.cwd).readOnlyHomeEnv();
     return reviewCandidate({
       ...input,
-      reviewerTimeoutMs: input.reviewerTimeoutMs ?? this.reviewerTimeoutMs(input.cwd),
-      transientRetryPolicy: input.transientRetryPolicy ?? this.transientRetryPolicy(input.cwd),
+      reviewerTimeoutMs: input.reviewerTimeoutMs ?? reviewerTimeoutMs(this.config(input.cwd)),
+      transientRetryPolicy: input.transientRetryPolicy ?? transientRetryPolicy(this.config(input.cwd)),
       env: reviewHome.env,
     }).finally(() => reviewHome.dispose());
   }
@@ -3266,8 +3256,8 @@ export class Orchestrator {
                 artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
                 cwd: candidateCwd,
                 reviewers,
-                reviewerTimeoutMs: this.reviewerTimeoutMs(contract.repo.root),
-                envInheritance: this.envInheritance(cwd),
+                reviewerTimeoutMs: reviewerTimeoutMs(this.config(contract.repo.root)),
+                envInheritance: envInheritance(this.config(cwd)),
                 signal,
                 onReviewerEvent: (event) => log.emit(event.type, { ...event }),
               })
@@ -3804,7 +3794,7 @@ export class Orchestrator {
                       artifactsDir: join(paths.reviewsDir, `${attemptId}-reviewers`),
                       cwd: candidateReviewCwd,
                       reviewers,
-                      envInheritance: this.envInheritance(input.repoRoot),
+                      envInheritance: envInheritance(this.config(input.repoRoot)),
                       signal: input.signal,
                       onReviewerEvent: (event) => log.emit(event.type, { ...event }),
                     })
@@ -4405,7 +4395,7 @@ export class Orchestrator {
           model_hint: knobs.model,
           effort_hint: knobs.effort,
           max_turns: knobs.maxTurns,
-          env_inheritance: this.envInheritance(input.repoRoot),
+          env_inheritance: envInheritance(this.config(input.repoRoot)),
           env: roHome.env,
         });
         const plannerAbort = new AbortController();
@@ -4449,7 +4439,7 @@ export class Orchestrator {
           });
           if (!input.signal?.aborted) {
             const watchedPlan = withInactivityWatchdog(adapter.run(spec), {
-              timeoutMs: this.harnessInactivityTimeoutMs(input.repoRoot),
+              timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
               onTimeout: () => {
                 plannerAbort.abort();
                 void adapter.cancel?.(spec.session_id)?.catch(() => {});
@@ -4465,7 +4455,7 @@ export class Orchestrator {
               // unreachable afterwards. Recording it would poison the thread resume
               // map with dead ids — the read-side mirror of the agent path's
               // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
-              this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+              observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
@@ -4653,7 +4643,7 @@ export class Orchestrator {
           artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
           cwd: this.execRootOf(input),
           reviewers,
-          envInheritance: this.envInheritance(input.repoRoot),
+          envInheritance: envInheritance(this.config(input.repoRoot)),
           signal: input.signal,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });
@@ -5110,8 +5100,14 @@ export class Orchestrator {
         model_hint: knobs.model,
         effort_hint: knobs.effort,
         max_turns: knobs.maxTurns,
-        env_inheritance: this.envInheritance(input.repoRoot),
+        env_inheritance: envInheritance(this.config(input.repoRoot)),
         env: roHome.env,
+        // Structured output (D10): the orchestrate BRAIN's deliverable IS the
+        // typed plan — constrain schema-capable routes to it. Capability-gated:
+        // routes without json_schema_output keep fenced-JSON parsing.
+        ...(opts.intent === "orchestrate" && routed.supportsJsonSchemaOutput
+          ? { output_schema: orchestratePlanJsonSchema() }
+          : {}),
       });
       const reportAbort = new AbortController();
       spec.extra["abortSignal"] = input.signal
@@ -5136,7 +5132,7 @@ export class Orchestrator {
           knobs.webPolicy === "live",
         effectiveWeb,
       );
-      const retryPolicy = this.transientRetryPolicy(input.repoRoot);
+      const retryPolicy = transientRetryPolicy(this.config(input.repoRoot));
       let activeSessionId = spec.session_id;
       const onAbort = () => {
         void adapter.cancel?.(activeSessionId)?.catch(() => {});
@@ -5170,7 +5166,7 @@ export class Orchestrator {
           });
           try {
             const watchedReport = withInactivityWatchdog(adapter.run(runSpec), {
-              timeoutMs: this.harnessInactivityTimeoutMs(input.repoRoot),
+              timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
               onTimeout: () => {
                 reportAbort.abort();
                 void adapter.cancel?.(activeSessionId)?.catch(() => {});
@@ -5186,7 +5182,7 @@ export class Orchestrator {
               // unreachable afterwards. Recording it would poison the thread resume
               // map with dead ids — the read-side mirror of the agent path's
               // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
-              this.observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+              observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
@@ -6117,7 +6113,7 @@ export class Orchestrator {
           artifactsDir: join(paths.reviewsDir, `orchestrate-${call.run_id}`),
           cwd: input.repoRoot,
           reviewers,
-          envInheritance: this.envInheritance(input.repoRoot),
+          envInheritance: envInheritance(this.config(input.repoRoot)),
           signal: input.signal,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
         });

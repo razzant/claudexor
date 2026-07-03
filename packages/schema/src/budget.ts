@@ -38,7 +38,7 @@ export const BudgetObservation = z.object({
   harness_id: Id,
   ts: z.string(),
   quality: SignalQuality,
-  kind: z.enum(["spend", "rate_limited", "used_percent", "cooldown", "reset_hint", "manual"]),
+  kind: z.enum(["spend", "rate_limited", "used_percent", "cooldown", "manual"]),
   usd: z.number().optional(),
   used_percent: z.number().optional(),
   resets_at: z.string().nullable().optional(),

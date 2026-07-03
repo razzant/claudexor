@@ -28,7 +28,6 @@
             "rate_limited",
             "used_percent",
             "cooldown",
-            "reset_hint",
             "manual"
           ]
         },

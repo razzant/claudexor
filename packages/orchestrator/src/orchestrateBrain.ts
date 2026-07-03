@@ -52,6 +52,17 @@ export function buildOrchestrateBrainPrompt(
  * parsing, not governance: validity is decided by the OrchestratePlan schema.
  */
 export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
+  // STRUCTURED-FIRST (D10): a schema-constrained route emits the plan as the
+  // bare final message — try the whole report as JSON before fence-hunting.
+  const bare = report.trim();
+  if (bare.startsWith("{") && bare.endsWith("}")) {
+    try {
+      const parsed = OrchestratePlanSchema.safeParse(JSON.parse(bare));
+      if (parsed.success) return { plan: parsed.data, error: "" };
+    } catch {
+      /* not bare JSON — fall through to fenced parsing */
+    }
+  }
   const fence = /```json\s*\n([\s\S]*?)\n```/g;
   let lastBlock: string | null = null;
   for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;

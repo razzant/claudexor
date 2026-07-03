@@ -18,6 +18,19 @@ export function observationFromEvent(harnessId: string, ev: HarnessEvent): Budge
     return { harness_id: harnessId, ts: nowIso(), quality, kind: "spend", usd: ev.usage.cost_usd };
   }
 
+  if (ev.quota) {
+    // The CLI's own machine-readable window record (codex rollout
+    // token_count.rate_limits) -> "native" quality used_percent observation.
+    return {
+      harness_id: harnessId,
+      ts: nowIso(),
+      quality: "native",
+      kind: "used_percent",
+      used_percent: ev.quota.used_percent,
+      resets_at: ev.quota.resets_at ?? null,
+    };
+  }
+
   if (ev.rate_limit) {
     const resets = ev.rate_limit.resets_at ?? null;
     const delay = ev.rate_limit.retry_delay_ms ?? null;

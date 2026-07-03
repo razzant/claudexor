@@ -344,3 +344,24 @@ describe("plan progress (D14)", () => {
     ]);
   });
 });
+
+describe("structured output flag (D10)", () => {
+  it("claudeArgsForSpec adds inline --json-schema only when output_schema is set", async () => {
+    const { claudeArgsForSpec } = await import("./index.js");
+    const { HarnessRunSpec } = await import("@claudexor/schema");
+    const spec = HarnessRunSpec.parse({
+      session_id: "s1",
+      intent: "orchestrate",
+      prompt: "plan",
+      cwd: "/tmp",
+      access: "readonly",
+      output_schema: { type: "object", properties: { tool_calls: { type: "array" } } },
+    });
+    const args = claudeArgsForSpec(spec);
+    const i = args.indexOf("--json-schema");
+    expect(i).toBeGreaterThan(-1);
+    expect(JSON.parse(args[i + 1]!)).toMatchObject({ type: "object" });
+    const bare = claudeArgsForSpec(HarnessRunSpec.parse({ session_id: "s2", intent: "explain", prompt: "q", cwd: "/tmp", access: "readonly" }));
+    expect(bare).not.toContain("--json-schema");
+  });
+});

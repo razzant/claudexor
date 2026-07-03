@@ -4,6 +4,8 @@
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
 import type { HarnessEvent, ModeKind, ProtectedPathApproval, ReviewFinding } from "@claudexor/schema";
+import { FallbackReason as FallbackReasonSchema, RouteFallbackPayload as RouteFallbackPayloadSchema } from "@claudexor/schema";
+import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
@@ -242,3 +244,64 @@ export function readRunPatch(repoRoot: string, runId: string): string | null {
   const path = join(sub.finalDir, "patch.diff");
   return existsSync(path) ? readFileSync(path, "utf8") : null;
 }
+
+/** Config-derived runtime knobs (pure projections of ResolvedConfig). */
+export interface ResolvedConfigLike {
+  global: {
+    routing: { env_inheritance: "mirror_native" | "clean" };
+    runtime: {
+      transient_retry: { max_retries: number; initial_delay_ms: number; max_delay_ms: number };
+      reviewer_timeout_ms: number;
+      harness_inactivity_timeout_ms: number;
+    };
+  };
+}
+
+export function envInheritance(cfg: ResolvedConfigLike): "mirror_native" | "clean" {
+  return cfg.global.routing.env_inheritance;
+}
+
+export function transientRetryPolicy(cfg: ResolvedConfigLike): TransientRetryPolicy {
+  const c = cfg.global.runtime.transient_retry;
+  return { maxRetries: c.max_retries, initialDelayMs: c.initial_delay_ms, maxDelayMs: c.max_delay_ms };
+}
+
+export function reviewerTimeoutMs(cfg: ResolvedConfigLike): number {
+  return cfg.global.runtime.reviewer_timeout_ms;
+}
+
+export function harnessInactivityTimeoutMs(cfg: ResolvedConfigLike): number {
+  return cfg.global.runtime.harness_inactivity_timeout_ms;
+}
+
+/** Typed auth-switch disclosure: adapters mark auth_switched on a message;
+ * the run event log gets the typed route.fallback payload. */
+export function observeAuthSwitch(
+  log: EventLog | undefined,
+  harnessId: string,
+  attemptId: string,
+  ev: HarnessEvent,
+): void {
+  if (!log || ev.type !== "message" || ev.payload?.["auth_switched"] !== true) return;
+  // Most auth_switched markers mean the preferred auth route was unavailable,
+  // so the default reason is `auth_unavailable`. Adapters may override with a
+  // more specific typed reason, e.g. `readiness_preferred` when auto selects a
+  // smoke-proven route for reliability/cost transparency.
+  const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
+  try {
+    log.emit(
+      "route.fallback.auth_switched",
+      RouteFallbackPayloadSchema.parse({
+        from_harness: harnessId,
+        to_harness: harnessId,
+        from_auth_mode: ev.payload?.["from_auth_mode"],
+        to_auth_mode: ev.payload?.["to_auth_mode"],
+        reason: overrideReason.success ? overrideReason.data : "auth_unavailable",
+        attempt_id: attemptId,
+      }) as unknown as Record<string, unknown>,
+    );
+  } catch {
+    /* a malformed marker must not fail the run */
+  }
+}
+
