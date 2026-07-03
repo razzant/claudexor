@@ -356,11 +356,14 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
             ...(ctx.elicit
               ? {
                   onInteraction: async (ictx: any) => {
+                    const interactionId = ictx?.request?.interaction_id ?? "";
                     const answers = await ctx.elicit!({
-                      interaction_id: ictx?.request?.interaction_id ?? "",
+                      interaction_id: interactionId,
                       questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
                     });
-                    return answers ? { answers } : null;
+                    // The TYPED InteractionAnswerSet carries the interaction id
+                    // (ACP/daemon parity; the engine keys the set to the request).
+                    return answers ? { interaction_id: interactionId, answers } : null;
                   },
                 }
               : {}),

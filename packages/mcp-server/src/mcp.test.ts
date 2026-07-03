@@ -201,6 +201,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
 
     expect(w.responses.find((r) => r.id === 9)?.result?.content?.[0]?.text).toContain("asked and answered");
     expect(receivedAnswers).toEqual({
+      interaction_id: "int-1", // typed InteractionAnswerSet parity with ACP/daemon
       answers: [
         { question_id: "q1", selected_labels: ["B"], free_text: null },
         { question_id: "q2", selected_labels: [], free_text: "because reasons" },
