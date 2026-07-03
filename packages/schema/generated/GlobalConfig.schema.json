@@ -79,6 +79,18 @@
                 "minimum": 0,
                 "maximum": 1
               },
+              "propertyNames": {
+                "enum": [
+                  "openai",
+                  "anthropic",
+                  "google",
+                  "cursor",
+                  "opencode",
+                  "xai",
+                  "local",
+                  "unknown"
+                ]
+              },
               "default": {}
             }
           },

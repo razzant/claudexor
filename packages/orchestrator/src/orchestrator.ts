@@ -79,6 +79,9 @@ import {
   renderSummary,
   readRunStatus,
   readRunPatch,
+  observeBudgetSignals,
+  rotateOnStall,
+  recordCleanAttemptMetrics,
   envInheritance,
   transientRetryPolicy,
   reviewerTimeoutMs,
@@ -140,8 +143,6 @@ import {
   BudgetLedger,
   type RouterCandidate,
   loadHarnessMetrics,
-  observationsFromEvent,
-  recordHarnessMetric,
   promptFingerprint,
   selectHarness,
 } from "@claudexor/budget";
@@ -1606,6 +1607,7 @@ export class Orchestrator {
     const inactivityMs = harnessInactivityTimeoutMs(this.config(contract.repo.root));
 
     const attemptStartedMs = Date.now();
+    const budgetSignalState = { quotaPressureDisclosed: false };
     let cost = 0;
     let costEstimated = false;
     let harnessErrored = false;
@@ -1712,22 +1714,9 @@ export class Orchestrator {
             ) {
               pushUniqueText(messageParts, safeEv.text);
             }
-            // Observe ALL budget/quota signals from this event (one codex
-            // usage event carries BOTH spend and quota) so the router/loop
-            // can react.
-            for (const obs of observationsFromEvent(adapter.id, safeEv)) {
-              ledger.observe(obs);
-              // D7 disclosure: a harness burning >=50% of its rate window is
-              // routing-relevant NOW (pool ordering multiplies by headroom).
-              if (obs.kind === "used_percent" && (obs.used_percent ?? 0) >= 50) {
-                log?.emit("budget.quota_pressure", {
-                  harness_id: adapter.id,
-                  attempt_id: attemptId,
-                  used_percent: obs.used_percent,
-                  resets_at: obs.resets_at ?? null,
-                });
-              }
-            }
+            // Observe ALL budget/quota signals (one codex usage event carries
+            // BOTH spend and quota); pressure disclosed once per attempt.
+            observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
           }
         } catch (err) {
           // A throwing adapter must not lose the cost already streamed: record the
@@ -1782,6 +1771,7 @@ export class Orchestrator {
         retries: retryPolicy.maxRetries,
       });
     }
+    const attemptStreamEndedMs = Date.now();
     const unrecovered = unrecoveredToolErrors(telemetry);
     if (webUnsatisfied(telemetry)) {
       errors.push(
@@ -1840,11 +1830,12 @@ export class Orchestrator {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
     store.writeText(join(attemptDir, "patch.diff"), diff);
-    // D7 routing metrics: one settled sample per attempt (advisory input for
-    // pool ordering; recording failures never fail the run).
-    recordHarnessMetric(globalConfigDir(), adapter.id, {
-      costUsd: cost > 0 ? cost : null,
-      durationMs: Date.now() - attemptStartedMs,
+    // D7 routing metrics (one owner in runSupport; clean attempts only).
+    recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
+      costUsd: cost,
+      streamMs: attemptStreamEndedMs - attemptStartedMs,
+      errored,
+      aborted: signal?.aborted === true,
     });
     const attemptDiffstat = diffStats(diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
@@ -3981,14 +3972,11 @@ export class Orchestrator {
         if (roundCap !== null && attempt >= roundCap) break;
         if (readiness.isStalled(sig, stallThreshold)) {
           if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
-            adapterIdx = (adapterIdx + 1) % adapterPool.length;
+            // D7 headroom consumer (mid-run, where quota observations EXIST);
+            // pick + honest route event owned by runSupport.rotateOnStall.
+            adapterIdx = rotateOnStall(adapterPool.map((a) => a.adapter.id), adapterIdx, ledger, triedSinceProgress, log, lastRun?.harnessId ?? null);
             routed = adapterPool[adapterIdx] as RoutedAdapter;
             adapter = routed.adapter;
-            log.emit("route.fallback.started", {
-              from_harness: lastRun?.harnessId ?? null,
-              to_harness: adapter.id,
-              reason: "stall",
-            });
           } else {
             break; // tried every available harness on this failure and still stuck -> stop
           }
@@ -4442,6 +4430,7 @@ export class Orchestrator {
         }
         let cost = 0;
         let harnessError: string | null = null;
+        const budgetSignalState = { quotaPressureDisclosed: false };
         try {
           log.emit("harness.started", {
             harness_id: adapter.id,
@@ -4474,6 +4463,9 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
+              // D7: read-only routes burn quota too (the orchestrate BRAIN is
+              // the loudest) — same single owner as the agent loop.
+              observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 log.emit("budget.observation", {
@@ -5065,6 +5057,7 @@ export class Orchestrator {
       const attemptId = modelOverride
         ? `a${String(idx + 1).padStart(2, "0")}-fb`
         : `a${String(idx + 1).padStart(2, "0")}`;
+      const budgetSignalState = { quotaPressureDisclosed: false };
       const lease = ledger.reserve({
         taskId,
         attemptId,
@@ -5116,8 +5109,14 @@ export class Orchestrator {
         env: roHome.env,
         // Structured output (D10): the orchestrate BRAIN's deliverable IS the
         // typed plan — constrain schema-capable routes to it. Capability-gated:
-        // routes without json_schema_output keep fenced-JSON parsing.
-        ...(opts.intent === "orchestrate" && routed.supportsJsonSchemaOutput
+        // routes without json_schema_output keep fenced-JSON parsing. ALSO
+        // gated off when this spec will ride the INTERACTIVE stream-json
+        // transport (an interaction channel will be offered): --json-schema x
+        // interactive is an unverified vendor combination — fenced parsing
+        // carries those runs until it is live-verified.
+        ...(opts.intent === "orchestrate" &&
+        routed.supportsJsonSchemaOutput &&
+        !(Boolean(input.onInteraction) && routed.supportsInteractive)
           ? { output_schema: orchestratePlanJsonSchema() }
           : {}),
       });
@@ -5201,6 +5200,9 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
+              // D7: read-only routes burn quota too (the orchestrate BRAIN is
+              // the loudest) — same single owner as the agent loop.
+              observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 log.emit("budget.observation", {

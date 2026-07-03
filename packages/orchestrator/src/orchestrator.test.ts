@@ -4747,3 +4747,53 @@ describe("structured-first plan parsing (D10)", () => {
     expect(neither.error).toContain("no fenced json");
   });
 });
+
+describe("strict structured-output schema (critic findings)", () => {
+  it("optional fields become NULLABLE (never force-required) and explicit nulls parse back", async () => {
+    const { orchestratePlanJsonSchema } = await import("@claudexor/schema");
+    const schema = orchestratePlanJsonSchema() as {
+      properties?: { tool_calls?: { items?: { anyOf?: Array<{ properties?: Record<string, { type?: unknown }>; required?: string[] }> } } };
+    };
+    const variants = schema.properties?.tool_calls?.items?.anyOf ?? [];
+    const startRun = variants.find((v) => v.properties && "harness" in v.properties)!;
+    expect(startRun.required).toContain("harness"); // strict mode: listed...
+    const harnessType = startRun.properties!["harness"]!.type;
+    expect(Array.isArray(harnessType) ? harnessType : [harnessType]).toContain("null"); // ...but nullable
+    const { extractOrchestratePlan } = await import("./orchestrateBrain.js");
+    const withNulls = extractOrchestratePlan(
+      JSON.stringify({ tool_calls: [{ tool: "start_run", prompt: "p", mode: "agent", harness: null, why: "w" }] }),
+    );
+    expect(withNulls.plan).not.toBeNull();
+    expect(withNulls.plan!.tool_calls[0]).not.toHaveProperty("harness", null);
+    // Null ARRAY ELEMENTS are NOT the nullable-optional recipe — a malformed
+    // plan must fail the parse loudly, never be silently truncated.
+    const nullElement = extractOrchestratePlan(JSON.stringify({ tool_calls: [null] }));
+    expect(nullElement.plan).toBeNull();
+    expect(nullElement.error).not.toBe("");
+  });
+});
+
+describe("stall rotation (D7 headroom + coverage)", () => {
+  it("prefers UNTRIED candidates even when a tried one has more headroom", async () => {
+    const { pickStallRotationIdx } = await import("./runSupport.js");
+    const ledger = {
+      headroom: (id: string) => (id === "strong" ? 1 : 0.2),
+      cooldownActive: () => false,
+    };
+    const pool = ["strong", "current", "fresh"];
+    // "strong" was already tried since progress; "fresh" was not.
+    expect(pickStallRotationIdx(pool, 1, ledger, new Set(["strong", "current"]))).toBe(2);
+    // all tried -> falls back to best headroom among eligible.
+    expect(pickStallRotationIdx(pool, 1, ledger, new Set(pool))).toBe(0);
+    // total on degenerate pools: empty pool never NaN/undefined.
+    expect(pickStallRotationIdx([], 0, ledger)).toBe(0);
+    // every ALTERNATIVE cooling -> STAY on current (never hop onto a
+    // known rate-limited harness just to rotate).
+    const allCooling = { headroom: () => 1, cooldownActive: () => true };
+    expect(pickStallRotationIdx(pool, 1, allCooling)).toBe(1);
+    // equal headroom -> round-robin tiebreak: nearest clockwise neighbor.
+    const flat = { headroom: () => 1, cooldownActive: () => false };
+    expect(pickStallRotationIdx(pool, 1, flat)).toBe(2);
+    expect(pickStallRotationIdx(pool, 2, flat)).toBe(0);
+  });
+});

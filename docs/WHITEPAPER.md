@@ -265,8 +265,9 @@ reads as a clean success.
 Quota and routing run on evidence, not vibes. A harness's own
 machine-readable rate-window record (codex's rollout `rate_limits`) becomes
 a typed quota event; a harness with no such surface honestly emits nothing.
-Quota burn feeds pool ordering (headroom-aware routing) and is disclosed in
-the run log at pressure. Portfolio choices (cheapest/strongest/…) rank on
+Quota burn is observed on every route, disclosed in the run log at
+pressure, and steers MID-RUN routing (a stalled convergence rotates to the
+harness with the most remaining window). Portfolio choices (cheapest/strongest/…) rank on
 REAL observed metrics — rolling per-harness cost and latency averages from
 settled attempts plus operator-declared quality priors — never invented
 benchmark numbers. Schema-capable harnesses are constrained to typed output

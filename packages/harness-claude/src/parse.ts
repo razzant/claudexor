@@ -63,15 +63,28 @@ function applySessionTask(sessionId: string, tool: string, input: Record<string,
   // own numbering, observed live).
   const taskId = typeof input["taskId"] === "string" ? input["taskId"] : null;
   if (!taskId) return false;
-  const task = list.find((t) => t.id === taskId);
-  if (!task) return false;
+  let task = list.find((t) => t.id === taskId);
   const status = input["status"];
-  if (status === "completed" || status === "in_progress" || status === "pending") {
-    task.status = status;
+  if (status !== "completed" && status !== "in_progress" && status !== "pending") return false;
+  if (!task) {
+    // RESUMED session: the CLI's numbering continues from prior turns while
+    // this accumulator started fresh — create-on-miss with the CLI's own id
+    // (subject line unknown; the status update is still honest progress).
+    const subject = typeof input["subject"] === "string" ? input["subject"] : `Task ${taskId}`;
+    task = { id: taskId, title: subject, status };
+    list.push(task);
     sessionTasks.set(sessionId, list);
     return true;
   }
-  return false;
+  task.status = status;
+  sessionTasks.set(sessionId, list);
+  return true;
+}
+
+/** Session finished: release its accumulated task list (long-lived daemons
+ * must not hold every historical session's checklist). */
+function releaseSessionTasks(sessionId: string): void {
+  sessionTasks.delete(sessionId);
 }
 
 function sessionTaskItems(sessionId: string): SessionTask[] {
@@ -259,6 +272,8 @@ function parseClaudeEventStateful(
   }
 
   if (type === "result") {
+    // The session is finishing: release its accumulated task list.
+    releaseSessionTasks(sessionId);
     const out: HarnessEvent[] = [];
     const u = obj.usage ?? {};
     out.push({

@@ -208,7 +208,25 @@ function strictifyForStructuredOutput(node: unknown): Record<string, unknown> {
     const obj = { ...(value as Record<string, unknown>) };
     for (const key of Object.keys(obj)) obj[key] = walk(obj[key]);
     if (obj["type"] === "object" && obj["properties"] && typeof obj["properties"] === "object") {
-      obj["required"] = Object.keys(obj["properties"] as Record<string, unknown>);
+      const props = obj["properties"] as Record<string, unknown>;
+      const originallyRequired = new Set(Array.isArray(obj["required"]) ? (obj["required"] as unknown[]) : []);
+      // Vendor strict mode demands required = ALL keys; fields that were
+      // OPTIONAL in the source schema stay expressible by becoming NULLABLE
+      // (the OpenAI strict-mode recipe) — otherwise the model would be FORCED
+      // to invent values for e.g. start_run.harness on every call.
+      for (const key of Object.keys(props)) {
+        if (originallyRequired.has(key)) continue;
+        const prop = props[key];
+        if (prop && typeof prop === "object" && !Array.isArray(prop)) {
+          const p = prop as Record<string, unknown>;
+          if (typeof p["type"] === "string" && p["type"] !== "null") {
+            p["type"] = [p["type"], "null"];
+          } else if (Array.isArray(p["type"]) && !(p["type"] as unknown[]).includes("null")) {
+            (p["type"] as unknown[]).push("null");
+          }
+        }
+      }
+      obj["required"] = Object.keys(props);
       obj["additionalProperties"] = false;
     }
     return obj;

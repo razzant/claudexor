@@ -123,12 +123,27 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
 
 /** The LAST plan.progress event's typed items (live plan checklist, D14), or
  * null when the run never emitted one. Last-wins by construction: plan tools
- * re-emit the whole list on every revision. */
-export function latestPlanProgress(rec: RunDirCarrier): { items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }> } | null {
+ * re-emit the whole list on every revision. On RACES the candidates' lists
+ * interleave — prefer the WINNER's attempt (decision.yaml) so the Plan tab
+ * shows the shipped candidate's checklist, not whichever emitted last. */
+export function latestPlanProgress(
+  rec: RunDirCarrier,
+  winnerAttemptId?: string | null,
+): { items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }> } | null {
   const events = readRunEvents(rec);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev?.["type"] !== "plan.progress") continue;
+  const pick = (matchWinner: boolean): Record<string, unknown> | null => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.["type"] !== "plan.progress") continue;
+      if (matchWinner && eventPayload(ev)["attempt_id"] !== winnerAttemptId) continue;
+      return ev;
+    }
+    return null;
+  };
+  const chosen = (winnerAttemptId ? pick(true) : null) ?? pick(false);
+  {
+    const ev = chosen;
+    if (!ev) return null;
     const payload = eventPayload(ev);
     const rawItems = Array.isArray(payload["items"]) ? (payload["items"] as unknown[]) : [];
     const items = rawItems
@@ -141,5 +156,4 @@ export function latestPlanProgress(rec: RunDirCarrier): { items: Array<{ id: str
       .filter((x): x is { id: string; title: string; status: "pending" | "in_progress" | "completed" } => x !== null);
     return { items };
   }
-  return null;
 }

@@ -7,6 +7,8 @@ import { defineConfig } from "vitest/config";
 // unit-test run so `pnpm test` stays fast and dist-independent.
 export default defineConfig({
   test: {
+    // Hermeticity: canary workers must not touch the real ~/.claudexor either.
+    setupFiles: ["./vitest.setup.ts"],
     include: ["packages/canary/src/**/*.story.ts"],
     environment: "node",
     passWithNoTests: false,

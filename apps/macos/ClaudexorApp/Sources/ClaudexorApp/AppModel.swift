@@ -1684,39 +1684,10 @@ final class AppModel {
                 task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)
             }
             task.artifactPaths = detail.artifacts.map(\.path)
-            // Live plan checklist (D14): the latest typed plan.progress items.
-            if let progress = detail.planProgress, !progress.items.isEmpty {
-                task.plan = progress.items.map { item in
-                    PlanItem(
-                        id: item.id,
-                        item.title,
-                        item.status == "completed" ? .done : item.status == "in_progress" ? .active : .pending
-                    )
-                }
-            }
-            // Candidate cards (D13): server-projected per-attempt evidence.
-            task.candidates = detail.candidates.map { c in
-                Candidate(
-                    id: c.label ?? c.attemptId,
-                    family: HarnessFamily(rawValue: c.harnessId) ?? (c.harnessId.hasPrefix("fake") ? .fake : .raw),
-                    status: c.errored ? .failed : (task.status == .running ? .running : .succeeded),
-                    costUsd: c.costUsd,
-                    estimated: c.costEstimated,
-                    gatesPassed: c.gatesPassed,
-                    gatesTotal: c.gatesTotal,
-                    reviewState: c.winner
-                        ? .winner
-                        : c.errored
-                            ? .rejected
-                            : c.blockers > 0
-                                ? .changesRequested
-                                : c.finalReviewClean == true ? .clean : .pending,
-                    summary: "\(c.harnessId) · \(c.attemptId)",
-                    filesChanged: c.diffstat?.files ?? 0,
-                    added: c.diffstat?.additions ?? 0,
-                    removed: c.diffstat?.deletions ?? 0
-                )
-            }
+            // Live plan checklist (D14) + candidate cards (D13): mapping owned
+            // by RunDetailMapping.swift.
+            if let planItems = RunDetailMapping.planItems(detail.planProgress) { task.plan = planItems }
+            task.candidates = RunDetailMapping.candidates(detail.candidates, runStatus: task.status)
             if let budget = detail.budget {
                 if let cap = budget.maxUsd { task.capUsd = cap }
                 if let spend = budget.spendUsd { task.spendUsd = spend }

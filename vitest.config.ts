@@ -6,5 +6,7 @@ export default defineConfig({
     environment: "node",
     passWithNoTests: true,
     clearMocks: true,
+    // Hermeticity: no test may touch the operator's real ~/.claudexor.
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

@@ -65,7 +65,10 @@ export function recordHarnessMetric(
   const path = metricsPath(configDir);
   try {
     mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp-${process.pid}`;
+    // Unique per WRITE, not per process: two attempts settling concurrently in
+    // one daemon collide on a pid-only name (the second rename ENOENTs and
+    // silently drops the sample).
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     writeFileSync(tmp, JSON.stringify(all, null, 2) + "\n");
     renameSync(tmp, path);
   } catch {

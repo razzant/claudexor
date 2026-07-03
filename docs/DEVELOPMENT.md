@@ -115,6 +115,11 @@ the audited bypass (logged to `review-bypass.jsonl` + echoed into the commit
 body). The panel lives in the committed `.claudexor/review-panel.yaml` and is
 read from HEAD — a staged panel change cannot weaken the gate reviewing it.
 
+RESTART `claudexord` AFTER REBUILDING: the daemon loads the engine at start
+and serves that build until stopped — a long-lived daemon silently runs
+pre-rebuild code (`claudexor daemon stop` and let the next command
+auto-start it). Two Phase-4 dogfoods were invalidated by exactly this trap.
+
 ### Local toolchain notes
 
 The build scripts prefer machine-local toolchains when present and fall back to

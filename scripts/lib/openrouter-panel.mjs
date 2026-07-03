@@ -90,6 +90,12 @@ function validateFindings(arr) {
   if (!arr.every((i) => isFindingShaped(i))) {
     return { findings: null, error: "array contains non-finding-shaped items (severity + finding/claim required)" };
   }
+  // A reviewer answering INSUFFICIENT_EVIDENCE did not review: its response
+  // is quorum-UNUSABLE (fail closed), not a non-blocking pass vote — parity
+  // with the primary route's fail-closed bar.
+  if (arr.some((i) => String(i.severity).toUpperCase() === "INSUFFICIENT_EVIDENCE")) {
+    return { findings: null, error: "reviewer returned INSUFFICIENT_EVIDENCE (quorum-unusable)" };
+  }
   return { findings: arr, error: null };
 }
 

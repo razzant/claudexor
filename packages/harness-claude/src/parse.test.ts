@@ -330,8 +330,12 @@ describe("plan progress (D14)", () => {
     ]);
     const done = call("TaskUpdate", { taskId: "1", status: "completed" });
     expect(done?.plan_progress?.items?.[0]?.status).toBe("completed");
-    // Unknown task id / no status change -> plain tool_call, no plan_progress.
-    const noop = call("TaskUpdate", { taskId: "99", status: "completed" });
+    // RESUMED-SESSION honesty: an unknown task id CREATES the entry with the
+    // CLI's own numbering (the accumulator started fresh mid-conversation).
+    const resumed = call("TaskUpdate", { taskId: "99", status: "completed" });
+    expect(resumed?.plan_progress?.items?.find((i) => i.id === "claude-99")?.status).toBe("completed");
+    // A status-less update is still a no-op (nothing to record).
+    const noop = call("TaskUpdate", { taskId: "1" });
     expect(noop?.plan_progress).toBeUndefined();
   });
 

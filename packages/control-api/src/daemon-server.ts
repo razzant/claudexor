@@ -1883,8 +1883,8 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     // Per-candidate evidence cards (D13): projected from the run's attempt/
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
-    // Live plan checklist (D14): the last plan.progress event's items.
-    planProgress: latestPlanProgress(rec),
+    // Live plan checklist (D14): the winner's (else last) plan.progress items.
+    planProgress: latestPlanProgress(rec, decision?.winner ?? null),
     failure,
   });
 }

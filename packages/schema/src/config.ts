@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
+import { AccessProfile, AuthPreference, ExternalContextPolicy, ProviderFamily } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { Portfolio } from "./budget.js";
 
@@ -70,7 +70,7 @@ export const GlobalConfig = z
          * RouterCandidate.qualityForIntent (D7). A DECLARED prior, not
          * invented magic: unset families ride the router's neutral 0.5.
          */
-        quality_priors: z.record(z.string(), z.number().min(0).max(1)).default({}),
+        quality_priors: z.record(ProviderFamily, z.number().min(0).max(1)).default({}),
       })
       .strict()
       .default({}),

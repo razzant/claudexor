@@ -723,8 +723,14 @@ rate-window record (`token_count.rate_limits` in the rollout transcript, the
 same native source route proof uses) as `HarnessEvent.quota{used_percent,
 resets_at}`; claude has no machine-readable subscription-quota surface, so it
 honestly emits nothing. The budget layer maps quota to a native-quality
-`used_percent` observation; `headroom()` consumes it, pool ordering multiplies
-by it, and the run log discloses `budget.quota_pressure` at >=50% window burn.
+`used_percent` observation, observed in EVERY stream loop (agent, plan,
+read-only — the orchestrate brain included) and disclosed as
+`budget.quota_pressure` at >=50% window burn. Headroom consumers are the
+MID-RUN decisions where observations exist: convergence stall-rotation picks
+the harness with the most remaining window (initial pool ordering also
+multiplies by headroom, but a fresh run's ledger has no observations yet —
+quota is per-run by decided tradeoff, so ordering effects appear only once
+the run has streamed usage).
 Portfolio routing runs on REAL metrics: per-harness EMA averages of settled
 attempt cost/duration persisted under the config dir
 (`telemetry/harness-metrics.json`; one producer — attempt settlement) fill
@@ -738,9 +744,14 @@ the OrchestratePlan JSON Schema computed from the live Zod shape, strictified
 for vendor strict modes (every object: `required` = all keys,
 `additionalProperties: false`; inline root — both live-verified: codex
 `--output-schema <FILE>` written into the scoped CODEX_HOME, claude
-`--json-schema <inline JSON>`). Plan parsing is structured-first (a bare-JSON
-final message parses directly; fenced JSON stays the fallback for
-non-capable routes). Live plan checklists (D14) ride typed
+`--json-schema <inline JSON>`). The two CLIs SATISFY the schema differently
+(live-observed): codex constrains its FINAL MESSAGE to bare JSON
+(structured-first parse path); claude materializes the schema as a
+StructuredOutput TOOL — the constrained JSON rides the tool call while the
+final message stays markdown, so the fenced-JSON path carries claude (and
+every non-capable route). Structured output is also gated OFF when the spec
+will ride the interactive stream-json transport — that vendor combination
+is unverified; fenced parsing carries interactive runs. Live plan checklists (D14) ride typed
 `HarnessEvent.plan_progress` (codex `todo_list` items; claude
 TaskCreate/TaskUpdate accumulation — TodoWrite kept for older CLIs), forwarded
 as last-wins `plan.progress` run events and projected on the run detail as

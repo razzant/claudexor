@@ -68,7 +68,10 @@ export const ControlRunDetail = z.object({
    * null for non-orchestrate runs or suggest autonomy. Projected from
    * final/orchestration_progress.yaml. */
   orchestrate: OrchestratePlanProgress.nullable().default(null),
-  /** Per-candidate evidence for race runs (empty for single-envelope modes). */
+  /** Per-candidate evidence cards. Present for EVERY envelope-producing
+   * mode (races show N lanes; single-candidate turns and convergence
+   * refinements project their attempts too); empty only when no attempt
+   * artifacts exist. */
   candidates: z.array(ControlCandidate).default([]),
   /** Live plan checklist (D14): the LAST plan.progress event's items, or null
    * when the run never emitted one. */

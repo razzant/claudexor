@@ -9,6 +9,8 @@ import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
+import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
+import type { BudgetObservation } from "@claudexor/schema";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -305,3 +307,96 @@ export function observeAuthSwitch(
   }
 }
 
+
+/** Observe ALL budget/quota signals from one harness event and disclose
+ * quota pressure ONCE per attempt (crossing semantics). One owner — the
+ * agent, plan, and read-only loops all consume this instead of pasting the
+ * loop (critic finding: triplicated logic drifts). */
+export function observeBudgetSignals(
+  ledger: { observe(o: BudgetObservation): void },
+  log: { emit(type: string, payload: Record<string, unknown>): unknown } | undefined,
+  harnessId: string,
+  attemptId: string,
+  ev: HarnessEvent,
+  state: { quotaPressureDisclosed: boolean },
+): void {
+  for (const obs of observationsFromEvent(harnessId, ev)) {
+    ledger.observe(obs);
+    if (obs.kind === "used_percent" && (obs.used_percent ?? 0) >= 50 && !state.quotaPressureDisclosed) {
+      state.quotaPressureDisclosed = true;
+      log?.emit("budget.quota_pressure", {
+        harness_id: harnessId,
+        attempt_id: attemptId,
+        used_percent: obs.used_percent,
+        resets_at: obs.resets_at ?? null,
+      });
+    }
+  }
+}
+
+/** D7 stall rotation with an HONEST route event: picks via
+ * pickStallRotationIdx and emits route.fallback.started only when the idx
+ * actually moved — STAY (every alternative cooling) is a retry, not a
+ * fallback. Returns the (possibly unchanged) idx. */
+export function rotateOnStall(
+  poolIds: string[],
+  currentIdx: number,
+  ledger: { headroom(id: string): number; cooldownActive(id: string): boolean },
+  tried: ReadonlySet<string>,
+  log: { emit(type: string, payload: Record<string, unknown>): unknown },
+  fromHarness: string | null,
+): number {
+  const pickedIdx = pickStallRotationIdx(poolIds, currentIdx, ledger, tried);
+  if (pickedIdx !== currentIdx) {
+    log.emit("route.fallback.started", {
+      from_harness: fromHarness,
+      to_harness: poolIds[pickedIdx],
+      reason: "stall",
+      headroom: ledger.headroom(poolIds[pickedIdx] as string),
+    });
+  }
+  return pickedIdx;
+}
+
+/** D7 stall-rotation pick: UNTRIED candidates first (the caller's exhaustion
+ * check counts distinct harnesses, so headroom alone could ping-pong between
+ * two strong harnesses and starve a third), then by remaining rate-window
+ * headroom, cooldowns excluded, round-robin order among equals. Pure. */
+export function pickStallRotationIdx(
+  poolIds: string[],
+  currentIdx: number,
+  ledger: { headroom(id: string): number; cooldownActive(id: string): boolean },
+  tried: ReadonlySet<string> = new Set(),
+): number {
+  if (poolIds.length === 0) return currentIdx; // total: never NaN via %0
+  const rank = (candidates: Array<{ id: string; idx: number }>) =>
+    candidates.sort(
+      (a, b) =>
+        ledger.headroom(b.id) - ledger.headroom(a.id) ||
+        ((a.idx - currentIdx + poolIds.length) % poolIds.length) -
+          ((b.idx - currentIdx + poolIds.length) % poolIds.length),
+    )[0];
+  const eligible = poolIds
+    .map((id, idx) => ({ id, idx }))
+    .filter(({ idx, id }) => idx !== currentIdx && !ledger.cooldownActive(id));
+  const next = rank(eligible.filter(({ id }) => !tried.has(id))) ?? rank(eligible);
+  // Every alternative cooling: STAY — retrying the stalled-but-not-throttled
+  // current harness beats hopping onto a known rate-limited one.
+  return next ? next.idx : currentIdx;
+}
+
+/** D7 routing metrics: one settled sample per CLEAN attempt (advisory input;
+ * failures never fail the run). Errored/cancelled attempts are NOT samples —
+ * a fast-failing harness must not earn a flattering latency average (the
+ * router divides by latency). Duration = stream time only (gates excluded). */
+export function recordCleanAttemptMetrics(
+  configDir: string,
+  harnessId: string,
+  sample: { costUsd: number; streamMs: number; errored: boolean; aborted: boolean },
+): void {
+  if (sample.errored || sample.aborted) return;
+  recordHarnessMetric(configDir, harnessId, {
+    costUsd: sample.costUsd > 0 ? sample.costUsd : null,
+    durationMs: sample.streamMs,
+  });
+}

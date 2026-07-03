@@ -158,6 +158,12 @@ pnpm test
   `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each
   finding against the code, and record the decision table. Unresolved accepted
   findings block the release.
+- Commit-gate bypass audit: review `.claudexor/logs/review-bypass.jsonl` for
+  the release range — every bypass must carry an honest reason and its commit
+  body must disclose it (`review bypassed:` line). An unexplained bypass, or a
+  bypass whose reason contradicts the diff, blocks the release. (Bypasses are
+  observable only for hook-installed commits — the release triad is the
+  backstop for the rest; accepted residual risk of opt-in local hooks.)
 - If the cumulative diff is too large for an exact OpenRouter reviewer, lower
   only `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
   downgrade or substitute the required review models.

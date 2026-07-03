@@ -82,6 +82,13 @@ function loadPanelConfig() {
   if (text === null) return null;
   const raw = parseYaml(text);
   if (!raw || typeof raw !== "object") return null;
+  // Strict-config doctrine: unknown keys are LOUD errors, never silent
+  // no-ops (a typo'd budget_seconds would starve the primary route).
+  const KNOWN_PANEL_KEYS = new Set(["reviewer_panel", "fallback_models", "quorum", "budget_seconds"]);
+  const unknown = Object.keys(raw).filter((k) => !KNOWN_PANEL_KEYS.has(k));
+  if (unknown.length > 0) {
+    throw new Error(`review-panel.yaml: unknown key(s): ${unknown.join(", ")} (known: ${[...KNOWN_PANEL_KEYS].join(", ")})`);
+  }
   // Versioned config chooses REVIEWERS only (models/panel/quorum). It cannot
   // grant powers: no env, no bypass flags, no command execution knobs.
   return {
@@ -194,8 +201,24 @@ async function main() {
       env: scrubbedGitEnv, // hook git env must not leak into reviewer children
     });
     if (res.status === null) {
-      // spawnSync timeout: status is null — say so LOUDLY, then fall back.
-      console.error(`commit-review: primary route timed out after ${cfg.budgetSeconds}s — trying fallback`);
+      // spawnSync timeout/spawn-error: status is null — say so LOUDLY,
+      // PRESERVE whatever reviewer telemetry the snapshot accumulated (a
+      // timed-out panel without evidence is indistinguishable from a hang),
+      // then fall back.
+      const kind = res.error ? `failed to spawn (${res.error.message})` : `timed out after ${cfg.budgetSeconds}s`;
+      console.error(`commit-review: primary route ${kind} — trying fallback`);
+      try {
+        const snapReviews = join(snapshotDir, ".claudexor", "reviews");
+        if (existsSync(snapReviews)) {
+          const stampT = new Date().toISOString().replace(/[:.]/g, "-");
+          const dest = join(logsDir, "commit-review", stampT, "primary-timeout");
+          mkdirSync(dest, { recursive: true });
+          cpSync(snapReviews, dest, { recursive: true });
+          console.error(`commit-review: partial primary telemetry -> ${dest}`);
+        }
+      } catch {
+        /* best-effort preservation */
+      }
     } else if (res.status === 0 || res.status === 1) {
       const jsonStart = res.stdout.indexOf("{");
       if (jsonStart >= 0) {

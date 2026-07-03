@@ -28,7 +28,6 @@ import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
 import {
-  isBlocking,
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,

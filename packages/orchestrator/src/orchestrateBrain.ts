@@ -51,13 +51,29 @@ export function buildOrchestrateBrainPrompt(
  * fenced ```json block the orchestrate prompt requires). Structured-output
  * parsing, not governance: validity is decided by the OrchestratePlan schema.
  */
+/** Schema-constrained routes emit explicit `null` for OPTIONAL FIELDS (the
+ * strict-mode nullable recipe); Zod `.optional()` rejects null, so those are
+ * stripped before parsing — translational, never inventing values. Null
+ * ARRAY ELEMENTS are NOT part of that recipe: they are a malformed plan and
+ * must FAIL the Zod parse loudly (no silent truncation). */
+function stripNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripNulls);
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === null) continue;
+    out[k] = stripNulls(v);
+  }
+  return out;
+}
+
 export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
   // STRUCTURED-FIRST (D10): a schema-constrained route emits the plan as the
   // bare final message — try the whole report as JSON before fence-hunting.
   const bare = report.trim();
   if (bare.startsWith("{") && bare.endsWith("}")) {
     try {
-      const parsed = OrchestratePlanSchema.safeParse(JSON.parse(bare));
+      const parsed = OrchestratePlanSchema.safeParse(stripNulls(JSON.parse(bare)));
       if (parsed.success) return { plan: parsed.data, error: "" };
     } catch {
       /* not bare JSON — fall through to fenced parsing */
@@ -68,7 +84,7 @@ export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT
   for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;
   if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
   try {
-    const parsed = OrchestratePlanSchema.safeParse(JSON.parse(lastBlock));
+    const parsed = OrchestratePlanSchema.safeParse(stripNulls(JSON.parse(lastBlock)));
     if (!parsed.success)
       return {
         plan: null,
