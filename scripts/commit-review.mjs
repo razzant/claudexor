@@ -21,7 +21,7 @@
  * deep gate — this catches per-commit regressions early.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -114,8 +114,9 @@ async function main() {
   // without `pnpm build` must BLOCK with an actionable message, not crash
   // with a bare module-not-found (fail closed, loudly).
   let containsSecretLikeToken;
+  let redactSecrets;
   try {
-    ({ containsSecretLikeToken } = await import("../packages/util/dist/index.js"));
+    ({ containsSecretLikeToken, redactSecrets } = await import("../packages/util/dist/index.js"));
   } catch {
     console.error("commit-review: engine not built (packages/util/dist missing) — run `pnpm build` first. Commit blocked (fail closed).");
     return 1;
@@ -201,6 +202,20 @@ async function main() {
         try {
           const out = JSON.parse(res.stdout.slice(jsonStart));
           if (typeof out.ok === "boolean" && out.error === undefined) {
+            // Preserve the PRIMARY route's per-reviewer telemetry BEFORE the
+            // snapshot worktree (its execution root) is cleaned up — a
+            // verdict whose evidence was deleted is non-diagnosable.
+            if (typeof out.artifactsDir === "string" && existsSync(out.artifactsDir)) {
+              try {
+                const stampP = new Date().toISOString().replace(/[:.]/g, "-");
+                const dest = join(logsDir, "commit-review", stampP, "primary");
+                mkdirSync(dest, { recursive: true });
+                cpSync(out.artifactsDir, dest, { recursive: true });
+                console.log(`commit-review: primary telemetry -> ${dest}`);
+              } catch (err) {
+                console.error(`commit-review: could not preserve primary telemetry: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
             for (const f of out.findings ?? []) console.log(`  [${f.severity}] ${f.claim ?? f.finding ?? ""}`);
             if (out.ok) {
               console.log(`commit-review: PASS (primary route; providers: ${(out.providers ?? []).join(", ")})`);
@@ -258,27 +273,35 @@ async function main() {
     // Per-reviewer telemetry (review-gate contract): requested/observed
     // model, status, timings, FULL raw output, parse errors — a verdict
     // without durable per-reviewer evidence is indistinguishable from a hang.
+    // All persisted reviewer strings ride redactSecrets (local/redacted
+    // telemetry contract); timestamps + observed-model source included.
     panel.actors.forEach((a, i) => {
       const dir = join(artifactsDir, `${String(i + 1).padStart(2, "0")}-${a.model.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "metadata.json"), JSON.stringify({
         requested_model: a.model,
         observed_model: a.observedModel ?? null,
+        observed_model_source: a.observedModelSource ?? null,
         route_proof: "openrouter:/api/v1/chat/completions",
         status: a.status,
+        started_at: a.startedAt ?? null,
+        first_event_at: a.firstEventAt ?? null,
+        completed_at: a.completedAt ?? null,
         ms: a.ms ?? null,
-        parse_error: a.parseError ?? null,
-        error: a.error ?? null,
+        parse_error: a.parseError ? redactSecrets(String(a.parseError)) : null,
+        error: a.error ? redactSecrets(String(a.error)) : null,
       }, null, 2) + "\n");
-      writeFileSync(join(dir, "raw-output.txt"), typeof a.raw === "string" ? a.raw : "");
-      writeFileSync(join(dir, "findings.json"), JSON.stringify(a.findings ?? null, null, 2) + "\n");
+      writeFileSync(join(dir, "raw-output.txt"), redactSecrets(typeof a.raw === "string" ? a.raw : ""));
+      writeFileSync(join(dir, "findings.json"), redactSecrets(JSON.stringify(a.findings ?? null, null, 2)) + "\n");
     });
     writeFileSync(
       join(artifactsDir, "fallback-panel.json"),
-      JSON.stringify(
-        { models: cfg.fallbackModels, quorum: cfg.quorum, quorum_met: panel.quorumMet, findings: panel.findings },
-        null,
-        2,
+      redactSecrets(
+        JSON.stringify(
+          { models: cfg.fallbackModels, quorum: cfg.quorum, quorum_met: panel.quorumMet, findings: panel.findings },
+          null,
+          2,
+        ),
       ) + "\n",
     );
     console.log(`commit-review: fallback telemetry -> ${artifactsDir}`);

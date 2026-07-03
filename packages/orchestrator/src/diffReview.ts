@@ -48,9 +48,17 @@ export async function runDiffReview(input: DiffReviewInput, deps: DiffReviewDeps
   }
   // INV-062: raw secrets must never become review artifacts. The fence lives
   // HERE so every caller (CLI verb, commit gate, future surfaces) is covered
-  // before any evidence write or reviewer call.
-  if (containsSecretLikeToken(input.diff)) {
-    throw new Error("reviewDiff: the diff contains a secret-like token; refusing review (remove the secret first)");
+  // before any evidence write or reviewer call — and it covers EVERY
+  // artifact-bound string, not just the diff.
+  for (const [label, text] of [
+    ["diff", input.diff],
+    ["userIntent", input.userIntent],
+    ["tests", input.tests],
+    ["decidedTradeoffs", input.decidedTradeoffs],
+  ] as const) {
+    if (typeof text === "string" && containsSecretLikeToken(text)) {
+      throw new Error(`reviewDiff: ${label} contains a secret-like token; refusing review (remove the secret first)`);
+    }
   }
   const reviewers = await deps.resolveReviewers(input.repoRoot, input.authPreference);
   if (reviewers.length === 0) {

@@ -106,10 +106,10 @@ PRIMARY route: `claudexor review --diff` against an index-snapshot worktree
 (engine reviewer machinery, file-backed evidence, fail closed on inconclusive
 panels). FALLBACK route: an OpenRouter triad-lite — this is the SECOND
 sanctioned prompt-transport diff reviewer (alongside triad-scope-review.mjs),
-allowed because it is the no-primary emergency path with strict finding-shape
-quorum, per-reviewer telemetry under `.claudexor/logs/commit-review/`, an
-oversized-diff refusal instead of truncation, and a lower-assurance status
-recorded in DECIDED_TRADEOFFS. Blocking findings, quorum failures, secret-like
+allowed because it is the no-primary emergency path: strict finding-shape
+quorum, per-reviewer telemetry under `.claudexor/logs/commit-review/`, and an
+oversized-diff refusal instead of truncation. Its lower assurance relative to
+the engine panel is an accepted, recorded tradeoff. Blocking findings, quorum failures, secret-like
 diffs, and missing routes BLOCK the commit; `SKIP_COMMIT_REVIEW="<reason>"` is
 the audited bypass (logged to `review-bypass.jsonl` + echoed into the commit
 body). The panel lives in the committed `.claudexor/review-panel.yaml` and is

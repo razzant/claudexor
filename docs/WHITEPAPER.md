@@ -272,9 +272,10 @@ settled attempts plus operator-declared quality priors — never invented
 benchmark numbers. Schema-capable harnesses are constrained to typed output
 where the deliverable IS the typed artifact (the orchestrate brain's plan),
 and live plan checklists + per-candidate evidence cards ride typed events
-into the UI. This repository also gates its OWN commits: a staged diff is
-reviewed by a cross-family panel (with an audited, commit-body-disclosed
-bypass) before it lands.
+into the UI. This repository also gates its OWN commits: a staged diff is reviewed
+before it lands — the primary route is a cross-family engine panel; the
+emergency fallback is a lower-assurance quorum review — with an audited,
+commit-body-disclosed bypass.
 
 Runs cannot hang silently, and crashes do not leak. Every announced run ends
 with a terminal event on every path (throw, cancel, daemon restart); a

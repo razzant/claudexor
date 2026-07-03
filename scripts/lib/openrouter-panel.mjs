@@ -13,11 +13,12 @@ function isAbortError(err) {
 
 export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
   const started = Date.now();
+  const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) return { model, status: "error", raw: "", error: "OPENROUTER_API_KEY is required" };
+    if (!apiKey) return { model, status: "error", raw: "", error: "OPENROUTER_API_KEY is required", startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
@@ -30,14 +31,16 @@ export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, t
         messages: [{ role: "user", content: prompt }],
       }),
     });
+    const firstEventAt = new Date().toISOString();
     const bodyText = await res.text();
-    if (!res.ok) return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started };
+    const doneAt = () => new Date().toISOString();
+    if (!res.ok) return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
-    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started };
-    return { model, observedModel: body.model ?? model, status: "responded", raw, ms: Date.now() - started };
+    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
+    return { model, observedModel: body.model ?? model, observedModelSource: "openrouter_response_body", status: "responded", raw, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
   } catch (err) {
-    return { model, status: isAbortError(err) ? "timed_out" : "error", raw: "", error: String(err), ms: Date.now() - started };
+    return { model, status: isAbortError(err) ? "timed_out" : "error", raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
   } finally {
     clearTimeout(timer);
   }
