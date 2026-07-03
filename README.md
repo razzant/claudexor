@@ -87,8 +87,10 @@ directly (the project for an `in_place` thread, or the thread's persistent git
 worktree for an `isolated` thread) and resumes the native vendor session, so
 the next turn sees the work. A race (`--n N` > 1) runs its candidates in
 isolated throwaway envelopes and AUTO-ADOPTS the winner's patch into the live
-tree. `session.rebound` is emitted only when a thread re-hosts onto a DIFFERENT
-harness, not on every write turn.
+tree. `session.rebound` is the typed disclosure for turns that CANNOT resume
+the native session in place — isolated-envelope candidates (race lanes
+included) and re-hosting onto a different harness; plain in-place turns
+resume natively with no rebound event.
 
 Examples:
 
