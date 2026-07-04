@@ -92,6 +92,20 @@ applies through the single shared delivery gate and can mutate the live project.
 Orchestrate is therefore not purely read-only — only its default `suggest` level
 is.
 
+A conversation must also be honest about turns that never ran. When a turn's
+run is refused before it starts — the canonical case is the trust gate
+rejecting unsandboxed `access: full` for a repo without the user-level allow —
+the refusal is PERSISTED on the turn itself (message plus a typed machine
+code), so every surface renders the reason inline instead of an eternally
+empty bubble whose explanation lived in one lost HTTP response. Retry
+re-enqueues that SAME turn by replaying its recorded parameters (no duplicate
+bubble), and unsandboxed full access itself stays a user-level, per-repo grant
+held OUTSIDE the repository: versioned project config can never self-grant it,
+the control surface exposes exactly one narrow write ({repoRoot,
+allowFullAccess} — everything else is CLI-only), and the macOS one-click
+remedy performs that same audited write with the grant's persistence stated on
+the button, revocable from Settings at any time.
+
 ## Attachments And Vision
 
 A turn can carry attachments — files and images — and Claudexor treats them as

@@ -34,8 +34,12 @@ extension AppModel {
             await refreshTrust()
             return true
         } catch {
-            trustStatus = userMessage(for: error)
+            // Refresh the list, then RESTORE the failure message: refreshTrust
+            // clears trustStatus on success, which would silently swallow the
+            // grant/revoke error the user needs to see.
+            let message = userMessage(for: error)
             await refreshTrust()
+            trustStatus = message
             return false
         }
     }
@@ -90,6 +94,9 @@ extension AppModel {
             threadStatus = userMessage(for: error)
             return false
         }
+        // Keep the Settings trust list truthful if it is already open: the
+        // one-click grant is the same write the Settings section audits.
+        await refreshTrust()
         return await retryTurn(threadId: threadId, turnId: turnId)
     }
 }

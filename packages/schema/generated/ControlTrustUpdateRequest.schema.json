@@ -1,0 +1,23 @@
+{
+  "$ref": "#/definitions/ControlTrustUpdateRequest",
+  "definitions": {
+    "ControlTrustUpdateRequest": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowFullAccess": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repoRoot",
+        "allowFullAccess"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

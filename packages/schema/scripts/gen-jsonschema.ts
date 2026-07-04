@@ -73,6 +73,9 @@ import {
   ControlThreadApplyResponse,
   ControlThreadDetail,
   ControlThreadListResponse,
+  ControlTrustListResponse,
+  ControlTrustState,
+  ControlTrustUpdateRequest,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -149,6 +152,9 @@ const schemas = {
   ControlThreadApplyResponse,
   ControlThreadListResponse,
   ControlThreadDetail,
+  ControlTrustListResponse,
+  ControlTrustState,
+  ControlTrustUpdateRequest,
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {

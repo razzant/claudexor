@@ -14,6 +14,7 @@
  * (`foldLiveBox`), so terminal runs render exactly as before from TaskRun.
  */
 import Foundation
+import Observation
 import ClaudexorKit
 
 @Observable
@@ -46,12 +47,15 @@ final class RunLiveBox: Identifiable {
     }
 
     /// Append one live event, honestly collapsing the oldest past the cap.
+    /// The feed NEVER exceeds the documented cap: crossing it trims down to
+    /// cap - chunk in one go, so the O(n) removeFirst amortizes to ~once per
+    /// `activityTrimChunk` appends instead of every event at the cap.
     func appendActivity(_ event: ActivityEvent) {
         activity.append(event)
-        if activity.count > Self.activityCap + Self.activityTrimChunk {
-            let overflow = activity.count - Self.activityCap
-            activity.removeFirst(overflow)
-            activityDropped += overflow
+        if activity.count > Self.activityCap {
+            let drop = min(activity.count - Self.activityCap + Self.activityTrimChunk, activity.count)
+            activity.removeFirst(drop)
+            activityDropped += drop
         }
     }
 }
@@ -133,7 +137,9 @@ extension AppModel {
             let evictable = !keep.contains(t.id) && t.status.isTerminal
             if evictable, !t.activity.isEmpty { liveTasks[idx].activity = [] }
         }
-        for runId in transcripts.keys where !keep.contains(runId) {
+        // Snapshot the keys BEFORE mutating: removing entries while iterating
+        // the live keys view is an undefined-iteration hazard.
+        for runId in Array(transcripts.keys) where !keep.contains(runId) {
             // A transcript without a task row is orphaned bookkeeping; a task
             // row keeps its transcript only while active (mid-run reconnects).
             if let t = task(runId), !t.status.isTerminal { continue }
