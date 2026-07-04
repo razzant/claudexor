@@ -13,10 +13,26 @@ Release history for Claudexor. The current version is declared in the root
   output on both real CLIs, live plan checklists, per-candidate evidence
   cards), the per-commit review gate (audited bypasses; release-checklist
   consumer), and the MCP/ACP surface upgrade + integration suite below.
-  Release-grade triads on the cumulative diff (rounds 33-35, three
-  meaningful scopes, exact locked panel) + full real-harness battery
-  (PASS=82) + surface canaries in CI. Phase entries below preserve the
-  detailed history.
+  Pre-tag batch: REFUSED TURNS are honest end-to-end — a run refused
+  before it starts (trust gate, preflight, enqueue throw on ANY
+  pre-created-turn path) persists `ThreadTurn.enqueue_error` {message,
+  typed code, retryable} on the turn (INV-093), every surface renders it
+  inline, `POST /threads/:id/turns/:turnId/retry` replays the recorded
+  job params onto the SAME turn (tail-only; retryable:false refusals 409
+  immediately), and the macOS trust refusal carries a one-click "Allow
+  full access & Retry" backed by the NARROW user-level GET/POST /trust
+  surface ({repoRoot, allowFullAccess} only; provenance-stamped, locked
+  writes; Settings audit + revoke). UI PERFORMANCE without touching
+  glass/transparency: per-run @Observable live-box render granularity
+  (one card repaints, not the app), adaptive 64-250ms SSE coalescing,
+  bounded feeds with honest truncation markers (activity ring 1000,
+  transcript 200), lazy newest-first Timeline, off-screen terminal-run
+  eviction with server-timeline reload, and render micro-memoization.
+  Release-grade triads on the cumulative diff (rounds 33-35 + the pre-tag
+  batch rounds 36-38, three meaningful scopes, exact locked panel) + full
+  real-harness battery (PASS=82) + surface canaries in CI + live dogfood
+  of the refusal->grant->retry flow and a streaming race. Phase entries
+  below preserve the detailed history.
 - **v0.15 program, phase 5** — MCP/ACP surface
   upgrade: the MCP server rides the official TypeScript SDK v2
   (`@modelcontextprotocol/server` 2.0.0-beta.1) — concurrent dispatch
