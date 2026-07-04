@@ -7,6 +7,7 @@ import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { eventPayload, latestPlanProgress, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
+import { handleThreadTurnCreate, handleThreadTurnRetry, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
 import { candidatesFor } from "./candidates.js";
 import {
   AccessProfile,
@@ -39,6 +40,9 @@ import {
   ControlBudgetSnapshot,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
+  ControlTrustListResponse,
+  ControlTrustState,
+  ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
   type ControlPendingInteraction,
@@ -133,6 +137,15 @@ export interface DaemonControlApiOptions {
     updateThread?: (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) => Promise<unknown>;
     /** Deliver an isolated thread's accumulated worktree diff to the project. */
     applyThread?: (id: string, opts: { mode: string; branch?: string; message?: string }) => Promise<unknown>;
+    /** Persist why a turn's run could not be enqueued (runless-turn honesty).
+     * `code` is the typed throw's machine code (null if none). */
+    setTurnEnqueueError?: (turnId: string, message: string, code: string | null) => void;
+    /** User-level trust: enumerate per-repo trust files (Settings projection). */
+    listTrust?: () => Promise<unknown>;
+    /** NARROW trust write: grant/revoke full access for ONE repo — the same
+     * user-level file `claudexor trust` owns; every other trust field stays
+     * CLI-only. */
+    updateTrust?: (input: { repoRoot: string; allowFullAccess: boolean }) => Promise<unknown>;
   };
 }
 
@@ -580,9 +593,9 @@ export class DaemonControlApiServer {
 
     const threadTurnMatch = /^\/threads\/([^/]+)\/turns$/.exec(path);
     if (method === "POST" && threadTurnMatch) {
-      const detailSvc = this.opts.services?.threadDetail;
-      const createTurnSvc = this.opts.services?.createThreadTurn;
-      if (!detailSvc || !createTurnSvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!this.opts.services?.threadDetail || !this.opts.services?.createThreadTurn) {
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      }
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
       // Read the body BEFORE chaining: a request body is a one-shot stream, so
       // reading it inside the chain would block on the previous turn and could
@@ -595,111 +608,18 @@ export class DaemonControlApiServer {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
-      // Per-thread serialization: concurrent turns on one thread would race the
-      // head_run_id lineage (check-then-act across awaits). Chain them.
-      const previous = this.threadTurnChains.get(threadId) ?? Promise.resolve();
-      const turnWork = previous.catch(() => undefined).then(async () => {
-        try {
-          const detail = await detailSvc(threadId);
-          const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null; eligible_harnesses?: string[]; run_ids?: string[]; workspace?: { mode?: string } };
-          let prompt = String(body["prompt"] ?? "");
-          let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;
-          const planRunId = typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
-          // "Implement plan": prefix the approved plan from an earlier turn into
-          // the prompt and force agent mode. The plan run must belong to THIS
-          // thread (no cross-thread artifact reads).
-          if (planRunId) {
-            if (!(thread.run_ids ?? []).includes(planRunId)) {
-              throw Object.assign(new Error(`planRunId ${planRunId} is not a turn of this thread`), { status: 400 });
-            }
-            const planText = await this.readRunArtifactText(planRunId, "final/plan.md");
-            if (!planText || !planText.trim()) {
-              // Fail loudly: "Implement plan" with an unreadable plan must NOT
-              // silently run the bare prompt as agent (review r2 #7).
-              throw Object.assign(new Error(`plan run ${planRunId} has no readable final/plan.md to implement`), { status: 400 });
-            }
-            prompt = `Implement the following approved plan. Deviate only where the code contradicts it, and say so.\n\n${planText}\n\n## Additional instruction\n${prompt}`.trim();
-            mode = "agent";
-          }
-          // Agent turns run "live" in the execution tree (in-place project or the
-          // thread worktree — the runner resolves which from thread.workspace).
-          const isolation = mode === "agent" ? "live" : "envelope";
-          // Sticky routing inheritance (thin gateway — pure DTO passthrough, the
-          // engine's orderPool/resolveCandidateAdapters owns all ordering): pool/
-          // primary precedence is per-turn body > thread sticky > omit (engine then
-          // auto-pools doctor-ok / falls back to config primary).
-          // The pool THIS turn routes/races over: a per-turn override, else the
-          // thread's sticky pool, else omit.
-          const turnPool = Array.isArray(body["harnesses"])
-            ? (body["harnesses"] as string[])
-            : (thread.eligible_harnesses && thread.eligible_harnesses.length > 0 ? thread.eligible_harnesses : undefined);
-          // Inherit the sticky primary ONLY when it stays valid in that pool. If the
-          // pool (per-turn OR the inherited thread pool) does not contain the primary
-          // — e.g. the user dropped the primary harness from the pool via the "⋯"
-          // chips — drop the bias rather than drag it along; the engine would
-          // otherwise reject the turn with "primary not in pool".
-          const inheritPrimary =
-            body["primaryHarness"] === undefined && thread.primary_harness
-              && (!turnPool || turnPool.includes(thread.primary_harness))
-              ? thread.primary_harness
-              : undefined;
-          const params = normalizeRunStart(
-            ControlRunStartRequest.parse({
-              ...body,
-              prompt,
-              scope: thread.repo ? { kind: "project", root: thread.repo.root } : { kind: "none" },
-              mode,
-              execution: { isolation },
-              threadId,
-              parentRunId: thread.head_run_id ?? undefined,
-              planRunId: planRunId ?? undefined,
-              authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
-              ...(inheritPrimary ? { primaryHarness: inheritPrimary } : {}),
-              ...(body["harnesses"] === undefined && thread.eligible_harnesses && thread.eligible_harnesses.length > 0
-                ? { harnesses: thread.eligible_harnesses }
-                : {}),
-            }),
-          );
-          // Single-writer: create the turn (run_id=null) BEFORE enqueue and pass
-          // its id in the params; the daemon runner binds the started run to it.
-          // This means a queued-but-not-yet-started turn is still recorded, so we
-          // NEVER cancel the job on a wait timeout (the old #18 race).
-          const turn = (await createTurnSvc(threadId, prompt, {
-            // No explicit kind: the store auto-detects initial vs followup so the
-            // FIRST turn of a thread is "initial", not "followup" (review #4).
-            parentRunId: thread.head_run_id ?? null,
-            planRunId,
-            attachments: params.attachments,
-          })) as { id: string };
-          // Strip base64 attachment bytes from the enqueued params: jobs.json must
-          // never carry the bytes (the turn holds the resolved scoped paths, and
-          // the run reads them back from the turn at start).
-          const { attachments: _att, ...enqueueParams } = params;
-          const job = await this.opts.daemon.enqueue({ ...enqueueParams, turnId: turn.id });
-          const rec = await this.waitForRunStart(job.id);
-          if (rec.runId && rec.runDir) {
-            return this.json(res, 200, {
-              ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
-              turnId: turn.id,
-              threadId,
-            });
-          }
-          // The turn IS recorded (turnId) and the job is canonical in the daemon;
-          // the runner binds the run when it starts. Return 202 without cancelling.
-          return this.json(res, 202, { jobId: rec.id, turnId: turn.id, threadId, state: rec.state });
-        } catch (err) {
-          const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-          return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
-        }
-      });
-      // Drop the chain entry once settled so the Map cannot grow unbounded
-      // across a thread's lifetime (#19 micro-leak). The entry references itself
-      // so a newer turn that replaced it is never deleted out from under.
-      const entry: Promise<void> = turnWork.then(() => undefined, () => undefined).finally(() => {
-        if (this.threadTurnChains.get(threadId) === entry) this.threadTurnChains.delete(threadId);
-      });
-      this.threadTurnChains.set(threadId, entry);
-      return turnWork;
+      return handleThreadTurnCreate(this.threadTurnRouteCtx(), res, threadId, body);
+    }
+
+    const turnRetryMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/retry$/.exec(path);
+    if (method === "POST" && turnRetryMatch) {
+      if (!this.opts.services?.threadDetail) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      return handleThreadTurnRetry(
+        this.threadTurnRouteCtx(),
+        res,
+        decodeURIComponent(turnRetryMatch[1] as string),
+        decodeURIComponent(turnRetryMatch[2] as string),
+      );
     }
 
     const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
@@ -996,6 +916,22 @@ export class DaemonControlApiServer {
     if (method === "GET" && setupJobEventsMatch) {
       return this.streamSetupJobEvents(decodeURIComponent(setupJobEventsMatch[1] as string), req, res);
     }
+    // User-level trust (INV-122: sensitive powers live OUTSIDE versioned repo
+    // config). GET lists per-repo trust files; POST is deliberately NARROW —
+    // exactly {repoRoot, allowFullAccess} (strict), everything else CLI-only.
+    if (method === "GET" && path === "/trust") return this.service(res, "listTrust", undefined, ControlTrustListResponse);
+    if (method === "POST" && path === "/trust") {
+      let body: ControlTrustUpdateRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlTrustUpdateRequest.parse(raw);
+      } catch (err) {
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+      }
+      return this.service(res, "updateTrust", body, ControlTrustState);
+    }
     if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
       let body: ControlSettingsUpdateRequest;
@@ -1202,6 +1138,25 @@ export class DaemonControlApiServer {
   private async findRun(id: string): Promise<DaemonRunRecord | null> {
     const runs = await this.opts.daemon.list();
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
+  }
+
+  /** Bound helper context for the extracted thread-turn write routes.
+   * Callers guard the required services (threadDetail/createThreadTurn)
+   * before routing here. */
+  private threadTurnRouteCtx(): ThreadTurnRouteCtx {
+    const services = this.opts.services ?? {};
+    return {
+      json: (res, status, body) => this.json(res, status, body),
+      waitForRunStart: (jobId) => this.waitForRunStart(jobId),
+      readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
+      normalizeStart: normalizeRunStart,
+      isTerminalState: (state) => TERMINAL_STATES.has(state),
+      daemon: this.opts.daemon,
+      threadDetail: services.threadDetail as NonNullable<typeof services.threadDetail>,
+      createThreadTurn: services.createThreadTurn as NonNullable<typeof services.createThreadTurn>,
+      setTurnEnqueueError: services.setTurnEnqueueError,
+      threadTurnChains: this.threadTurnChains,
+    };
   }
 
   /** Read a run's text artifact (e.g. final/plan.md) for the "Implement plan" turn. */

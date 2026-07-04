@@ -104,6 +104,31 @@ export const Session = z.object({
 });
 export type Session = z.infer<typeof Session>;
 
+/**
+ * Well-known machine code for the trust-gate refusal (access=full without the
+ * user-level allow). ONE producer — the engine's trust gate throw — and typed
+ * consumers (the macOS one-click remedy keys on it; never substring matching
+ * on the human message). New gates may attach their own codes without a
+ * schema change: `code` is an open string by design.
+ */
+export const TRUST_FULL_ACCESS_CODE = "trust_full_access_required";
+
+/**
+ * Typed record of a turn whose run could not be enqueued/started (e.g. the
+ * trust gate refused `access: full`). Persisted ON the turn so every surface
+ * renders the honest refusal inline — a runless turn must never be a silent
+ * orphan whose reason lived only in one HTTP response (INV-093). Cleared when
+ * a retry binds a run.
+ */
+export const TurnEnqueueError = z.object({
+  message: z.string(),
+  /** Machine-readable refusal code carried from the throwing gate (e.g.
+   * TRUST_FULL_ACCESS_CODE); null when the failure had no typed code. */
+  code: z.string().nullable().default(null),
+  failed_at: IsoTimestamp,
+});
+export type TurnEnqueueError = z.infer<typeof TurnEnqueueError>;
+
 /** One follow-up unit within a thread (a run is its backing execution). */
 export const ThreadTurn = z.object({
   id: Id,
@@ -116,6 +141,8 @@ export const ThreadTurn = z.object({
   prompt: z.string().default(""),
   /** Files/images the user attached to this turn (resolved scoped paths). */
   attachments: z.array(Attachment).default([]),
+  /** Why this turn has no run (enqueue/preflight refusal); null once a run binds. */
+  enqueue_error: TurnEnqueueError.nullable().default(null),
   created_at: IsoTimestamp,
 });
 export type ThreadTurn = z.infer<typeof ThreadTurn>;

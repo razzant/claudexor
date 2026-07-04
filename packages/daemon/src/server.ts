@@ -30,6 +30,12 @@ export interface DaemonOptions {
    * used to drop pending interactions so a dead run never advertises
    * waiting_on_user. */
   onRunTerminal?: (runId: string) => void;
+  /** Called when a job that carried a pre-created thread turn (params.turnId)
+   * settles failure-shaped WITHOUT ever binding a run — i.e. the refusal
+   * happened before the run materialized (trust gate, preflight validation).
+   * The observer persists the reason on the turn so it is never a silent
+   * orphan bubble. `code` is the typed throw's machine code (null if none). */
+  onTurnEnqueueFailed?: (turnId: string, error: string, code: string | null) => void;
 }
 
 export const JOB_STATES = [
@@ -69,6 +75,7 @@ function salvageJobRecord(raw: unknown): JobRecord | null {
     state: rec["state"] as JobState,
     params: rec["params"],
     error: optionalString("error"),
+    errorCode: optionalString("errorCode"),
     createdAt: rec["createdAt"],
     runId: optionalString("runId"),
     taskId: optionalString("taskId"),
@@ -84,6 +91,10 @@ export interface JobRecord {
   params: unknown;
   result?: unknown;
   error?: string;
+  /** Machine-readable code carried by a typed throw (e.g. the trust gate's
+   * trust_full_access_required) — lets surfaces key remedies on the CODE,
+   * never on substring-matching the human message. */
+  errorCode?: string;
   createdAt: string;
   /** Surfaced as soon as the run starts so a client can tail .claudexor/runs/<runId>/events.jsonl. */
   runId?: string;
@@ -434,6 +445,10 @@ export class DaemonServer {
     } catch (err) {
       rec.state = controller.signal.aborted ? "cancelled" : "failed";
       rec.error = redactSecrets(err instanceof Error ? err.message : String(err));
+      // Preserve a typed throw's machine code (e.g. the trust gate) so
+      // consumers can key remedies on it instead of parsing the message.
+      const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined;
+      if (typeof code === "string" && code) rec.errorCode = code;
     } finally {
       rec.finishedAt = nowIso();
       this.controllers.delete(id);
@@ -443,6 +458,18 @@ export class DaemonServer {
           this.opts.onRunTerminal?.(rec.runId);
         } catch {
           /* observer failure must not corrupt terminal bookkeeping */
+        }
+      } else if (rec.error) {
+        // Failure-shaped terminal with NO run ever bound: the refusal happened
+        // before the run materialized. If this job carried a pre-created thread
+        // turn, persist the reason on it (honest inline refusal, INV-093).
+        const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
+        if (typeof turnId === "string" && turnId) {
+          try {
+            this.opts.onTurnEnqueueFailed?.(turnId, rec.error, rec.errorCode ?? null);
+          } catch {
+            /* observer failure must not corrupt terminal bookkeeping */
+          }
         }
       }
       this.pruneHistory();
@@ -534,6 +561,7 @@ function persistedJobRecord(rec: JobRecord): Omit<JobRecord, "result"> {
     state: rec.state,
     params: redactParams(rec.params),
     error: rec.error ? redactSecrets(rec.error) : undefined,
+    errorCode: rec.errorCode,
     createdAt: rec.createdAt,
     runId: rec.runId,
     taskId: rec.taskId,

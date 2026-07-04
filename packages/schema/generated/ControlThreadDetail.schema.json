@@ -388,6 +388,37 @@
                 ],
                 "default": null
               },
+              "enqueueError": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string"
+                      },
+                      "code": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "failedAt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message",
+                      "failedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "createdAt": {
                 "type": "string"
               }

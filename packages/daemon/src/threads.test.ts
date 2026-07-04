@@ -38,6 +38,37 @@ describe("ThreadStore", () => {
     expect(t2.parent_run_id).toBe("run-1");
   });
 
+  it("setTurnEnqueueError records the refusal (message + typed code) on a RUNLESS turn; bindTurnRun clears it (retry path)", () => {
+    const { path, s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    const turn = s.createTurn(t.id, "do risky work");
+    s.setTurnEnqueueError(turn.id, "access profile 'full' requires allow_full_access: true", "trust_full_access_required");
+    const refused = s.getTurn(turn.id);
+    expect(refused?.enqueue_error?.message).toContain("allow_full_access");
+    expect(refused?.enqueue_error?.code).toBe("trust_full_access_required");
+    expect(refused?.enqueue_error?.failed_at).toBeTruthy();
+    // Survives a reload (the whole point: a thread re-open still shows WHY).
+    const reloaded = new ThreadStore(path).getTurn(turn.id);
+    expect(reloaded?.enqueue_error?.message).toContain("allow_full_access");
+    expect(reloaded?.enqueue_error?.code).toBe("trust_full_access_required");
+    // A REPEAT refusal (retry refused again) replaces the recorded reason.
+    s.setTurnEnqueueError(turn.id, "still refused", null);
+    expect(s.getTurn(turn.id)?.enqueue_error?.message).toBe("still refused");
+    // A successful retry binds a run and the refusal vanishes with it.
+    s.bindTurnRun(turn.id, "run-retry");
+    expect(s.getTurn(turn.id)?.enqueue_error).toBeNull();
+    expect(s.getTurn(turn.id)?.run_id).toBe("run-retry");
+  });
+
+  it("setTurnEnqueueError is a no-op once a run is bound (late failure reports belong to the run)", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    const turn = s.createTurn(t.id, "ok work");
+    s.bindTurnRun(turn.id, "run-1");
+    s.setTurnEnqueueError(turn.id, "late refusal");
+    expect(s.getTurn(turn.id)?.enqueue_error).toBeNull();
+  });
+
   it("auto-titles a thread from the first prompt's first line", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

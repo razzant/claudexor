@@ -487,6 +487,20 @@ views in the shared design-system files; screens compose them.
 - **Inline failure card.** A terminal turn that FAILED with no answer/transcript
   renders an inline failure card with the engine's honest failure reason,
   instead of reading as idle next to a red status pill.
+- **Refused-turn card + one-click trust.** A turn whose run was refused before
+  it started (server-persisted `enqueueError` — e.g. the trust gate rejecting
+  `access: full`) renders an inline "Not started" card with the engine's exact
+  refusal text. The TRUST refusal carries a one-click remedy — "Allow full
+  access & Retry": no confirmation sheet by design; the button label + hover
+  help state the persistent user-level grant it performs, then the SAME turn is
+  retried (`POST /trust` → `POST /threads/:id/turns/:turnId/retry`, no
+  duplicate bubble). Other refusals get a plain Retry. A repeat refusal
+  replaces the card's reason; a successful retry replaces the card with the
+  live run.
+- **Trust section (Settings → Secrets tab).** Lists the projects with
+  full access (user-level trust files) with per-row Revoke; legacy
+  pre-provenance grants (no recorded repo root) are disclosed as revocable only
+  via `claudexor trust` in that repo.
 - **Spec interview cards.** The Spec intent runs the server-owned interview as
   cards in the conversation: each round renders the structured multiple-choice
   questions (single/multi/text with options), and the answer card ends with two

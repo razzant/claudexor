@@ -57,6 +57,7 @@ export function turnRunCard(summary: ControlRunSummary): ControlTurnRunCard {
 export function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>): ControlThreadTurn {
   const t = raw as Record<string, unknown>;
   const runId = (t["run_id"] as string | null) ?? null;
+  const enqueueError = t["enqueue_error"] as { message?: unknown; code?: unknown; failed_at?: unknown } | null | undefined;
   return ControlThreadTurn.parse({
     id: t["id"],
     threadId: t["thread_id"],
@@ -68,6 +69,16 @@ export function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>
     // Embedded run card so the chat renders the whole conversation (state +
     // honest outcome) from this one response — no N+1 run-detail fetch per turn.
     run: runId ? cards.get(runId) ?? null : null,
+    // A runless turn's refusal (trust gate / preflight) rides the projection so
+    // the chat shows WHY there is no run instead of an eternally-empty bubble.
+    enqueueError:
+      !runId && enqueueError && typeof enqueueError === "object"
+        ? {
+            message: String(enqueueError.message ?? ""),
+            code: typeof enqueueError.code === "string" ? enqueueError.code : null,
+            failedAt: String(enqueueError.failed_at ?? ""),
+          }
+        : null,
     createdAt: t["created_at"],
   });
 }

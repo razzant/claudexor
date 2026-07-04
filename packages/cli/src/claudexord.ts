@@ -17,6 +17,7 @@ import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/con
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
+import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore } from "@claudexor/secrets";
 import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
 import { deliver } from "@claudexor/delivery";
@@ -75,6 +76,10 @@ async function main(): Promise<void> {
     // cancelled/failed runs otherwise park their questions in the registry
     // until the interaction timeout.
     onRunTerminal: (runId) => interactions.dropForRun(runId),
+    // A turn whose job died BEFORE a run bound (trust gate, preflight throw)
+    // records the refusal on itself — the chat renders it inline instead of
+    // an eternally-empty bubble.
+    onTurnEnqueueFailed: (turnId, error, code) => threads.setTurnEnqueueError(turnId, error, code),
     runner: async (params, ctx) => {
       const p = normalizeDaemonRunStart(params);
       const mode = p.mode;
@@ -394,6 +399,12 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       }),
     applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) =>
       applyThreadDiff(threads, id, opts),
+    setTurnEnqueueError: (turnId: string, message: string, code: string | null) =>
+      threads.setTurnEnqueueError(turnId, message, code),
+    // User-level trust surface (narrow by design): list per-repo trust files
+    // and grant/revoke ONE flag — the same file/writer `claudexor trust` owns.
+    listTrust: listTrustService,
+    updateTrust: updateTrustService,
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
       interactions.answer(runId, interactionId, answers),

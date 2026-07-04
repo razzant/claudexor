@@ -154,6 +154,9 @@ final class AppModel {
     var secretBackend = "unknown"
     var storedSecrets: [SecretInfo] = []
     var settingsStatus: String?
+    /// Per-repo user-level trust files (Settings trust section).
+    var trustEntries: [TrustEntry] = []
+    var trustStatus: String?
     let demoTasks: [TaskRun] = DemoData.tasks
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
@@ -558,6 +561,15 @@ final class AppModel {
         } catch {
             secretBackend = "unknown"
         }
+    }
+
+    /// Model-internal busy bracket for turn-start paths that live in other
+    /// files (retryTurn in AppModelTrust.swift): `turnSubmitting` keeps its
+    /// private(set) so views can never write it directly.
+    func withTurnSubmission<T>(_ body: () async -> T) async -> T {
+        turnSubmitting = true
+        defer { turnSubmitting = false }
+        return await body()
     }
 
     func saveSettings(_ patch: SettingsUpdateRequest) async -> Bool {

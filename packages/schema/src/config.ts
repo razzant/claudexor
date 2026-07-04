@@ -37,6 +37,14 @@ export const TrustConfig = z
     version: z.literal(1).default(1),
     access_default: AccessProfile.default("workspace_write"),
     allow_full_access: z.boolean().default(false),
+    /**
+     * Provenance ONLY: which repo root this file was written for. The file's
+     * key stays the repo-root HASH in its filename — this field never gates
+     * anything; it exists so trust state is enumerable (Settings lists the
+     * projects with full access). Legacy files (written before this field)
+     * carry null and surfaces disclose them as revocable only via CLI.
+     */
+    repo_root: z.string().nullable().default(null),
   })
   .strict();
 export type TrustConfig = z.infer<typeof TrustConfig>;

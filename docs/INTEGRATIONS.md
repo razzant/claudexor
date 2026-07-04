@@ -87,6 +87,12 @@ and `claudexor follow` answer via `POST /runs/:id/interactions/:id/answer`,
 and an unanswered question declines benignly after the configurable
 `interaction_timeout_ms`.
 
+A thread turn whose run is refused before it starts (trust gate, preflight)
+carries the persisted reason in its projection (`enqueueError`);
+`POST /threads/:id/turns/:turnId/retry` re-enqueues that same turn.
+`GET /trust` / `POST /trust` expose the narrow user-level full-access surface
+(`{repoRoot, allowFullAccess}` only); all other trust fields stay CLI-only.
+
 ## MCP
 
 Run:

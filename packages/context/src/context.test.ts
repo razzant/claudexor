@@ -247,8 +247,8 @@ describe("atlas symlink containment (R33 gate finding)", () => {
     const leak = res.atlas.find((e) => e.path === "leak.txt");
     expect(leak?.disposition).toBe("excluded");
     expect(leak?.reason).toContain("symlink resolves outside");
-    // The out-of-tree content never lands in any inlined file.
-    expect(JSON.stringify(res.files ?? res).includes("HOST SECRET CONTENT")).toBe(false);
+    // The out-of-tree content never lands anywhere in the atlas result.
+    expect(JSON.stringify(res).includes("HOST SECRET CONTENT")).toBe(false);
     // The in-tree symlink still maps normally.
     const alias = res.atlas.find((e) => e.path === "alias.txt");
     expect(alias?.disposition === "excluded" ? alias?.reason ?? "" : "").not.toContain("outside");

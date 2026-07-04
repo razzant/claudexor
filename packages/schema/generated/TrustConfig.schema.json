@@ -23,6 +23,13 @@
         "allow_full_access": {
           "type": "boolean",
           "default": false
+        },
+        "repo_root": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

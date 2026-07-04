@@ -452,6 +452,9 @@ README and INTEGRATIONS link here instead of maintaining duplicates.
 - `PATCH /threads/:id`
 - `POST /threads/:id/apply`
 - `POST /threads/:id/turns`
+- `POST /threads/:id/turns/:id/retry`
+- `GET /trust`
+- `POST /trust`
 <!-- END GENERATED ENDPOINTS -->
 
 Endpoint semantics beyond the inventory:
@@ -475,6 +478,23 @@ Endpoint semantics beyond the inventory:
   prompt. `POST /threads/:id/apply` delivers an isolated thread's accumulated
   worktree diff to the project; in-place threads write the project directly and
   never need it.
+- Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
+  (the trust gate refusing `access: full`, preflight validation, an enqueue
+  throw), the daemon persists the reason on the turn (`ThreadTurn.enqueue_error`,
+  projected as `enqueueError`) so every surface renders the refusal inline
+  instead of an eternally-empty bubble. `POST /threads/:id/turns/:turnId/retry`
+  re-enqueues that SAME turn by replaying the recorded job params verbatim (no
+  duplicate turn); a successful run binding clears the error, a repeat refusal
+  replaces it. Retry refuses turns that already have a run, have no recorded
+  refusal, or still have an active job (409).
+- `GET /trust` + `POST /trust` are the NARROW user-level trust surface: the GET
+  enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
+  stamped with its `repo_root` provenance so the list is human-readable; legacy
+  pre-provenance files show a null root), and the POST accepts exactly
+  `{repoRoot, allowFullAccess}` (strict — unknown fields are 400) to grant or
+  revoke unsandboxed full access for ONE repo. Every other trust field stays
+  CLI-only (`claudexor trust`). This backs the macOS one-click remedy on a
+  trust-refused turn and the Settings trust section (list + revoke).
 - `POST /runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;

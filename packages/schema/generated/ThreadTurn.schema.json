@@ -93,9 +93,40 @@
           },
           "default": []
         },
+        "enqueue_error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "failed_at": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "message",
+                "failed_at"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "created_at": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/definitions/ThreadTurn/properties/enqueue_error/anyOf/0/properties/failed_at"
         }
       },
       "required": [

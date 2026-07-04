@@ -381,6 +381,40 @@ import Testing
         #expect(old.run == nil)
     }
 
+    @Test func threadTurnDecodesEnqueueErrorAndTrustDTOs() throws {
+        // A REFUSED turn: no run, but the server persisted WHY — the chat
+        // renders this as the inline refusal card (never an empty bubble).
+        let json = #"""
+        {"id":"tn-3","threadId":"th-1","runId":null,"prompt":"risky work",
+         "enqueueError":{"message":"access profile 'full' requires allow_full_access: true","code":"trust_full_access_required","failedAt":"t1"},
+         "createdAt":"t"}
+        """#
+        let turn = try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(json.utf8))
+        #expect(turn.enqueueError?.message.contains("allow_full_access") == true)
+        // The one-click remedy keys on the typed CODE, never the message text.
+        #expect(turn.enqueueError?.code == TurnEnqueueErrorInfo.trustFullAccessCode)
+        #expect(turn.enqueueError?.failedAt == "t1")
+        // An untyped refusal (code null/omitted) still decodes.
+        let untyped = #"""
+        {"id":"tn-4","threadId":"th-1","runId":null,"prompt":"x",
+         "enqueueError":{"message":"daemon socket is gone","code":null,"failedAt":"t2"},
+         "createdAt":"t"}
+        """#
+        #expect(try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(untyped.utf8)).enqueueError?.code == nil)
+        // Legacy turn (no field) and a cleared refusal both decode to nil.
+        let legacy = #"{"id":"tn-0","threadId":"th-1","prompt":"hi","createdAt":"t"}"#
+        #expect(try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(legacy.utf8)).enqueueError == nil)
+        // Trust DTOs: legacy entries carry a null repoRoot (path-only identity).
+        let list = #"{"entries":[{"repoRoot":"/Users/x/proj","path":"/t/a.yaml","allowFullAccess":true,"accessDefault":"workspace_write"},{"repoRoot":null,"path":"/t/old.yaml","allowFullAccess":true,"accessDefault":"workspace_write"}]}"#
+        let trust = try JSONDecoder().decode(TrustListResponse.self, from: Data(list.utf8))
+        #expect(trust.entries.count == 2)
+        #expect(trust.entries[0].repoRoot == "/Users/x/proj")
+        #expect(trust.entries[1].repoRoot == nil)
+        let body = try JSONEncoder().encode(TrustUpdateRequest(repoRoot: "/p", allowFullAccess: true))
+        let s = String(decoding: body, as: UTF8.self)
+        #expect(s.contains("\"allowFullAccess\":true"))
+    }
+
     @Test func threadTurnDecodesQueuedHeadDuringBindWindow() throws {
         // The 202-QUEUED bind window: the head turn has NO runId yet, but its
         // embedded run card already carries an active state. The composer's

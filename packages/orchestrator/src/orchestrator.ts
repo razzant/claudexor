@@ -50,6 +50,7 @@ import {
   ReviewFinding as ReviewFindingSchema,
   RunTelemetry as RunTelemetrySchema,
   SCHEMA_VERSION,
+  TRUST_FULL_ACCESS_CODE,
   TaskContract as TaskContractSchema,
   isBlocking,
   orchestratePlanJsonSchema,
@@ -1273,9 +1274,15 @@ export class Orchestrator {
     // The gate applies to the EFFECTIVE profile: a read-only run clamped to
     // readonly never runs unsandboxed and needs no trust allow.
     if (effectiveAccess === "full" && !resolvedCfg.trust.allow_full_access) {
-      throw new Error(
-        `access profile 'full' requires allow_full_access: true in the user-level trust file for this repo ` +
-          `(${trustConfigPath(input.repoRoot)}); enable it with \`claudexor trust --allow-full-access\` — refusing to run unsandboxed`,
+      // Typed refusal: the `code` rides the daemon job record onto the thread
+      // turn (TurnEnqueueError.code), so surfaces key remedies on the CODE —
+      // never on substring-matching this human message.
+      throw Object.assign(
+        new Error(
+          `access profile 'full' requires allow_full_access: true in the user-level trust file for this repo ` +
+            `(${trustConfigPath(input.repoRoot)}); enable it with \`claudexor trust --allow-full-access\` — refusing to run unsandboxed`,
+        ),
+        { code: TRUST_FULL_ACCESS_CODE },
       );
     }
     const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";

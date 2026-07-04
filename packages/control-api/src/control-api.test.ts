@@ -485,6 +485,379 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: a refused enqueue persists the error on the turn; the detail projection renders enqueueError", async () => {
+    const { daemon } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-refuse-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-r",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "refusal thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const refusing: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        throw new Error("daemon socket is gone");
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt, opts) => {
+        const turn = {
+          id: "tn-refused",
+          thread_id: id,
+          run_id: null,
+          parent_run_id: opts.parentRunId ?? null,
+          plan_run_id: opts.planRunId ?? null,
+          kind: "initial",
+          prompt,
+          created_at: now,
+        };
+        turns.push(turn);
+        return turn;
+      },
+      // The daemon ThreadStore contract: persist the refusal on the turn.
+      setTurnEnqueueError: (turnId, message, code) => {
+        const turn = turns.find((t) => t["id"] === turnId);
+        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, failed_at: now };
+      },
+    };
+    await withDaemonServer(
+      refusing,
+      async (base) => {
+        const res = await fetch(`${base}/threads/th-r/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "do work" }),
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string; turnId?: string };
+        // The error response names the recorded turn (no silent orphan).
+        expect(body.turnId).toBe("tn-refused");
+        expect(body.error).toContain("daemon socket is gone");
+        // The projection renders the refusal so a reloading client sees it.
+        const detail = (await (
+          await fetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
+        ).json()) as { turns: { id: string; enqueueError: { message: string; code: string | null; failedAt: string } | null }[] };
+        expect(detail.turns[0]?.enqueueError?.message).toContain("daemon socket is gone");
+        expect(detail.turns[0]?.enqueueError?.code).toBeNull(); // untyped throw
+        expect(detail.turns[0]?.enqueueError?.failedAt).toBeTruthy();
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("threads: a turn whose job goes TERMINAL before a run binds is a 500 pre-start failure, never an accepted queued turn", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-terminal-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-t",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "terminal thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    // The daemon accepts the job, then the runner refuses PRE-run (trust
+    // gate): the job settles `failed` with an error and NO runId/runDir.
+    const failFast: DaemonFacadeClient = {
+      async enqueue(params: unknown) {
+        void params;
+        return { id: "job-t", state: "queued" };
+      },
+      async status() {
+        return { id: "job-t", state: "failed", error: "access profile 'full' requires allow_full_access: true" };
+      },
+      async list() {
+        return [{ id: "job-t", state: "failed", error: "access profile 'full' requires allow_full_access: true" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt) => {
+        const turn = { id: "tn-t", thread_id: id, run_id: null, prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+    };
+    await withDaemonServer(
+      failFast,
+      async (base) => {
+        const res = await fetch(`${base}/threads/th-t/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "risky work" }),
+        });
+        // Mirrors POST /runs' terminal handling: a pre-start failure is 500
+        // (the daemon hook persists the refusal on the turn), NOT a 202 that
+        // the client would render as an accepted queued turn.
+        expect(res.status).toBe(500);
+        const body = (await res.json()) as { turnId: string; state: string; error?: string };
+        expect(body.turnId).toBe("tn-t");
+        expect(body.state).toBe("failed");
+        expect(body.error).toContain("allow_full_access");
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("threads: POST /threads/:id/turns/:turnId/retry replays the recorded job params; guards refuse bound/active/unknown turns", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-retry-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-x",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "retry thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const refusedParams = {
+      prompt: "risky work",
+      mode: "agent",
+      scope: { kind: "project", root: repo, context: "auto" },
+      access: "full",
+      turnId: "tn-1",
+    };
+    const turns: Record<string, unknown>[] = [
+      {
+        id: "tn-old-refused",
+        thread_id: "th-x",
+        run_id: null,
+        parent_run_id: null,
+        plan_run_id: null,
+        kind: "initial",
+        prompt: "old refused work",
+        enqueue_error: { message: "old refusal", code: null, failed_at: now },
+        created_at: now,
+      },
+      {
+        id: "tn-bound",
+        thread_id: "th-x",
+        run_id: "run-old",
+        parent_run_id: null,
+        plan_run_id: null,
+        kind: "followup",
+        prompt: "done work",
+        created_at: now,
+      },
+      {
+        id: "tn-1",
+        thread_id: "th-x",
+        run_id: null,
+        parent_run_id: null,
+        plan_run_id: null,
+        kind: "followup",
+        prompt: "risky work",
+        enqueue_error: { message: "access profile 'full' requires allow_full_access: true", code: "trust_full_access_required", failed_at: now },
+        created_at: now,
+      },
+    ];
+    // Job registry double: the failed original + a retry that starts a run.
+    const jobs = new Map<string, DaemonRunRecord>([
+      ["job-fail", { id: "job-fail", state: "failed", error: "access profile 'full' requires allow_full_access: true", params: refusedParams, createdAt: now }],
+    ]);
+    const enqueued: unknown[] = [];
+    // The FIRST replay is refused again (trust still missing — a typed
+    // throw); the second succeeds. This is the exact "second refusal must be
+    // persisted" scenario.
+    let refuseNextEnqueue = true;
+    const retryDaemon: DaemonFacadeClient = {
+      async enqueue(params: unknown) {
+        if (refuseNextEnqueue) {
+          refuseNextEnqueue = false;
+          throw Object.assign(new Error("access profile 'full' requires allow_full_access: true (still)"), {
+            code: "trust_full_access_required",
+          });
+        }
+        enqueued.push(params);
+        const rec: DaemonRunRecord = {
+          id: `job-retry-${enqueued.length}`,
+          state: "running",
+          runId: "run-retried",
+          taskId: "task-retried",
+          runDir: repo,
+          params,
+          createdAt: new Date().toISOString(),
+        };
+        jobs.set(rec.id, rec);
+        // Simulate the runner binding the run to the SAME turn.
+        const turnId = (params as { turnId?: string }).turnId;
+        const turn = turns.find((t) => t["id"] === turnId);
+        if (turn) {
+          turn["run_id"] = "run-retried";
+          turn["enqueue_error"] = null;
+        }
+        return { id: rec.id, state: "queued" };
+      },
+      async status(id: string) {
+        const rec = jobs.get(id);
+        if (!rec) throw new Error("missing");
+        return rec;
+      },
+      async list() {
+        return [...jobs.values()];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      setTurnEnqueueError: (turnId, message, code) => {
+        const turn = turns.find((t) => t["id"] === turnId);
+        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, failed_at: now };
+      },
+    };
+    await withDaemonServer(
+      retryDaemon,
+      async (base) => {
+        const retry = (turnId: string) =>
+          fetch(`${base}/threads/th-x/turns/${turnId}/retry`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+          });
+        // Guards first: unknown turn, already-bound turn, and an OLDER refused
+        // turn (retry repairs the conversation TAIL only — re-running an old
+        // turn would silently reorder lineage the thread already moved past).
+        expect((await retry("tn-nope")).status).toBe(404);
+        expect((await retry("tn-bound")).status).toBe(409);
+        const older = await retry("tn-old-refused");
+        expect(older.status).toBe(409);
+        expect(((await older.json()) as { error: string }).error).toContain("not the latest");
+        // First replay: refused AGAIN — the fresh refusal (message + typed
+        // code) must be PERSISTED on the turn, not just returned once.
+        const refused = await retry("tn-1");
+        expect(refused.status).toBe(400);
+        const turn1 = turns.find((t) => t["id"] === "tn-1");
+        const freshError = turn1?.["enqueue_error"] as { message: string; code: string | null };
+        expect(freshError.message).toContain("(still)");
+        expect(freshError.code).toBe("trust_full_access_required");
+        // Second replay succeeds: replays the recorded params verbatim onto
+        // the SAME turn (no duplicate bubble).
+        const ok = await retry("tn-1");
+        expect(ok.status).toBe(200);
+        const body = (await ok.json()) as { runId: string; turnId: string; threadId: string };
+        expect(body.runId).toBe("run-retried");
+        expect(body.turnId).toBe("tn-1");
+        expect(body.threadId).toBe("th-x");
+        expect(enqueued).toEqual([refusedParams]);
+        // After the run bound, a third retry is refused (turn has a run now).
+        expect((await retry("tn-1")).status).toBe(409);
+        // A LATEST runless turn with NO recorded refusal (the queued-bind
+        // window) is not retryable either — its job may still be starting.
+        turns.push({
+          id: "tn-queued",
+          thread_id: "th-x",
+          run_id: null,
+          parent_run_id: null,
+          plan_run_id: null,
+          kind: "followup",
+          prompt: "queued work",
+          created_at: now,
+        });
+        const pending = await retry("tn-queued");
+        expect(pending.status).toBe(409);
+        expect(((await pending.json()) as { error: string }).error).toContain("no recorded refusal");
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("trust: GET /trust lists entries; POST /trust is strict-narrow and delegates to the service", async () => {
+    const { daemon } = fakeDaemon();
+    const calls: Array<{ repoRoot: string; allowFullAccess: boolean }> = [];
+    let allow = false;
+    const services: DaemonControlApiOptions["services"] = {
+      listTrust: async () => ({
+        entries: [
+          { repoRoot: "/Users/x/proj", path: "/Users/x/.claudexor/trust/abc.yaml", allowFullAccess: allow, accessDefault: "workspace_write" },
+          // Legacy pre-provenance file: enumerable with a null root.
+          { repoRoot: null, path: "/Users/x/.claudexor/trust/old.yaml", allowFullAccess: true, accessDefault: "workspace_write" },
+        ],
+      }),
+      updateTrust: async (input) => {
+        calls.push(input);
+        allow = input.allowFullAccess;
+        return { repoRoot: input.repoRoot, path: "/Users/x/.claudexor/trust/abc.yaml", allowFullAccess: allow, accessDefault: "workspace_write" };
+      },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = await fetch(`${base}/trust`, { headers: { authorization: `Bearer ${token}` } });
+        expect(list.status).toBe(200);
+        const listBody = (await list.json()) as { entries: { repoRoot: string | null; allowFullAccess: boolean }[] };
+        expect(listBody.entries).toHaveLength(2);
+        expect(listBody.entries[1]?.repoRoot).toBeNull();
+
+        // NARROW by construction: unknown fields are refused, not ignored —
+        // the control surface must never grow trust powers by accident.
+        const widened = await fetch(`${base}/trust`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ repoRoot: "/Users/x/proj", allowFullAccess: true, accessDefault: "readonly" }),
+        });
+        expect(widened.status).toBe(400);
+        expect(calls).toHaveLength(0);
+
+        const missing = await fetch(`${base}/trust`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ repoRoot: "/Users/x/proj" }),
+        });
+        expect(missing.status).toBe(400);
+
+        const ok = await fetch(`${base}/trust`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ repoRoot: "/Users/x/proj", allowFullAccess: true }),
+        });
+        expect(ok.status).toBe(200);
+        const okBody = (await ok.json()) as { repoRoot: string; allowFullAccess: boolean };
+        expect(okBody.allowFullAccess).toBe(true);
+        expect(calls).toEqual([{ repoRoot: "/Users/x/proj", allowFullAccess: true }]);
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("threads: a turn inherits the thread's sticky primary + eligible pool; the body overrides them; PATCH switches them", async () => {
     const { daemon, record } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-pool-"));

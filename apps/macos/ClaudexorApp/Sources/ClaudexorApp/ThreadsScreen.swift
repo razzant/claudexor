@@ -1122,6 +1122,11 @@ private struct TurnCard: View {
                 // only failure.yaml) otherwise reads as idle next to a red status pill.
                 // Make it honest in the chat: surface the reason + an Open-run link.
                 if isSilentFailure(run) { failureCard(run) }
+            } else if let refusal = turn.enqueueError {
+                // The turn's run was REFUSED before it started (trust gate,
+                // preflight): render the persisted reason inline — a refused
+                // turn must never look like an idle empty bubble.
+                TurnRefusalCard(turn: turn, refusal: refusal)
             } else if let state = turn.run?.state {
                 Text(state).font(.caption).foregroundStyle(.secondary)
             }

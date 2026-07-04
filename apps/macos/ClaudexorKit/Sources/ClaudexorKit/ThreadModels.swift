@@ -105,6 +105,27 @@ public struct ThreadSessionInfo: Codable, Sendable, Identifiable, Equatable {
     public let state: String?
 }
 
+/// Why a turn has NO run: the enqueue/preflight refusal (e.g. the trust gate
+/// rejected `access: full`) persisted on the turn by the daemon. Renders as an
+/// inline failure card — a refused turn must never be a silent empty bubble.
+public struct TurnEnqueueErrorInfo: Codable, Sendable, Equatable {
+    /// The trust gate's machine code (engine-owned constant): remedies key on
+    /// `code`, never on substring-matching the human message.
+    public static let trustFullAccessCode = "trust_full_access_required"
+
+    public let message: String
+    /// Machine-readable refusal code from the typed throw; nil when the
+    /// failure had no code (older servers omit the field entirely).
+    public let code: String?
+    public let failedAt: String
+
+    public init(message: String, code: String? = nil, failedAt: String) {
+        self.message = message
+        self.code = code
+        self.failedAt = failedAt
+    }
+}
+
 public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let threadId: String
@@ -116,7 +137,25 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     public let prompt: String
     /// Embedded run card (state + honest outcome) so the chat renders without N+1.
     public let run: TurnRunCard?
+    /// Present when the turn's run could not be enqueued (refusal reason);
+    /// nil once a run binds (retry clears it server-side).
+    public let enqueueError: TurnEnqueueErrorInfo?
     public let createdAt: String
+
+    public init(id: String, threadId: String, runId: String?, parentRunId: String?,
+                planRunId: String?, kind: String?, prompt: String, run: TurnRunCard?,
+                enqueueError: TurnEnqueueErrorInfo? = nil, createdAt: String) {
+        self.id = id
+        self.threadId = threadId
+        self.runId = runId
+        self.parentRunId = parentRunId
+        self.planRunId = planRunId
+        self.kind = kind
+        self.prompt = prompt
+        self.run = run
+        self.enqueueError = enqueueError
+        self.createdAt = createdAt
+    }
 }
 
 public struct ThreadListResponse: Codable, Sendable {

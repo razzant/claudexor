@@ -31,7 +31,7 @@ struct SettingsScreen: View {
                 .tabItem { Label("Harnesses", systemImage: "cpu") }
             settingsTab { budgetGroup; interactiveGroup }
                 .tabItem { Label("Budget", systemImage: "dollarsign.circle") }
-            settingsTab { secretsGroup }
+            settingsTab { secretsGroup; TrustSettingsSection() }
                 .tabItem { Label("Secrets", systemImage: "key") }
             settingsTab { appearanceGroup }
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
@@ -303,6 +303,7 @@ struct SettingsScreen: View {
         await model.refreshSettings()
         await model.refreshSecrets()
         await model.refreshHarnesses()
+        await model.refreshTrust()
         syncFromModel()
     }
 

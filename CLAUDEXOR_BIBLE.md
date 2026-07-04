@@ -287,9 +287,13 @@ process below. Never paper over the conflict.
 - **INV-093** Every turn shows its HONEST outcome: a plan says "no files
   changed" and offers to implement; a patch shows its diffstat; a race shows
   the adopted winner; a terminal failure with no output renders an inline
-  failure card with the engine's reason. Working progress (reasoning + tool
-  calls) streams into the turn as it happens. verify: canary
-  `[INV-093:plan-honest-no-op]`; turn-card UI review.
+  failure card with the engine's reason. A turn whose run was refused BEFORE
+  it started (trust gate, preflight) persists the refusal on the turn
+  (`ThreadTurn.enqueue_error`) and renders it inline with a retry remedy —
+  never an eternally-empty bubble whose reason lived only in one HTTP
+  response. Working progress (reasoning + tool calls) streams into the turn
+  as it happens. verify: canary `[INV-093:plan-honest-no-op]`; ThreadStore
+  setTurnEnqueueError tests; turn-card UI review.
 - **INV-094** The window is matte glass (behind-window material; Reduce
   Transparency falls back to solid). There is NO always-animating backdrop
   and NO perpetual pulsing: idle means zero animation. Liquid Glass belongs

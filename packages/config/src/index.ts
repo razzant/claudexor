@@ -1,5 +1,5 @@
-import { renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import type { ResolvedConfig } from "@claudexor/schema";
@@ -204,28 +204,67 @@ export function updateTrustConfig(
   repoRoot: string,
   mutator: (config: TrustConfig) => TrustConfig,
 ): { path: string; config: TrustConfig } {
+  // Guard at the HASH site: a relative root would silently key a different
+  // file per cwd (and stamp wrong provenance). Callers surface their own
+  // status codes; this is the single-owner backstop.
+  if (!isAbsolute(repoRoot)) {
+    throw new Error(`trust config requires an absolute repo root (got ${repoRoot})`);
+  }
   const path = trustConfigPath(repoRoot);
-  const current = parseStrict(TrustConfig, readYaml(path) ?? {}, path);
-  const next = TrustConfig.parse(mutator(current));
   ensureDir(join(globalConfigDir(), "trust"));
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeText(tmp, yamlStringify(next));
-  renameSync(tmp, path);
-  return { path, config: next };
+  // Locked read-mutate-write: the app's POST /trust and CLI `claudexor trust`
+  // are two live writers of the same file — same discipline as global config.
+  return withConfigLock(path, () => {
+    const current = parseStrict(TrustConfig, readYaml(path) ?? {}, path);
+    // Stamp provenance on every write: the filename is a one-way hash, so the
+    // repo root recorded INSIDE the file is what makes trust state enumerable
+    // (Settings trust list). Never trusted for gating — loadConfig keys by hash.
+    const next = TrustConfig.parse({ ...mutator(current), repo_root: repoRoot });
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+    writeText(tmp, yamlStringify(next));
+    renameSync(tmp, path);
+    return { path, config: next };
+  });
 }
 
 /**
- * Update ~/.claudexor/config.yaml with validated global settings. Sensitive
- * values are not accepted here.
- *
- * Two-writer safety (T5#7): the read-mutate-write cycle holds an advisory
- * lock file (O_EXCL create; stale after 10s), and the write itself is atomic
- * (tmp file + rename) so a concurrent daemon PATCH and CLI `settings set` can
- * never interleave into torn YAML or lose one writer's fields.
+ * Enumerate every user-local trust file (Settings trust list). Unreadable or
+ * schema-invalid entries are skipped: listing is a projection, and one stale
+ * hand-edited file must not take down the whole settings surface — the strict
+ * parse still fails loudly on the load path that actually GATES access.
  */
-export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): { path: string; config: GlobalConfig } {
-  const path = globalConfigPath();
-  ensureDir(globalConfigDir());
+export function listTrustConfigs(): Array<{ path: string; config: TrustConfig }> {
+  const dir = join(globalConfigDir(), "trust");
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".yaml"));
+  } catch {
+    return [];
+  }
+  const out: Array<{ path: string; config: TrustConfig }> = [];
+  for (const name of names.sort()) {
+    const path = join(dir, name);
+    try {
+      out.push({ path, config: parseStrict(TrustConfig, readYaml(path) ?? {}, path) });
+    } catch (err) {
+      // Skip-but-disclose: the projection must survive one stale file, but an
+      // operator debugging "why is my grant not listed" needs the breadcrumb.
+      process.stderr.write(
+        `claudexor: skipping unparseable trust file ${path}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Two-writer safety (T5#7): run `fn` while holding an advisory lock file
+ * (O_EXCL create; stale after 10s). ONE owner of the locking discipline —
+ * every read-mutate-write config cycle (global config, per-repo trust files)
+ * must go through here so concurrent daemon and CLI writers can never
+ * interleave into torn YAML or lose one writer's fields.
+ */
+function withConfigLock<T>(path: string, fn: () => T): T {
   const lockPath = `${path}.lock`;
   const LOCK_STALE_MS = 10_000;
   const deadline = Date.now() + LOCK_STALE_MS;
@@ -259,6 +298,24 @@ export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConf
     }
   }
   try {
+    return fn();
+  } finally {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* already broken as stale */
+    }
+  }
+}
+
+/**
+ * Update ~/.claudexor/config.yaml with validated global settings. Sensitive
+ * values are not accepted here. Locked + atomic (see withConfigLock).
+ */
+export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): { path: string; config: GlobalConfig } {
+  const path = globalConfigPath();
+  ensureDir(globalConfigDir());
+  return withConfigLock(path, () => {
     const current = parseStrict(
       GlobalConfig,
       stripRetiredKeys(readYaml(path), RETIRED_CONFIG_KEYS) ?? {},
@@ -269,13 +326,7 @@ export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConf
     writeText(tmp, yamlStringify(next));
     renameSync(tmp, path);
     return { path, config: next };
-  } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* already broken as stale */
-    }
-  }
+  });
 }
 
 export interface InitResult {

@@ -376,6 +376,46 @@ public final class GatewayClient: Sendable {
         throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
     }
 
+    /// Re-enqueue a REFUSED turn (same prompt/options — the daemon replays the
+    /// recorded job params onto the SAME turn; no duplicate bubble). 200/202
+    /// mirror sendTurn; 409 means the turn is not retryable (run bound/active).
+    public func retryTurn(threadId: String, turnId: String) async throws -> RunStartResult {
+        let req = request("threads/\(threadId)/turns/\(turnId)/retry", method: "POST")
+        let (data, resp) = try await session.data(for: req)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        if status == 200 {
+            return .started(try Self.decoder.decode(RunStartInfo.self, from: data))
+        }
+        if status == 202 {
+            return .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
+        }
+        throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+    }
+
+    /// List per-repo user-level trust files (Settings trust section).
+    public func trustList() async throws -> TrustListResponse {
+        let (data, resp) = try await session.data(for: request("trust", method: "GET"))
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(TrustListResponse.self, from: data)
+    }
+
+    /// Grant/revoke full access for ONE repo (the narrow trust write — the
+    /// same user-level file `claudexor trust` owns). Returns the updated entry.
+    public func updateTrust(repoRoot: String, allowFullAccess: Bool) async throws -> TrustEntry {
+        var req = request("trust", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(TrustUpdateRequest(repoRoot: repoRoot, allowFullAccess: allowFullAccess))
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(TrustEntry.self, from: data)
+    }
+
     /// Rename / archive a thread (PATCH /threads/:id).
     public func updateThread(id: String, body: UpdateThreadRequest) async throws -> ThreadSummary {
         var req = request("threads/\(id)", method: "PATCH")

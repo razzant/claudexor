@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigParseError, loadConfig, repoHash, updateGlobalConfig } from "./index.js";
+import { ConfigParseError, listTrustConfigs, loadConfig, repoHash, updateGlobalConfig, updateTrustConfig } from "./index.js";
 
 describe("loadConfig", () => {
   function withTempConfig(fn: (paths: { dir: string; repo: string; configDir: string }) => void): void {
@@ -111,6 +111,37 @@ describe("strict config unknown keys", () => {
     try {
       writeFileSync(join(dir, "config.yaml"), "version: 1\ntotally_unknown_knob: true\n");
       expect(() => loadConfig(dir)).toThrowError(/unknown key\(s\): totally_unknown_knob/);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("trust config enumeration", () => {
+  it("updateTrustConfig stamps repo_root provenance; listTrustConfigs enumerates entries (legacy files -> null root)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-trust-list-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      const repoA = join(dir, "proj-a");
+      const res = updateTrustConfig(repoA, (cfg) => ({ ...cfg, allow_full_access: true }));
+      expect(res.config.repo_root).toBe(repoA);
+      expect(res.config.allow_full_access).toBe(true);
+      // A legacy file written BEFORE provenance stamping: enumerable, null root.
+      writeFileSync(
+        join(dir, "trust", `${repoHash("/legacy/proj")}.yaml`),
+        "version: 1\naccess_default: workspace_write\nallow_full_access: true\n",
+      );
+      const entries = listTrustConfigs();
+      expect(entries).toHaveLength(2);
+      const roots = entries.map((e) => e.config.repo_root).sort();
+      expect(roots).toEqual([repoA, null].sort());
+      // Revoke keeps the file enumerable with the flag off (Settings shows truth).
+      updateTrustConfig(repoA, (cfg) => ({ ...cfg, allow_full_access: false }));
+      const after = listTrustConfigs().find((e) => e.config.repo_root === repoA);
+      expect(after?.config.allow_full_access).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;

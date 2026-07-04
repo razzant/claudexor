@@ -102,6 +102,70 @@ describe("daemon", () => {
     }
   }, 20000);
 
+  it("onTurnEnqueueFailed fires when a turn-carrying job dies BEFORE a run binds — and never when one did", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const token = "tkn-turnfail";
+    const refusals: Array<{ turnId: string; error: string; code: string | null }> = [];
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath: join(dir, "jobs.json"),
+      onTurnEnqueueFailed: (turnId, error, code) => refusals.push({ turnId, error, code }),
+      runner: async (params, ctx) => {
+        const p = params as { boom?: string; turnId?: string };
+        // Pre-run refusal (the trust gate shape): a TYPED throw whose machine
+        // code must survive into the hook (remedies key on it).
+        if (p.boom === "pre-run") {
+          throw Object.assign(new Error("access profile 'full' requires allow_full_access: true"), {
+            code: "trust_full_access_required",
+          });
+        }
+        // Post-start failure: the run materialized, so the turn is bound and
+        // failure honesty lives on the RUN, not the turn.
+        ctx.onRunStart({ runId: "run-ok", taskId: "t", runDir: "/tmp/x" });
+        if (p.boom === "post-start") throw new Error("late failure");
+        return { status: "success" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const settle = async (id: string) => {
+        let st = await client.status(id);
+        for (let i = 0; i < 200 && (st.state === "queued" || st.state === "running"); i++) {
+          await sleep(10);
+          st = await client.status(id);
+        }
+        return st;
+      };
+      // 1. Pre-run refusal WITH a turn: the hook records message AND code.
+      const j1 = await client.enqueue({ boom: "pre-run", turnId: "tn-refused" });
+      expect((await settle(j1.id)).state).toBe("failed");
+      expect(refusals).toEqual([
+        {
+          turnId: "tn-refused",
+          error: expect.stringContaining("allow_full_access"),
+          code: "trust_full_access_required",
+        },
+      ]);
+      // 2. Post-start failure: run bound -> no turn-level refusal.
+      const j2 = await client.enqueue({ boom: "post-start", turnId: "tn-ran" });
+      expect((await settle(j2.id)).state).toBe("failed");
+      // 3. Pre-run refusal WITHOUT a turn: nothing to record.
+      const j3 = await client.enqueue({ boom: "pre-run" });
+      expect((await settle(j3.id)).state).toBe("failed");
+      expect(refusals).toHaveLength(1);
+      // The typed code SURVIVES the registry round-trip: persisted by the
+      // serializer, salvaged on reload — a daemon restart must not strip the
+      // machine-readable refusal from job history.
+      const persisted = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8")) as Array<{ id: string; errorCode?: string }>;
+      expect(persisted.find((r) => r.id === j1.id)?.errorCode).toBe("trust_full_access_required");
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
+
   it("persists the job registry across restart (durable run list)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");

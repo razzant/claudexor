@@ -257,6 +257,9 @@ export class ThreadStore {
     const turn = this.state.turns.find((t) => t.id === turnId);
     if (!turn) return;
     turn.run_id = runId;
+    // A binding run supersedes any recorded refusal (the retry path): the
+    // turn is no longer an orphan, so the stale error must not linger.
+    turn.enqueue_error = null;
     const thread = this.getThread(turn.thread_id);
     if (thread) {
       if (!thread.run_ids.includes(runId)) thread.run_ids.push(runId);
@@ -265,6 +268,24 @@ export class ThreadStore {
     }
     this.persist();
   }
+
+  /**
+   * Persist the reason a turn's run could NOT be enqueued/started (trust
+   * refusal, preflight validation, enqueue throw). Only meaningful for a
+   * RUNLESS turn: once a run is bound the turn's honesty lives on the run's
+   * own terminal artifacts, so a late failure report is ignored. `code` is
+   * the typed throw's machine code (e.g. trust_full_access_required) that
+   * surfaces key remedies on.
+   */
+  setTurnEnqueueError(turnId: string, message: string, code: string | null = null): void {
+    const turn = this.state.turns.find((t) => t.id === turnId);
+    if (!turn || turn.run_id) return;
+    turn.enqueue_error = { message: redactSecrets(message), code, failed_at: nowIso() };
+    const thread = this.getThread(turn.thread_id);
+    if (thread) thread.updated_at = nowIso();
+    this.persist();
+  }
+
 
   /** Convenience: create a turn and bind its run in one call (CLI/runner path). */
   addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup", parentRunId?: string | null): ThreadTurn {

@@ -685,9 +685,47 @@ export const ControlThreadTurn = z.object({
   prompt: z.string().default(""),
   /** Embedded run card (outcome/state) so the chat renders without N+1 fetches. */
   run: ControlTurnRunCard.nullable().default(null),
+  /** Why this turn has NO run (enqueue/preflight refusal, e.g. the trust
+   * gate) — surfaces render it as an inline failure card with the remedy;
+   * null once a run binds (retry clears it). `code` is the typed throw's
+   * machine code (remedies key on it, never on the message text). */
+  enqueueError: z
+    .object({ message: z.string(), code: z.string().nullable().default(null), failedAt: z.string() })
+    .nullable()
+    .default(null),
   createdAt: z.string(),
 });
 export type ControlThreadTurn = z.infer<typeof ControlThreadTurn>;
+
+/**
+ * NARROW trust update (the ONLY trust field the control API exposes): grant or
+ * revoke unsandboxed full access for one repo in the USER-LEVEL trust file —
+ * the same file `claudexor trust` writes. Everything else about trust stays
+ * CLI-only; unknown fields are refused (strict).
+ */
+export const ControlTrustUpdateRequest = z
+  .object({
+    repoRoot: z.string().min(1),
+    allowFullAccess: z.boolean(),
+  })
+  .strict();
+export type ControlTrustUpdateRequest = z.infer<typeof ControlTrustUpdateRequest>;
+
+export const ControlTrustState = z.object({
+  /** Repo root recorded in the trust file; null for legacy files written
+   * before provenance stamping (revocable only via CLI in the repo). */
+  repoRoot: z.string().nullable(),
+  /** The user-level trust file backing this state (path disclosure, no content). */
+  path: z.string(),
+  allowFullAccess: z.boolean(),
+  accessDefault: AccessProfile,
+});
+export type ControlTrustState = z.infer<typeof ControlTrustState>;
+
+export const ControlTrustListResponse = z.object({
+  entries: z.array(ControlTrustState),
+});
+export type ControlTrustListResponse = z.infer<typeof ControlTrustListResponse>;
 
 export const ControlThreadCreateRequest = z
   .object({
