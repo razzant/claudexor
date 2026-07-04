@@ -1278,6 +1278,24 @@ final class AppModel {
                 protectedPathApprovals: options.protectedPathApprovals
             ))
         } catch {
+            // A REFUSED turn is not a lost turn: when the server persisted the
+            // refusal on a recorded turn (the error body carries its turnId),
+            // reload the thread so the inline card shows IMMEDIATELY.
+            if let refusal = Self.refusedTurn(from: error) {
+                await refreshRuns()
+                await openThread(threadId)
+                if refusal.retryable {
+                    // The prompt lives on the refused turn and Retry replays
+                    // it — report "sent" so the composer clears (no duplicate
+                    // unsent draft).
+                    threadStatus = nil
+                    return true
+                }
+                // NOT retryable (no recorded job to replay): keep the draft —
+                // "send a new message" is the remedy the card states.
+                threadStatus = userMessage(for: error)
+                return false
+            }
             threadStatus = userMessage(for: error)
             return false
         }
@@ -1291,6 +1309,7 @@ final class AppModel {
         }
         return true
     }
+
 
     // MARK: SPEC-FLOW (server-owned interview)
 

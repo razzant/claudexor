@@ -403,6 +403,10 @@
                         ],
                         "default": null
                       },
+                      "retryable": {
+                        "type": "boolean",
+                        "default": true
+                      },
                       "failedAt": {
                         "type": "string"
                       }

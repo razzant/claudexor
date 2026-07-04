@@ -57,7 +57,7 @@ export function turnRunCard(summary: ControlRunSummary): ControlTurnRunCard {
 export function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>): ControlThreadTurn {
   const t = raw as Record<string, unknown>;
   const runId = (t["run_id"] as string | null) ?? null;
-  const enqueueError = t["enqueue_error"] as { message?: unknown; code?: unknown; failed_at?: unknown } | null | undefined;
+  const enqueueError = t["enqueue_error"] as { message?: unknown; code?: unknown; retryable?: unknown; failed_at?: unknown } | null | undefined;
   return ControlThreadTurn.parse({
     id: t["id"],
     threadId: t["thread_id"],
@@ -76,6 +76,9 @@ export function projectTurn(raw: unknown, cards: Map<string, ControlTurnRunCard>
         ? {
             message: String(enqueueError.message ?? ""),
             code: typeof enqueueError.code === "string" ? enqueueError.code : null,
+            // Legacy records (pre-retryable) default to true — they came from
+            // the runner-hook path, where a job exists to replay.
+            retryable: enqueueError.retryable !== false,
             failedAt: String(enqueueError.failed_at ?? ""),
           }
         : null,

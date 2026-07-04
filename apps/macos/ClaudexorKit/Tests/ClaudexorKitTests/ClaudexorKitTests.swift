@@ -394,13 +394,18 @@ import Testing
         // The one-click remedy keys on the typed CODE, never the message text.
         #expect(turn.enqueueError?.code == TurnEnqueueErrorInfo.trustFullAccessCode)
         #expect(turn.enqueueError?.failedAt == "t1")
-        // An untyped refusal (code null/omitted) still decodes.
+        // An untyped, NON-retryable refusal (enqueue threw before any job):
+        // code null, retryable false — the card offers "send a new message".
         let untyped = #"""
         {"id":"tn-4","threadId":"th-1","runId":null,"prompt":"x",
-         "enqueueError":{"message":"daemon socket is gone","code":null,"failedAt":"t2"},
+         "enqueueError":{"message":"daemon socket is gone","code":null,"retryable":false,"failedAt":"t2"},
          "createdAt":"t"}
         """#
-        #expect(try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(untyped.utf8)).enqueueError?.code == nil)
+        let refusedNoJob = try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(untyped.utf8))
+        #expect(refusedNoJob.enqueueError?.code == nil)
+        #expect(refusedNoJob.enqueueError?.retryable == false)
+        // Legacy refusal without the field reads as retryable (runner-hook path).
+        #expect(turn.enqueueError?.retryable == nil)
         // Legacy turn (no field) and a cleared refusal both decode to nil.
         let legacy = #"{"id":"tn-0","threadId":"th-1","prompt":"hi","createdAt":"t"}"#
         #expect(try JSONDecoder().decode(ThreadTurnInfo.self, from: Data(legacy.utf8)).enqueueError == nil)

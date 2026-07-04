@@ -108,6 +108,10 @@
                   ],
                   "default": null
                 },
+                "retryable": {
+                  "type": "boolean",
+                  "default": true
+                },
                 "failed_at": {
                   "type": "string",
                   "minLength": 1

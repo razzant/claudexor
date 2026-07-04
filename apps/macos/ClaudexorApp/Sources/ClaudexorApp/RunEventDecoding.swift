@@ -7,6 +7,19 @@ import Foundation
 import ClaudexorKit
 
 extension AppModel {
+    /// The server persisted a refusal on a recorded turn when the HTTP error
+    /// body names its `turnId` (thread-turn create/replay paths attach it).
+    /// `retryable=false` means no job was recorded (enqueue itself threw), so
+    /// the composer should KEEP the draft — retry has nothing to replay.
+    static func refusedTurn(from error: Error) -> (turnId: String, retryable: Bool)? {
+        guard case GatewayError.http(_, let body) = error,
+              let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let turnId = obj["turnId"] as? String, !turnId.isEmpty
+        else { return nil }
+        return (turnId, (obj["retryable"] as? Bool) ?? true)
+    }
+
     /// Decode a pending interaction from the interaction.requested event payload.
     static func pendingInteraction(from payload: JSONValue, runId: String) -> PendingInteraction? {
         guard let interactionId = payload["interaction_id"]?.stringValue else { return nil }

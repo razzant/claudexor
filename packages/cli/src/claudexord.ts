@@ -399,8 +399,8 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       }),
     applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) =>
       applyThreadDiff(threads, id, opts),
-    setTurnEnqueueError: (turnId: string, message: string, code: string | null) =>
-      threads.setTurnEnqueueError(turnId, message, code),
+    setTurnEnqueueError: (turnId: string, message: string, code: string | null, retryable?: boolean) =>
+      threads.setTurnEnqueueError(turnId, message, code, retryable ?? true),
     // User-level trust surface (narrow by design): list per-repo trust files
     // and grant/revoke ONE flag — the same file/writer `claudexor trust` owns.
     listTrust: listTrustService,

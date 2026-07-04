@@ -275,12 +275,14 @@ export class ThreadStore {
    * RUNLESS turn: once a run is bound the turn's honesty lives on the run's
    * own terminal artifacts, so a late failure report is ignored. `code` is
    * the typed throw's machine code (e.g. trust_full_access_required) that
-   * surfaces key remedies on.
+   * surfaces key remedies on; `retryable=false` marks refusals with NO
+   * recorded job to replay (the enqueue itself threw) so surfaces offer
+   * "send a new message" instead of a doomed Retry.
    */
-  setTurnEnqueueError(turnId: string, message: string, code: string | null = null): void {
+  setTurnEnqueueError(turnId: string, message: string, code: string | null = null, retryable = true): void {
     const turn = this.state.turns.find((t) => t.id === turnId);
     if (!turn || turn.run_id) return;
-    turn.enqueue_error = { message: redactSecrets(message), code, failed_at: nowIso() };
+    turn.enqueue_error = { message: redactSecrets(message), code, retryable, failed_at: nowIso() };
     const thread = this.getThread(turn.thread_id);
     if (thread) thread.updated_at = nowIso();
     this.persist();

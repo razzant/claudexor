@@ -125,6 +125,11 @@ export const TurnEnqueueError = z.object({
   /** Machine-readable refusal code carried from the throwing gate (e.g.
    * TRUST_FULL_ACCESS_CODE); null when the failure had no typed code. */
   code: z.string().nullable().default(null),
+  /** Whether retry can REPLAY this turn: true when a job was recorded before
+   * the failure (the registry holds the params to replay); false when the
+   * enqueue itself threw and no job exists — surfaces then offer "send a new
+   * message" instead of a doomed Retry (DT-PT-2). */
+  retryable: z.boolean().default(true),
   failed_at: IsoTimestamp,
 });
 export type TurnEnqueueError = z.infer<typeof TurnEnqueueError>;

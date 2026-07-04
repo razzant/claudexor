@@ -117,11 +117,16 @@ public struct TurnEnqueueErrorInfo: Codable, Sendable, Equatable {
     /// Machine-readable refusal code from the typed throw; nil when the
     /// failure had no code (older servers omit the field entirely).
     public let code: String?
+    /// False when NO recorded job exists to replay (the enqueue itself
+    /// threw): the card offers "send a new message" instead of Retry.
+    /// nil (older servers) reads as retryable.
+    public let retryable: Bool?
     public let failedAt: String
 
-    public init(message: String, code: String? = nil, failedAt: String) {
+    public init(message: String, code: String? = nil, retryable: Bool? = nil, failedAt: String) {
         self.message = message
         self.code = code
+        self.retryable = retryable
         self.failedAt = failedAt
     }
 }

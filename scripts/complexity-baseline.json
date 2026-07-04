@@ -8,7 +8,7 @@
   "packages/cli/src/claudexord.ts": 620,
   "packages/cli/src/cli.ts": 1730,
   "packages/cli/src/plugins.ts": 1465,
-  "packages/control-api/src/daemon-server.ts": 2217,
+  "packages/control-api/src/daemon-server.ts": 2170,
   "packages/harness-codex/src/index.ts": 641,
   "packages/harness-cursor/src/index.ts": 766,
   "packages/orchestrator/src/orchestrator.ts": 6239,

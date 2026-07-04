@@ -529,9 +529,9 @@ describe("DaemonControlApiServer", () => {
         return turn;
       },
       // The daemon ThreadStore contract: persist the refusal on the turn.
-      setTurnEnqueueError: (turnId, message, code) => {
+      setTurnEnqueueError: (turnId, message, code, retryable) => {
         const turn = turns.find((t) => t["id"] === turnId);
-        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, failed_at: now };
+        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
       },
     };
     await withDaemonServer(
@@ -542,17 +542,21 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "do work" }),
         });
-        expect(res.status).toBe(400);
-        const body = (await res.json()) as { error: string; turnId?: string };
-        // The error response names the recorded turn (no silent orphan).
+        // Untyped enqueue throws are INFRA failures — 500 (matching POST /runs).
+        expect(res.status).toBe(500);
+        const body = (await res.json()) as { error: string; turnId?: string; retryable?: boolean };
+        // The error response names the recorded turn (no silent orphan) and
+        // discloses that retry has nothing to replay (no job was recorded).
         expect(body.turnId).toBe("tn-refused");
+        expect(body.retryable).toBe(false);
         expect(body.error).toContain("daemon socket is gone");
         // The projection renders the refusal so a reloading client sees it.
         const detail = (await (
           await fetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
-        ).json()) as { turns: { id: string; enqueueError: { message: string; code: string | null; failedAt: string } | null }[] };
+        ).json()) as { turns: { id: string; enqueueError: { message: string; code: string | null; retryable: boolean; failedAt: string } | null }[] };
         expect(detail.turns[0]?.enqueueError?.message).toContain("daemon socket is gone");
         expect(detail.turns[0]?.enqueueError?.code).toBeNull(); // untyped throw
+        expect(detail.turns[0]?.enqueueError?.retryable).toBe(false); // nothing to replay
         expect(detail.turns[0]?.enqueueError?.failedAt).toBeTruthy();
       },
       undefined,
@@ -621,6 +625,141 @@ describe("DaemonControlApiServer", () => {
         expect(body.turnId).toBe("tn-t");
         expect(body.state).toBe("failed");
         expect(body.error).toContain("allow_full_access");
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("threads: retry 409s IMMEDIATELY for a retryable:false refusal (no registry lookup for params that were never recorded)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-norep-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-n",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "non-replayable thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [
+      {
+        id: "tn-norep",
+        thread_id: "th-n",
+        run_id: null,
+        prompt: "never enqueued",
+        enqueue_error: { message: "daemon socket is gone", code: null, retryable: false, failed_at: now },
+        created_at: now,
+      },
+    ];
+    let listCalls = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        throw new Error("must not be called");
+      },
+      async status() {
+        throw new Error("missing");
+      },
+      async list() {
+        listCalls += 1;
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await fetch(`${base}/threads/th-n/turns/tn-norep/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toContain("send a new message");
+        expect(listCalls).toBe(0); // short-circuited before the registry lookup
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("POST /runs with threadId: an enqueue throw lands on the pre-created turn (no orphan bubble)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-directrun-refuse-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-d",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "direct-run thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      portfolio: "subscription-first",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const refusing: DaemonFacadeClient = {
+      async enqueue() {
+        // Deliberately UNTYPED (no status): a daemon socket outage is an
+        // infra failure and must surface as 500, never a client 400.
+        throw new Error("daemon socket is gone");
+      },
+      async status() {
+        throw new Error("missing");
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt) => {
+        const turn = { id: "tn-direct", thread_id: id, run_id: null, prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+      setTurnEnqueueError: (turnId, message, code, retryable) => {
+        const turn = turns.find((t) => t["id"] === turnId);
+        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
+      },
+    };
+    await withDaemonServer(
+      refusing,
+      async (base) => {
+        const res = await fetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "direct work", mode: "agent", scope: { kind: "project", root: repo }, threadId: "th-d" }),
+        });
+        expect(res.status).toBe(500);
+        // The body mirrors the recorded refusal: clients keep the draft for a
+        // retryable:false turn (nothing to replay).
+        const body = (await res.json()) as { error: string; turnId?: string; retryable?: boolean };
+        expect(body.turnId).toBe("tn-direct");
+        expect(body.retryable).toBe(false);
+        const err = turns[0]?.["enqueue_error"] as { message: string; retryable: boolean } | null;
+        expect(err?.message).toContain("daemon socket is gone");
+        expect(err?.retryable).toBe(false);
       },
       undefined,
       services,
@@ -760,9 +899,10 @@ describe("DaemonControlApiServer", () => {
         expect(older.status).toBe(409);
         expect(((await older.json()) as { error: string }).error).toContain("not the latest");
         // First replay: refused AGAIN — the fresh refusal (message + typed
-        // code) must be PERSISTED on the turn, not just returned once.
+        // code) must be PERSISTED on the turn, not just returned once. The
+        // typed trust throw carries no HTTP status -> infra default 500.
         const refused = await retry("tn-1");
-        expect(refused.status).toBe(400);
+        expect(refused.status).toBe(500);
         const turn1 = turns.find((t) => t["id"] === "tn-1");
         const freshError = turn1?.["enqueue_error"] as { message: string; code: string | null };
         expect(freshError.message).toContain("(still)");

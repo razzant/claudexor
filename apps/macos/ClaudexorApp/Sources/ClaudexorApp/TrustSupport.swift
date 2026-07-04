@@ -49,8 +49,51 @@ extension AppModel {
     /// wiring: refresh, reload the thread, and stream the started run.
     @discardableResult
     func retryTurn(threadId: String, turnId: String) async -> Bool {
+        guard !isThreadBusy(threadId) else {
+            threadStatus = "Wait for the running turn to finish, or Stop it, before retrying."
+            return false
+        }
+        return await withTurnSubmission {
+            await retryTurnCore(threadId: threadId, turnId: turnId)
+        }
+    }
+
+    /// The retry body WITHOUT the busy guard/bracket — composed by retryTurn
+    /// and grantFullAccessAndRetry, which own their own busy bracketing.
+    private func retryTurnCore(threadId: String, turnId: String) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before retrying."
+            return false
+        }
+        let result: RunStartResult
+        do {
+            result = try await client.retryTurn(threadId: threadId, turnId: turnId)
+        } catch {
+            threadStatus = userMessage(for: error)
+            // The retry itself may have been refused AGAIN (fresh enqueue_error
+            // persisted server-side) — reload so the card shows the new reason.
+            await openThread(threadId)
+            return false
+        }
+        threadStatus = nil
+        await refreshRuns()
+        await openThread(threadId)
+        if case .started(let info) = result {
+            stream(runId: info.runId)
+        }
+        return true
+    }
+
+    /// One-click remedy for the trust refusal: persist the user-level full-access
+    /// allow for this repo (the same file `claudexor trust --allow-full-access`
+    /// writes), then auto-retry the refused turn. No confirmation sheet by
+    /// design — the button labels the persistent grant it performs. The WHOLE
+    /// grant+retry runs inside ONE busy bracket: a concurrent send during the
+    /// trust write would advance the thread tail and 409 the promised retry.
+    @discardableResult
+    func grantFullAccessAndRetry(threadId: String, turnId: String, repoRoot: String) async -> Bool {
+        guard let client else {
+            threadStatus = "Engine offline — reconnect before granting access."
             return false
         }
         guard !isThreadBusy(threadId) else {
@@ -58,46 +101,17 @@ extension AppModel {
             return false
         }
         return await withTurnSubmission {
-            let result: RunStartResult
             do {
-                result = try await client.retryTurn(threadId: threadId, turnId: turnId)
+                _ = try await client.updateTrust(repoRoot: repoRoot, allowFullAccess: true)
             } catch {
                 threadStatus = userMessage(for: error)
-                // The retry itself may have been refused AGAIN (fresh enqueue_error
-                // persisted server-side) — reload so the card shows the new reason.
-                await openThread(threadId)
                 return false
             }
-            threadStatus = nil
-            await refreshRuns()
-            await openThread(threadId)
-            if case .started(let info) = result {
-                stream(runId: info.runId)
-            }
-            return true
+            // Keep the Settings trust list truthful if it is already open: the
+            // one-click grant is the same write the Settings section audits.
+            await refreshTrust()
+            return await retryTurnCore(threadId: threadId, turnId: turnId)
         }
-    }
-
-    /// One-click remedy for the trust refusal: persist the user-level full-access
-    /// allow for this repo (the same file `claudexor trust --allow-full-access`
-    /// writes), then auto-retry the refused turn. No confirmation sheet by
-    /// design — the button labels the persistent grant it performs.
-    @discardableResult
-    func grantFullAccessAndRetry(threadId: String, turnId: String, repoRoot: String) async -> Bool {
-        guard let client else {
-            threadStatus = "Engine offline — reconnect before granting access."
-            return false
-        }
-        do {
-            _ = try await client.updateTrust(repoRoot: repoRoot, allowFullAccess: true)
-        } catch {
-            threadStatus = userMessage(for: error)
-            return false
-        }
-        // Keep the Settings trust list truthful if it is already open: the
-        // one-click grant is the same write the Settings section audits.
-        await refreshTrust()
-        return await retryTurn(threadId: threadId, turnId: turnId)
     }
 }
 
@@ -193,7 +207,12 @@ struct TurnRefusalCard: View {
                 Text("Not started").font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
                 Text(refusal.message)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                if isTrustRefusal, let repoRoot = model.selectedThreadDetail?.thread.repoRoot {
+                if refusal.retryable == false {
+                    // No recorded job to replay (the enqueue itself threw):
+                    // Retry would 409 — say so instead of offering it.
+                    Text("This turn cannot be retried in place — send a new message instead.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                } else if isTrustRefusal, let repoRoot = model.selectedThreadDetail?.thread.repoRoot {
                     remedyButton(
                         label: "Allow full access & Retry",
                         systemImage: "lock.open.fill",

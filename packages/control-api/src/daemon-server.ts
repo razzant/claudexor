@@ -7,7 +7,9 @@ import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { eventPayload, latestPlanProgress, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
-import { handleThreadTurnCreate, handleThreadTurnRetry, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
+import { handleThreadTurnCreate, handleThreadTurnRetry, recordTurnEnqueueFailure, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
+import { normalizeRunStart, validateAbsoluteRepoRoot, validateDirectRunAttachments } from "./run-start.js";
+export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import {
   AccessProfile,
@@ -138,8 +140,9 @@ export interface DaemonControlApiOptions {
     /** Deliver an isolated thread's accumulated worktree diff to the project. */
     applyThread?: (id: string, opts: { mode: string; branch?: string; message?: string }) => Promise<unknown>;
     /** Persist why a turn's run could not be enqueued (runless-turn honesty).
-     * `code` is the typed throw's machine code (null if none). */
-    setTurnEnqueueError?: (turnId: string, message: string, code: string | null) => void;
+     * `code` is the typed throw's machine code (null if none); `retryable`
+     * false marks refusals with no recorded job to replay. */
+    setTurnEnqueueError?: (turnId: string, message: string, code: string | null, retryable?: boolean) => void;
     /** User-level trust: enumerate per-repo trust files (Settings projection). */
     listTrust?: () => Promise<unknown>;
     /** NARROW trust write: grant/revoke full access for ONE repo — the same
@@ -346,14 +349,39 @@ export class DaemonControlApiServer {
           enqueueParams = { ...rest, turnId: turn.id };
         }
       }
+      // Every failure UP TO a successful enqueue must land ON the pre-created
+      // turn (if any): a validation/enqueue throw would otherwise orphan it as
+      // the exact silent empty bubble the refusal record exists to eliminate.
+      // retryable=false — no job exists to replay, so clients keep drafts.
+      const preCreatedTurnId = (enqueueParams as { turnId?: string }).turnId;
+      let job: { id: string };
       try {
         enqueueParams = validateDirectRunAttachments(enqueueParams);
+        job = await this.opts.daemon.enqueue(enqueueParams);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        recordTurnEnqueueFailure(this.opts.services?.setTurnEnqueueError, preCreatedTurnId, err);
+        // Untyped throws here are INFRA failures (daemon socket down mid-
+        // enqueue) — 500, not a client "bad request". Validation paths attach
+        // their own typed 400 status.
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 500;
+        return this.json(res, status, {
+          error: err instanceof Error ? err.message : "enqueue failed",
+          ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
+        });
       }
-      const job = await this.opts.daemon.enqueue(enqueueParams);
-      const rec = await this.waitForRunStart(job.id);
+      // POST-ENQUEUE: the job EXISTS. A status-poll throw is observation
+      // loss, NOT a refusal — record nothing (the runner hook records real
+      // pre-start deaths) and never claim retryable:false.
+      let rec: DaemonRunRecord;
+      try {
+        rec = await this.waitForRunStart(job.id);
+      } catch (err) {
+        return this.json(res, 500, {
+          error: `job ${job.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
+          jobId: job.id,
+          ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
+        });
+      }
       if (rec.runId && rec.runDir) {
         return this.json(res, 200, ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }));
       }
@@ -863,8 +891,31 @@ export class DaemonControlApiServer {
         })) as { id: string };
         rerunTurnId = turn.id;
       }
-      const job = await this.opts.daemon.enqueue({ ...params, ...(rerunTurnId ? { turnId: rerunTurnId } : {}) });
-      const newRec = await this.waitForRunStart(job.id);
+      let rerunJob: { id: string };
+      try {
+        rerunJob = await this.opts.daemon.enqueue({ ...params, ...(rerunTurnId ? { turnId: rerunTurnId } : {}) });
+      } catch (err) {
+        // The decision turn was pre-created: a failed rerun ENQUEUE must be
+        // an inline refusal on that turn, not a silent orphan bubble.
+        // retryable=false mirrors the recorded refusal (no job to replay).
+        recordTurnEnqueueFailure(this.opts.services?.setTurnEnqueueError, rerunTurnId, err);
+        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 500;
+        return this.json(res, status, {
+          error: err instanceof Error ? err.message : "rerun enqueue failed",
+          ...(rerunTurnId ? { turnId: rerunTurnId, retryable: false } : {}),
+        });
+      }
+      // POST-ENQUEUE: observation loss is not a refusal — record nothing.
+      let newRec: DaemonRunRecord;
+      try {
+        newRec = await this.waitForRunStart(rerunJob.id);
+      } catch (err) {
+        return this.json(res, 500, {
+          error: `rerun job ${rerunJob.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
+          jobId: rerunJob.id,
+          ...(rerunTurnId ? { turnId: rerunTurnId } : {}),
+        });
+      }
       appendRunAuditEvent(rec, "control.applied", { decision: body.action, new_run_id: newRec.runId ?? newRec.id });
       return this.json(res, 200, ControlRunDecisionResponse.parse({
         accepted: true,
@@ -1140,6 +1191,7 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
+
   /** Bound helper context for the extracted thread-turn write routes.
    * Callers guard the required services (threadDetail/createThreadTurn)
    * before routing here. */
@@ -1395,103 +1447,6 @@ function readNewLines(path: string, offset: number, carry: string): { lines: str
 
 function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
   return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
-}
-
-function validateDirectRunAttachments<T extends ControlRunStartRequest & { turnId?: string }>(params: T): T {
-  if (!params.attachments || params.attachments.length === 0) return params;
-  const attachments = params.attachments.map((att, index) => {
-    const hasData = typeof att.data === "string" && att.data.length > 0;
-    const path = typeof att.path === "string" ? att.path.trim() : "";
-    const hasPath = path.length > 0;
-    if (hasData) {
-      throw Object.assign(
-        new Error("inline attachment data is only accepted through thread turns; direct /runs enqueue requires path-only attachments"),
-        { status: 400 },
-      );
-    }
-    if (!hasPath) {
-      throw Object.assign(new Error(`attachments[${index}].path must be a non-empty absolute file path`), { status: 400 });
-    }
-    if (!isAbsolute(path)) {
-      throw Object.assign(new Error(`attachments[${index}].path must be absolute: ${path}`), { status: 400 });
-    }
-    if (!existsSync(path) || !lstatSync(path).isFile()) {
-      throw Object.assign(new Error(`attachments[${index}].path does not exist or is not a file: ${path}`), { status: 400 });
-    }
-    const { data: _data, ...rest } = att;
-    return { ...rest, path };
-  });
-  return { ...params, attachments };
-}
-
-function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
-  const specPath = parsed.specPath?.trim();
-  const mode = parsed.mode ?? "agent";
-  // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
-  // engine boundary unless a frozen spec FILE (specPath) supplies the intent.
-  // A bare specId does not load spec content at enqueue time, so it is not a
-  // valid substitute for the prompt. Fail loud (400) rather than enqueue a
-  // doomed run that produces nothing.
-  if (parsed.prompt.trim().length === 0 && !specPath) {
-    throw Object.assign(new Error("prompt must not be empty (provide a prompt or a frozen specPath)"), { status: 400 });
-  }
-  // maxToolCalls caps the orchestrate EXECUTOR's plan steps; accepting it on
-  // any other mode would create a silent no-op knob (INV-023).
-  if (parsed.maxToolCalls !== undefined && mode !== "orchestrate") {
-    throw Object.assign(
-      new Error("maxToolCalls only applies to mode=orchestrate (it caps the executor's plan steps)"),
-      { status: 400 },
-    );
-  }
-  if (specPath && specPath !== parsed.specPath) parsed = { ...parsed, specPath };
-  // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must
-  // 400 here, not persist a doomed job for the orchestrator to reject later.
-  if (parsed.web && parsed.externalContextPolicy && parsed.web !== parsed.externalContextPolicy) {
-    throw Object.assign(
-      new Error(`contradictory web policy: web='${parsed.web}' vs externalContextPolicy='${parsed.externalContextPolicy}' (pass one, or equal values)`),
-      { status: 400 },
-    );
-  }
-  // Live (in-place) isolation is only honored by the convergence strategies
-  // (agent + attempts / until_clean flags); accepting it elsewhere would
-  // silently run an envelope while claiming live semantics.
-  // Live (in-place) isolation runs the harness directly in the execution tree
-  // (the live project for an in-place thread, or the thread's worktree for an
-  // isolated thread; also CLI convergence --in-place). It is an agent-only
-  // concept — read-only modes have nothing to mutate.
-  if (parsed.execution?.isolation === "live" && mode !== "agent") {
-    throw Object.assign(
-      new Error(`execution.isolation='live' is only supported for agent runs, not '${mode}'`),
-      { status: 400 },
-    );
-  }
-  if (parsed.scope.kind === "project") {
-    const repoRoot = parsed.scope.root.trim();
-    const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
-    if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
-    // Existence is the only filesystem precondition here: a NON-GIT folder is
-    // fine — write modes initialize the git boundary themselves (announced via
-    // the project.git.initialized run event).
-    if (!existsSync(repoRoot) || !lstatSync(repoRoot).isDirectory()) {
-      throw Object.assign(new Error(`project root does not exist or is not a directory: ${repoRoot}`), { status: 400 });
-    }
-    return { ...parsed, scope: { kind: "project", root: repoRoot, context: parsed.scope.context ?? "auto" } };
-  }
-  if (mode === "ask") {
-    mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-    return parsed;
-  }
-  throw Object.assign(new Error(`project scope is required for mode '${mode}'`), { status: 400 });
-}
-
-/**
- * Single owner of run-start normalization. Both entry paths (HTTP control API
- * and the daemon socket runner) MUST use this so scope/secret/absolute-root
- * acceptance can never drift between surfaces.
- */
-export function normalizeRunStartRequest(raw: unknown): ControlRunStartRequest {
-  assertNoInlineSecretValues(raw);
-  return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}));
 }
 
 function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" } {
@@ -2182,10 +2137,6 @@ function isPatchArtifact(path: string): boolean {
 function isTextArtifact(path: string): boolean {
   const type = contentType(path);
   return type.startsWith("text/") || type.startsWith("application/json");
-}
-
-function validateAbsoluteRepoRoot(repoRoot: string): string | null {
-  return isAbsolute(repoRoot) ? null : "project root must be an absolute path";
 }
 
 // Single allowlist shared with the CLI (A17) — includes claude_oauth, which
