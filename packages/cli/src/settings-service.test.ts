@@ -1,6 +1,25 @@
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControlSettingsUpdateRequest } from "@claudexor/schema";
-import { applyHarnessSettingsPatches, assertSettingsPatchValid } from "./settings-service.js";
+
+// HERMETIC codex stub: the adapter resolves its binary (CLAUDEXOR_CODEX_BIN)
+// at MODULE LOAD, and codex discover() hard-requires `--version` to answer.
+// Without this stub the suite silently depended on a real codex install —
+// green on dev machines, red on CI runners. The manifest truth source
+// (static known_models) is what these tests exercise; the stub only answers
+// the liveness probes. Env is set BEFORE the dynamic import below so the
+// adapter picks it up.
+const stubDir = mkdtempSync(join(tmpdir(), "claudexor-codex-stub-"));
+const stubBin = join(stubDir, "codex");
+writeFileSync(
+  stubBin,
+  '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 0 ;;\nesac\n',
+);
+chmodSync(stubBin, 0o755);
+process.env["CLAUDEXOR_CODEX_BIN"] = stubBin;
+const { applyHarnessSettingsPatches, assertSettingsPatchValid } = await import("./settings-service.js");
 
 /** The daemon POST /settings validation core (D3/T1#26), tested offline
  * against the codex manifest truth source (static known_models). */
