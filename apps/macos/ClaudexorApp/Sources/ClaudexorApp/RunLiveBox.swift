@@ -6,7 +6,7 @@
  * only invalidates the views that read THAT box — one run card / one open
  * timeline — instead of rewriting an element of `liveTasks`, whose array-
  * property write invalidated every list/screen reading any task projection
- * (the v0.15 "whole app repaints 10+ times per second during a race" bug).
+ * (the whole-app-repaints-during-races bug this refactor removed).
  *
  * `liveTasks` (TaskRun) keeps the LOW-FREQUENCY truths: status flips,
  * findings, interactions, caps, harnesses — a handful of writes per run.
