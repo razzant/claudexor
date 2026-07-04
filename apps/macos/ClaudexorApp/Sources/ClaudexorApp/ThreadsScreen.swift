@@ -1050,8 +1050,10 @@ private struct TurnCard: View {
                 HStack(spacing: Theme.Spacing.sm) {
                     StatusPill(status: run.status)
                     Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
-                    if run.spendKnown {
-                        Text(String(format: "$%.2f", run.spendUsd)).font(.caption).foregroundStyle(.secondary)
+                    // Live-first spend (the run's streaming box while live).
+                    let spend = model.spendDisplay(run)
+                    if spend.known {
+                        Text(String(format: "$%.2f", spend.usd)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Open run") {
@@ -1063,17 +1065,22 @@ private struct TurnCard: View {
                 // Live transcript: the harness's reasoning + tool calls as they
                 // happen (folded from SSE), so the chat shows working progress —
                 // not just a status pill and a final answer. Collapsible: expanded
-                // while the run is live, folds away when it finishes (a user toggle pins it).
-                if let runId = turn.runId, let blocks = model.transcripts[runId]?.blocks, !blocks.isEmpty {
-                    let live = run.status.isActive
-                    DisclosureGroup(isExpanded: Binding(
-                        get: { transcriptExpanded ?? live },
-                        set: { transcriptExpanded = $0 }
-                    )) {
-                        TranscriptView(blocks: blocks)
-                    } label: {
-                        Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
-                            .font(.caption).foregroundStyle(.secondary)
+                // while the run is live, folds away when it finishes (a user toggle
+                // pins it). Read through the live-box overlay: while streaming only
+                // THIS card re-renders per batch, not the whole conversation.
+                if let runId = turn.runId {
+                    let blocks = model.transcriptBlocks(runId)
+                    if !blocks.isEmpty {
+                        let live = run.status.isActive
+                        DisclosureGroup(isExpanded: Binding(
+                            get: { transcriptExpanded ?? live },
+                            set: { transcriptExpanded = $0 }
+                        )) {
+                            TranscriptView(blocks: blocks, trimmedOlder: model.transcriptTrimmedCount(runId))
+                        } label: {
+                            Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 // Honest outcome (the v0.9 "is the game done?" fix): a plan turn
@@ -1157,7 +1164,7 @@ private struct TurnCard: View {
         let failureShaped: Set<RunStatus> = [.failed, .interrupted, .exhausted, .notConverged, .stuckNoProgress]
         guard failureShaped.contains(run.status) else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasTranscript = !(turn.runId.flatMap { model.transcripts[$0]?.blocks } ?? []).isEmpty
+        let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
         return !hasAnswer && !hasTranscript && run.diff.isEmpty
     }
 
@@ -1392,9 +1399,15 @@ private struct ApplyThreadBar: View {
 /// `TranscriptReducer` fold of the SSE stream (v0.10 Р7).
 private struct TranscriptView: View {
     let blocks: [TranscriptBlock]
+    /// Oldest blocks the reducer's cap dropped (honest truncation marker).
+    var trimmedOlder: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            if trimmedOlder > 0 {
+                Text("\(trimmedOlder) earlier transcript blocks collapsed — the full stream lives in the run's events.jsonl artifact.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
             ForEach(blocks) { block in
                 switch block {
                 case .thinking(_, let text):

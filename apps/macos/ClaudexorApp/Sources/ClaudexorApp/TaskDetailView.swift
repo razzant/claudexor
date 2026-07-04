@@ -152,7 +152,10 @@ struct TaskDetailView: View {
                         .help(task.webEvidenceDetail ?? "Web evidence status.")
                 }
                 ForEach(task.harnesses) { HarnessChip(family: $0) }
-                BudgetMini(spend: task.spendUsd, cap: task.capUsd, spendKnown: task.spendKnown, capKnown: task.capKnown, spendEstimated: task.spendEstimated)
+                // Live-first spend: the streaming box while the run is live
+                // (per-run invalidation), the task snapshot once terminal.
+                let spend = model.spendDisplay(task)
+                BudgetMini(spend: spend.usd, cap: task.capUsd, spendKnown: spend.known, capKnown: task.capKnown, spendEstimated: spend.estimated)
                 if task.isLive && task.status.isActive {
                     Button(role: .destructive) { Task { await model.cancel(task.id) } } label: {
                         Label("Cancel", systemImage: "stop.circle")
@@ -214,7 +217,13 @@ struct TaskDetailView: View {
         case .activity:
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 SectionLabel("Timeline", systemImage: "waveform", accessory: AnyView(verbosityMenu))
-                Panel { ActivityFeedView(events: task.activity.reversed(), verbosity: verbosity) }
+                // Live-first feed: the run's streaming box while live (only
+                // this tab re-renders per batch), the folded task history after.
+                Panel {
+                    ActivityFeedView(events: model.activityFor(task),
+                                     droppedOlder: model.liveBox(task.id)?.activityDropped ?? 0,
+                                     verbosity: verbosity)
+                }
             }
         case .candidates:
             candidatesContent(task)

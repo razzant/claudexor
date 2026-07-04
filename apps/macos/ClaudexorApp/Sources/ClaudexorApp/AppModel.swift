@@ -186,13 +186,21 @@ final class AppModel {
     private var snapshotLoadDepth: [String: Int] = [:]
     /// Stream envelopes deferred while a snapshot load is in flight.
     private var deferredEnvelopes: [String: [BusEnvelope]] = [:]
-    /// SSE coalescing: events buffer here and flush in ~64ms batches, so a burst of
-    /// harness events (10+/sec) causes ONE SwiftUI re-render per batch instead of one
-    /// per event. `@ObservationIgnored` so buffering never itself triggers a render.
+    /// SSE coalescing: events buffer here and flush in adaptive batches, so a burst
+    /// of harness events (10+/sec) causes ONE SwiftUI re-render per batch instead of
+    /// one per event. `@ObservationIgnored` so buffering never itself triggers a render.
     @ObservationIgnored private var eventBuffers: [String: [BusEnvelope]] = [:]
     @ObservationIgnored private var flushTasks: [String: Task<Void, Never>] = [:]
-    /// Live chat transcript per run (thinking / tools / messages folded from SSE).
+    /// Rolling per-run event rate estimate driving the ADAPTIVE flush window
+    /// (64ms when calm, up to ~250ms under sustained bursts).
+    @ObservationIgnored private var flushRates: [String: (window: TimeInterval, lastAt: Date)] = [:]
+    /// TERMINAL chat transcripts per run (live transcripts stream in the run's
+    /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]
+    /// Per-run live streaming boxes (P1 granularity): the dictionary property
+    /// only changes on attach/fold (rare); hot per-event writes mutate the
+    /// box CLASS internals and invalidate only that box's readers.
+    var liveBoxes: [String: RunLiveBox] = [:]
     /// Engine timestamps come from `Date().toISOString()` WITH milliseconds; a
     /// plain ISO8601DateFormatter parses none of them. Try fractional first.
     private static let eventDateFormatterFractional: ISO8601DateFormatter = {
@@ -1707,6 +1715,14 @@ final class AppModel {
                 task.spendKnown = budget.spendUsd != nil
                 task.spendEstimated = budget.estimated
             }
+            // Seed the live box's spend from the snapshot (authoritative up to
+            // lastSeq): post-fence budget.observation increments then add ON
+            // TOP — same "seed from replay OR summary, never both" rule.
+            if let box = liveBoxes[id], task.spendKnown {
+                box.spendUsd = task.spendUsd
+                box.spendKnown = true
+                box.spendEstimated = task.spendEstimated
+            }
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {
                 task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
@@ -1734,6 +1750,16 @@ final class AppModel {
             }
             if !detail.timeline.isEmpty {
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
+                // A STREAMING run's feed lives in its box (views read the box
+                // overlay): the snapshot timeline is authoritative up to
+                // lastSeq, so it replaces the SSE-accumulated feed (the ring
+                // counter resets with it — the server snapshot carries its own
+                // truncation marker); deferred envelopes past the fence
+                // re-append after this load.
+                if let box = liveBoxes[id] {
+                    box.activity = task.activity
+                    box.activityDropped = 0
+                }
             }
             task.diagnosticText = await diagnosticText(client: client, runId: id, detail: detail, error: task.engineError)
             let persistedFindings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: task.title) }
@@ -1951,11 +1977,13 @@ final class AppModel {
             while !Task.isCancelled {
                 guard let self, let client = self.client else { break }
                 let resumeFrom = self.lastEventIds[runId]
-                if resumeFrom == nil, let idx = self.liveTasks.firstIndex(where: { $0.id == runId }) {
+                if resumeFrom == nil {
                     // Full replay rebuilds spend from budget.observation
                     // increments (T6#7): seed from replay OR summary, never
                     // both — a mid-run first attach used to double the money.
-                    self.liveTasks[idx].spendUsd = 0
+                    let box = self.ensureLiveBox(runId)
+                    box.spendUsd = 0
+                    box.spendKnown = false
                 }
                 do {
                     for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
@@ -1993,13 +2021,40 @@ final class AppModel {
         }
     }
 
-    /// Schedule a coalesced flush of this run's buffered SSE events (throttle: at
-    /// most one flush per ~64ms window). The batch applies synchronously, so SwiftUI
-    /// renders the whole batch once.
+    /// Schedule a coalesced flush of this run's buffered SSE events. The window
+    /// ADAPTS to the event rate: 64ms when calm (snappy live feel), stretching
+    /// toward 250ms under sustained bursts (a racing multi-harness run emits
+    /// 20+ events/sec; four renders per second read the same as fifteen but
+    /// cost a quarter of the compositing). The batch applies synchronously, so
+    /// SwiftUI renders the whole batch once.
+    /// Adaptive-coalescing tuning (DT-PT-19): the flush window starts snappy
+    /// and widens exponentially under sustained bursts, capped so the feed
+    /// still repaints ~4x/second at worst.
+    private static let flushWindowCalm: TimeInterval = 0.064
+    private static let flushWindowMax: TimeInterval = 0.25
+    /// Arrivals closer than this are a burst (widen); gaps beyond the reset
+    /// threshold mean the storm passed (snap back to calm).
+    private static let flushBurstGap: TimeInterval = 0.05
+    private static let flushCalmGap: TimeInterval = 0.3
+    private static let flushWidenFactor = 1.25
+
     private func scheduleFlush(_ runId: String) {
+        // Rate estimate OUTSIDE the single-flight guard: every arrival shapes
+        // the window, not just the first event of a window.
+        let now = Date()
+        var rate = flushRates[runId] ?? (window: Self.flushWindowCalm, lastAt: now)
+        let gap = now.timeIntervalSince(rate.lastAt)
+        if gap < Self.flushBurstGap {
+            rate.window = min(rate.window * Self.flushWidenFactor, Self.flushWindowMax)
+        } else if gap > Self.flushCalmGap {
+            rate.window = Self.flushWindowCalm
+        }
+        rate.lastAt = now
+        flushRates[runId] = rate
         guard flushTasks[runId] == nil else { return }
+        let window = rate.window
         flushTasks[runId] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(64))
+            try? await Task.sleep(for: .seconds(window))
             guard let self else { return }
             self.flushTasks[runId] = nil
             self.drainBuffer(runId)
@@ -2024,13 +2079,22 @@ final class AppModel {
         for task in flushTasks.values { task.cancel() }
         flushTasks.removeAll()
         eventBuffers.removeAll()
+        flushRates.removeAll()
+        // Fold whatever streamed so far into value-type state (transcripts /
+        // spend survive the reconnect); fresh streams re-create boxes.
+        for runId in Array(liveBoxes.keys) { foldLiveBox(runId) }
     }
 
     /// Stream ended (terminal end frame or repeated failures): load the full
-    /// snapshot so status and content land atomically, then notify.
+    /// snapshot so status and content land atomically, fold the live box back
+    /// into value-type state, then notify.
     private func finalizeStream(runId: String, lostStream: Bool) async {
         let before = liveTasks.first(where: { $0.id == runId })?.status
         await loadRunDetail(runId)
+        // Terminal fold AFTER the snapshot: server timeline/spend from the
+        // snapshot stay authoritative; the box fills gaps, then retires.
+        foldLiveBox(runId)
+        flushRates[runId] = nil
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         if lostStream, liveTasks[idx].status.isActive {
             liveTasks[idx].status = .unknown
@@ -2122,20 +2186,27 @@ final class AppModel {
             deferredEnvelopes[runId, default: []].append(env)
             return
         }
+        // HOT fields (transcript, activity, spend ticks) mutate the per-run
+        // box: only that box's readers re-render. The tasks ARRAY is written
+        // only when a low-frequency truth changes (status, findings,
+        // interactions, caps) — its property write invalidates every list.
+        let box = ensureLiveBox(runId)
         // Fold the live transcript (the chat shows working progress — reasoning +
         // tools — as it happens, not just the final answer).
-        var reducer = transcripts[runId] ?? TranscriptReducer()
-        if reducer.apply(env) { transcripts[runId] = reducer }
+        _ = box.transcript.apply(env)
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let type = env.event["type"]?.stringValue ?? env.kind
         let payload = env.event["payload"] ?? env.event
         let before = liveTasks[idx].status
         var t = liveTasks[idx]
+        var taskChanged = false
         var shouldLoadDetail = false
         defer {
-            t.updatedAt = .now
-            liveTasks[idx] = t
-            Self.notifyTransition(from: before, to: t.status, title: t.title)
+            if taskChanged {
+                t.updatedAt = .now
+                liveTasks[idx] = t
+                Self.notifyTransition(from: before, to: t.status, title: t.title)
+            }
             if shouldLoadDetail {
                 Task { await self.loadRunDetail(runId) }
             }
@@ -2144,7 +2215,10 @@ final class AppModel {
         if type == "end" {
             return
         }
-        if let phase = Self.phase(for: type) { t.activePhase = phase }
+        if let phase = Self.phase(for: type), phase != t.activePhase {
+            t.activePhase = phase
+            taskChanged = true
+        }
 
         if type.hasPrefix("run.") {
             if type == "run.completed" {
@@ -2168,6 +2242,9 @@ final class AppModel {
             }
             else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.status = RunStatus(api: s) }
             else if t.status == .queued { t.status = .running }
+            // Only an ACTUAL status change rewrites the tasks array (a
+            // repeated same-status run.* frame is a no-op for the lists).
+            if t.status != before { taskChanged = true }
         } else if type.hasPrefix("harness.") {
             let detail = payload["type"]?.stringValue ?? payload["kind"]?.stringValue ?? ""
             let kind: ActivityKind = detail.contains("file") ? .file
@@ -2175,40 +2252,47 @@ final class AppModel {
                 : detail.contains("think") ? .thinking
                 : detail.contains("message") ? .message : .tool
             let h = (payload["harness_id"]?.stringValue ?? payload["harness"]?.stringValue).flatMap { HarnessFamily(rawValue: $0) }
-            if let h, !t.harnesses.contains(h) { t.harnesses.append(h) }
-            t.activity.append(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), detail: payload["text"]?.stringValue ?? payload["error"]?.stringValue, code: payload["rawRef"]?.stringValue, at: .now))
+            if let h, !t.harnesses.contains(h) {
+                t.harnesses.append(h)
+                taskChanged = true
+            }
+            box.appendActivity(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), detail: payload["text"]?.stringValue ?? payload["error"]?.stringValue, code: payload["rawRef"]?.stringValue, at: .now))
         } else if type.hasPrefix("gate.") {
-            t.activity.append(ActivityEvent(.gate, Self.title(payload) ?? Self.pretty(type), at: .now))
+            box.appendActivity(ActivityEvent(.gate, Self.title(payload) ?? Self.pretty(type), at: .now))
         } else if type.hasPrefix("review.") || type.hasPrefix("finding.") {
-            t.activity.append(ActivityEvent(.review, Self.title(payload) ?? Self.pretty(type), at: .now))
+            box.appendActivity(ActivityEvent(.review, Self.title(payload) ?? Self.pretty(type), at: .now))
             if type == "review.finding.proposed", let f = Self.finding(from: payload, taskTitle: t.title) {
                 t.findings.append(f)
+                taskChanged = true
             }
         } else if type.hasPrefix("budget.") {
             if type == "budget.observation", let usd = payload["usd"]?.doubleValue {
                 // Observations are per-event INCREMENTS (live spend ticks up mid-run).
-                t.spendUsd += usd
-                t.spendKnown = true
-                if payload["estimated"]?.boolValue == true { t.spendEstimated = true }
+                box.spendUsd += usd
+                box.spendKnown = true
+                if payload["estimated"]?.boolValue == true { box.spendEstimated = true }
             } else if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue {
-                t.spendUsd = spend
-                t.spendKnown = true
-                t.spendEstimated = payload["estimated"]?.boolValue ?? t.spendEstimated
+                box.spendUsd = spend
+                box.spendKnown = true
+                box.spendEstimated = payload["estimated"]?.boolValue ?? box.spendEstimated
             }
-            if let cap = payload["max_usd"]?.doubleValue, cap > 0 {
+            if let cap = payload["max_usd"]?.doubleValue, cap > 0, cap != t.capUsd || !t.capKnown {
                 t.capUsd = cap
                 t.capKnown = true
+                taskChanged = true
             }
         } else if type == "output.ready" {
             t.outputReadyState = payload["state"]?.stringValue ?? "ready"
+            taskChanged = true
             shouldLoadDetail = true
         } else if type == "interaction.requested" {
             if let pending = Self.pendingInteraction(from: payload, runId: runId) {
                 t.pendingInteractions.removeAll { $0.interactionId == pending.interactionId }
                 t.pendingInteractions.append(pending)
                 t.waitingOnUser = true
+                taskChanged = true
                 let summary = pending.questions.map(\.question).joined(separator: " | ")
-                t.activity.append(ActivityEvent(.system, "Question: \(String(summary.prefix(200)))", at: .now))
+                box.appendActivity(ActivityEvent(.system, "Question: \(String(summary.prefix(200)))", at: .now))
                 Notifier.post(title: "Claudexor needs your answer", body: String(summary.prefix(120)))
             }
         } else if type == "interaction.answered" || type == "interaction.timeout" {
@@ -2216,120 +2300,11 @@ final class AppModel {
                 t.pendingInteractions.removeAll { $0.interactionId == interactionId }
             }
             t.waitingOnUser = !t.pendingInteractions.isEmpty
-            t.activity.append(ActivityEvent(.system, type == "interaction.answered" ? "Answer delivered" : "Question timed out — continuing with assumptions", at: .now))
+            taskChanged = true
+            box.appendActivity(ActivityEvent(.system, type == "interaction.answered" ? "Answer delivered" : "Question timed out — continuing with assumptions", at: .now))
         } else {
-            t.activity.append(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
+            box.appendActivity(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }
     }
 
-    /// Decode a pending interaction from the interaction.requested event payload.
-    private static func pendingInteraction(from payload: JSONValue, runId: String) -> PendingInteraction? {
-        guard let interactionId = payload["interaction_id"]?.stringValue else { return nil }
-        var questions: [InteractionQuestion] = []
-        if case .array(let raw)? = payload["questions"] {
-            for q in raw {
-                guard let text = q["question"]?.stringValue, !text.isEmpty else { continue }
-                var options: [InteractionOption] = []
-                if case .array(let rawOptions)? = q["options"] {
-                    for o in rawOptions {
-                        guard let label = o["label"]?.stringValue, !label.isEmpty else { continue }
-                        options.append(InteractionOption(label: label, description: o["description"]?.stringValue))
-                    }
-                }
-                questions.append(InteractionQuestion(
-                    id: q["id"]?.stringValue ?? "q\(questions.count + 1)",
-                    question: text,
-                    header: q["header"]?.stringValue,
-                    options: options,
-                    multiSelect: q["multi_select"]?.boolValue ?? false
-                ))
-            }
-        }
-        guard !questions.isEmpty else { return nil }
-        return PendingInteraction(
-            interactionId: interactionId,
-            runId: runId,
-            attemptId: payload["attempt_id"]?.stringValue,
-            harnessId: payload["harness_id"]?.stringValue,
-            sourceTool: payload["source_tool"]?.stringValue,
-            questions: questions,
-            requestedAt: payload["requested_at"]?.stringValue ?? "",
-            timeoutAt: payload["timeout_at"]?.stringValue
-        )
-    }
-
-    private static func phase(for type: String) -> Phase? {
-        switch type {
-        case "run.created", "task.contract.created": return .contract
-        case "context.pack.created": return .context
-        case "budget.lease.created", "budget.observation": return .budget
-        case "harness.started", "harness.event", "harness.completed": return .envelope
-        case "gate.started", "gate.completed": return .gates
-        case "review.started", "review.finding.proposed", "finding.revalidated": return .review
-        case "synthesis.started": return .synthesis
-        case "arbitration.completed": return .arbitration
-        case "work_product.emitted", "run.completed", "run.failed": return .final
-        default: return nil
-        }
-    }
-
-    private static func title(_ payload: JSONValue?) -> String? {
-        payload?["title"]?.stringValue ?? payload?["message"]?.stringValue ?? payload?["summary"]?.stringValue
-    }
-
-    /// "review.finding.proposed" -> "Review · finding proposed"
-    private static func pretty(_ type: String) -> String {
-        let parts = type.split(separator: ".")
-        guard let head = parts.first else { return type }
-        let rest = parts.dropFirst().joined(separator: " ")
-        return rest.isEmpty ? head.capitalized : "\(head.capitalized) · \(rest)"
-    }
-
-    private static func finding(from payload: JSONValue?, taskTitle: String) -> Finding? {
-        guard let payload else { return nil }
-        let sevRaw = (payload["severity"]?.stringValue ?? "minor").lowercased()
-        // NEEDS_HUMAN is the review-queue gate: it must read as blocking, never
-        // collapse into a low-priority tint.
-        let severity: Severity = sevRaw.contains("block") || sevRaw.contains("needs_human") ? .blocker
-            : sevRaw.contains("fix_first") || sevRaw.contains("major") || sevRaw.contains("high") ? .major
-            : sevRaw.contains("nit") || sevRaw.contains("low") || sevRaw.contains("out_of_scope") || sevRaw.contains("insufficient_evidence") ? .nit : .minor
-        let evidenceFile = payload["file"]?.stringValue ?? payload["path"]?.stringValue ?? Self.firstEvidenceFile(payload)?.path
-        let evidenceLine = payload["line"]?.doubleValue.map(Int.init) ?? Self.firstEvidenceFile(payload)?.line
-        let reviewerRaw = payload["reviewer"]?.stringValue
-            ?? payload["reviewer"]?["harness_id"]?.stringValue
-            ?? payload["harness"]?.stringValue
-        let routeProofRaw = payload["reviewer"]?["route_proof_status"]?.stringValue
-        let title = payload["title"]?.stringValue ?? payload["summary"]?.stringValue ?? payload["claim"]?.stringValue ?? "Finding"
-        let detail = payload["detail"]?.stringValue ?? payload["body"]?.stringValue ?? payload["claim"]?.stringValue ?? ""
-        return Finding(
-            id: payload["id"]?.stringValue ?? UUID().uuidString,
-            severity: severity,
-            category: payload["category"]?.stringValue ?? "Review",
-            title: title,
-            detail: detail,
-            reviewer: reviewerRaw.flatMap { HarnessFamily(rawValue: $0) } ?? .raw,
-            routeProof: Self.routeProof(from: routeProofRaw, routeVerified: payload["route_verified"]?.boolValue ?? false),
-            evidenceFile: evidenceFile,
-            evidenceLine: evidenceLine,
-            status: FindingStatus(api: payload["status"]?.stringValue),
-            taskTitle: taskTitle
-        )
-    }
-
-    private static func firstEvidenceFile(_ payload: JSONValue) -> (path: String?, line: Int?)? {
-        guard case .array(let files) = payload["evidence"]?["files"], let first = files.first else { return nil }
-        let lines = first["lines"]?.stringValue
-        let line = lines.flatMap { raw in raw.split(separator: "-").first.map(String.init).flatMap(Int.init) }
-        return (first["path"]?.stringValue, line)
-    }
-
-    private static func routeProof(from raw: String?, routeVerified: Bool) -> RouteProof {
-        if routeVerified { return .verified }
-        switch raw {
-        case "verified": return .verified
-        case "accepted_model_arg": return .acceptedModelArg
-        case "same_model_fallback": return .sameModelFallback
-        default: return .unverified
-        }
-    }
 }

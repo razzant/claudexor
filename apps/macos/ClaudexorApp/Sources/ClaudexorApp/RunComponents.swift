@@ -122,15 +122,27 @@ private struct PlanRow: View {
 enum Verbosity: String, CaseIterable, Identifiable { case summary, normal, verbose; var id: String { rawValue }; var label: String { rawValue.capitalized } }
 
 struct ActivityFeedView: View {
+    /// OLDEST-FIRST storage (append-only ring). Rendered newest-first through a
+    /// lazy ReversedCollection — no materialized reversed copy per render — in
+    /// a LazyVStack, so a thousand-row feed only builds the visible rows.
     let events: [ActivityEvent]
+    /// Older events dropped by the live ring cap (honest truncation marker,
+    /// mirrors the server's capped-timeline "omitted" note).
+    var droppedOlder: Int = 0
     var verbosity: Verbosity = .normal
     var body: some View {
         if events.isEmpty {
             Text("No activity yet.").font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                ForEach(filtered) { ActivityRow(event: $0) }
+            let visible = filtered
+            LazyVStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                ForEach(visible.reversed()) { ActivityRow(event: $0) }
+                if droppedOlder > 0 {
+                    Text("\(droppedOlder) older events collapsed — the live feed keeps the newest 1000; the full log lives in the run's events.jsonl artifact.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .padding(.top, Theme.Spacing.sm)
+                }
             }
         }
     }

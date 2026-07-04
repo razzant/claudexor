@@ -271,6 +271,30 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
   `GlassEffectContainer`, the glass button styles, Materials (HIG); WWDC25
   #219/#323/#356.
 
+### 3.2 Live-stream render granularity (performance contract)
+
+Glass/transparency are NOT the streaming-performance lever — recomposition
+frequency and volume are. The contracts:
+
+- **Per-run live box.** A streaming run's HIGH-FREQUENCY state (activity feed,
+  transcript, spend ticks) lives in a per-run `@Observable` `RunLiveBox`; SSE
+  batches mutate only that box, so one live run repaints ONE card/tab — never
+  every list that projects the tasks array. `TaskRun` (the tasks array) keeps
+  low-frequency truths (status flips, findings, interactions, caps) and is
+  written only when one of those actually changes. At terminal the box folds
+  back into the task snapshot and is retired.
+- **Adaptive coalescing.** SSE events flush in batches: a 64 ms window when
+  calm, stretching to ~250 ms under sustained bursts (racing multi-harness
+  runs) — four honest repaints per second, not fifteen.
+- **Bounded feeds with honest truncation.** The live activity feed is a ring
+  of the newest 1000 events with a visible "N older events collapsed" note
+  (mirroring the server's capped timeline); transcripts cap at 200 blocks with
+  the same disclosure. Full logs stay in `events.jsonl` — the UI never
+  pretends the capped view is complete.
+- **Lazy timelines.** The Timeline tab renders newest-first through a lazy
+  reversed collection inside `LazyVStack` — no materialized reversed copies,
+  no eagerly-built thousand-row stacks.
+
 ---
 
 ## 4. App shell & information architecture
