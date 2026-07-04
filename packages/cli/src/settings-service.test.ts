@@ -15,7 +15,7 @@ const stubDir = mkdtempSync(join(tmpdir(), "claudexor-codex-stub-"));
 const stubBin = join(stubDir, "codex");
 writeFileSync(
   stubBin,
-  '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 0 ;;\nesac\n',
+  '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 1 ;;\nesac\n',
 );
 chmodSync(stubBin, 0o755);
 process.env["CLAUDEXOR_CODEX_BIN"] = stubBin;

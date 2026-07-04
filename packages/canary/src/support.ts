@@ -8,7 +8,7 @@
  * product rule.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,12 +43,22 @@ export function makeSandbox(): Sandbox {
   git(["init", "-q"]);
   git(["-c", "user.email=canary@claudexor.local", "-c", "user.name=Canary", "add", "-A"]);
   git(["-c", "user.email=canary@claudexor.local", "-c", "user.name=Canary", "commit", "-qm", "init"]);
+  // HERMETIC vendor stub: codex-truth canaries (settings-write-strict) need
+  // the adapter's discover() to answer `--version`, but CI runners ship no
+  // codex CLI — the suite must not silently depend on a dev machine's
+  // install. The stub only answers liveness probes; the manifest
+  // known_models stay the truth source, and no canary run ever executes it
+  // (fake harnesses / typed refusals).
+  const codexStub = join(base, "codex-stub");
+  writeFileSync(codexStub, '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 1 ;;\nesac\n');
+  chmodSync(codexStub, 0o755);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
     CLAUDEXOR_CONFIG_DIR: configDir,
     CLAUDEXOR_SECRETS_BACKEND: "file",
     CLAUDEXOR_DISABLE_STORED_SECRETS: "1",
+    CLAUDEXOR_CODEX_BIN: codexStub,
     // Keep daemon state inside the sandbox too (config dir owns it).
   };
   return {
