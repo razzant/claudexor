@@ -91,6 +91,9 @@ struct TaskDetailView: View {
             .onChange(of: task.status) { _, _ in autoSelectDefaultTab(for: task) }
             .onChange(of: task.engineError ?? "") { _, _ in autoSelectDefaultTab(for: task) }
             .onChange(of: task.answerText ?? "") { _, _ in autoSelectDefaultTab(for: task) }
+            // Reload on open for every live-sourced run (terminal included):
+            // P3 eviction drops off-screen terminal feeds, and this is the
+            // reload that restores them from the server timeline.
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")

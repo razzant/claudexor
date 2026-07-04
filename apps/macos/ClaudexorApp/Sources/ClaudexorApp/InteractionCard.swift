@@ -97,9 +97,9 @@ struct InteractionCard: View {
 
     private var timeoutLabel: String? {
         guard let timeoutAt = interaction.timeoutAt else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: timeoutAt) ?? ISO8601DateFormatter().date(from: timeoutAt) else { return nil }
+        // Shared static formatters (AppModel.parseEventDate): ISO8601DateFormatter
+        // allocation is expensive and this label re-evaluates on every card render.
+        guard let date = AppModel.parseEventDate(timeoutAt) else { return nil }
         let remaining = date.timeIntervalSinceNow
         guard remaining > 0 else { return "expiring" }
         let minutes = Int(remaining / 60)

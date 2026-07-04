@@ -43,10 +43,27 @@ struct MarkdownOutputView: View {
 
     @ViewBuilder
     private func inline(_ raw: String, font: Font) -> some View {
-        Text((try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw))
+        Text(Self.inlineAttributed(raw))
             .font(font)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Memoized inline-markdown parse: AttributedString(markdown:) is a full
+    /// parser invocation PER LINE per render — a long transcript re-parsed
+    /// every visible paragraph on each SSE batch. Completed text never
+    /// changes, so it parses once (same policy as the block cache below).
+    private final class InlineBox { let value: AttributedString; init(_ v: AttributedString) { value = v } }
+    private static let inlineCache: NSCache<NSString, InlineBox> = {
+        let c = NSCache<NSString, InlineBox>(); c.countLimit = 2048; return c
+    }()
+
+    private static func inlineAttributed(_ raw: String) -> AttributedString {
+        let key = raw as NSString
+        if let hit = inlineCache.object(forKey: key) { return hit.value }
+        let parsed = (try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw)
+        inlineCache.setObject(InlineBox(parsed), forKey: key)
+        return parsed
     }
 
     // Memoized: parsing was a computed property that re-ran on EVERY render, so a

@@ -71,7 +71,12 @@ enum SpecFlowState: Equatable {
 final class AppModel {
     var health: Health = .connecting
     var endpoint: String = ""
-    var route: SidebarRoute = .threads
+    var route: SidebarRoute = .threads {
+        // Leaving a run's inspector is the P3 eviction point: terminal runs
+        // that just went off-screen release their heavy feed/transcript
+        // arrays (reopening reloads from the server).
+        didSet { if oldValue != route { evictBackgroundRunData() } }
+    }
     var appearance: AppearanceMode = .dark {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
     }
@@ -869,6 +874,9 @@ final class AppModel {
             // don't let a stale load overwrite the now-current selection/draft.
             guard selectedThreadId == id else { return }
             selectedThreadDetail = detail
+            // Thread switch is the other P3 eviction point: terminal runs of
+            // the thread we just left release their heavy arrays.
+            evictBackgroundRunData()
             // Hydrate run details for the most recent turns so the conversation
             // can offer decision/apply actions (diff/findings) without requiring
             // a manual visit to each run's detail screen first.

@@ -113,6 +113,34 @@ extension AppModel {
         return (task.spendUsd, task.spendKnown, task.spendEstimated)
     }
 
+    /// Reclaim heavy per-run memory (P3 eviction): TERMINAL runs that are not
+    /// on screen drop their activity feed and transcript. Reopening restores
+    /// the feed from the server timeline (openThread hydrates recent turns via
+    /// loadRunDetail); transcripts are SSE-fold artifacts — they were already
+    /// absent after an app restart, so dropping them off-screen matches the
+    /// existing terminal experience. Live/streaming runs are never touched.
+    func evictBackgroundRunData() {
+        var keep = Set<String>()
+        if case .task(let id) = route { keep.insert(id) }
+        for turn in selectedThreadDetail?.turns ?? [] {
+            if let runId = turn.runId { keep.insert(runId) }
+        }
+        // Streaming runs keep everything (their box IS the live state).
+        keep.formUnion(liveBoxes.keys)
+        for idx in liveTasks.indices {
+            let t = liveTasks[idx]
+            // Evict exactly the TERMINAL runs OUTSIDE the keep-set.
+            let evictable = !keep.contains(t.id) && t.status.isTerminal
+            if evictable, !t.activity.isEmpty { liveTasks[idx].activity = [] }
+        }
+        for runId in transcripts.keys where !keep.contains(runId) {
+            // A transcript without a task row is orphaned bookkeeping; a task
+            // row keeps its transcript only while active (mid-run reconnects).
+            if let t = task(runId), !t.status.isTerminal { continue }
+            transcripts[runId] = nil
+        }
+    }
+
     /// Terminal fold: persist the box's final state into the TaskRun snapshot
     /// (and the terminal transcript store), then retire the box so the run
     /// renders from plain value-type state exactly as pre-box builds did.

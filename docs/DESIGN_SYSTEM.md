@@ -294,6 +294,10 @@ frequency and volume are. The contracts:
 - **Lazy timelines.** The Timeline tab renders newest-first through a lazy
   reversed collection inside `LazyVStack` — no materialized reversed copies,
   no eagerly-built thousand-row stacks.
+- **Off-screen eviction.** Terminal runs outside the open thread / inspected
+  run release their heavy feed and transcript arrays on route/thread change;
+  reopening reloads the feed from the server timeline (`loadRunDetail`).
+  Live/streaming runs are never evicted.
 
 ---
 
