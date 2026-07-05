@@ -77,6 +77,12 @@ sed -e "s/__CLAUDEXOR_VERSION__/$VERSION/" -e "s/__CLAUDEXOR_BUILD__/$BUILD/" \
 
 # App icon: derived at build time from the single tracked source PNG (the SPM
 # resource the dev executable also uses), so no multi-MB .icns lives in git.
+# CONTRACT: the source PNG must already sit on the Apple icon grid — 1024x1024
+# canvas whose opaque squircle spans ONLY the centered 824x824 (~80.5%, corner
+# radius ~185) with transparent margins around it. The Dock renders the bitmap
+# as-is: full-bleed artwork ships an icon that looms ~20% LARGER than every
+# neighbor (shipped bug, fixed in the asset). Verify after replacing the art:
+# the alpha bounding box must be (100, 100, 924, 924).
 ICON_SRC="$APP_PKG/Sources/ClaudexorApp/Resources/AppIcon.png"
 [ -f "$ICON_SRC" ] || { echo "ERROR: icon source missing at $ICON_SRC" >&2; exit 1; }
 ICONSET_DIR="$(mktemp -d)/AppIcon.iconset"
