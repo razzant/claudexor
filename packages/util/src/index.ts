@@ -172,10 +172,18 @@ export function containsSecretLikeToken(text: string): boolean {
 export function assertNoInlineSecretValues(value: unknown, path = "$", context = "run params"): void {
   if (typeof value === "string") {
     if (containsSecretLikeToken(value)) {
-      throw Object.assign(
-        new Error(`secret-like value is not accepted in ${context} (${path}); store values via secrets and pass refs/profiles`),
-        { status: 400 },
-      );
+      // Prompts get a tailored remediation: they are DURABLE run artifacts
+      // (task contracts, transcripts, review packets), so a pasted live
+      // credential would outlive the run. There is deliberately NO bypass
+      // flag for this fence.
+      const inPrompt = /\.prompt(\[|\.|$)/.test(path);
+      const remediation = inPrompt
+        ? "the prompt contains a secret-like value; prompts are durable run artifacts — remove the credential (store it with `claudexor secrets set` and reference it instead) and retry"
+        : "store values via secrets and pass refs/profiles";
+      throw Object.assign(new Error(`secret-like value is not accepted in ${context} (${path}); ${remediation}`), {
+        status: 400,
+        code: "inline_secret_rejected",
+      });
     }
     return;
   }
@@ -185,15 +193,22 @@ export function assertNoInlineSecretValues(value: unknown, path = "$", context =
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "prompt") continue;
     if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
       throw Object.assign(
         new Error(`inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`),
-        { status: 400 },
+        { status: 400, code: "inline_secret_rejected" },
       );
     }
     assertNoInlineSecretValues(child, `${path}.${key}`, context);
   }
+}
+
+/** The machine-readable `code` a typed error carries (e.g. inline_secret_rejected), if any. */
+export function errorCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return undefined;
 }
 
 /**

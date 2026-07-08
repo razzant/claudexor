@@ -15,7 +15,7 @@ import {
   type InteractionAnswer,
   type InteractionQuestion,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
+import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 
 
 /**
@@ -228,7 +228,11 @@ function validateNoInlineSecrets(value: unknown, context: string): string | null
     assertNoInlineSecretValues(value, "$", context);
     return null;
   } catch (err) {
-    return err instanceof Error ? err.message : String(err);
+    // MCP tool failures are text results (until structured outputs land):
+    // prefix the machine-readable class so hosts can branch on it.
+    const code = errorCode(err);
+    const message = err instanceof Error ? err.message : String(err);
+    return code ? `${code}: ${message}` : message;
   }
 }
 

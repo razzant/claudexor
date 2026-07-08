@@ -362,6 +362,16 @@ describe("AcpServer", () => {
         params: withSession({ prompt: "go", protectedPathApprovals: [{ path: secretLike }] }),
       }) + "\n",
     );
+    // The prompt hard block on the ACP surface: a secret-like value inside
+    // the prompt text itself is refused (durable-artifact remediation).
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 18,
+        method: "session/prompt",
+        params: withSession({ prompt: `deploy using ${secretLike}` }),
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
@@ -384,6 +394,9 @@ describe("AcpServer", () => {
     expect(messages.find((m) => m.id === 15)?.error?.message).toContain("secret-like value is not accepted");
     expect(messages.find((m) => m.id === 16)?.error?.message).toContain("secret-like value is not accepted");
     expect(messages.find((m) => m.id === 17)?.error?.message).toContain("secret-like value is not accepted");
+    expect(messages.find((m) => m.id === 18)?.error?.message).toContain("durable run artifacts");
+    // Machine-readable class in JSON-RPC error.data (hosts branch without prose-parsing).
+    expect(messages.find((m) => m.id === 18)?.error?.data?.code).toBe("inline_secret_rejected");
   });
 
   it("answers session/request_permission WHILE the prompt is still running (read loop never blocks)", async () => {

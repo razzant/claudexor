@@ -70,7 +70,7 @@ import {
   ProtectedPathApproval,
   WorkProduct,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import { assertNoInlineSecretValues, containsSecretLikeToken, errorCode, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
@@ -233,6 +233,17 @@ export class DaemonControlApiServer {
     return this.tokenMatches(m?.[1]?.trim());
   }
 
+  /**
+   * ONE owner of the bad-request envelope: status from the typed error,
+   * message text, and the machine-readable `code` (e.g.
+   * inline_secret_rejected) when the error carries one.
+   */
+  private requestError(res: ServerResponse, err: unknown): void {
+    const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
+    const code = errorCode(err);
+    this.json(res, status, { error: err instanceof Error ? err.message : "bad request", ...(code ? { code } : {}) });
+  }
+
   private json(res: ServerResponse, status: number, body: unknown): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text) });
@@ -287,8 +298,7 @@ export class DaemonControlApiServer {
         const parsed = ControlRunStartRequest.parse(body);
         params = normalizeRunStart(parsed);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       // 202-queued lineage race: a thread-anchored direct enqueue is a TURN
       // of that conversation. The daemon runner binds the turn only at onRunStart,
@@ -432,8 +442,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlInteractionAnswerRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       const interactionId = decodeURIComponent(interactionAnswerMatch[2] as string);
       const answerSet = {
@@ -488,8 +497,7 @@ export class DaemonControlApiServer {
         });
         return this.json(res, 200, projectThread(thread, false));
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
 
@@ -535,8 +543,7 @@ export class DaemonControlApiServer {
           turns: detail.turns.map((t) => projectTurn(t, cards)),
         }));
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
 
@@ -556,8 +563,7 @@ export class DaemonControlApiServer {
         });
         return this.json(res, 200, projectThread(thread, false));
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
 
@@ -613,8 +619,7 @@ export class DaemonControlApiServer {
         const result = await applySvc(threadId, { mode: body.mode, branch: body.branch, message: body.message });
         return this.json(res, 200, ControlThreadApplyResponse.parse(result));
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
 
@@ -632,8 +637,7 @@ export class DaemonControlApiServer {
         body = ((await this.readBody(req)) ?? {}) as Record<string, unknown>;
         assertNoInlineSecretValues(body);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       return handleThreadTurnCreate(this.threadTurnRouteCtx(), res, threadId, body);
     }
@@ -731,8 +735,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlApplyCheckRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
@@ -756,8 +759,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlApplyRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
@@ -783,8 +785,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlRunDecisionRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
 
       if (body.action === "accept_risk" || body.action === "override_needs_human") {
@@ -938,8 +939,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlSetupJobCreateRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       return this.service(res, "createSetupJob", body, ControlSetupJob);
     }
@@ -959,8 +959,7 @@ export class DaemonControlApiServer {
         const body = ControlSetupJobConfirmRequest.parse(raw);
         return this.service(res, "confirmSetupJob", { jobId: decodeURIComponent(setupJobConfirmMatch[1] as string), confirmed: body.confirmed }, ControlSetupJob);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
     const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
@@ -978,8 +977,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlTrustUpdateRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       return this.service(res, "updateTrust", body, ControlTrustState);
     }
@@ -991,8 +989,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlSettingsUpdateRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       return this.service(res, "updateSettings", body);
     }
@@ -1016,8 +1013,7 @@ export class DaemonControlApiServer {
         const body = ControlSpecQuestionsRequest.parse(raw);
         return this.service(res, "specQuestions", body);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
     if (method === "POST" && path === "/spec/freeze") {
@@ -1027,8 +1023,7 @@ export class DaemonControlApiServer {
         const body = ControlSpecFreezeRequest.parse(raw);
         return this.service(res, "specFreeze", body);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
     }
 
@@ -1042,8 +1037,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         body = ControlRunControlRequest.parse(raw);
       } catch (err) {
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-        return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
+        return this.requestError(res, err);
       }
       appendRunAuditEvent(rec, "control.requested", { control: body.control });
       // Honesty: a control action on a TERMINAL job has no process to stop;

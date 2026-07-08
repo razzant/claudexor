@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -288,7 +289,6 @@ describe("daemon", () => {
     const persistPath = join(dir, "jobs.json");
     const token = "tkn-redact";
     const SECRET_SUMMARY = "RAW-MODEL-OUTPUT-do-not-persist";
-    const SECRET_PROMPT = "please use sk-" + "a".repeat(24);
     const server = new DaemonServer({
       socketPath,
       token,
@@ -301,7 +301,7 @@ describe("daemon", () => {
     await server.start();
     try {
       const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ x: 1, prompt: SECRET_PROMPT });
+      const job = await client.enqueue({ x: 1, prompt: "tidy the README wording" });
       let st = await client.status(job.id);
       for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
         await sleep(10);
@@ -313,9 +313,56 @@ describe("daemon", () => {
       // but the durable file must NOT contain the raw result, and must keep the runId pointer
       const onDisk = readFileSync(persistPath, "utf8");
       expect(onDisk).not.toContain(SECRET_SUMMARY);
-      expect(onDisk).not.toContain(SECRET_PROMPT);
-      expect(onDisk).toContain("[redacted]");
       expect(onDisk).toContain("run-redact-1");
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
+
+  it("REJECTS a secret-like prompt at enqueue (the prompt hard block; no bypass)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-block";
+    let ran = 0;
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath,
+      runner: async () => {
+        ran += 1;
+        return { status: "success", summary: "should never run" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      await expect(client.enqueue({ prompt: "please use sk-" + "a".repeat(24) })).rejects.toThrow(
+        /durable run artifacts/,
+      );
+      expect(ran).toBe(0); // blocked BEFORE the runner, never queued
+      // ...and BEFORE persistence: the block happens ahead of the registry
+      // write, so no jobs.json record of the secret prompt ever exists.
+      expect(existsSync(persistPath)).toBe(false);
+      // The socket envelope carries the machine-readable class too.
+      const raw = await new Promise<string>((resolvePromise, rejectPromise) => {
+        const sock = createConnection(socketPath, () => {
+          sock.write(
+            JSON.stringify({ id: "e1", method: "claudexor.enqueue", token, params: { prompt: "k sk-" + "b".repeat(24) } }) + "\n",
+          );
+        });
+        let buf = "";
+        sock.on("data", (d) => {
+          buf += String(d);
+          if (buf.includes("\n")) {
+            sock.end();
+            resolvePromise(buf);
+          }
+        });
+        sock.on("error", rejectPromise);
+      });
+      const parsed = JSON.parse(raw.split("\n")[0] as string) as { error?: { code?: string } };
+      expect(parsed.error?.code).toBe("inline_secret_rejected");
     } finally {
       await server.stop();
     }

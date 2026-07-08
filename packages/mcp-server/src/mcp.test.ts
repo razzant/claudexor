@@ -156,6 +156,10 @@ describe("Claudexor MCP server (SDK v2)", () => {
       { id: 20, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] } },
       { id: 21, name: "claudexor_run", arguments: { prompt: "go", tests: [`echo ${secretLike}`] } },
       { id: 22, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] } },
+      // The prompt hard block: a secret-like value INSIDE the prompt is
+      // refused on the MCP surface too (prompts are durable artifacts).
+      { id: 23, name: "claudexor_run", arguments: { prompt: `deploy with ${secretLike}` } },
+      { id: 24, name: "claudexor_ask", arguments: { prompt: `explain ${secretLike}` } },
     ];
     for (const call of invalidCalls) {
       w.send({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } });
@@ -177,6 +181,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(textOf(20)).toContain("secret-like value is not accepted");
     expect(textOf(21)).toContain("secret-like value is not accepted");
     expect(textOf(22)).toContain("secret-like value is not accepted");
+    // Prompt block carries the tailored durable-artifact remediation AND the
+    // machine-readable class prefix (text contract until structured outputs).
+    expect(textOf(23)).toContain("durable run artifacts");
+    expect(textOf(23)).toContain("inline_secret_rejected");
+    expect(textOf(24)).toContain("durable run artifacts");
+    expect(textOf(24)).toContain("inline_secret_rejected");
   });
 
   it("bridges engine interactions to MCP elicitation and maps answers back", async () => {

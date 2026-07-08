@@ -100,8 +100,8 @@ export class AcpServer {
   }
 
   /** Spec-coded JSON-RPC error response ({code, message}) — never an ad-hoc shape. */
-  private error(id: unknown, code: number, message: string): void {
-    this.write({ jsonrpc: "2.0", id, error: { code, message } });
+  private error(id: unknown, code: number, message: string, data?: Record<string, unknown>): void {
+    this.write({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } });
   }
 
   private notify(method: string, params: unknown): void {
@@ -186,7 +186,9 @@ export class AcpServer {
         }
         const runControlError = validateRunControls(params);
         if (runControlError) {
-          this.error(id, -32600, runControlError);
+          // The machine-readable class (e.g. inline_secret_rejected) rides
+          // JSON-RPC error.data so ACP hosts can branch without parsing prose.
+          this.error(id, -32600, runControlError.message, runControlError.code ? { code: runControlError.code } : undefined);
           return;
         }
         // One active run per session: a second prompt while one is running is

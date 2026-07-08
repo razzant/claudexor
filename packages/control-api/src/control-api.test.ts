@@ -2181,6 +2181,52 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("rejects a secret-like value inside the PROMPT itself on POST /runs and POST /threads/:id/turns (hard block, 400)", async () => {
+    const { daemon } = fakeDaemon();
+    const secret = "sk-" + "d".repeat(24);
+    await withDaemonServer(daemon, async (base) => {
+      const start = await fetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prompt: `use ${secret} to auth`, mode: "agent" }),
+      });
+      expect(start.status).toBe(400);
+      const body = (await start.json()) as { error: string; code?: string };
+      expect(body.error).toContain("durable run artifacts");
+      // The machine-readable class rides the envelope, not just prose.
+      expect(body.code).toBe("inline_secret_rejected");
+
+    });
+
+    // The thread-turn ingress (REPL/app path): the fence runs BEFORE thread
+    // resolution, so a minimal threads-capable server proves the block
+    // without a real thread. createThreadTurn must never be reached.
+    let turnCreated = 0;
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const turn = await fetch(`${base}/threads/th-any/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: `retry with ${secret}` }),
+        });
+        expect(turn.status).toBe(400);
+        const turnBody = (await turn.json()) as { error: string; code?: string };
+        expect(turnBody.error).toContain("durable run artifacts");
+        expect(turnBody.code).toBe("inline_secret_rejected");
+        expect(turnCreated).toBe(0);
+      },
+      undefined,
+      {
+        threadDetail: async () => ({ thread: {}, sessions: [], turns: [] }),
+        createThreadTurn: async () => {
+          turnCreated += 1;
+          return {};
+        },
+      },
+    );
+  });
+
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
     const { daemon, cancelled, record } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {

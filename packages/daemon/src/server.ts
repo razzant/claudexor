@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { appendRunEvent } from "@claudexor/event-log";
-import { assertNoInlineSecretValues, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
+import { assertNoInlineSecretValues, errorCode, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -219,7 +219,10 @@ export class DaemonServer {
     try {
       this.send(sock, { id, result: await this.dispatch(method, params) });
     } catch (err) {
-      this.send(sock, { id, error: { message: redactSecrets(err instanceof Error ? err.message : String(err)) } });
+      // Carry the machine-readable error code (e.g. inline_secret_rejected)
+      // alongside the redacted message so socket clients get the typed class.
+      const code = errorCode(err);
+      this.send(sock, { id, error: { message: redactSecrets(err instanceof Error ? err.message : String(err)), ...(code ? { code } : {}) } });
     }
   }
 

@@ -33,6 +33,18 @@ describe("canary golden stories", () => {
     expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
   });
 
+  it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
+    const secret = "sk-" + "z".repeat(24);
+    const r = cli(sb, ["run", `deploy the service using ${secret}`, "--harness", "fake-success", "--json"]);
+    expect(r.code).not.toBe(0);
+    expect(r.stdout + r.stderr).toMatch(/durable run artifacts/);
+    expect(r.stdout + r.stderr).toContain("claudexor secrets set");
+    // Nothing ran: no run directory was created for the blocked prompt.
+    const runsRoot = join(sb.repo, ".claudexor", "runs");
+    const runDirs = existsSync(runsRoot) ? readdirSync(runsRoot) : [];
+    expect(runDirs.length).toBe(0);
+  });
+
   it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
     const r = cli(sb, ["plan", "make add() add instead of subtract", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(0);

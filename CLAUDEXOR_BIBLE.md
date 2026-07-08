@@ -193,8 +193,13 @@ process below. Never paper over the conflict.
   typed-disclosed when a native route also exists. verify: cursor adapter
   auth tests.
 - **INV-062** Raw secrets must not appear in run params, `jobs.json`, task
-  contracts, events, summaries, patches, PR text, logs, or docs. verify:
-  secret-scan CI step; redaction tests; inline-secret rejection tests.
+  contracts, events, summaries, patches, PR text, logs, or docs. The PROMPT
+  is included: a secret-like value inside the prompt text is hard-blocked at
+  every ingress surface (CLI, POST /runs, thread turns, MCP, ACP, daemon
+  enqueue) with a typed `inline_secret_rejected` error and remediation —
+  prompts are durable artifacts and there is deliberately NO bypass flag.
+  verify: secret-scan CI step; redaction tests; inline-secret rejection
+  tests; canary `[INV-062:prompt-secret-block]`.
 - **INV-063** Scoped harness homes/config dirs stay outside the mutation
   worktree so `git add -A` can never capture auth files, plugin downloads,
   sqlite logs, or transcripts into a patch. Where a containment exception
