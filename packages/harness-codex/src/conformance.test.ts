@@ -1,10 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { validateTypedStream } from "@claudexor/core";
 import { parseCodexEvent } from "./parse.js";
 
-const FIXTURES = join(__dirname, "..", "fixtures");
+const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
 
 /**
  * Real codex stdout can TEAR lines under concurrent writes (observed live on

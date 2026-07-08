@@ -1,10 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { validateTypedStream } from "@claudexor/core";
 import { parseOpenCodeEvent } from "./parse.js";
 
-const FIXTURES = join(__dirname, "..", "fixtures");
+const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
 
 describe("opencode adapter conformance fixtures", () => {
   for (const name of readdirSync(FIXTURES).filter((f) => f.endsWith(".jsonl"))) {

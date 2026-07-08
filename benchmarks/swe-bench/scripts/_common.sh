@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Common setup for Claudexor x SWE-bench operator scripts. Optionally loads API keys from
-# CLAUDEXOR_KEYS_FILE WITHOUT printing values, sets PATH, and exposes a `claudexor` helper that
-# runs the locally built CLI. The official SWE-bench evaluator and HuggingFace dataset
-# loader are invoked via `uv run --with ...` so no global installs are required.
+# CLAUDEXOR_KEYS_FILE WITHOUT printing values and sets PATH. The official SWE-bench
+# evaluator and HuggingFace dataset loader are invoked via `uv run --with ...` so no
+# global installs are required.
 
 set -euo pipefail
 

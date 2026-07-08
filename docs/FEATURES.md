@@ -12,7 +12,7 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **78** (half-baked: 2, suspicious: 1, works-with-caveats: 75)
+Rows: **77** (half-baked: 2, suspicious: 1, works-with-caveats: 74)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|
@@ -81,14 +81,13 @@ Rows: **78** (half-baked: 2, suspicious: 1, works-with-caveats: 75)
 | harness adapters | F15 raw-api adapter | works-with-caveats | (no cost → ledger $0; `version: defaultModel`) | `harness-raw-api/src/index.ts:48-253` | v0.15 P2 |
 | harness adapters | F24 browser full-access + off guard | works-with-caveats | (codex adapter itself has no off-guard; claude does) | `orchestrator.ts:835-853`; `harness-claude/src/index.ts:380-384` vs `harness-codex/src/index.ts:207-219` | v0.15 P5 |
 | harness adapters | F9 cursor doctor + keychain bridge | works-with-caveats | (bridge pierces isolation; smoke cache per instance ) | `harness-cursor/src/index.ts:283-302,327-342,344-383,664-687` | backlog |
-| integrations | ACP-06 interactive questions | works-with-caveats | (permission request cites a toolCallId that was never announced as a tool_call) | packages/acp-server/src/index.ts:92-94, 366-413, 387-390; acp.test.ts:389 | v0.15 P5 |
 | integrations | BEN-02 swe-bench suite | works-with-caveats | (operator-run only) | benchmarks/swe-bench/scripts/run-dataset.sh:24-38 | backlog |
 | integrations | BEN-03 terminal_bench suite | works-with-caveats | (Rosetta caveats documented; one stale header comment) | benchmarks/terminal_bench/claudexor_agent.py:179-268, 300-366; README.md:44-70 | backlog |
 | integrations | CI-01 ci.yml | works-with-caveats | Gates repaired in v0.15 P0 (typecheck incl. tests/scripts, staged:check, ajv, ratchet, canary, concept-gate, Swift job on PRs, scan-first ordering). Remaining: format:check ungated; real-harness battery never in CI. | .github/workflows/ci.yml | backlog |
 | integrations | PLG-05 status | works-with-caveats | Compares artifacts by exact content/state hash; drift vs unowned vs missing vs partial; **exit code always 0 for status** | packages/cli/src/plugins.ts:1331-1352, 1414-1417 | v0.15 P5 |
 | integrations | PLG-08 uninstall | works-with-caveats | Removes verified-legacy shims, owned config entries (state-required for config), owned artifacts; `pruneEmptyDirs` is a deliberate NO-OP → empty dirs and `.claudexor-backups/` remain | packages/cli/src/plugins.ts:1355-1371, 1160-1190 | v0.15 P2 |
 | integrations | SCR-04 triad-scope-review | works-with-caveats | Pinned cross-vendor panel (>=3 models, >=2 vendors; from `TRIAD_MODELS`/`SCOPE_MODEL` env or local `.adversarial-review/PANEL.lock`) via OpenRouter (direct fallbacks opt-in); quorum ≥2 responded; parse_failure counts as degraded; scope reviewer must cover all 8 items or gate blocks; raw outputs never truncated; secret-like token aborts before upload; per-reviewer started/first-event/completed telemetry to `reviewer-progress.jsonl` | scripts/triad-scope-review.mjs panel guard, 654-656, 761-770, 719-721, 578-581, 587-651 | v0.15 P2 |
-| integrations | SCR-05 real-harness battery | works-with-caveats | (never in CI; zero MCP/ACP/plugin coverage) | scripts/real-harness-battery.mjs:423-766, 773-822, 110-119 | v0.15 P5 |
+| integrations | SCR-05 real-harness battery | works-with-caveats | Manual operator battery — not wired into CI (real keys/sessions required); MCP serve, ACP serve, and plugin phases are covered | scripts/real-harness-battery.mjs:423-766, 773-822, 110-119 | v0.15 P5 |
 | macos app | auth.sheet | works-with-caveats | Daemon-owned jobs polled to terminal, risk flags, timestamps, log path, confirm-install; doctor recheck after | AuthSheet.swift:28-290 | backlog |
 | macos app | composer.reviewers | works-with-caveats | Tokenized `harness[=model[:effort]]` parser; invalid tokens block Send; **server gate over-strict** | ThreadsScreen.swift:112-123, 615-628; ComposerOptionParser.swift:13-47 | v0.15 P2 |
 | macos app | rundetail.artifacts | works-with-caveats | Grid of file cards, image inline/text sheet/external open; tech artifacts filtered | ArtifactGalleryView.swift:10-191 | backlog |

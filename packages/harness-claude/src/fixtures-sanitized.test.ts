@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -11,7 +12,7 @@ import { describe, expect, it } from "vitest";
  * gate that keeps future recordings honest (a manifest claim without an
  * enforcing check is exactly the drift this repo bans).
  */
-const packagesDir = join(__dirname, "..", "..");
+const packagesDir = fileURLToPath(new URL("../..", import.meta.url));
 
 /** Every *.jsonl under every packages/harness-* fixtures dir (one subdir level). */
 function allFixtureFiles(): string[] {
