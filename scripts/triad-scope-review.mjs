@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Triad + Scope review devtool (Ouroboros-style, via OpenRouter).
+ * Triad + Scope review devtool (multi-model release gate, via OpenRouter).
  *
- * Replicates the structure of Ouroboros' pre-commit review gate
- * (ouroboros/tools/review.py + scope_review.py + triad_review.py):
- *   - triad: 3 reviewer models, JSON-array findings contract, quorum >= 2
- *     responsive models, degraded accounting, NO output truncation;
+ * Two independent review passes over one release diff:
+ *   - triad: 3 reviewer models from distinct vendors, JSON-array findings
+ *     contract, quorum >= 2 responsive models, degraded accounting, NO
+ *     output truncation;
  *   - scope: one large-context reviewer covering the 8 fixed scope items
  *     against a compact repository atlas.
  * The preamble/checklists are Claudexor's own (docs/CHECKLISTS.md +
@@ -19,6 +19,15 @@
  *     --out <dir>             # default .adversarial-review/triad
  *     --goal-file <path>      # user intent / goal text file
  *     --skip-scope            # triad only
+ *
+ * Panel selection (required): TRIAD_MODELS / SCOPE_MODEL env vars, or a
+ * local pinned panel in .adversarial-review/PANEL.lock (gitignored):
+ *   triad: vendor/model-a,vendor/model-b,vendor/model-c
+ *   scope: vendor/model-d
+ * The gate always runs on a PINNED panel: the first configured panel is
+ * written to PANEL.lock automatically (disclosed in summary.json), and from
+ * then on env overrides against the pin require an explicit
+ * TRIAD_ALLOW_OVERRIDE acknowledgement and are recorded.
  *
  * Optional infrastructure fallbacks, off by default:
  *   TRIAD_MAX_OUTPUT_TOKENS=12000
@@ -39,16 +48,28 @@ import { join, resolve } from "node:path";
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 
-// The reviewer panel is LOCKED (owner directive): never downgrade, substitute,
-// or "nearest available" these exact models. Overriding via env is a hard error
-// unless the operator explicitly acknowledges the violation — a silent
-// TRIAD_MODELS swap would let a weaker panel impersonate the release gate.
-const LOCKED_TRIAD = "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8";
-const LOCKED_SCOPE = "openai/gpt-5.5";
+// The reviewer panel is PINNED, not hardcoded: models come from env
+// (TRIAD_MODELS / SCOPE_MODEL) or from a local gate config file
+// (.adversarial-review/PANEL.lock, gitignored) with two lines:
+//   triad: vendor/model-a,vendor/model-b,vendor/model-c
+//   scope: vendor/model-d
+// When the lock file exists it is the release panel of record: an env value
+// that differs from it is a hard error unless the operator explicitly
+// acknowledges the substitution — a silent swap would let a weaker panel
+// impersonate the release gate. Every acknowledged override is recorded in
+// the review summary.
 const OVERRIDE_ACK = "I_UNDERSTAND_THIS_VIOLATES_THE_LOCKED_PANEL";
-// Order-insensitive: reordering the same three locked models is not a panel
+const PANEL_LOCK_PATH = resolve(".adversarial-review", "PANEL.lock");
+
+function arg(name, fallback = null) {
+  const idx = process.argv.indexOf(`--${name}`);
+  if (idx === -1) return fallback;
+  const next = process.argv[idx + 1];
+  return next && !next.startsWith("--") ? next : true;
+}
+// Order-insensitive: reordering the same locked models is not a panel
 // violation (the panel is a SET; sequence carries no meaning here). Blank
-// segments from sloppy env values ("a,,b", trailing commas) are ignored.
+// segments from sloppy values ("a,,b", trailing commas) are ignored.
 const normalizePanel = (s) =>
   s
     .split(",")
@@ -56,26 +77,92 @@ const normalizePanel = (s) =>
     .filter(Boolean)
     .sort()
     .join(",");
-for (const [envName, locked] of [["TRIAD_MODELS", LOCKED_TRIAD], ["SCOPE_MODEL", LOCKED_SCOPE]]) {
+function readPanelLock() {
+  if (!existsSync(PANEL_LOCK_PATH)) return {};
+  const out = {};
+  for (const line of readFileSync(PANEL_LOCK_PATH, "utf8").split("\n")) {
+    const m = line.match(/^\s*(triad|scope)\s*:\s*(.+?)\s*$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+const panelLock = readPanelLock();
+const ackActive = process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK;
+for (const [envName, lockKey] of [["TRIAD_MODELS", "triad"], ["SCOPE_MODEL", "scope"]]) {
   const v = process.env[envName];
-  if (v && normalizePanel(v) !== normalizePanel(locked) && process.env.TRIAD_ALLOW_OVERRIDE !== OVERRIDE_ACK) {
+  const locked = panelLock[lockKey];
+  if (v && locked && normalizePanel(v) !== normalizePanel(locked) && !ackActive) {
     console.error(
-      `${envName} override ('${v}') conflicts with the locked reviewer panel ('${locked}').\n` +
-        `The panel is an owner-locked release gate. If this override is a deliberate, disclosed decision,\n` +
+      `${envName} override ('${v}') conflicts with the pinned reviewer panel ('${locked}') in ${PANEL_LOCK_PATH}.\n` +
+        `The pinned panel is the release gate of record. If this override is a deliberate, disclosed decision,\n` +
         `set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK} — the override will be recorded in the review summary.`,
     );
     process.exit(1);
   }
-  if (v && normalizePanel(v) !== normalizePanel(locked)) {
+  if (v && locked && normalizePanel(v) !== normalizePanel(locked)) {
     // Reachable only with the ack set (the guard above exits otherwise).
     console.error(`WARNING: ${envName} override active — acknowledged panel substitution; recording it in summary.json.`);
   }
 }
-const TRIAD_MODELS = (process.env.TRIAD_MODELS || LOCKED_TRIAD)
+const triadPanelValue = process.env.TRIAD_MODELS || panelLock.triad || "";
+const scopePanelValue = (process.env.SCOPE_MODEL || panelLock.scope || "").trim();
+// --skip-scope runs the triad only; demand a scope model only when the scope
+// pass will actually run.
+const scopeRequired = arg("skip-scope") === null;
+// A partial lock must not fail open: a lock that pins only one half while the
+// unpinned half is supplied from env would let that half be substituted with
+// no ack. Refuse and make the operator complete (or consciously override) it.
+const lockPartial = (panelLock.triad && !panelLock.scope) || (!panelLock.triad && panelLock.scope);
+if (lockPartial && scopeRequired && !ackActive) {
+  console.error(
+    `${PANEL_LOCK_PATH} is PARTIAL (pins ${panelLock.triad ? "only triad" : "only scope"}). A half-pinned panel lets the\n` +
+      `other half be substituted silently. Complete the lock file with both lines:\n` +
+      `  triad: vendor/model-a,vendor/model-b,vendor/model-c\n` +
+      `  scope: vendor/model-d\n` +
+      `or set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK} to proceed anyway (recorded).`,
+  );
+  process.exit(2);
+}
+if (!triadPanelValue || (scopeRequired && !scopePanelValue)) {
+  console.error(
+    "No reviewer panel configured. Provide TRIAD_MODELS (comma-separated OpenRouter model ids from at least two vendors)\n" +
+      (scopeRequired ? "and SCOPE_MODEL " : "") +
+      "via env, or pin them in .adversarial-review/PANEL.lock:\n" +
+      "  triad: vendor/model-a,vendor/model-b,vendor/model-c\n" +
+      "  scope: vendor/model-d",
+  );
+  process.exit(2);
+}
+const TRIAD_MODELS = triadPanelValue
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
-const SCOPE_MODEL = (process.env.SCOPE_MODEL || LOCKED_SCOPE).trim();
+const SCOPE_MODEL = scopePanelValue;
+// Cross-vendor rigor: the triad exists to put DISTINCT model families in the
+// room. Fewer than 3 reviewers or fewer than 2 vendors needs the explicit ack,
+// and running below the bar is recorded in summary.json either way.
+const panelMeetsCrossVendorBar =
+  new Set(TRIAD_MODELS).size >= 3 && new Set(TRIAD_MODELS.map((m) => m.split("/")[0])).size >= 2;
+if (!panelMeetsCrossVendorBar && !ackActive) {
+  console.error(
+    `Triad panel '${TRIAD_MODELS.join(",")}' is below the cross-vendor bar (need >=3 DISTINCT models from >=2 vendors).\n` +
+      `If this reduced panel is a deliberate, disclosed decision, set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK}.`,
+  );
+  process.exit(2);
+}
+// First-run pinning: the release gate runs on a PINNED panel (local gate
+// config), never on ephemeral env alone. When no lock file exists yet, the
+// first COMPLETE panel (triad AND scope) becomes the pin — disclosed here and
+// in summary.json — so every later substitution needs the explicit ack. A
+// --skip-scope bootstrap deliberately does NOT pin: a lock missing its scope
+// entry would let a later scope substitution slip past the override guard.
+let panelPinnedNow = false;
+if (!panelLock.triad && !panelLock.scope && scopePanelValue) {
+  mkdirSync(resolve(".adversarial-review"), { recursive: true });
+  writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
+  panelPinnedNow = true;
+  console.error(`panel pinned: wrote ${PANEL_LOCK_PATH} — future runs enforce this panel (override needs the explicit ack).`);
+}
 const SCOPE_ITEMS = [
   "intent_alignment",
   "forgotten_touchpoints",
@@ -103,12 +190,6 @@ const REQUEST_TIMEOUT_MS = 900_000;
 const MAX_FILE_BYTES = 200_000;
 const MAX_PACK_BYTES = positiveIntEnv("TRIAD_MAX_PACK_BYTES", 3_000_000);
 
-function arg(name, fallback = null) {
-  const idx = process.argv.indexOf(`--${name}`);
-  if (idx === -1) return fallback;
-  const next = process.argv[idx + 1];
-  return next && !next.startsWith("--") ? next : true;
-}
 
 function git(args, opts = {}) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, ...opts });
@@ -123,7 +204,7 @@ function readDoc(path) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt blocks (ported from ouroboros/tools/review_helpers.py, preamble swapped)
+// Prompt blocks (shared reviewer preamble + per-pass checklists)
 // ---------------------------------------------------------------------------
 
 const PREAMBLE =
@@ -770,13 +851,20 @@ async function main() {
     base,
     generated_at: new Date().toISOString(),
     // Explicit audit markers. `panel_override_active` is the truth signal: the
-    // panel actually ran with non-locked models (an unacknowledged override is
-    // impossible — the guard at the top hard-errors first). The ack alone with
-    // a locked panel is a no-op and must not read as a violation.
+    // panel actually ran with models that differ from the pinned lock file (an
+    // unacknowledged override is impossible — the guard at the top hard-errors
+    // first). The ack alone with a matching panel is a no-op and must not read
+    // as a violation. Without a lock file there is nothing to override, but a
+    // panel below the cross-vendor bar is still recorded explicitly so an
+    // acknowledged reduced panel can never pass as a full one.
+    panel: { triad: TRIAD_MODELS, scope: SCOPE_MODEL },
+    panel_source: process.env.TRIAD_MODELS || process.env.SCOPE_MODEL ? "env" : "lock_file",
+    panel_pinned_now: panelPinnedNow,
+    panel_meets_cross_vendor_bar: panelMeetsCrossVendorBar,
     panel_override_active:
-      normalizePanel(TRIAD_MODELS.join(",")) !== normalizePanel(LOCKED_TRIAD) ||
-      normalizePanel(SCOPE_MODEL) !== normalizePanel(LOCKED_SCOPE),
-    panel_override_acknowledged: process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK,
+      (Boolean(panelLock.triad) && normalizePanel(TRIAD_MODELS.join(",")) !== normalizePanel(panelLock.triad)) ||
+      (Boolean(panelLock.scope) && normalizePanel(SCOPE_MODEL) !== normalizePanel(panelLock.scope)),
+    panel_override_acknowledged: ackActive,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
   };

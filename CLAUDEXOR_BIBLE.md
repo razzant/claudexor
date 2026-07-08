@@ -28,10 +28,9 @@ process below. Never paper over the conflict.
   invariants as executable user stories tagged `[INV-NNN:…]`. When a canary
   fails, the product regressed: fix the product, never the story, unless the
   owner approved a `CONCEPT-CHANGE` for that invariant.
-- Some invariants below encode owner decisions locked in the v0.15 program
-  whose enforcement lands in a named phase; their `verify:` notes say so.
-  They are constitution first, implementation second — code converges to
-  them, never the reverse.
+- Some invariants below encode locked owner decisions; their `verify:` notes
+  name the enforcement. They are constitution first, implementation second —
+  code converges to them, never the reverse.
 
 ## 1. Claudexor Is CLI-First
 
@@ -130,7 +129,7 @@ process below. Never paper over the conflict.
   the base it was captured against (no silent corruption — CRLF, quoted
   paths, binary — between capture and delivery). verify: workspace diff
   tests incl. the CRLF and binary round-trip cases (byte-faithful raw
-  capture; `git diff --binary`; landed in the v0.15 program).
+  capture; `git diff --binary`).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
   route proof is observed (stream- or transcript-observed model, never an
   argv echo), reviewer telemetry is persisted, and the reviewer read the
@@ -141,8 +140,7 @@ process below. Never paper over the conflict.
   verified recovery exists, but it does not by itself discard a produced
   deliverable. Recovery must be attributable to the failed operation, not
   merely a later call of the same-named tool — the engine keys recovery by
-  tool AND target. verify: attemptTelemetry recovery-keying tests (landed
-  in the v0.15 program).
+  tool AND target. verify: attemptTelemetry recovery-keying tests.
 - **INV-044** The engine separates terminal state from tool hygiene: a
   completed answer/report/patch may succeed with warnings, while failed web
   evidence, terminal harness errors, failed apply/verify steps, or required
@@ -176,7 +174,7 @@ process below. Never paper over the conflict.
   critical/security human gates. Path parsing for these gates must handle
   every path git can emit (quoted, non-ASCII) — the shared quote-aware
   diff parser is the one owner. verify: policy tests; core diff parser
-  tests (landed in the v0.15 program).
+  tests.
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under `.claudexor/runs/<id>/` is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
@@ -263,7 +261,7 @@ process below. Never paper over the conflict.
 - **INV-081** A frozen SpecPack is a content-hashed contract: the engine
   verifies the hash when a run consumes a spec, and a tampered spec fails
   loudly instead of silently running against altered criteria. verify:
-  spec tamper fence test (landed in the v0.15 program).
+  spec tamper fence test.
 - **INV-082** Frozen SpecPacks and repo config cannot carry protected-path
   approvals; operator approval is always supplied on the current run.
   verify: schema strictness test (SpecConstraints).
@@ -325,7 +323,7 @@ process below. Never paper over the conflict.
   primary — never to the pool (ambiguous scalars are rejected). verify:
   schema (no `routing.default_model`); canaries
   `[INV-103:scalar-model-primary-only]` and `[INV-103:no-global-model]`;
-  routing tests. Locked in the v0.15 program (D2).
+  routing tests. Locked owner decision.
 - **INV-104** A model outside the harness's model truth source (live
   inventory or manifest known-good list) is refused at settings-write, run
   preflight (typed failure WITH artifacts before any CLI spawns), and both
@@ -336,8 +334,8 @@ process below. Never paper over the conflict.
   model-hints-freshness gate. verify: canaries
   `[INV-104:model-truth-refusal]`, `[INV-104:models-manifest-fallback]`,
   `[INV-104:settings-write-strict]`; settings-service tests;
-  modelGovernance preflight tests. Locked in the v0.15 program (D3, strict
-  everywhere).
+  modelGovernance preflight tests. Locked owner decision: strict
+  everywhere.
 - **INV-105** Per-harness knobs a manifest does not support are disclosed as
   `ignored_settings` on `harness.started` — never silently dropped. This
   covers max_turns, tool lists, and effort (an empty declared ladder); an
@@ -372,13 +370,12 @@ process below. Never paper over the conflict.
   divergence-fenced; thread apply requires the thread's HEAD run to be
   non-blocked/non-failed or covered by a typed operator decision. An
   unlisted mutation path is a release blocker. verify: mutation-path
-  inventory in ARCHITECTURE; thread-apply head-run gate test (landed in
-  the v0.15 program; locked D4).
+  inventory in ARCHITECTURE; thread-apply head-run gate test (locked
+  owner decision).
 - **INV-114** A failed apply/adoption leaves the target tree restored, or —
   when restoration itself fails — reports the mutation honestly;
   `adopted:false`/`not_applied` must mean the tree is unchanged. verify:
-  protected-apply conflict tests (byte-identical restore; landed in the
-  v0.15 program).
+  protected-apply conflict tests (byte-identical restore).
 - **INV-115** Before an envelope-produced patch is applied or adopted —
   race winner or convergence result — it is re-verified in a fresh
   envelope (`git apply` to a clean base + configured deterministic gates
@@ -390,7 +387,7 @@ process below. Never paper over the conflict.
   green work. Deterministic gates must be hermetic to the checkout for the
   verify re-run to be meaningful.
   verify: FinalVerifier tests + the final_verify apply-gate consumer tests
-  (landed in the v0.15 program; locked D12).
+  (locked owner decision).
 - **INV-116** Terminal run state and output readiness are separate
   (`succeeded|blocked|failed|not_converged` vs
   `pending|finalizing|ready|diagnostic`), and every announced run reaches a
@@ -398,7 +395,7 @@ process below. Never paper over the conflict.
   observer waits forever. CLI and UI show the distinction. verify: canaries
   `[INV-116:output-ready-before-terminal]`, `[INV-116:cancel-fast]`,
   `[INV-116:stream-watchdog]`; the whole-strategy terminal net and
-  interrupt-stamping tests (landed in the v0.15 program).
+  interrupt-stamping tests.
 
 ## 12. Keep The Codebase Small And Direct
 
@@ -432,12 +429,13 @@ process below. Never paper over the conflict.
   fix because appending is cheapest. verify:
   `scripts/complexity-ratchet.mjs` in CI.
 - **INV-125** Release tags additionally pass the external triad + scope
-  review gate on the exact owner-locked reviewer panel; substituting or
-  downgrading panel models without an explicit acknowledged override is a
-  hard error, and any override is recorded in the review summary. A
-  whole-tree immune scan (docs-vs-code, dead surface, invariants-vs-tree)
-  is a mandatory pre-release checklist step. verify: triad lock guard;
-  CHECKLISTS Release section.
+  review gate on a pinned cross-vendor reviewer panel (at least three
+  models from at least two vendors, pinned in local gate config);
+  substituting or downgrading a pinned panel without an explicit
+  acknowledged override is a hard error, and any override is recorded in
+  the review summary. A whole-tree immune scan (docs-vs-code, dead
+  surface, invariants-vs-tree) is a mandatory pre-release checklist step.
+  verify: triad panel guard; CHECKLISTS Release section.
 
 ## 13. Documentation Must Stay Current
 

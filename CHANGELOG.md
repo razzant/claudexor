@@ -69,7 +69,7 @@ Release history for Claudexor. The current version is declared in the root
   a CI coverage gate and a release-grade freshness check
   (`scripts/fixture-freshness-check.mjs --strict`); the mandatory
   pre-release IMMUNE SCAN (whole-tree audit against the Bible) is now a
-  Release checklist step (D24).
+  Release checklist step.
 - **v0.15 program, phase 4** — routing/output reality: typed
   quota events (codex rollout rate-window -> used_percent observations ->
   headroom-aware pool ordering + `budget.quota_pressure` disclosure; claude

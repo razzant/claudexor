@@ -119,13 +119,15 @@ enum DemoData {
         diff: []
     )
 
+    // "starmap" is a fictional sample project (all demo data here is fiction
+    // behind the off-by-default "Show sample data" toggle).
     static let blockedTask = TaskRun(
         id: "run-44ab7e",
-        title: "Swap Ouroboros claude_code.py for Claudexor",
-        prompt: "Replace Ouroboros' claude_code.py with the Claudexor embeddable substrate over JSON-RPC.",
+        title: "Swap starmap's agent shim for Claudexor",
+        prompt: "Replace starmap's hand-rolled agent shim with the Claudexor embeddable substrate over JSON-RPC.",
         mode: .maxAttempts,
         status: .blocked,
-        project: "ouroboros",
+        project: "starmap",
         specTitle: "Embed substrate v1",
         harnesses: [.claude],
         n: 1,
@@ -133,7 +135,7 @@ enum DemoData {
         activePhase: .envelope,
         spendUsd: 0.0890, capUsd: 0.30,
         routeProof: .sameModelFallback,
-        attentionNote: "Needs permission: write outside workspace_write scope (Ouroboros repo).",
+        attentionNote: "Needs permission: write outside workspace_write scope (starmap repo).",
         plan: [
             PlanItem("Map claude_code.py surface to Claudexor API", .done),
             PlanItem("Generate JSON-RPC client shim", .blocked, note: "Blocked on access scope"),
@@ -242,7 +244,7 @@ enum DemoData {
             Spec(id: "s3", title: "Control API v1", frozen: true, version: 1, runIds: ["run-1190ff"]),
             Spec(id: "s4", title: "macOS mission-control", frozen: false, version: 1, runIds: []),
         ]),
-        Project(id: "p2", name: "ouroboros", specs: [
+        Project(id: "p2", name: "starmap", specs: [
             Spec(id: "s5", title: "Embed substrate v1", frozen: true, version: 1, runIds: ["run-44ab7e"]),
         ]),
     ]

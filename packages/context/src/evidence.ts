@@ -4,8 +4,9 @@ import { containsSecretLikeToken, readTextSafe, redactSecrets, sha256, writeText
 
 /**
  * The `.adversarial-review/` evidence packet that bridges clean-context
- * reviewers (generalized from cursor-multimodel-review). Critics read these
- * files before producing findings; missing/empty mandatory files => fail closed.
+ * reviewers: parent context is written to files on disk so critics with no
+ * chat history can read it. Critics read these files before producing
+ * findings; missing/empty mandatory files => fail closed.
  */
 export interface EvidencePacket {
   userIntent: string;

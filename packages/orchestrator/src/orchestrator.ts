@@ -741,8 +741,9 @@ export class Orchestrator {
     // lets it through. Require full access rather than silently inject a browser
     // whose first navigation will fail. The composer discloses this when the user
     // arms the tool; a non-full run drops the browser honestly (no broken tool).
-    // headless:false -> a real headed window is the live view (Anton's chosen
-    // mirror); output_dir captures navigation snapshots into the run tree.
+    // headless:false -> a real headed window is the live view (locked design:
+    // the user watches the browser itself, not a mirrored feed); output_dir
+    // captures navigation snapshots into the run tree.
     if (access !== "full" && access !== "external_sandbox_full") return null;
     return { output_dir: join(paths.root, "browser"), headless: false };
   }

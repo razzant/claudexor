@@ -102,7 +102,7 @@ per-arm resolve% + `dual − max(single)` lift. The dual arm is the **best-of-N 
 
 ```bash
 cd benchmarks/terminal_bench
-export CLAUDEXOR_KEYS_FILE="$HOME/file1.txt"     # or export the keys directly
+export CLAUDEXOR_KEYS_FILE="$HOME/.claudexor/keys.env"   # or export the keys directly
 # The code under test is the prebuilt bundle (pnpm bench:bundle on the host); to test a
 # different ref, check it out and rebuild the bundle. CLAUDEXOR_TB_REPO/REF are legacy.
 export CLAUDEXOR_TB_CLAUDE_MODEL="anthropic/claude-sonnet-4-6"

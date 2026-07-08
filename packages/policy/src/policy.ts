@@ -18,7 +18,7 @@ export interface PathGuardResult {
 
 /**
  * Confine writes to the workspace root (defense-in-depth on top of the native
- * harness sandbox). Ported in spirit from Ouroboros' make_path_guard.
+ * harness sandbox).
  */
 export function pathGuard(workspaceRoot: string, targetPath: string): PathGuardResult {
   const root = resolve(workspaceRoot);

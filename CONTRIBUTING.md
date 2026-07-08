@@ -53,7 +53,7 @@ node scripts/complexity-ratchet.mjs
 pnpm canary
 ```
 
-Run the per-commit review gate (D18) on your staged diff:
+Run the per-commit review gate on your staged diff:
 
 ```bash
 node scripts/commit-review.mjs

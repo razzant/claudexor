@@ -93,12 +93,14 @@ pnpm release:verify
 ```
 
 It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
-The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs`; when the
-release diff is too large for an exact OpenRouter reviewer, set
-`TRIAD_MAX_PACK_BYTES` to reduce supplemental context only. Do not use that as a
-reason to downgrade or substitute the required review models.
+The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` (reviewer
+models come from `TRIAD_MODELS`/`SCOPE_MODEL` or a pinned local
+`.adversarial-review/PANEL.lock`); when the release diff is too large for a
+remote reviewer, set `TRIAD_MAX_PACK_BYTES` to reduce supplemental context
+only. Do not use that as a reason to downgrade or substitute the pinned review
+panel.
 
-The PER-COMMIT review gate (D18) reviews the staged diff before it lands:
+The PER-COMMIT review gate reviews the staged diff before it lands:
 
 ```bash
 node scripts/commit-review.mjs      # or: bash scripts/install-hooks.sh (opt-in hooks)

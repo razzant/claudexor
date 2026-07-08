@@ -164,9 +164,9 @@ pnpm test
   bypass whose reason contradicts the diff, blocks the release. (Bypasses are
   observable only for hook-installed commits — the release triad is the
   backstop for the rest; accepted residual risk of opt-in local hooks.)
-- If the cumulative diff is too large for an exact OpenRouter reviewer, lower
-  only `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
-  downgrade or substitute the required review models.
+- If the cumulative diff is too large for a remote reviewer, lower only
+  `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
+  downgrade or substitute the pinned review panel.
 - Local app package artifacts are labeled honestly as signed/notarized or
   unsigned; they are smoke artifacts only.
 - Final DMG/ZIP release assets are produced by GitHub Actions from the committed
@@ -233,8 +233,8 @@ pnpm test
   full diff through the process argv or a giant prompt as the normal review path.
   (Exception by construction: `scripts/triad-scope-review.mjs` reviews via
   remote OpenRouter chat models that cannot read local files, so its prompt IS
-  the evidence transport — mirroring the upstream Ouroboros protocol it
-  replicates. Its prompts and raw outputs are persisted untruncated per round.)
+  the evidence transport. Its prompts and raw outputs are persisted
+  untruncated per round.)
 - Persist local/redacted per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse

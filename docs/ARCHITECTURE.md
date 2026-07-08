@@ -636,7 +636,7 @@ sufficient verification even without a deterministic test gate;
 discloses what backed an applyable outcome, so a no-test run adopted on review
 evidence never reads as "tests passed". Before adoption/apply eligibility, an
 otherwise-adoptable ENVELOPE-produced patch — race winner or convergence
-result — also passes the FINAL VERIFIER (D12): the patch is applied onto a
+result — also passes the FINAL VERIFIER: the patch is applied onto a
 FRESH worktree at its own base sha and the deterministic gates re-run there,
 recorded as `DecisionRecord.final_verify`
 (attempted/applied_cleanly/gates_passed/reason). In-place turns are exempt
@@ -747,7 +747,7 @@ the cap BEFORE usage streams; a slot whose estimate does not fit remaining
 headroom is a typed `estimate_headroom` lease denial (already-granted work
 continues — only a tripped hard cap stops everything).
 
-Quota is a TYPED event, never scraped prose (D7): codex reports its own
+Quota is a TYPED event, never scraped prose: codex reports its own
 rate-window record (`token_count.rate_limits` in the rollout transcript, the
 same native source route proof uses) as `HarnessEvent.quota{used_percent,
 resets_at}`; claude has no machine-readable subscription-quota surface, so it
@@ -767,7 +767,7 @@ attempt cost/duration persisted under the config dir
 (`routing.quality_priors`, 0..1) fill `qualityForIntent` — so
 cheapest/strongest/balanced genuinely differentiate.
 
-Structured output (D10): routes whose manifest declares `json_schema_output`
+Structured output: routes whose manifest declares `json_schema_output`
 receive `HarnessRunSpec.output_schema` — today the orchestrate BRAIN passes
 the OrchestratePlan JSON Schema computed from the live Zod shape, strictified
 for vendor strict modes (every object: `required` = all keys,
@@ -780,14 +780,14 @@ StructuredOutput TOOL — the constrained JSON rides the tool call while the
 final message stays markdown, so the fenced-JSON path carries claude (and
 every non-capable route). Structured output is also gated OFF when the spec
 will ride the interactive stream-json transport — that vendor combination
-is unverified; fenced parsing carries interactive runs. Live plan checklists (D14) ride typed
+is unverified; fenced parsing carries interactive runs. Live plan checklists ride typed
 `HarnessEvent.plan_progress` (codex `todo_list` items; claude
 TaskCreate/TaskUpdate accumulation — TodoWrite kept for older CLIs), forwarded
 as last-wins `plan.progress` run events and projected on the run detail as
-`planProgress`; per-candidate evidence cards (D13) are projected on the run
+`planProgress`; per-candidate evidence cards are projected on the run
 detail as `candidates` from attempt/review/decision artifacts.
 
-Per-commit review gate for this repository (D18): `claudexor review --diff
+Per-commit review gate for this repository: `claudexor review --diff
 <file>` reviews a diff through the engine's reviewer machinery (fail-closed:
 the pass bar is cross-family healthy AND verified with no
 INSUFFICIENT_EVIDENCE); `scripts/commit-review.mjs` runs it against an

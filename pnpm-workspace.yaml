@@ -2,14 +2,17 @@ packages:
   - "packages/*"
   - "benchmarks/runner"
 
-# esbuild (multiple hoisted versions via knip/vitest) is our only dependency
-# with build scripts; its JS API resolves the platform binary at runtime.
-# pnpm 11 raises ERR_PNPM_IGNORED_BUILDS on a cold install unless dependency
-# build scripts are allowed — the allowlist alone does not cover every hoisted
-# duplicate version in CI. Our dependency set is controlled and audited.
-onlyBuiltDependencies:
-  - esbuild
-dangerouslyAllowAllBuilds: true
+# Supply-chain fence: NO dependency runs install scripts. pnpm 11 allowBuilds
+# is the single build-script policy: a package with scripts that is NOT listed
+# here has its scripts SKIPPED and pnpm prints an ERR_PNPM_IGNORED_BUILDS
+# notice (strictDepBuilds default) — scripts never run silently. esbuild
+# (multiple hoisted versions via knip/vitest) is the only dependency that
+# declares a build script, and it does not need it — the platform binary
+# ships as an optional dependency package that its JS/bin shim resolves at
+# runtime (verified: cold install + full build + `esbuild --version` with the
+# script denied).
+allowBuilds:
+  esbuild: false
 
 # pnpm 11 runs an implicit deps-status check before every `pnpm run` that
 # auto-installs; disable it and rely on explicit installs.

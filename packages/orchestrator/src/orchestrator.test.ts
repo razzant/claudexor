@@ -1388,7 +1388,7 @@ describe("Orchestrator", () => {
         session_id: sessionId,
         ts,
         text: "WebSearch",
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" },
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "current Node.js LTS version" },
       };
       yield {
         type: "tool_result",
@@ -1875,7 +1875,7 @@ describe("Orchestrator", () => {
         session_id: sessionId,
         ts,
         text: "WebSearch",
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "Anton Razzhigaev" },
+        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "current Node.js LTS version" },
       };
       yield {
         type: "tool_result",
@@ -1904,7 +1904,7 @@ describe("Orchestrator", () => {
             name: "WebSearch",
             kind: "web",
             use_id: "toolu_web2",
-            target: "Anton Razzhigaev",
+            target: "current Node.js LTS version",
           },
         };
         yield {
