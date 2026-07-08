@@ -91,13 +91,24 @@ export class ThreadStore {
       (items ?? []).flatMap((item) => {
         let parsed = schema.safeParse(item);
         if (!parsed.success && item && typeof item === "object") {
-          // Forward-migrate: bump schema_version AND coerce enum values removed in
-          // v0.10 (Thread.state "blocked" -> "active", ThreadTurnKind "orchestrate"
-          // -> "followup") so a pre-v0.10 record is migrated, not dropped.
+          // Forward-migrate: bump schema_version AND coerce retired enum values
+          // (Thread.state "blocked" -> "active", ThreadTurnKind "orchestrate"
+          // -> "followup", SessionResumeKind "resume_latest"/"rehost" -> the
+          // values the daemon actually stamps) so an old record is migrated,
+          // not dropped.
           const rec = item as Record<string, unknown>;
           const migrated: Record<string, unknown> = { ...rec, schema_version: SCHEMA_VERSION };
           if (migrated["state"] === "blocked") migrated["state"] = "active";
           if (migrated["kind"] === "orchestrate") migrated["kind"] = "followup";
+          if (migrated["resume_kind"] === "resume_latest") migrated["resume_kind"] = "resume_by_id";
+          if (migrated["resume_kind"] === "rehost") {
+            // "rehost" meant "continued on a DIFFERENT harness — native resume
+            // impossible". resumeMap keys on state==="live" + native id, so the
+            // state must flip to "rebound" too or a stale live rehost record
+            // would still resume natively despite its own retirement semantics.
+            migrated["resume_kind"] = "none";
+            migrated["state"] = "rebound";
+          }
           parsed = schema.safeParse(migrated);
         }
         if (parsed.success && parsed.data !== undefined) return [parsed.data];

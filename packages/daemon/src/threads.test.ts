@@ -171,16 +171,30 @@ describe("ThreadStore", () => {
     expect(existsSync(`${path}.bak`)).toBe(false); // migration succeeded, no data loss
   });
 
-  it("coerces removed v0.9 enum values during migration instead of dropping", () => {
+  it("coerces removed enum values during migration instead of dropping", () => {
     const { path } = store();
     const legacy = {
       threads: [{
         schema_version: 1, id: "th-blocked", created_at: "t", updated_at: "t",
         repo: { root: "/p", base_ref: "HEAD" }, title: "Blocked", mode: "agent",
         auth_preference: "auto", primary_harness: null, run_ids: [], head_run_id: null,
-        state: "blocked", // removed in v0.10 -> must coerce to "active", not drop
+        state: "blocked", // removed -> must coerce to "active", not drop
       }],
-      sessions: [],
+      sessions: [
+        {
+          schema_version: 1, id: "se-latest", thread_id: "th-blocked", harness_id: "codex",
+          native_session_id: "vendor-1", resume_kind: "resume_latest", // retired -> resume_by_id
+          state: "live", created_at: "t", updated_at: "t",
+        },
+        {
+          // The dangerous shape: a LIVE rehost record with a stale native id.
+          // Migration must flip it to none/rebound or resumeMap would resume a
+          // session whose own semantics said "native resume impossible".
+          schema_version: 1, id: "se-rehost", thread_id: "th-blocked", harness_id: "claude",
+          native_session_id: "stale-native-id", resume_kind: "rehost",
+          state: "live", created_at: "t", updated_at: "t",
+        },
+      ],
       turns: [{ id: "tn-o", thread_id: "th-blocked", created_at: "t", kind: "orchestrate" /* removed -> followup */ }],
     };
     writeFileSync(path, JSON.stringify(legacy));
@@ -188,6 +202,13 @@ describe("ThreadStore", () => {
     expect(s.getThread("th-blocked")?.state).toBe("active"); // migrated, not dropped
     expect(existsSync(`${path}.bak`)).toBe(false);            // no data loss
     expect(s.turnsFor("th-blocked")[0]?.kind).toBe("followup");
+    // Retired session resume kinds are coerced: resume_latest keeps native
+    // continuity; a live rehost record does NOT leak its stale native id into
+    // the resume map (its state flips to rebound with the coercion).
+    expect(s.resumeMap("th-blocked")).toEqual({ codex: "vendor-1" });
+    const rehosted = s.sessionsForThread("th-blocked").find((x) => x.harness_id === "claude");
+    expect(rehosted?.resume_kind).toBe("none");
+    expect(rehosted?.state).toBe("rebound");
   });
 
   it("backs up the store and logs when a record is truly unparseable", () => {
