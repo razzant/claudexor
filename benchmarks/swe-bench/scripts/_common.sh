@@ -8,8 +8,14 @@ set -euo pipefail
 
 CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export CLAUDEXOR_REPO_ROOT
-export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:/opt/homebrew/bin:$PATH"
-export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
+# A notarized Node under ~/.claudexor/node is preferred when present (absent on
+# other machines — the system node on PATH is used there).
+export PATH="$HOME/.local/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
+# Default to a Colima socket ONLY when it exists; native Docker / Docker Desktop
+# keeps its own DOCKER_HOST. Override to force a specific VM.
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.colima/default/docker.sock" ]; then
+  export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+fi
 
 SWE_RUNS_ROOT="${CLAUDEXOR_SWE_RUNS_ROOT:-$HOME/.claudexor/cache/bench-experiments/swe-bench}"
 SWEBENCH_SPEC="${CLAUDEXOR_SWEBENCH_SPEC:-swebench}"   # uv --with target (pin e.g. swebench==4.1.0 if needed)

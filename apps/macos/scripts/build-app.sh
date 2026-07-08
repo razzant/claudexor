@@ -43,11 +43,12 @@ VERSION="${CLAUDEXOR_VERSION:-${DERIVED_VERSION:-${ROOT_VERSION:-}}}"
 [ -n "$VERSION" ] || { echo "ERROR: unable to derive Claudexor version" >&2; exit 1; }
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 
-# On this macOS dev/release machine, Homebrew's ad-hoc-signed Node can be
-# killed by the OS code-signing monitor during bundling. Prefer the official
-# Claudexor runtime Node whenever it exists.
-if [ -d "$HOME/.claudex/node/bin" ]; then
-  export PATH="$HOME/.claudex/node/bin:$PATH"
+# On macOS, Homebrew's ad-hoc-signed Node can be killed by the OS code-signing
+# monitor during bundling. Prefer a notarized Node under ~/.claudexor/node/bin
+# when present (override with CLAUDEXOR_NODE_BIN); otherwise fall back to the
+# system node on PATH.
+if [ -d "$HOME/.claudexor/node/bin" ]; then
+  export PATH="$HOME/.claudexor/node/bin:$PATH"
 fi
 
 echo "==> Building release binary (Swift)"
@@ -114,12 +115,21 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     echo "ERROR: esbuild bundle failed; cannot build self-contained app" >&2
     exit 1
   fi
-  NODE_BIN="${CLAUDEXOR_NODE_BIN:-$HOME/.claudex/node/bin/node}"
+  # Prefer an explicit/notarized Node for the bundled engine. CI release builds
+  # always set CLAUDEXOR_NODE_BIN (release.yml captures process.execPath from
+  # actions/setup-node), so the PATH fallback below only ever applies to LOCAL
+  # smoke builds — and it warns, because a distributable must not silently ship
+  # an ad-hoc-signed/non-portable system Node.
+  NODE_BIN="${CLAUDEXOR_NODE_BIN:-$HOME/.claudexor/node/bin/node}"
+  if [ ! -x "$NODE_BIN" ] && command -v node >/dev/null 2>&1; then
+    NODE_BIN="$(command -v node)"
+    echo "    WARNING: bundling the system node ($NODE_BIN) — set CLAUDEXOR_NODE_BIN to a notarized Node for a distributable build" >&2
+  fi
   if [ -x "$NODE_BIN" ]; then
     cp "$NODE_BIN" "$APP/Contents/Resources/node"; chmod +x "$APP/Contents/Resources/node"
     echo "    bundled node ($(du -h "$APP/Contents/Resources/node" | cut -f1 | tr -d ' '))"
   else
-    echo "ERROR: notarized node not found at $NODE_BIN; set CLAUDEXOR_NODE_BIN or CLAUDEXOR_NO_ENGINE_BUNDLE=1" >&2
+    echo "ERROR: no node found (looked at CLAUDEXOR_NODE_BIN, ~/.claudexor/node/bin/node, and PATH); set CLAUDEXOR_NODE_BIN or CLAUDEXOR_NO_ENGINE_BUNDLE=1" >&2
     exit 1
   fi
 fi

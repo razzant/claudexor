@@ -10,10 +10,15 @@ set -euo pipefail
 CLAUDEXOR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export CLAUDEXOR_REPO_ROOT
 
-# Toolchain + Docker (Colima) discovery. Override DOCKER_HOST if you use a different VM.
-# The Claudexor runtime Node lives under ~/.claudex/node (homebrew node OOMs the build).
-export PATH="$HOME/.local/bin:$HOME/.claudex/node/bin:/opt/homebrew/bin:$PATH"
-export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
+# Toolchain + Docker discovery. A notarized Node under ~/.claudexor/node is
+# preferred when present (some macOS setups kill ad-hoc-signed Homebrew Node);
+# it is simply absent on other machines, leaving the system node on PATH.
+export PATH="$HOME/.local/bin:$HOME/.claudexor/node/bin:/opt/homebrew/bin:$PATH"
+# Default to a Colima socket ONLY when it exists (macOS Colima users); native
+# Docker / Docker Desktop keeps its own DOCKER_HOST. Override to force a VM.
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.colima/default/docker.sock" ]; then
+  export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+fi
 # So Harbor can import the Claudexor agent as a dotted module.
 export PYTHONPATH="${CLAUDEXOR_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 

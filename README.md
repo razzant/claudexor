@@ -326,7 +326,7 @@ itself. Paste something like this into Cursor, Claude Code, Codex, or OpenCode:
 Install Claudexor's host integration for this app. First find the local
 Claudexor CLI: prefer an existing `claudexor` command; otherwise, if this repo
 is checked out at <REPO_ROOT> (the directory containing this README), use
-`PATH="$HOME/.claudex/node/bin:$PATH" node <REPO_ROOT>/packages/cli/dist/cli.js`.
+`node <REPO_ROOT>/packages/cli/dist/cli.js`.
 
 Run the matching command for this host:
 - Claude Code: `claudexor plugin install claude`

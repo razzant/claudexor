@@ -84,7 +84,9 @@ TB 2.x task images are **amd64-only**. Where you run them determines correctness
 ## Quickstart
 
 ```bash
-export PATH="$HOME/.claudex/node/bin:$PATH"
+# Use a notarized Node if you keep one under ~/.claudexor/node (macOS setups
+# where ad-hoc-signed Homebrew Node is killed during the build); else system node.
+[ -d "$HOME/.claudexor/node/bin" ] && export PATH="$HOME/.claudexor/node/bin:$PATH"
 pnpm build && pnpm bench:bundle  # prebuilt CLI + daemon bundles the agent uploads per container
 cd benchmarks/terminal_bench
 ./scripts/colima-setup.sh        # start/resize Colima (+Rosetta on Apple Silicon)
@@ -151,7 +153,7 @@ uploads both, preserving that sibling relationship.
 them on demand, but explicit is faster):
 
 ```bash
-export PATH="$HOME/.claudex/node/bin:$PATH"
+[ -d "$HOME/.claudexor/node/bin" ] && export PATH="$HOME/.claudexor/node/bin:$PATH"
 pnpm build           # build the workspace (produces packages/cli/dist/{cli,claudexord}.js)
 pnpm bench:bundle    # esbuild → dist/claudexor-cli.js + dist/claudexord.js (sibling bundles)
 node benchmarks/terminal_bench/dist/claudexor-cli.js --version   # sanity: prints the root package version

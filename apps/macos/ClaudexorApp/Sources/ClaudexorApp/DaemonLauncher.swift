@@ -42,7 +42,6 @@ enum DaemonLauncher {
         }
         let existingPath = env["PATH", default: "/usr/bin:/bin:/usr/sbin:/sbin"]
         let extraPaths = [
-            "\(home)/.claudex/node/bin",
             "\(home)/.claudexor/node/bin",
             "\(home)/.local/bin",
             "\(home)/.npm-global/bin",

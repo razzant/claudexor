@@ -9,7 +9,6 @@ import { join } from "node:path";
 export function normalizedHarnessPath(source: NodeJS.ProcessEnv = process.env): string {
   const home = source.HOME || homedir();
   const preferred = [
-    join(home, ".claudex", "node", "bin"),
     join(home, ".claudexor", "node", "bin"),
     join(home, ".local", "bin"),
     join(home, ".npm-global", "bin"),
@@ -47,5 +46,5 @@ export function atRiskNodeAdvisory(execPath: string = process.execPath, platform
   if (platform !== "darwin") return null;
   const atRisk = execPath.includes("/Cellar/node") || execPath.startsWith("/opt/homebrew/") || execPath.startsWith("/usr/local/Cellar/");
   if (!atRisk) return null;
-  return `node at ${execPath} is Homebrew-signed and may be SIGKILLed by macOS; install the notarized Node under ~/.claudex/node/bin and put it first on PATH`;
+  return `node at ${execPath} is Homebrew-signed and may be SIGKILLed by macOS; install a notarized Node (e.g. under ~/.claudexor/node/bin) and put it first on PATH`;
 }

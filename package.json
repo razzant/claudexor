@@ -29,7 +29,7 @@
     "version-packages": "changeset version",
     "release:verify:node": "pnpm build && pnpm typecheck && pnpm typecheck:tests && pnpm test && pnpm schema:gen && git diff --exit-code packages/schema/generated && test -z \"$(git ls-files --others --exclude-standard packages/schema/generated)\" && node scripts/validate-generated-schemas.mjs && pnpm docs:check && node scripts/concept-gate.mjs --since-last-tag && pnpm staged:check && pnpm knip && node scripts/complexity-ratchet.mjs && node scripts/model-hints-freshness.mjs --strict && node scripts/mcp-cli-parity-check.mjs && node scripts/fixture-freshness-check.mjs --strict && pnpm canary",
     "release:verify:swift": "(cd apps/macos/ClaudexorKit && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test) && (cd apps/macos/ClaudexorApp && PATH=\"$HOME/.swiftly/bin:$PATH\" swift build)",
-    "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudex/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
+    "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudexor/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
     "release:verify": "pnpm release:verify:node && pnpm release:verify:swift && pnpm release:verify:app",
     "release:npm": "pnpm release:verify && changeset publish",
     "release": "pnpm release:verify"

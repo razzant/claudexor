@@ -125,23 +125,24 @@ read from HEAD — a staged panel change cannot weaken the gate reviewing it.
 RESTART `claudexord` AFTER REBUILDING: the daemon loads the engine at start
 and serves that build until stopped — a long-lived daemon silently runs
 pre-rebuild code (`claudexor daemon stop` and let the next command
-auto-start it). Two Phase-4 dogfoods were invalidated by exactly this trap.
+auto-start it). This trap has silently invalidated dogfood runs; restart the
+daemon after every rebuild.
 
 ### Local toolchain notes
 
 The build scripts prefer machine-local toolchains when present and fall back to
 the system ones, so CI and other machines work unchanged:
 
-- `apps/macos/scripts/build-app.sh` prepends `~/.claudex/node/bin` to `PATH`
-  when that directory exists (some macOS setups kill ad-hoc-signed Homebrew
-  Node during bundling) and accepts `CLAUDEXOR_NODE_BIN` to point at the Node
-  binary to bundle.
+- On macOS, some setups kill ad-hoc-signed Homebrew Node during bundling.
+  `apps/macos/scripts/build-app.sh` therefore prefers a notarized Node: set
+  `CLAUDEXOR_NODE_BIN`, or place one under `~/.claudexor/node/bin` (probed
+  automatically); otherwise it falls back to the `node` on `PATH`.
 - If the Xcode Command Line Tools `swift-package` crashes with a dyld llbuild
   symbol error, use a Swiftly-managed toolchain
   (`PATH="$HOME/.swiftly/bin:$PATH" swift build`).
 - `claudexor doctor` surfaces a non-gating advisory when the running Node is an
-  at-risk Homebrew build on macOS; the harness PATH shim still prefers the
-  notarized Node under `~/.claudex/node/bin`.
+  at-risk Homebrew build on macOS; set `CLAUDEXOR_NODE_BIN` (or put a notarized
+  Node first on `PATH`) to silence it.
 
 ### Deterministic / hermetic testing
 

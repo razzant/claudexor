@@ -430,7 +430,7 @@ function runtimePaths(): RuntimePaths {
   const warnings: string[] = [];
   const allowTestOverrides = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
   const envNode = allowTestOverrides ? process.env.CLAUDEXOR_NODE_PATH?.trim() : undefined;
-  const bundledNode = join(home, ".claudex", "node", "bin", "node");
+  const bundledNode = join(home, ".claudexor", "node", "bin", "node");
   const nodePath = envNode || (existsSync(bundledNode) ? bundledNode : process.execPath);
   if (!isAbsolute(nodePath) || !existsSync(nodePath) || !statSync(nodePath).isFile()) {
     throw new Error(`unable to resolve a safe Node executable for plugin MCP config: ${nodePath}`);

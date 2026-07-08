@@ -64,7 +64,6 @@ mkdirSync(logsDir, { recursive: true });
 const env = {
   ...process.env,
   PATH: [
-    join(home, ".claudex", "node", "bin"),
     join(home, ".claudexor", "node", "bin"),
     join(home, ".local", "bin"),
     process.env.PATH ?? "",
@@ -75,11 +74,11 @@ const env = {
 if (existsSync(join(home, ".local", "bin", "cursor-agent"))) {
   env.CLAUDEXOR_CURSOR_BIN = join(home, ".local", "bin", "cursor-agent");
 }
-if (existsSync(join(home, ".claudex", "node", "bin", "codex"))) {
-  env.CLAUDEXOR_CODEX_BIN = join(home, ".claudex", "node", "bin", "codex");
+if (existsSync(join(home, ".claudexor", "node", "bin", "codex"))) {
+  env.CLAUDEXOR_CODEX_BIN = join(home, ".claudexor", "node", "bin", "codex");
 }
-if (existsSync(join(home, ".claudex", "node", "bin", "claude"))) {
-  env.CLAUDEXOR_CLAUDE_BIN = join(home, ".claudex", "node", "bin", "claude");
+if (existsSync(join(home, ".claudexor", "node", "bin", "claude"))) {
+  env.CLAUDEXOR_CLAUDE_BIN = join(home, ".claudexor", "node", "bin", "claude");
 }
 
 const results = [];

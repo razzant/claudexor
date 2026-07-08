@@ -53,10 +53,10 @@ const cliBooleanFlags = [...booleanFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((
 
 // The ACP surface's accepted session/prompt fields (third surface of the
 // same contract) — parsed from the allowlist in acp-server.
-const acpSrc = readFileSync(join(root, "packages/acp-server/src/index.ts"), "utf8");
+const acpSrc = readFileSync(join(root, "packages/acp-server/src/validate.ts"), "utf8");
 const acpAllowMatch = /const allowedKeys = new Set\(\[([\s\S]*?)\]\)/.exec(acpSrc);
 if (!acpAllowMatch) {
-  console.error("mcp-cli-parity: could not locate the session/prompt allowedKeys in packages/acp-server/src/index.ts");
+  console.error("mcp-cli-parity: could not locate the session/prompt allowedKeys in packages/acp-server/src/validate.ts");
   process.exit(1);
 }
 const acpFields = [...acpAllowMatch[1].matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]);

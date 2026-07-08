@@ -16,14 +16,36 @@
  *   coverage) — always warning-grade, NEVER strict-fatal: recording is gated
  *   on live route availability, not on the release calendar.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const strict = process.argv.includes("--strict");
+
+// Installed vendor-CLI versions come from the SAME source model-hints uses —
+// each adapter's own discover() — so the two gates can never disagree about
+// "the installed version" (this gate used to hardcode machine bin paths while
+// model-hints read the adapter). No machine paths here.
+const semverToken = (s) => /(\d+\.\d+\.\d+)/.exec(s ?? "")?.[1] ?? null;
+const installedByCli = new Map();
+try {
+  // The dynamic import is INSIDE the try: an unbuilt workspace (no dist)
+  // throws ERR_MODULE_NOT_FOUND here, which must degrade to "versions
+  // unknown" (structure checks still run), not crash the gate.
+  const { buildRegistry } = await import(pathToFileURL(join(root, "packages/cli/dist/registry.js")).href);
+  for (const adapter of buildRegistry({ includeFakes: false }).values()) {
+    try {
+      const manifest = await adapter.discover();
+      const v = semverToken(manifest.version);
+      if (v) installedByCli.set(adapter.id, v);
+    } catch {
+      /* adapter not installed here — leave unknown */
+    }
+  }
+} catch {
+  /* registry dist not built — versions stay unknown, structure checks still run */
+}
 
 /** Minimal YAML reader for the manifest's flat shape (no deps in scripts). */
 function parseManifest(text) {
@@ -53,28 +75,13 @@ function parseManifest(text) {
   return out;
 }
 
-/** First semver-looking token (same extraction rule as
- * model-hints-freshness.mjs — both gates must agree on what "the installed
- * version" means for a vendor CLI banner like "codex-cli 0.137.0"). */
 const semver = (s) => /(\d+\.\d+\.\d+)/.exec(s ?? "")?.[1] ?? null;
 
+/** Installed version for a manifest `cli` id, resolved via the adapter
+ * registry (the manifest's `cli:` matches the adapter id). null = the vendor
+ * CLI is not discoverable on this machine. */
 function installedVersion(cliName) {
-  const candidates = {
-    codex: [join(homedir(), ".claudex", "node", "bin", "codex"), "codex"],
-    claude: [join(homedir(), ".claudex", "node", "bin", "claude"), "claude"],
-    cursor: [join(homedir(), ".local", "bin", "cursor-agent"), "cursor-agent"],
-    opencode: ["opencode"],
-  }[cliName] ?? [cliName];
-  for (const bin of candidates) {
-    try {
-      const out = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
-      const v = semver(out);
-      if (v) return v;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
+  return installedByCli.get(cliName) ?? null;
 }
 
 const failures = [];
