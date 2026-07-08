@@ -30,26 +30,17 @@ if (!runTool) {
 }
 const mcpArgs = Object.keys(runTool.inputSchema.properties ?? {}).sort();
 
-// The CLI side: the run-control VALUE_FLAGS block in cli.ts source (same
-// source-extraction pattern as docs-truth-check; a refactor that breaks the
-// idiom fails loudly here rather than silently passing).
-const cliSrc = readFileSync(join(root, "packages/cli/src/cli.ts"), "utf8");
-const valueFlagsMatch = /const VALUE_FLAGS = \[([\s\S]*?)\];/.exec(cliSrc);
-if (!valueFlagsMatch) {
-  console.error("mcp-cli-parity: could not locate the VALUE_FLAGS block in packages/cli/src/cli.ts");
+// The CLI side: the built command registry (the ONE owner of the CLI
+// surface) — no source regex; a refactor that breaks the registry import
+// fails loudly here rather than silently passing.
+const registryDist = join(root, "packages/cli/dist/command-registry.js");
+if (!existsSync(registryDist)) {
+  console.error("mcp-cli-parity: packages/cli/dist is missing — run `pnpm build` first");
   process.exit(1);
 }
-const cliValueFlags = [...valueFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
-
-// BOOLEAN run-control flags (strategy switches) — parsed from args.ts's
-// BOOLEAN_FLAGS so additions surface here too.
-const argsSrc = readFileSync(join(root, "packages/cli/src/args.ts"), "utf8");
-const booleanFlagsMatch = /BOOLEAN_FLAGS[^=]*= new Set\(\[([\s\S]*?)\]\)/.exec(argsSrc);
-if (!booleanFlagsMatch) {
-  console.error("mcp-cli-parity: could not locate BOOLEAN_FLAGS in packages/cli/src/args.ts");
-  process.exit(1);
-}
-const cliBooleanFlags = [...booleanFlagsMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+const cliRegistry = await import(registryDist);
+const cliValueFlags = [...cliRegistry.VALUE_FLAGS];
+const cliBooleanFlags = [...cliRegistry.BOOLEAN_FLAGS];
 
 // The ACP surface's accepted session/prompt fields (third surface of the
 // same contract) — parsed from the allowlist in acp-server.
@@ -116,6 +107,7 @@ const CLI_ONLY_EXEMPT = {
   spec: "spec-file attach (CLI spec flow only)",
   attach: "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only; a prompt cannot carry an image)",
   image: "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only)",
+  "access-default": "trust subcommand flag, not a run control (was invisible to the old VALUE_FLAGS source-regex; the registry surfaces it)",
   "from-env": "secrets subcommand flag, not a run control",
   backend: "secrets subcommand flag, not a run control",
   "apply-mode": "decision subcommand flag, not a run control",

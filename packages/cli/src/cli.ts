@@ -54,6 +54,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
+import { KNOWN_FLAGS, VALUE_FLAGS, helpJson, renderHelp, restrictedFlagAllowlist } from "./command-registry.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
@@ -105,87 +106,9 @@ import {
 // package.json) so the banner / --version can never ship stale or drift.
 const CLI_VERSION = CLAUDEXOR_VERSION;
 
-const HELP = `claudexor — harness-agnostic AI coding control plane (v${CLI_VERSION})
-
-Usage:
-  claudexor init                          Scaffold repo-local config (.claudexor/config.yaml)
-  claudexor doctor [--harness <id>] [--all]   Detect + conformance-test harnesses
-  claudexor ask "<question>" [opts]       Read-only answer/explanation route
-  claudexor run "<prompt>" [opts]         Run a task (default mode: agent)
-  claudexor race "<prompt>" [--n N]       Best-of-N race (agent --n) with cross-family review
-  claudexor plan "<prompt>"               Read-only planning report
-  claudexor orchestrate "<goal>"          Brain: typed orchestration plan over the tool belt
-  claudexor spec "<prompt>" [--answers file]  Multi-harness plan grounding -> quiz -> frozen SpecPack
-  claudexor create "<prompt>"             Create-from-scratch (agent --create)
-  claudexor audit | map                   Read-only repo audit / map
-  claudexor explore "<question>"          Read-only research swarm (audit --swarm)
-  claudexor review --diff <file>          Reviewer-panel review of a diff file (per-commit gate)
-  claudexor inspect <run_id>              Inspect a run's decision + artifacts
-  claudexor follow <run_id> [--json]      Live-tail a daemon run (replay + push; answer questions in the TTY)
-  claudexor apply <run_id> [--mode ...]   Apply a run's WorkProduct (apply|commit|branch|pr|--dry-run)
-  claudexor decision <run_id> <action>    Decide a blocked run: --accept-risk|--override|--revert|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"
-  claudexor settings show|set             Show/update user defaults
-  claudexor trust                         Show/update this repo's user-local trust
-    --allow-full-access                   Permit access=full (unsandboxed) for this repo
-    --revoke-full-access                  Revoke the full-access allow
-    --access-default <profile>            readonly|workspace_write default for write modes
-  claudexor auth status|login             Inspect native harness auth
-  claudexor secrets list|set|delete       Manage stored API-key refs (Keychain/0600 file)
-  claudexor release check-name <name>     Naming gate (npm/pypi/crates/github)
-  claudexor daemon start|status|stop|logs|rotate-token Optional local daemon (claudexord)
-  claudexor mcp serve                     Expose Claudexor as an MCP server (stdio)
-  claudexor acp serve                     Expose Claudexor as an ACP agent (stdio)
-  claudexor plugin install <host|all>     Install host integration (cursor|claude|codex|opencode|all)
-  claudexor plugin status <host|all>      Inspect host integration status
-  claudexor plugin doctor <host|all>      Verify installed files/config and MCP startup
-  claudexor plugin repair <host|all>      Reapply owned Claudexor host integration files/config
-  claudexor plugin uninstall <host|all>   Remove owned Claudexor host integration files/config
-  claudexor harness list [--all]          List real harnesses (--all includes fakes)
-  claudexor models [--harness <id>] [--all]   List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --all includes fakes)
-  claudexor help                          Show this help
-
-Options:
-  --harness <id[,id...]>   Force harness(es)
-  --mode <mode>            ask | plan | audit | agent | orchestrate (strategies are flags, not modes)
-  --n <N>                  Race width (agent): N isolated candidates + cross-review
-  --synthesis <mode>       Best-of-N synthesis: auto (default, only n>=3)|always|never
-  --attempts <N>           Convergence cap (agent): repair loop up to N attempts
-  --until-clean            Convergence (agent): iterate until the review/gates are clean
-  --swarm                  Research swarm (audit): bounded read-only explorer fan-out
-  --create                 Create-from-scratch intent (agent)
-  --autonomy <level>       Orchestrate: how much the brain may act without confirmation:
-                           suggest (default, read-only plan) | auto_safe | auto_full
-  --test "<cmd>"           Deterministic gate command(s); repeat flag or separate with ';;'
-  --allow-protected-path <glob[,glob...]>  Explicitly approve protected gate/test path changes for this run
-  --max-usd <amount>       Hard per-run spend cap (USD)
-  --max-tool-calls <n>     Orchestrate executor: cap on plan tool calls
-  --diff <file>            Diff file for the review verb (per-commit gate)
-  --intent "<text>"        Review intent context for the review verb
-  --tests "<evidence>"     Test evidence text for the review verb
-  --reviewer-panel <list>  Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
-  --reviewer-model <map>   Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"
-  --reviewer-effort <map>  Per-family reviewer effort, e.g. "anthropic=max"
-  --access <profile>       Access profile: readonly|workspace_write|full|external_sandbox_full|inherit_native
-  --web <mode>             External web/search policy: off|auto|cached|live
-  --model <id>             Model hint forwarded to the selected harness route
-  --effort <level>         Reasoning effort hint: low|medium|high|xhigh|max
-  --primary-harness <id>   Bias single-route modes and first candidate choice
-  --portfolio <id>         Budget/routing portfolio (default: subscription-first)
-  --in-place               Run write turns against the live project tree (single-candidate
-                           in-place; race candidates stay isolated and the winner is adopted)
-                           instead of a throwaway envelope
-  --answers <file>         Answers JSON for claudexor spec (batch mode)
-  --previous <spec.json>   Previous SpecPack JSON for section-level diff
-  --spec <spec.json>       Frozen SpecPack context for run/race/create/convergence
-  --attach <path[,path...]> Attach file(s) to ask/run/race/plan/audit
-  --image <path[,path...]>  Attach image file(s) (alias for --attach with image kind)
-  --backend <store>        Secrets store: auto (default)|keychain|file (file = sandbox-safe, no Keychain)
-  --json                   Machine-readable JSON output
-  --dry-run                Plugin: show lifecycle actions; apply: check patch without mutating
-  --force                  Reapply verified Claudexor-owned plugin drift; never overwrites unowned files
-  --help                   Show this help
-  --version                Print the CLI version
-`;
+// The help text is a rendered view of the command registry (the ONE owner of
+// the CLI surface — command-registry.ts). Never hand-edit a help literal.
+const HELP = renderHelp(CLI_VERSION);
 
 const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
 
@@ -1034,97 +957,10 @@ function listCliArtifacts(root: string): string[] {
 
 
 
-/** Every flag any command accepts. Unknown flags FAIL LOUDLY: `--harnes codex` must never silently run all harnesses. */
-const KNOWN_FLAGS = new Set([
-  "harness",
-  "allow-full-access",
-  "revoke-full-access",
-  "access-default",
-  "mode",
-  "n",
-  "attempts",
-  "until-clean",
-  "swarm",
-  "create",
-  "synthesis",
-  "test",
-  "allow-protected-path",
-  "max-usd",
-  "max-tool-calls",
-  "reviewer-panel",
-  "reviewer-model",
-  "reviewer-effort",
-  "access",
-  "web",
-  "model",
-  "effort",
-  "primary-harness",
-  "portfolio",
-  "in-place",
-  "autonomy",
-  "answers",
-  "previous",
-  "spec",
-  "attach",
-  "image",
-  "json",
-  "all",
-  "dry-run",
-  "force",
-  "from-env",
-  "backend",
-  // `decision` command action/option flags (subcommand-scoped).
-  "accept-risk",
-  "override",
-  "revert",
-  "accept-clean-patch",
-  "apply-mode",
-  "rerun",
-  "feedback",
-  "help",
-  "version",
-  // review verb (per-commit gate)
-  "diff",
-  "intent",
-  "tests",
-]);
-
-const VALUE_FLAGS = [
-  "harness",
-  "mode",
-  "n",
-  "attempts",
-  "synthesis",
-  "test",
-  "allow-protected-path",
-  "max-usd",
-  "max-tool-calls",
-  "reviewer-panel",
-  "reviewer-model",
-  "reviewer-effort",
-  "access",
-  "web",
-  "model",
-  "effort",
-  "primary-harness",
-  "portfolio",
-  "autonomy",
-  "answers",
-  "previous",
-  "spec",
-  "attach",
-  "image",
-  "from-env",
-  "backend",
-  "apply-mode",
-  "feedback",
-  // review verb (per-commit gate)
-  "diff",
-  "intent",
-  "tests",
-];
-
-const PLUGIN_FLAGS = ["json", "dry-run", "force", "help", "version"];
+// KNOWN_FLAGS / VALUE_FLAGS (imported above) and the plugin allowlist are
+// projections of the command registry. Unknown flags FAIL LOUDLY: `--harnes
+// codex` must never silently run all harnesses.
+const PLUGIN_FLAGS = restrictedFlagAllowlist("plugin") ?? [];
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
@@ -1721,7 +1557,10 @@ async function main(): Promise<number> {
     }
 
     case "help":
-      print(HELP);
+      // `help --json` is the machine-readable command catalog (agents parse
+      // it instead of scraping the text help).
+      if (json) printJson(helpJson(CLI_VERSION));
+      else print(HELP);
       return 0;
 
     default:

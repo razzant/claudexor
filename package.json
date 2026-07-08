@@ -19,7 +19,7 @@
     "gen:version": "node scripts/gen-version.mjs",
     "bench:bundle": "node benchmarks/terminal_bench/scripts/bundle-cli.mjs",
     "battery:real": "node scripts/real-harness-battery.mjs",
-    "docs:check": "node scripts/docs-truth-check.mjs",
+    "docs:check": "pnpm --filter ...@claudexor/cli build && node scripts/docs-truth-check.mjs",
     "staged:check": "node scripts/staged-field-check.mjs",
     "knip": "knip",
     "clean": "rimraf \"packages/*/dist\" \"packages/*/*.tsbuildinfo\" .turbo \"packages/*/.turbo\"",

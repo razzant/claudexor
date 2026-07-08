@@ -3,6 +3,7 @@ import process from "node:process";
 import { Orchestrator } from "@claudexor/orchestrator";
 import type { ModeKind } from "@claudexor/schema";
 import { buildRegistry } from "./registry.js";
+import { renderReplHelp } from "./command-registry.js";
 import { type ControlApiAddress, controlApiAddress, followRun } from "./live.js";
 import { ensureDaemon } from "./daemon-run.js";
 
@@ -19,21 +20,9 @@ export function replModeIsMutating(mode: ModeKind): boolean {
 }
 
 
-const REPL_HELP = `claudexor REPL — a thread of turns over your harnesses
-  <text>            run an agent turn (plan first with /plan if you prefer)
-  /ask <q>          read-only answer turn
-  /plan <prompt>    read-only planning turn
-  /audit [prompt]   read-only audit turn
-  /race <prompt>    best-of-2 race turn (cross-family review)
-  /orchestrate <g>  brain: typed orchestration plan over the tool belt
-  /thread           show the current thread (turns + native sessions)
-  /new [title]      start a new thread
-  /help             this help
-  /quit             exit
-Turns run "in-place" in the project (or the thread's worktree), so each harness
-RESUMES its own native CLI session and the next turn sees the previous turn's
-work. A best-of-N race runs candidates in isolated envelopes and auto-applies
-the winner.`;
+// Rendered from the command registry (REPL_COMMANDS) — the same one owner
+// as the main CLI help.
+const REPL_HELP = renderReplHelp();
 
 interface ReplTurnSpec {
   mode: ModeKind;

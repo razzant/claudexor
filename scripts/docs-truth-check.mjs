@@ -24,7 +24,7 @@
  * Exit 1 with an explicit list on any mismatch.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { GEN_BEGIN, GEN_END, implementedEndpoints, renderEndpointBlock } from "./endpoints-lib.mjs";
 
@@ -86,6 +86,19 @@ for (const docPath of ["docs/INTEGRATIONS.md", "README.md"]) {
 // 2. Mode ids
 // --------------------------------------------------------------------------
 
+// The registry (built artifact) is the ONE owner of the CLI surface: verbs,
+// flags, help, and `help --json` are all views of it, so the old
+// source-regex extractions (KNOWN_FLAGS block, HELP literal) are gone by
+// construction. The gate now checks the REGISTRY against the docs.
+// Fail FAST when the artifact is missing (same contract as
+// mcp-cli-parity-check): a partial docs-truth pass must never read as green.
+const registryDist = "packages/cli/dist/command-registry.js";
+if (!existsSync(registryDist)) {
+  console.error(`docs-truth: ${registryDist} is missing — run \`pnpm build\` first (the gate reads the built command registry)`);
+  process.exit(1);
+}
+const cliRegistry = await import(join(process.cwd(), registryDist));
+
 const schemaSrc = readFileSync("packages/schema/src/primitives.ts", "utf8");
 const modeMatch = /ModeKind = z\.enum\(\[([^\]]+)\]\)/.exec(schemaSrc);
 if (!modeMatch) {
@@ -93,32 +106,34 @@ if (!modeMatch) {
 } else {
   const modes = [...modeMatch[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
   const readme = readFileSync("README.md", "utf8");
-  const cliHelp = readFileSync("packages/cli/src/cli.ts", "utf8");
+  const renderedHelp = cliRegistry.renderHelp("0.0.0");
   for (const mode of modes) {
     if (!readme.includes(mode)) failures.push(`README.md does not mention canonical mode id '${mode}'`);
-    if (!cliHelp.includes(mode)) failures.push(`cli.ts help/modes does not mention canonical mode id '${mode}'`);
+    if (!renderedHelp.includes(mode)) failures.push(`CLI help (command registry) does not mention canonical mode id '${mode}'`);
   }
 }
 
 // --------------------------------------------------------------------------
-// 3. CLI flags vs help text
+// 3. CLI registry self-consistency (flags referenced by commands must exist;
+//    every accepted flag must be documented in help or inline under a command)
 // --------------------------------------------------------------------------
 
-const cliSrc = readFileSync("packages/cli/src/cli.ts", "utf8");
-const knownMatch = /const KNOWN_FLAGS = new Set\(\[([\s\S]*?)\]\);/.exec(cliSrc);
-if (!knownMatch) {
-  failures.push("could not locate KNOWN_FLAGS in packages/cli/src/cli.ts");
-} else {
-  const flags = [...knownMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
-  const helpMatch = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
-  const help = helpMatch ? helpMatch[1] : "";
-  const subcommandScoped = new Set(["all", "dry-run", "deep", "from-env", "json"]);
-  for (const flag of flags) {
-    if (subcommandScoped.has(flag)) continue;
-    if (!help.includes(`--${flag}`)) failures.push(`cli.ts KNOWN_FLAGS has '--${flag}' but the help text does not document it`);
+{
+  const flagNames = new Set(cliRegistry.CLI_FLAGS.map((f) => f.name));
+  for (const cmd of cliRegistry.CLI_COMMANDS) {
+    for (const flag of cmd.flags) {
+      if (!flagNames.has(flag)) failures.push(`command registry: command '${cmd.id}' references unknown flag '--${flag}'`);
+    }
   }
-  for (const m of help.matchAll(/--([a-z-]+)/g)) {
-    if (!flags.includes(m[1])) failures.push(`cli.ts help documents '--${m[1]}' but KNOWN_FLAGS does not accept it`);
+  const renderedHelp = cliRegistry.renderHelp("0.0.0");
+  for (const m of renderedHelp.matchAll(/--([a-z-]+)/g)) {
+    if (!flagNames.has(m[1])) failures.push(`CLI help mentions '--${m[1]}' but the command registry does not declare it`);
+  }
+  // Every declared flag must be consumed by at least one command (no orphan knobs).
+  const consumed = new Set(cliRegistry.CLI_COMMANDS.flatMap((c) => [...c.flags]));
+  consumed.add("help").add("version"); // global preflight affordances
+  for (const flag of flagNames) {
+    if (!consumed.has(flag)) failures.push(`command registry declares '--${flag}' but no command consumes it`);
   }
 }
 
@@ -365,26 +380,21 @@ function collectSourceHaystack() {
     if (!tools.has(m[1])) failures.push(`docs/INTEGRATIONS.md documents MCP tool '${m[1]}' which the server does not expose`);
   }
 
-  // CLI verb parity (one-directional, toward the help): every user-facing verb
-  // the CLI's Usage block advertises must appear in the "## Surface Matrix"
-  // SECTION of INTEGRATIONS (not just anywhere in the doc — a verb mentioned
-  // only in a later example would not keep the matrix honest), so the
-  // hand-written verb list cannot silently rot when commands are added.
-  // (Internal/unlisted verbs are not force-documented.)
-  const helpMatch2 = /const HELP = `([\s\S]*?)`;/.exec(cliSrc);
+  // CLI verb parity (one-directional, toward the registry): every user-facing
+  // verb the command registry advertises must appear in the "## Surface
+  // Matrix" SECTION of INTEGRATIONS (not just anywhere in the doc — a verb
+  // mentioned only in a later example would not keep the matrix honest), so
+  // the hand-written verb list cannot silently rot when commands are added.
   // Case-insensitive heading match; the section may also be the last one
   // (no following `## ` heading), hence the `$` alternative.
   const matrixMatch = /^##\s+Surface Matrix\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im.exec(integrations);
   if (!matrixMatch) {
     failures.push("docs/INTEGRATIONS.md no longer has a '## Surface Matrix' section (CLI verb parity check needs it)");
-  } else if (helpMatch2) {
-    const verbs = new Set();
-    for (const m of helpMatch2[1].matchAll(/^\s{2}claudexor ([a-z][a-z-]*)/gm)) {
-      if (m[1] !== "help") verbs.add(m[1]);
-    }
-    for (const verb of verbs) {
-      if (!new RegExp(`\\b${verb}\\b`, "i").test(matrixMatch[1])) {
-        failures.push(`docs/INTEGRATIONS.md Surface Matrix does not mention CLI verb '${verb}' (advertised in cli.ts help)`);
+  } else {
+    for (const cmd of cliRegistry.CLI_COMMANDS) {
+      if (cmd.id === "help") continue;
+      if (!new RegExp(`\\b${cmd.id}\\b`, "i").test(matrixMatch[1])) {
+        failures.push(`docs/INTEGRATIONS.md Surface Matrix does not mention CLI verb '${cmd.id}' (declared in the command registry)`);
       }
     }
   }

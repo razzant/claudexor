@@ -1,33 +1,14 @@
+import { BOOLEAN_FLAGS } from "./command-registry.js";
+
 export interface ParsedArgs {
   _: string[];
   flags: Record<string, string | boolean | Array<string | boolean>>;
 }
 
-/**
- * Flags that never take a value: `--flag token` must leave `token` a
- * positional instead of eating it (`audit --json x` used to silently drop
- * BOTH the prompt and the json request). `--flag=value` still works for
- * explicit `true`/`false`.
- */
-export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
-  "until-clean",
-  "swarm",
-  "create",
-  "in-place",
-  "json",
-  "all",
-  "dry-run",
-  "force",
-  "help",
-  "version",
-  "allow-full-access",
-  "revoke-full-access",
-  "accept-risk",
-  "override",
-  "revert",
-  "accept-clean-patch",
-  "rerun",
-]);
+// Flags that never take a value (`--flag token` must leave `token` a
+// positional instead of eating it; `--flag=value` still works for explicit
+// `true`/`false`) are a PROJECTION of the command registry — see
+// command-registry.ts, the one owner of the CLI surface.
 
 /** Minimal, dependency-free arg parser: supports `--k v`, `--k=v`, and boolean `--k`. */
 export function parseArgs(argv: string[]): ParsedArgs {

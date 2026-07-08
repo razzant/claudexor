@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostFallbackExamples, recoveryVerbs } from "./command-registry.js";
 import {
   CLAUDEXOR_VERSION,
   ensureDir,
@@ -180,6 +181,13 @@ function opencodeMcpEntry(runtime: RuntimePaths): Record<string, unknown> {
   };
 }
 
+/** `claudexor inspect <runId>`, `follow <runId>`, ... — from the registry's recovery verbs. */
+function recoveryVerbLine(): string {
+  const verbs = recoveryVerbs();
+  const parts = verbs.map((verb, i) => (i === 0 ? `\`claudexor ${verb} <runId>\`` : `\`${verb} <runId>\``));
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}` : (parts[0] ?? "");
+}
+
 function skillText(host: PluginHost): string {
   const namespace = host === "claude" ? "claudexor@skills-dir" : "claudexor";
   return [
@@ -207,14 +215,11 @@ function skillText(host: PluginHost): string {
     "",
     "When the host cannot call MCP tools, ask the user to run the local CLI explicitly:",
     "",
-    "`claudexor ask \"...\"`",
-    "`claudexor plan \"...\"`",
-    "`claudexor run \"...\"`",
-    "`claudexor race \"...\" --n 4`",
+    ...hostFallbackExamples().map((example) => `\`${example}\``),
     "",
     "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
     "",
-    "Mutating runs (run/race/create) are daemon-tracked and end with a `runId:` trailer — use `claudexor inspect <runId>`, `follow <runId>`, `apply <runId>`, or `decision <runId>` for evidence, live progress, delivery, or unblocking a blocked run.",
+    `Mutating runs (run/race/create) are daemon-tracked and end with a \`runId:\` trailer — use ${recoveryVerbLine()} for evidence, live progress, delivery, or unblocking a blocked run.`,
     "",
     `Host namespace: ${namespace}`,
     "",
@@ -234,10 +239,7 @@ function commandText(host: PluginHost): string {
     "",
     "First prefer the available MCP tools named `claudexor_*`. If MCP tools are unavailable, tell the user the exact local CLI command to run, such as:",
     "",
-    "- `claudexor ask \"$ARGUMENTS\"`",
-    "- `claudexor plan \"$ARGUMENTS\"`",
-    "- `claudexor run \"$ARGUMENTS\"`",
-    "- `claudexor race \"$ARGUMENTS\" --n 4`",
+    ...hostFallbackExamples().map((example) => `- \`${example.replace('"..."', '"$ARGUMENTS"')}\``),
     "",
     "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
     "",
