@@ -61,7 +61,7 @@ export type ProviderFamily = z.infer<typeof ProviderFamily>;
  * `until_clean` -> agent + until_clean, `create` -> agent + create,
  * `explore` -> audit + swarm, `readonly_audit` -> audit. Old ids hard-error
  * at every wire boundary (Bible: modes are canonical and breaking, never
- * silent aliases). `orchestrate` is the autonomous brain intent (A3).
+ * silent aliases). `orchestrate` is the autonomous coordinator intent.
  */
 export const ModeKind = z.enum(["ask", "plan", "audit", "agent", "orchestrate"]);
 export type ModeKind = z.infer<typeof ModeKind>;

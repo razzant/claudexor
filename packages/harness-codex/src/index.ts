@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -259,7 +259,7 @@ export function codexExecArgs(
   const effort = normalizeEffort(spec.effort_hint, CODEX_EFFORT_LEVELS);
   if (spec.resume_session_id) {
     const args = ["exec", "resume", spec.resume_session_id, "--json", ...sandboxConfigArgs(spec.access), "--skip-git-repo-check"];
-    // Structured output (D10), LIVE-VERIFIED (0.137): --output-schema <FILE>.
+    // Structured output, LIVE-VERIFIED (0.137): --output-schema <FILE>.
     if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
@@ -280,7 +280,7 @@ export function codexExecArgs(
     return args;
   }
   const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
-  // Structured output (D10), LIVE-VERIFIED (0.137): --output-schema <FILE>.
+  // Structured output, LIVE-VERIFIED (0.137): --output-schema <FILE>.
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
@@ -571,7 +571,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
-  // B9: capture the native thread id (thread.started) so we can read the model
+  // capture the native thread id (thread.started) so we can read the model
   // codex recorded in its own rollout transcript; cache that one read.
   let codexThreadId: string | undefined;
   let transcriptModel: string | undefined;
@@ -597,7 +597,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
           if (ev.type === "started" && spec.model_hint && !ev.observed_model) {
             ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
           }
-          // B9: codex's --json stream never carries the model, but the CLI
+          // codex's --json stream never carries the model, but the CLI
           // records it in its own session rollout. Try to recover it as soon as
           // the rollout's turn_context appears, then attach the transcript-sourced
           // observation to the next normalized event. This keeps route proof from
@@ -609,7 +609,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
               ev.payload = { ...(ev.payload ?? {}), observed_model_source: "transcript" };
             }
           }
-          // #16: an api_key run uses a TEMPORARY CODEX_HOME that this process
+          // an api_key run uses a TEMPORARY CODEX_HOME that this process
           // deletes on exit, so the native session it created is gone next turn.
           // Strip its id from the event so it never poisons the thread resume map
           // (a later `codex exec resume <ghost>` would deterministically fail).

@@ -528,7 +528,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           verify: true,
           synthesize: true,
           read_files: true,
-          // cursor-agent yet — honest false until that path exists + is verified.
+          // No browser-MCP injection path exists for cursor-agent yet —
+          // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",
           // No real rate-limit detector for cursor yet (a detector waits on a

@@ -38,7 +38,7 @@ function acceptanceFraction(c: CandidateEvidence): number {
 }
 
 /** Human label for gate-derived criteria coverage: honest "n/a" when no
- * criteria exist. Named gates_coverage in decision strings (T3#8): the
+ * criteria exist. Named gates_coverage in decision strings: the
  * number is a PROXY derived from the deterministic gates (all criteria
  * count as covered only when gates pass), not independent per-criterion
  * acceptance evidence. */
@@ -217,7 +217,7 @@ export function arbitrate(
   const hasGates = winner.testsTotal > 0 || winner.gates.length > 0;
   const reviewRan = winner.reviewVerified === true;
   // A clean, route-proof-VERIFIED cross-family review is real verification even
-  // when no deterministic test gate is configured (D2). `reviewRan` already
+  // when no deterministic test gate is configured. `reviewRan` already
   // requires crossFamilyVerified (observed route proofs, §5), so this never
   // adopts an unobserved/argv-echo review. The patch-hash binding is enforced
   // separately by the apply gate.

@@ -35,7 +35,7 @@ export interface ApplyGateInput {
  * actually unblocks it. The operator risk override (accept_risk /
  * override_needs_human) unblocks ONLY a `blocked` run (CLAUDEXOR_BIBLE §11) — so
  * never point an operator at a decision the daemon will refuse for this state
- * (the B8 contradiction: apply used to suggest accept_risk for ungated runs).
+ * (a fixed contradiction: apply used to suggest accept_risk for ungated runs).
  */
 function applyHint(state: string): string {
   switch (state) {
@@ -74,7 +74,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (input.decision.status !== "success" && !override) {
     return `decision status is ${input.decision.status}; refusing apply (${applyHint(input.decision.status)})`;
   }
-  // FinalVerifier consumer (D12/INV-115): a patch that FAILED to apply onto a
+  // FinalVerifier consumer (INV-115): a patch that FAILED to apply onto a
   // fresh tree at its own base is factually undeliverable — no operator
   // override can change that. Failed verify GATES may be overridden through
   // the same accept_risk path as any blocked run.
@@ -117,7 +117,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
 
 /** Paths touched by a unified git diff (both old and new sides, excluding /dev/null). */
 function patchPaths(patch: string): string[] {
-  // Shared structural parser (T3.2#2): header lines are honored only in
+  // Shared structural parser: header lines are honored only in
   // header position, so removed CONTENT starting with `-- ` (SQL comments)
   // can never masquerade as a path and false-refuse the apply; quoted
   // non-ASCII paths are C-unquoted to their real on-disk form.

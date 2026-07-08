@@ -1,5 +1,5 @@
 /**
- * STRICT run-preflight model gate (D3/INV-104): every route that resolved an
+ * STRICT run-preflight model gate (INV-104): every route that resolved an
  * explicit model (per-run map or per-harness settings default) must pass its
  * harness's model truth source — the live `models()` inventory when the
  * adapter has one, else the manifest `known_models` list. A violation throws

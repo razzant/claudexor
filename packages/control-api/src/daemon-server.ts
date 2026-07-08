@@ -1,11 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { basename, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, sep } from "node:path";
 import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
-import { eventPayload, latestPlanProgress, readRunEvents, stringOrNull, timelineEvents } from "./run-timeline.js";
+import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
 import { handleThreadTurnCreate, handleThreadTurnRetry, recordTurnEnqueueFailure, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
 import { normalizeRunStart, validateAbsoluteRepoRoot, validateDirectRunAttachments } from "./run-start.js";
@@ -38,7 +38,6 @@ import {
   ControlRunSummary,
   ControlRunResult,
   ControlPrimaryOutput,
-  ControlTimelineEvent,
   ControlBudgetSnapshot,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
@@ -63,7 +62,6 @@ import {
   OrchestratePlanProgress,
   Portfolio,
   ReviewFinding,
-  FallbackReason,
   RunEventType,
   RunFailure,
   RunTelemetry,
@@ -129,7 +127,7 @@ export interface DaemonControlApiOptions {
     /** Live waiting_on_user state (daemon InteractionRegistry projections). */
     pendingInteractions?: (runId: string) => ControlPendingInteraction[];
     answerInteraction?: (runId: string, interactionId: string, answers: unknown) => { status: string; message?: string };
-    /** Thread/session SSOT (A2 chat/session-first). */
+    /** Thread/session SSOT (chat/session-first). */
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
@@ -159,8 +157,6 @@ const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 /** Larger cap for binary artifacts (images, etc.): they are naturally bounded and
  * the small cap exists to protect the event loop from multi-MB text logs, not binaries. */
 const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
-/** Timeline projection cap (with explicit truncation marker). */
-const TIMELINE_EVENTS_MAX = 250;
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
@@ -291,7 +287,7 @@ export class DaemonControlApiServer {
         const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
         return this.json(res, status, { error: err instanceof Error ? err.message : "bad request" });
       }
-      // 202-queued lineage race (B4): a thread-anchored direct enqueue is a TURN
+      // 202-queued lineage race: a thread-anchored direct enqueue is a TURN
       // of that conversation. The daemon runner binds the turn only at onRunStart,
       // so a run that sits QUEUED (another turn on the thread is active) would be
       // observable headless (GET /runs, GET /threads) with NO turn record and a
@@ -304,7 +300,7 @@ export class DaemonControlApiServer {
       // turnId is the INTERNAL single-writer handoff (control-api pre-creates
       // the turn, the daemon runner binds the run to it). A client-supplied
       // turnId could rebind any thread's turn lineage to an unrelated run
-      // (T5#8) — reject it at the boundary; the /threads/:id/turns path is
+      // — reject it at the boundary; the /threads/:id/turns path is
       // the public way to create a turn.
       if (params.turnId) {
         return this.json(res, 400, {
@@ -315,7 +311,7 @@ export class DaemonControlApiServer {
       // reads final/plan.md, prefixes it into the prompt, and forces agent
       // mode. A direct POST /runs — WITH OR WITHOUT a threadId — skips that
       // pipeline, so the turn would record a plan contract the run never
-      // consumed (T5#9). Reject unconditionally.
+      // consumed. Reject unconditionally.
       if (params.planRunId) {
         return this.json(res, 400, {
           error: "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
@@ -458,7 +454,7 @@ export class DaemonControlApiServer {
       return this.streamGlobalEvents(req, res);
     }
 
-    // ---- Threads (A2 chat/session-first): the Thread is the conversation SSOT;
+    // ---- Threads (chat/session-first): the Thread is the conversation SSOT;
     // runs are turns inside it; native CLI sessions resume across turns. ----
     if (method === "POST" && path === "/threads") {
       const svc = this.opts.services?.createThread;
@@ -575,7 +571,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         const body = ControlThreadApplyRequest.parse(raw);
         const threadId = decodeURIComponent(threadApplyMatch[1] as string);
-        // Head-run state gate (T3.2#8 / D4 / INV-113): the cumulative thread
+        // Head-run state gate (INV-113): the cumulative thread
         // diff spans turns, so there is no single WorkProduct to hash-bind —
         // but a thread whose HEAD run is blocked (NEEDS_HUMAN) or failed must
         // NOT deliver with one POST unless a typed operator decision exists.
@@ -627,7 +623,7 @@ export class DaemonControlApiServer {
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
       // Read the body BEFORE chaining: a request body is a one-shot stream, so
       // reading it inside the chain would block on the previous turn and could
-      // time out (#19). Parse/secret-scan eagerly, then serialize the rest.
+      // time out. Parse/secret-scan eagerly, then serialize the rest.
       let body: Record<string, unknown>;
       try {
         body = ((await this.readBody(req)) ?? {}) as Record<string, unknown>;
@@ -1262,7 +1258,7 @@ export class DaemonControlApiServer {
   private async streamEvents(id: string, lastEventId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rec = await this.findRun(id);
     if (!rec) return this.json(res, 404, { error: "no such run" });
-    // A QUEUED job has no runDir yet — that is a wait, not a 404 (T3.1#6):
+    // A QUEUED job has no runDir yet — that is a wait, not a 404:
     // the stream opens with heartbeats and binds the events file once the
     // run starts, so `follow <jobId>` works from enqueue time. 404 stays for
     // truly unknown ids only.
@@ -1790,10 +1786,10 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     // Typed executor progress for an orchestrate auto_safe/auto_full run; null
     // for suggest / non-orchestrate runs. Thin projection of the engine artifact.
     orchestrate: safeReadStructuredArtifact(rec, "final/orchestration_progress.yaml", OrchestratePlanProgress),
-    // Per-candidate evidence cards (D13): projected from the run's attempt/
+    // Per-candidate evidence cards: projected from the run's attempt/
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
-    // Live plan checklist (D14): the winner's (else last) plan.progress items.
+    // Live plan checklist: the winner's (else last) plan.progress items.
     planProgress: latestPlanProgress(rec, decision?.winner ?? null),
     failure,
   });
@@ -2020,7 +2016,7 @@ function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: str
 }
 
 /**
- * SINGLE writer of the operator unblock artifact (B4). Every accept_risk /
+ * SINGLE writer of the operator unblock artifact. Every accept_risk /
  * override decision routes through here so the on-disk shape and the path
  * resolution (server-fixed name, validated run-dir root) exist in exactly one
  * place — the mirror of readOperatorDecision below. Returns false when the run
@@ -2139,7 +2135,7 @@ function isTextArtifact(path: string): boolean {
   return type.startsWith("text/") || type.startsWith("application/json");
 }
 
-// Single allowlist shared with the CLI (A17) — includes claude_oauth, which
+// Single allowlist shared with the CLI — includes claude_oauth, which
 // the claude adapter reads for subscription-route auth.
 function isAllowedSecretName(name: string): boolean {
   return isManagedSecretName(name);

@@ -45,7 +45,7 @@ export function readToken(): string | null {
   }
 }
 
-/** Rotate the local auth token (T5#23): a fresh random token replaces the
+/** Rotate the local auth token: a fresh random token replaces the
  * old one (0600). Existing daemon sessions keep their in-memory token, so
  * rotation takes effect on the next daemon start — the CLI surface says so. */
 export function rotateToken(): string {

@@ -45,7 +45,7 @@ does not bypass built-in critical/security human gates.
 
 ## Modes
 
-Canonical mode ids (five intents since the v0.9 collapse; engine strategies are
+Canonical mode ids (exactly five intents; engine strategies are
 FLAGS, not modes):
 
 - `ask` - read-only answer/explanation route. The macOS composer's no-project
@@ -71,7 +71,7 @@ FLAGS, not modes):
 
 Unknown modes fail loudly. The old strategy mode ids (`best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`) and the
-pre-v0.8 ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
+older ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
 Note the wire-mode vs CLI-verb distinction: `claudexor explore` and
 `claudexor create` are CLI convenience VERBS that map onto `audit --swarm` and
 `agent --create`, while the old WIRE mode ids above still hard-error at every
@@ -299,7 +299,7 @@ future verified host-side-effect mode is explicitly selected.
 ## Integrations
 
 Claudexor can be driven by other tools through CLI JSON on supported commands, the
-local daemon/control API, MCP, and ACP (the external JSON-RPC adapter-protocol package was removed in v0.9 as dead code). These
+local daemon/control API, MCP, and ACP. These
 surfaces are beta and capability-gated; integrations should not assume every
 subcommand has JSON output or every harness supports live steering.
 

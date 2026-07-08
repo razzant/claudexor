@@ -21,7 +21,7 @@ chmodSync(stubBin, 0o755);
 process.env["CLAUDEXOR_CODEX_BIN"] = stubBin;
 const { applyHarnessSettingsPatches, assertSettingsPatchValid } = await import("./settings-service.js");
 
-/** The daemon POST /settings validation core (D3/T1#26), tested offline
+/** The daemon POST /settings validation core, tested offline
  * against the codex manifest truth source (static known_models). */
 describe("assertSettingsPatchValid", () => {
   it("rejects fake harness ids everywhere they could persist", async () => {

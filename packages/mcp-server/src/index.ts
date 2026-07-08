@@ -17,10 +17,9 @@ import {
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Claudexor's MCP surface on the official TypeScript SDK v2 (D27).
+ * Claudexor's MCP surface on the official TypeScript SDK v2.
  *
  * The SDK owns the protocol core: version negotiation (2025-11-25 down to
  * 2024-10-07 — Cursor's 2025-06-18 handshake keeps working), CONCURRENT
@@ -123,7 +122,7 @@ export function serveClaudexorMcp(opts: McpServerOptions): { close(): Promise<vo
  * (plugins.ts). A mismatch with the running CLI means the host is driving a
  * NEWER/OLDER runtime than the artifacts it discovered — tool schemas may be
  * stale until `claudexor plugin repair`. Disclose on stderr (the wire stays
- * clean); this is the env var's first real reader (T7 finding 8).
+ * clean); this is the env var's first real reader.
  */
 function warnOnPluginVersionSkew(serverVersion: string | undefined): void {
   const pluginVersion = process.env["CLAUDEXOR_PLUGIN_VERSION"];
@@ -242,7 +241,7 @@ export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
  * Render a run result for an MCP host: the human-readable summary FIRST, then
  * the artifact handles (runId/artifacts/status) so the host can inspect,
  * apply, follow, or unblock the run through the CLI — the old surface dropped
- * the runId and left hosts with no handle at all (T7 finding 2).
+ * the runId and left hosts with no handle at all.
  */
 function formatRunResult(result: unknown): string {
   if (typeof result === "string") return result.trim();

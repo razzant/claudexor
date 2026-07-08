@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SF8 staged-field gate.
+// Staged-field gate.
 //
 // A "staged field" is a zod OBJECT FIELD declared in the schema package that NO
 // real code outside the schema definition ever reads or writes. The schema is a

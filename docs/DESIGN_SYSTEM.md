@@ -27,7 +27,7 @@ nothing animates when idle).
 Three design commitments:
 
 1. **Content-first; Liquid Glass on the navigation layer; frosted materials on
-   content cards (user-locked since v0.8).** `glassEffect` Liquid Glass lives on the
+   content cards (user-locked).** `glassEffect` Liquid Glass lives on the
    chrome (sidebar, toolbars, inspector, floating composer/action controls,
    sheets, menus). Ordinary content cards use **frosted system materials with a
    tuned surface tint** so the ambient glow shows through in BOTH themes — one
@@ -58,7 +58,7 @@ Three design commitments:
   **frosted floating** recipe (see 2.4): system material + graphite tint, a
   top-lit gradient hairline, and a VISIBLE separation shadow — never a flat
   charcoal slab with a uniform white outline (the "cheap dark card" trap,
-  a defect class removed in v0.8).
+  a removed defect class).
 - A user-facing **Appearance** control (Light / Dark / System) is required from day one.
   Do not ship a single forced theme with no toggle.
 
@@ -131,7 +131,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via Apple's
   ConcentricRectangle are a tracked beta refinement.)
-- Elevation — the ONE card recipe (centralized in `cardSurface` since v0.8):
+- Elevation — the ONE card recipe (centralized in `cardSurface`):
   - **Fill:** system `.regularMaterial` + a tuned `surface/raised` tint veil
     (dark ≈ 40%, light ≈ 55%) so the ambient glow shows through without
     hurting text contrast. Reduce Transparency → solid `surface/raised`.
@@ -227,7 +227,7 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
 - **`glassEffect(.regular[.tint(...)], in: shape)`** — the floating chrome surface
   (composer panel, floating actions). Use **static `.regular`** — NOT `.interactive()`:
   pointer lensing re-composites the glass on every mouse move AND every re-render,
-  which was a measured scroll/idle FPS regression on an M5 Max. Apple reserves
+  which was a measured scroll/idle FPS regression even on fast Apple Silicon. Apple reserves
   `.interactive()` for elements that physically move under the cursor, not a static
   composer. Reserve `.tint(...)` for one or two primary accents per surface.
 - **`GlassEffectContainer { ... }`** — wrap a cluster of glass elements so they share
@@ -683,7 +683,7 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   content uses the shared row/`FindingCard` views. Run/finding lists render
   each row as its OWN floating row-card — `cardSurface(hover: true)` with
   `Spacing.sm` gaps — not one slab with inset dividers (the floating-rows
-  doctrine, in force since v0.8). The thread sidebar is the exception: it uses
+  doctrine). The thread sidebar is the exception: it uses
   the native `.sidebar` `List` inside the floating `sidebarGlass` panel per §3.
 - **Cards.** One recipe: `cardSurface()` (radius `Radius.card`, 8pt): frosted
   `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one

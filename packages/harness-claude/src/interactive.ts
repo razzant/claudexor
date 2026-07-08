@@ -2,7 +2,6 @@ import type { ChildStdin, InteractionChannel } from "@claudexor/core";
 import type { HarnessEvent, InteractionAnswerSet, InteractionQuestion, InteractionRequest } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
 /**

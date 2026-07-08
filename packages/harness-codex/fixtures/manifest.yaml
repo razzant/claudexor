@@ -1,4 +1,4 @@
-# Fixture provenance manifest (Tier7 #49). Every stream fixture declares its
+# Fixture provenance manifest. Every stream fixture declares its
 # source; recorded fixtures carry the vendor CLI version they were captured
 # from so scripts/fixture-freshness-check.mjs can warn when the installed CLI
 # has moved on (stale recordings are a freshness smell, not a build breaker).

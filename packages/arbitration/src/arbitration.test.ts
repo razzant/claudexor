@@ -103,7 +103,7 @@ describe("arbitrate", () => {
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
-  it("adopts a no-gate run on a VERIFIED clean cross-family review (D2), basis disclosed", () => {
+  it("adopts a no-gate run on a VERIFIED clean cross-family review, basis disclosed", () => {
     // No deterministic test gate, but the cross-family review is route-proof
     // verified and clean → applyable, recorded honestly as review-based.
     const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);

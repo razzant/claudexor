@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cursor plugin end-to-end integration test (Tier6, phases A/C/D + failure
+ * Cursor plugin end-to-end integration test (phases A/C/D + failure
  * modes; scripted parts only). The two MANUAL phases live in
  * docs/CHECKLISTS.md ("Cursor E2E"): B (Cursor discovery after reload) and
  * E (agent-in-the-loop through the Cursor UI).

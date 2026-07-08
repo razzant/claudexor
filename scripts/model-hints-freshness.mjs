@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Model-hints freshness gate (T2#6d, INV-104 freshness note).
+ * Model-hints freshness gate (INV-104 freshness note).
  *
  * Data-driven: every harness manifest that declares `known_models` also
  * records `known_models_verified_against` — the vendor CLI version the hint

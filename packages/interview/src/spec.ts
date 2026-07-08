@@ -18,7 +18,7 @@ export class SpecNotReadyError extends Error {
 }
 
 /**
- * Build the typed task graph from a SpecPack's tasks (A3): topologically ordered,
+ * Build the typed task graph from a SpecPack's tasks: topologically ordered,
  * failing loudly on unknown dependencies or cycles — an ambiguous graph must
  * never silently flatten into "run them in file order".
  */

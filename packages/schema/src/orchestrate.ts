@@ -3,7 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { Id, ModeKind } from "./primitives.js";
 
 /**
- * The autonomous `orchestrate` brain (A3). It is NOT a privileged harness: it is
+ * The autonomous `orchestrate` brain. It is NOT a privileged harness: it is
  * an intent routed like reviewers (doctor-ok + capability + quota headroom),
  * sticky per thread, overridable. Its tool belt maps 1:1 onto existing engine
  * entry points; it never grows its own business logic.
@@ -180,7 +180,7 @@ export type OrchestratePlanProgress = z.infer<typeof OrchestratePlanProgress>;
 /**
  * JSON Schema for the brain's typed plan, computed from the LIVE Zod shape
  * (the SSOT) — passed as HarnessRunSpec.output_schema so schema-capable CLIs
- * constrain their final message to a valid OrchestratePlan (D10).
+ * constrain their final message to a valid OrchestratePlan.
  */
 let orchestratePlanJsonSchemaCache: Record<string, unknown> | null = null;
 export function orchestratePlanJsonSchema(): Record<string, unknown> {

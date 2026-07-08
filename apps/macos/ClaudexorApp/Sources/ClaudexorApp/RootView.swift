@@ -27,13 +27,13 @@ struct RootView: View {
                 }
                 .toolbar { toolbarContent }
                 // Hide the toolbar's own material so the behind-window blur is
-                // continuous from the desktop through the title area (В2).
+                // continuous from the desktop through the title area.
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .tint(Theme.accent)
         }
         // Clear the SwiftUI window container so the behind-window material (and the
         // desktop beneath it) shows through — the missing piece that made the window
-        // read as a solid gray panel (В2). Window opacity is set in AppDelegate.
+        // read as a solid gray panel. Window opacity is set in AppDelegate.
         .containerBackground(.clear, for: .window)
         .sheet(item: $model.authSheetHarness) { family in
             AuthSheet(family: family).environment(model)
@@ -48,7 +48,7 @@ struct RootView: View {
         }
     }
 
-    /// The trailing Workbench (Q13): ONE region with a [Run Detail | Canvas] switch.
+    /// The trailing Workbench: ONE region with a [Run Detail | Canvas] switch.
     /// Run Detail is the opened run's tabs; Canvas hosts the artifacts gallery and
     /// the mini-browser.
     @ViewBuilder private var runInspector: some View {
@@ -91,7 +91,7 @@ struct RootView: View {
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         // One minimal, native action cluster (trailing): appearance · inspector ·
-        // settings · new. No custom status capsule and no Refresh button (В3/В4/В10) —
+        // settings · new. No custom status capsule and no Refresh button —
         // the engine reconnects automatically (launch + SSE), reconnect lives in
         // Settings, and the project/primary chips live in the composer, not here.
         // .iconOnly keeps each glyph centered in its glass toolbar chip.

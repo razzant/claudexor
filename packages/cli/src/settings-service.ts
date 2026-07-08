@@ -1,7 +1,7 @@
 /**
  * Settings-write validation + patch merge — the daemon's POST /settings core.
  *
- * STRICT (D3/INV-104 + T1#26): persisted routing ids must be REAL registered
+ * STRICT (INV-104): persisted routing ids must be REAL registered
  * harnesses (fakes are test fixtures, never persistable routing targets),
  * model values must pass the harness's model truth source, and effort must be
  * on the declared ladder. All violations are 400s naming the harness, the
@@ -35,7 +35,7 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
     }
   }
   for (const [id, patch] of Object.entries(p.harnesses ?? {})) {
-    // Per-harness settings persist only for REAL harnesses too (T1#26): a
+    // Per-harness settings persist only for REAL harnesses too: a
     // fake fixture id must fail here exactly like it does on the CLI path,
     // never quietly persist a `harnesses.fake-*` block.
     if (!realIds.has(id)) {
@@ -92,7 +92,7 @@ export function applyHarnessSettingsPatches(
   if (!patches) return current;
   // FAIL LOUDLY on unknown harness ids: a typo ('codexx') must never be
   // silently persisted as a new config entry nothing will ever read. REAL
-  // harnesses only — fakes are test fixtures, never persistable (T1#26).
+  // harnesses only — fakes are test fixtures, never persistable.
   const knownIds = new Set(buildRegistry({ includeFakes: false }).keys());
   const next = { ...current };
   for (const [id, patch] of Object.entries(patches)) {

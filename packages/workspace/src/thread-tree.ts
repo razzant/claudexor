@@ -40,7 +40,7 @@ export async function ensureThreadWorktree(projectRoot: string, threadId: string
   ensureDir(join(projectRoot, ".claudexor", "threads", threadId));
   // Self-ignore the project's `.claudexor/` so the user's own `git add -A` never
   // captures the thread worktree (a `.gitignore` with `*` makes the dir invisible
-  // to git even in a pre-existing repo — same trick as WorkspaceManager) (D3).
+  // to git even in a pre-existing repo — same trick as WorkspaceManager).
   const selfIgnore = join(projectRoot, ".claudexor", ".gitignore");
   if (!existsSync(selfIgnore)) {
     try {

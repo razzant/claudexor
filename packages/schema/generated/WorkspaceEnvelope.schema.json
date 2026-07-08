@@ -33,9 +33,6 @@
         "branch_name": {
           "type": "string"
         },
-        "env_dir": {
-          "type": "string"
-        },
         "home_dir": {
           "type": "string"
         },
@@ -45,22 +42,6 @@
             "type": "string"
           },
           "default": {}
-        },
-        "ports": {
-          "type": "object",
-          "properties": {
-            "allocated": {
-              "type": "array",
-              "items": {
-                "type": "integer"
-              },
-              "default": []
-            }
-          },
-          "additionalProperties": false,
-          "default": {
-            "allocated": []
-          }
         },
         "policy_profile": {
           "type": "string",
@@ -73,12 +54,6 @@
             "snapshot"
           ],
           "default": "refuse"
-        },
-        "logs_dir": {
-          "type": "string"
-        },
-        "artifacts_dir": {
-          "type": "string"
         },
         "created_at": {
           "type": "string",
@@ -93,10 +68,7 @@
         "base_ref",
         "worktree_path",
         "branch_name",
-        "env_dir",
         "home_dir",
-        "logs_dir",
-        "artifacts_dir",
         "created_at"
       ],
       "additionalProperties": false

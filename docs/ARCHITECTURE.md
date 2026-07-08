@@ -76,7 +76,7 @@ strategies became flags, not modes:
   no-op knob.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
-`readonly_audit`, plus pre-v0.8 `daily`/`until_convergence`/`readonly_swarm`)
+`readonly_audit`, plus the older `daily`/`until_convergence`/`readonly_swarm`)
 are NOT aliases: they hard-error at every wire boundary.
 
 ## 3. Package Map
@@ -135,7 +135,11 @@ are NOT aliases: they hard-error at every wire boundary.
   host declares the capability; otherwise the timeout-decline fallback holds.
   ACP replies `authMethods: []`, tolerates the protocol's `_meta` envelope,
   and announces a `tool_call` before every `session/request_permission`.
-- `benchmarks/runner`: benchmark scaffolds (SWE-bench Verified et al.).
+- `packages/canary`: canary golden stories — user-level E2E smokes over the
+  BUILT CLI with offline fake harnesses, each pinned to a Bible invariant
+  tag (`pnpm canary`; runs in CI on every PR).
+- `benchmarks/runner`: the SWE-bench Verified benchmark runner (predictions
+  via the Claudexor CLI; see `benchmarks/`).
 - `apps/macos`: native app; displays/edits what the engine exposes.
 
 Adapters translate native I/O into `HarnessEvent`s. They do not select winners,
@@ -473,9 +477,9 @@ Endpoint semantics beyond the inventory:
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
   the winner to the execution tree (a typed `session.rebound` disclosure covers
   those isolated candidates). A `planRunId` body field implements an approved
-  plan from an earlier turn; a `specPath` body field Implements against a
-  frozen SpecPack — the agent runs against that contract instead of a bare
-  prompt. `POST /threads/:id/apply` delivers an isolated thread's accumulated
+  plan from an earlier turn; a `specPath` body field implements the turn
+  against a frozen SpecPack — the agent runs against that contract instead of
+  a bare prompt. `POST /threads/:id/apply` delivers an isolated thread's accumulated
   worktree diff to the project; in-place threads write the project directly and
   never need it.
 - Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
@@ -612,7 +616,7 @@ of local fake apply state.
 cancel/interrupt: daemon abort closes the active harness stream and the process
 helper sends a cooperative interrupt with hard-kill fallback. Live input
 forwarding into a running harness is not a supported control surface; the
-former `/runs/:id/input` endpoint and `RunInput` DTO were removed in v0.7
+former `/runs/:id/input` endpoint and `RunInput` DTO were removed as dead code
 rather than left as an always-`unsupported` stub.
 
 A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path

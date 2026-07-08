@@ -3,36 +3,28 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v0.15.0** — the stabilization program ships: concept freeze
+- **v0.15.0** (2026-07-05) — the stabilization release: concept freeze
   (numbered-invariant Bible + concept gate), model governance
-  (harness-scoped models, strict truth-source validation, settings
-  write-time refusal), run honesty (terminal nets on every path,
+  (harness-scoped models, strict truth-source validation at settings-write
+  and run preflight), run honesty (terminal events on every path, an
   inactivity watchdog, crash GC with live-owner proof, CRLF/binary diff
-  fidelity, FinalVerifier), routing/output reality (typed quota ->
-  headroom routing, portfolio EMA metrics + operator priors, structured
-  output on both real CLIs, live plan checklists, per-candidate evidence
-  cards), the per-commit review gate (audited bypasses; release-checklist
-  consumer), and the MCP/ACP surface upgrade + integration suite below.
-  Pre-tag batch: REFUSED TURNS are honest end-to-end — a run refused
-  before it starts (trust gate, preflight, enqueue throw on ANY
-  pre-created-turn path) persists `ThreadTurn.enqueue_error` {message,
-  typed code, retryable} on the turn (INV-093), every surface renders it
-  inline, `POST /threads/:id/turns/:turnId/retry` replays the recorded
-  job params onto the SAME turn (tail-only; retryable:false refusals 409
-  immediately), and the macOS trust refusal carries a one-click "Allow
-  full access & Retry" backed by the NARROW user-level GET/POST /trust
-  surface ({repoRoot, allowFullAccess} only; provenance-stamped, locked
-  writes; Settings audit + revoke). UI PERFORMANCE without touching
-  glass/transparency: per-run @Observable live-box render granularity
-  (one card repaints, not the app), adaptive 64-250ms SSE coalescing,
-  bounded feeds with honest truncation markers (activity ring 1000,
-  transcript 200), lazy newest-first Timeline, off-screen terminal-run
-  eviction with server-timeline reload, and render micro-memoization.
-  Release-grade triads on the cumulative diff (rounds 33-35 + the pre-tag
-  batch rounds 36-38, three meaningful scopes, exact locked panel) + full
-  real-harness battery (PASS=82) + surface canaries in CI + live dogfood
-  of the refusal->grant->retry flow and a streaming race. Phase entries
-  below preserve the detailed history.
+  fidelity, and a fresh-envelope FinalVerifier before apply/adopt),
+  routing/output reality (typed quota -> headroom-aware routing, portfolio
+  metrics with real producers, structured output on both real CLIs, live
+  plan checklists, per-candidate evidence cards), a per-commit multi-model
+  review gate with audited bypasses, and the MCP/ACP surface upgrade +
+  integration suite below. Refused turns are honest end-to-end: a run
+  refused before it starts persists a typed `enqueue_error` on its turn
+  (INV-093), every surface renders it inline,
+  `POST /threads/:id/turns/:turnId/retry` replays the same turn
+  (non-retryable refusals 409), and the macOS trust refusal carries a
+  one-click "Allow full access & Retry" backed by the narrow user-level
+  GET/POST /trust surface (provenance-stamped, locked writes; Settings
+  audit + revoke). UI performance without touching glass/transparency:
+  per-run render granularity (one card repaints, not the app), adaptive
+  SSE coalescing, bounded feeds with honest truncation markers, a lazy
+  newest-first Timeline, and off-screen terminal-run eviction. Phase
+  entries below preserve the detailed history.
 - **v0.15 program, phase 5** — MCP/ACP surface
   upgrade: the MCP server rides the official TypeScript SDK v2
   (`@modelcontextprotocol/server` 2.0.0-beta.1) — concurrent dispatch
@@ -110,19 +102,19 @@ Release history for Claudexor. The current version is declared in the root
   `harnesses.<id>.default_model`), and every explicit model must pass the
   harness's model truth source. The intents `compare`/`arbitrate` and the
   `scope.context: deep` tier were retired.
-- **v0.14.1** — checkpoint hardening for explicit reviewer panels, mandatory
+- **v0.14.1** (2026-07-01) — checkpoint hardening for explicit reviewer panels, mandatory
   review evidence preflight, scoped Cursor reviewer readiness, frozen SpecPack
   gate merging, protected-path approvals, and thin control/macOS projection
   parity.
-- **v0.14.0** — battery-driven hardening: typed transient retry evidence,
+- **v0.14.0** (2026-06-29) — battery-driven hardening: typed transient retry evidence,
   configurable reviewer timeouts with stronger route-proof capture,
   `stuck_no_progress` convergence diagnostics, deterministic protected-path
   tamper blocking, and a stricter real-harness battery with ENV quarantine.
-- **v0.13.3** — harness-agnostic hardening: a contract-level attempt outcome
+- **v0.13.3** (2026-06-28) — harness-agnostic hardening: a contract-level attempt outcome
   model, unified runtime PATH handling, adapter-declared credential/isolation
   capabilities, uniform mandatory-context behavior across harnesses,
   sandbox-safe secrets, deterministic fakes, and an honest CLI surface.
-- **v0.13.2** — Canvas + node_repl fix: the Canvas Artifacts panel now shows the
+- **v0.13.2** (2026-06-27) — Canvas + node_repl fix: the Canvas Artifacts panel now shows the
   PROJECT's produced outputs (the repo `artifacts/` dir, served via
   `GET /runs/:id/produced`, images inline, the Browser tab auto-renders the
   project `index.html`) — distinct from Run Detail's run-internal artifact tree;
@@ -130,34 +122,34 @@ Release history for Claudexor. The current version is declared in the root
   otherwise-clean runs, is now disabled config-aware (only when it is actually
   defined in the config codex loads — never on a scoped home, which avoids an
   "invalid transport" config-load break).
-- **v0.13.1** — attachment fix: user-attached images now reach the model
+- **v0.13.1** (2026-06-26) — attachment fix: user-attached images now reach the model
   (orchestrator forwards attachments in every run path; the codex adapter
   terminates the variadic `-i` with `--` so the prompt survives), an image-bearing
   run only routes to vision-capable harnesses (or fails loudly), and large
   agent-produced images render in the gallery.
-- **v0.13.0** — interactive workbench: composer attachments + in-app screenshots,
+- **v0.13.0** (2026-06-26) — interactive workbench: composer attachments + in-app screenshots,
   an artifacts gallery + mini-browser in a Canvas/Workbench, a deeper multi-tier
   spec interview, a multi-harness planning relay, and an agent-driven browser
   (Playwright MCP).
-- **v0.12.1** — fix release after v0.12.0: embed the SwiftPM-generated resource
+- **v0.12.1** (2026-06-18) — fix release after v0.12.0: embed the SwiftPM-generated resource
   bundle in the release macOS app so the packaged app works outside the build
   checkout.
-- **v0.12.0** — restored the write/apply path (codex transcript route-proof,
+- **v0.12.0** (2026-06-17) — restored the write/apply path (codex transcript route-proof,
   scoped homes) and honesty fixes.
-- **v0.11.0** — host plugin lifecycle: `claudexor plugin` now manages
+- **v0.11.0** (2026-06-17) — host plugin lifecycle: `claudexor plugin` now manages
   user-global Claude Code, Codex, Cursor, and OpenCode integrations with
   generated skill/MCP artifacts plus command artifacts where the host supports
   them, ownership state, dry-run/status/doctor/repair/uninstall flows, Codex
   personal-marketplace registration, OpenCode skill/command/experimental
   JS-plugin/MCP wiring, and install-health checks that keep host integration
   readiness separate from harness doctor readiness.
-- **v0.10.2** — real interactive spec quiz (multiple-choice interview) and the
+- **v0.10.2** (2026-06-15) — real interactive spec quiz (multiple-choice interview) and the
   frosted-glass backdrop refinement.
-- **v0.10.1** — macOS UX fixes and the first interactive spec flow.
-- **v0.10.0** — chat-first macOS beta: one-screen thread list, conversation,
+- **v0.10.1** (2026-06-15) — macOS UX fixes and the first interactive spec flow.
+- **v0.10.0** (2026-06-15) — chat-first macOS beta: one-screen thread list, conversation,
   and inspector; in-place thread turns; honest run outcomes; static
   behind-window glass replacing the old animated mesh.
-- **v0.9.0** — chat/session-first + harness-agnostic truth: modes collapse 9→5
+- **v0.9.0** (2026-06-12) — chat/session-first + harness-agnostic truth: modes collapse 9→5
   (`ask`/`plan`/`audit`/`agent`/`orchestrate`; strategies are flags); threads
   with native session resume across read-only turns (codex `exec resume`,
   claude `--resume`; write turns run fresh envelopes with a typed
@@ -174,7 +166,7 @@ Release history for Claudexor. The current version is declared in the root
   cursor/opencode resume + unified provider env scrub; OpenRouter raw-api
   instance; macOS ThreadsScreen (chat-first) with decision/apply actions on
   turns and a lifted dark card recipe.
-- **v0.8.0** — live truth pass: event-sourced streaming with a monotonic
+- **v0.8.0** (2026-06-11) — live truth pass: event-sourced streaming with a monotonic
   per-run `seq` and snapshot-then-subscribe SSE (gap-free reconnects, byte-level
   parser in the macOS app), interactive runs (`waiting_on_user`) with Claude's
   bidirectional control protocol live-verified (`AskUserQuestion` answered from
@@ -185,7 +177,7 @@ Release history for Claudexor. The current version is declared in the root
   `tests=100%`), in-process setup doctor (exit-127 class removed), observed-model
   route proof, global `GET /events` multiplex, configurable interaction timeout,
   and the frosted floating-card design doctrine across both themes.
-- **v0.7.0** — engine truth pass: typed `tool_call`/`tool_result` events with a
+- **v0.7.0** (2026-06-10) — engine truth pass: typed `tool_call`/`tool_result` events with a
   shared adapter run loop, engine-owned `final/telemetry.yaml` evidence, web
   policy as a manifest capability with disclosed upgrades, parallel
   race/explore, user-level trust gating for full access, per-harness settings
@@ -196,7 +188,7 @@ Release history for Claudexor. The current version is declared in the root
   knip/docs-truth/conformance CI gates,
   dead subsystem deletions (ExecutionEngine, legacy in-proc control server,
   `/runs/:id/input` stub).
-- **v0.6.0** — first public beta: canonical modes, daemon + control API, macOS
+- **v0.6.0** (2026-06-09) — first public beta: canonical modes, daemon + control API, macOS
   app, review/arbitration pipeline, secret store, release automation.
 
 Tags before v0.6.0 (v0.1.0–v0.5.0) were internal pre-beta milestones and are

@@ -59,14 +59,13 @@ describe("WorkspaceManager", () => {
     await mgr.dispose(env);
   });
 
-  it("creates an isolated worktree with scoped dirs/ports and captures a diff", async () => {
+  it("creates an isolated worktree with scoped dirs and captures a diff", async () => {
     const repo = await initRepo();
     const mgr = new WorkspaceManager(repo);
-    const env = await mgr.create({ taskId: "task-1", attemptId: "a01", baseRef: "HEAD", ports: 2 });
+    const env = await mgr.create({ taskId: "task-1", attemptId: "a01", baseRef: "HEAD" });
 
     expect(existsSync(env.worktree_path)).toBe(true);
     expect(existsSync(env.harness_config_dirs["codex_home"] as string)).toBe(true);
-    expect(env.ports.allocated.length).toBe(2);
 
     const scoped = mgr.envFor(env);
     expect(scoped.HOME).toBe(env.home_dir);
@@ -200,7 +199,7 @@ describe("WorkspaceManager", () => {
     expect(second.created).toBe(false);
     expect(second.path).toBe(first.path);
     expect(second.baseSha).toBe(first.baseSha);
-    // Self-ignore seeded so the user's own `git add -A` never captures it (D3).
+    // Self-ignore seeded so the user's own `git add -A` never captures it.
     expect(readFileSync(join(repo, ".claudexor", ".gitignore"), "utf8")).toBe("*\n");
   });
 
@@ -361,7 +360,7 @@ describe("disposeOrphan (crash GC)", () => {
   });
 });
 
-describe("diff fidelity (T3.2#1/#2)", () => {
+describe("diff fidelity", () => {
   it("round-trips CRLF content: captured diff applies cleanly to a fresh clone of base", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-crlf-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
@@ -404,7 +403,7 @@ describe("diff fidelity (T3.2#1/#2)", () => {
   });
 });
 
-describe("revert with quoted/special filenames (T3.2#4)", () => {
+describe("revert with quoted/special filenames", () => {
   it("removes a turn-added non-ASCII file and reports it (git C-quotes it on the newline format)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-q-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });

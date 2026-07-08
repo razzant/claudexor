@@ -1,5 +1,5 @@
 /**
- * Scoped DIFF review (D18): review a caller-supplied diff (e.g. a staged
+ * Scoped DIFF review: review a caller-supplied diff (e.g. a staged
  * commit) with the resolved reviewer panel — the same reviewCandidate
  * machinery race candidates use, no run/envelope. The engine owns reviewer
  * resolution, evidence packaging, revalidation, and typed results; the CLI

@@ -362,7 +362,7 @@ Review blocked on evidence.
   });
 });
 
-describe("commit-review panel lib (D18)", () => {
+describe("commit-review panel lib", () => {
   it("isBlockingSeverity accepts both the gate vocabulary and Claudexor-native blocking severities", async () => {
     const { isBlockingSeverity } = await import("../../../scripts/lib/openrouter-panel.mjs");
     for (const s of ["FAIL", "fail", "BLOCK", "FIX_FIRST", "NEEDS_HUMAN"]) expect(isBlockingSeverity(s)).toBe(true);

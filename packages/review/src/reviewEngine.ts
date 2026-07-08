@@ -64,7 +64,7 @@ export interface ReviewCandidateInput {
    * for the reviewer children, so a reviewer's native state (codex session
    * rollouts, claude config) is contained in a per-review scoped home instead of
    * the operator's real ~/.codex / ~/.claude (CLAUDEXOR_BIBLE §6). The codex
-   * route-proof transcript is read from this same CODEX_HOME, so B9 still
+   * route-proof transcript is read from this same CODEX_HOME, so route proof still
    * verifies. Adapters seed auth into these dirs. */
   env?: Record<string, string>;
   signal?: AbortSignal;
@@ -517,7 +517,7 @@ ${runtimePrompt}
       });
     });
     const healthyProviders = [...healthyFamilies];
-    // RR1 two-tier route proof: crossFamilyVerified — the strong tier that unblocks
+    // Two-tier route proof: crossFamilyVerified — the strong tier that unblocks
     // apply — requires the model to have been OBSERVED in the reviewer stream
     // (status "verified"). An argv/metadata echo ("accepted_model_arg") is a weaker
     // tier: it proves we PASSED a model arg, not that the CLI ran it, so it must

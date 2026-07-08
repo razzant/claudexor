@@ -1,4 +1,4 @@
-# Fixture provenance manifest (Tier7 #49). SYNTHETIC-ONLY today: no recorded
+# Fixture provenance manifest. SYNTHETIC-ONLY today: no recorded
 # real cursor-agent stream exists yet (the CLI is doctor-unavailable on the
 # recording machine); record one when a live route is available and stamp its
 # version here. The freshness gate discloses this gap on every run.

@@ -372,7 +372,7 @@ small estimate hold against the cap, and a slot whose estimate meets or
 exceeds the remaining headroom is denied up front — a typed denial of that
 one slot, never a trip wire that cancels work already granted.
 
-Harness settings are per-harness defaults records in the global config: each
+Harness settings are per-harness default records in the global config: each
 harness can carry enabled state, default model, effort, max turns/rounds,
 budget cap, tool allow/deny lists, fallback model, and web policy. The
 settings editor saves partial patches through the settings API — it changes

@@ -2,7 +2,6 @@ import type { ReviewFinding, RouteProofStatus, Severity } from "@claudexor/schem
 import { ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
 import { newId } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** Extract JSON payloads from a reviewer's free-text output (fenced or bare). */
 export function extractJsonBlocks(text: string): unknown[] {

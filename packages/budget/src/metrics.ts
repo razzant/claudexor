@@ -1,5 +1,5 @@
 /**
- * Harness routing metrics (D7): per-harness rolling averages of OBSERVED
+ * Harness routing metrics: per-harness rolling averages of OBSERVED
  * attempt cost and duration, persisted under the Claudexor config dir. ONE
  * producer (the orchestrator records after each settled attempt) and ONE
  * consumer (pool ordering fills RouterCandidate.costPerCall/latencyMs).

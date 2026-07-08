@@ -19,7 +19,6 @@ import {
   worktreePrune,
   worktreeRemove,
 } from "./git.js";
-import { allocatePorts } from "./ports.js";
 
 export interface CreateEnvelopeOptions {
   taskId: string;
@@ -27,7 +26,6 @@ export interface CreateEnvelopeOptions {
   baseRef?: string;
   accessProfile?: AccessProfile;
   dirtyPolicy?: DirtyPolicy;
-  ports?: number;
   /**
    * Run against the live `repoRoot` directly instead of an isolated git worktree.
    * Used for external stateful environments that may not be git repositories
@@ -40,8 +38,8 @@ export interface CreateEnvelopeOptions {
 
 /**
  * Manages WorkspaceEnvelopes: an isolated git worktree plus scoped HOME and
- * per-harness config dirs, allocated ports, and dirty-tree handling. Claudexor
- * owns these envelopes (it does not rely on a harness's native --worktree).
+ * per-harness config dirs, and dirty-tree handling. Claudexor owns these
+ * envelopes (it does not rely on a harness's native --worktree).
  */
 /** `ps` start time for a pid, or null when unavailable. Pid+start-time
  * equality is the recycling-proof liveness identity for envelope owners
@@ -104,14 +102,11 @@ export class WorkspaceManager {
       }
     }
     const homeDir = join(base, "home");
-    const envDir = join(base, "env");
-    const logsDir = join(base, "logs");
-    const artifactsDir = join(base, "artifacts");
     const codexHome = join(homeDir, ".codex");
     const claudeConfig = join(homeDir, ".claude");
     const cursorConfig = join(homeDir, ".cursor");
     const opencodeConfig = join(homeDir, ".config", "opencode");
-    for (const d of [homeDir, envDir, logsDir, artifactsDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) {
+    for (const d of [homeDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) {
       ensureDir(d);
     }
     const harnessConfigDirs = {
@@ -130,7 +125,6 @@ export class WorkspaceManager {
       join(base, "owner.json"),
       JSON.stringify({ pid: process.pid, started: processStartTime(process.pid), created_at: nowIso() }) + "\n",
     );
-    const ports = await allocatePorts(opts.ports ?? 0);
 
     // In-place mode: mutate the live repoRoot directly (no isolated worktree).
     // Used for thread turns (chat-first: the next turn sees this one's work) and
@@ -150,14 +144,10 @@ export class WorkspaceManager {
         base_sha: baseSha,
         worktree_path: this.repoRoot,
         branch_name: "inplace",
-        env_dir: envDir,
         home_dir: homeDir,
         harness_config_dirs: harnessConfigDirs,
-        ports: { allocated: ports },
         policy_profile: opts.accessProfile ?? "workspace_write",
         dirty_policy: opts.dirtyPolicy ?? "refuse",
-        logs_dir: logsDir,
-        artifacts_dir: artifactsDir,
         created_at: nowIso(),
       });
     }
@@ -197,14 +187,10 @@ export class WorkspaceManager {
       base_sha: baseSha,
       worktree_path: path,
       branch_name: branch,
-      env_dir: envDir,
       home_dir: homeDir,
       harness_config_dirs: harnessConfigDirs,
-      ports: { allocated: ports },
       policy_profile: opts.accessProfile ?? "workspace_write",
       dirty_policy: dirtyPolicy,
-      logs_dir: logsDir,
-      artifacts_dir: artifactsDir,
       created_at: nowIso(),
     });
   }
@@ -241,7 +227,6 @@ export class WorkspaceManager {
       // (opencode/cursor) cannot follow an INHERITED XDG_CONFIG_HOME back into the
       // operator's real ~/.config under `mirror_native` (§6 containment).
       XDG_CONFIG_HOME: join(env.home_dir, ".config"),
-      CLAUDEXOR_ENV_DIR: env.env_dir,
     };
   }
 
@@ -261,14 +246,13 @@ export class WorkspaceManager {
     // no-project Ask leaves nothing in its cwd (§7) and nothing in any worktree (§6).
     const base = mkdtempSync(join(tmpdir(), "claudexor-ro-"));
     const homeDir = join(base, "home");
-    const envDir = join(base, "env");
     const codexHome = join(homeDir, ".codex");
     const claudeConfig = join(homeDir, ".claude");
     const cursorConfig = join(homeDir, ".cursor");
     const opencodeConfig = join(homeDir, ".config", "opencode");
-    for (const d of [homeDir, envDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) ensureDir(d);
+    for (const d of [homeDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) ensureDir(d);
     return {
-      env: { HOME: homeDir, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeConfig, XDG_CONFIG_HOME: join(homeDir, ".config"), CLAUDEXOR_ENV_DIR: envDir },
+      env: { HOME: homeDir, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeConfig, XDG_CONFIG_HOME: join(homeDir, ".config") },
       dispose: () => {
         try {
           rmSync(base, { recursive: true, force: true });
@@ -387,7 +371,7 @@ export class WorkspaceManager {
   }
 
   /**
-   * Dispose an ORPHANED envelope by ids alone (crash GC, T3.1#5): a daemon
+   * Dispose an ORPHANED envelope by ids alone (crash GC): a daemon
    * crash leaves envelopes with no live job. Reconstructs the disposal
    * surface (worktree path, branch name, envelope base) from the same id
    * derivation create() used, so the safety invariants (id-validated base,
@@ -405,7 +389,6 @@ export class WorkspaceManager {
         base_sha: "0000000000000000000000000000000000000000",
         worktree_path: join(base, "tree"),
         branch_name: `claudexor/${taskId}/${attemptId}`,
-        env_dir: join(base, "env"),
         home_dir: join(base, "home"),
         harness_config_dirs: {
           codex_home: join(base, "home", ".codex"),
@@ -413,11 +396,8 @@ export class WorkspaceManager {
           cursor_config: join(base, "home", ".cursor"),
           opencode_config: join(base, "home", ".config", "opencode"),
         },
-        ports: { allocated: [] },
         policy_profile: "workspace_write",
         dirty_policy: "snapshot",
-        logs_dir: join(base, "logs"),
-        artifacts_dir: join(base, "artifacts"),
         created_at: nowIso(),
       }),
     );

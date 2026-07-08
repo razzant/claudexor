@@ -1,12 +1,12 @@
 import SwiftUI
 import ClaudexorKit
 
-/// Per-harness model rows for the composer "⋯" popover (D2/INV-103).
+/// Per-harness model rows for the composer "⋯" popover (INV-103).
 ///
 /// One row per pooled harness: `[harness chip] [model dropdown]`. The dropdown
 /// is fed by that harness's model TRUTH SOURCE (`/harnesses/:id/models` — live
 /// inventory `source: api` or manifest known-good hints `source: manifest`).
-/// STRICT (D3): there is no free-text entry — a harness with no truth source
+/// STRICT: there is no free-text entry — a harness with no truth source
 /// shows "Harness default only", because an arbitrary id would be refused by
 /// the engine's preflight anyway. Selections build the harness-scoped
 /// `models` map that rides the turn; the pool is never poisoned by one

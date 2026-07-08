@@ -446,7 +446,7 @@ export function buildEnvelopeSubInput<T extends {
     n: call.tool === "race" ? call.n : undefined,
     harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
     portfolio: input.portfolio,
-    // Aggregate budget (D9): the sub-run gets only the REMAINING headroom.
+    // Aggregate budget: the sub-run gets only the REMAINING headroom.
     maxUsd: remainingUsd,
     web: input.web,
     externalContextPolicy: input.externalContextPolicy,

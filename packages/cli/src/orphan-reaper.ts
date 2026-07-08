@@ -1,5 +1,5 @@
 /**
- * Orphaned-child bookkeeping for the daemon (T3.1#4). Harness children run in
+ * Orphaned-child bookkeeping for the daemon. Harness children run in
  * their OWN process groups (deliberate: group kill), so they survive a daemon
  * crash/SIGKILL and keep mutating trees with nobody watching. The daemon
  * periodically snapshots the live child registry to a pids file; on the next

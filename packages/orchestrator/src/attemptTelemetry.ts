@@ -3,7 +3,7 @@
  * evidence state, transient-failure observations, and the attempt outcome
  * truth. Adapters emit typed events; the orchestrator observes them here —
  * no regex over prose, and a tool error is "recovered" only when the SAME
- * tool later succeeds against the SAME target (T2#10).
+ * tool later succeeds against the SAME target.
  */
 import type { AttemptTelemetryRecord, ExternalContextPolicy, HarnessEvent, TaskContract, ToolKind } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
@@ -161,7 +161,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   }
   // status === "ok": a later success of the SAME tool against the SAME target
   // is the verified recovery for that call's earlier errors within this
-  // attempt (T2#10 keying fix: `bash echo done` must NOT launder an earlier
+  // attempt (keying fix: `bash echo done` must NOT launder an earlier
   // `bash npm test` failure — the name alone proved nothing).
   for (const err of t.toolErrors) {
     // INV-043: recovery must be attributable to the failed operation — same

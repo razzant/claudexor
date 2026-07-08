@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Per-commit review gate (D18): review the STAGED diff with a multi-model
+ * Per-commit review gate: review the STAGED diff with a multi-model
  * panel before the commit lands.
  *
  * Routes (panel config: .claudexor/review-panel.yaml, committed):

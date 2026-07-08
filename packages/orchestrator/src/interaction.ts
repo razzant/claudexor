@@ -5,7 +5,7 @@
  * run can never hang forever on an unanswered question. Undefined when the
  * caller provides no surface — the adapter then runs non-interactive.
  *
- * Capability gate (A2): the channel is OFFERED only to routes whose manifest
+ * Capability gate: the channel is OFFERED only to routes whose manifest
  * declares `interactive` — a non-interactive harness never gets a surface it
  * cannot raise questions through.
  */
@@ -116,7 +116,7 @@ export function interactionChannelFor(
           waited_ms: Date.now() - startedWaiting,
           ...(input.signal?.aborted ? { reason: "cancelled" } : {}),
         });
-        // Late-answer honesty (T2#23): the run already declined this
+        // Late-answer honesty: the run already declined this
         // interaction; an answer arriving AFTER the timeout must be visibly
         // DISCARDED, not silently swallowed (the user typed it in good faith).
         void answersPromise.then((late) => {

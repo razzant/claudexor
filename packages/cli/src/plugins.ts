@@ -1408,7 +1408,7 @@ async function runHost(def: HostDefinition, verb: PluginVerb, options: PluginCom
     }
     if (def.host === "cursor") checkConfig("cursor", state, res, runtime);
     res.state = def.installState;
-    // B6: a dry-run must be legible even when nothing needs doing — otherwise an
+    // a dry-run must be legible even when nothing needs doing — otherwise an
     // already-current host prints only its status and reads as if --dry-run was
     // ignored. Disclose that the lifecycle was evaluated and found no changes.
     if (dryRun && res.actions.length === 0) {

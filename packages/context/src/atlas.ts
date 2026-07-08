@@ -82,7 +82,7 @@ async function listFiles(repoRoot: string): Promise<string[]> {
 function walk(root: string, dir: string, seenDirs: Set<string> = new Set()): string[] {
   const skip = new Set([".git", "node_modules", "dist", ".turbo", ".claudexor", "coverage"]);
   const out: string[] = [];
-  // Symlink cycle guard (T3#7): `ln -s . loop` used to recurse until stack
+  // Symlink cycle guard: `ln -s . loop` used to recurse until stack
   // overflow, and a symlink to / walked the filesystem into the ContextPack.
   // Directory SYMLINKS are skipped entirely (the fallback walker only maps
   // the real tree); real dirs are deduped by their resolved identity.

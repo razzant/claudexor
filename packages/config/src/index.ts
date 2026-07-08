@@ -258,7 +258,7 @@ export function listTrustConfigs(): Array<{ path: string; config: TrustConfig }>
 }
 
 /**
- * Two-writer safety (T5#7): run `fn` while holding an advisory lock file
+ * Two-writer safety: run `fn` while holding an advisory lock file
  * (O_EXCL create; stale after 10s). ONE owner of the locking discipline —
  * every read-mutate-write config cycle (global config, per-repo trust files)
  * must go through here so concurrent daemon and CLI writers can never

@@ -31,10 +31,7 @@
                   "type": "string",
                   "enum": [
                     "local_cli",
-                    "local_server",
-                    "sdk",
                     "remote_api",
-                    "external_adapter",
                     "fake"
                   ]
                 },

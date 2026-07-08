@@ -5,7 +5,6 @@ import type { Readable, Writable } from "node:stream";
 import { extractPromptText, summarizeResult } from "./prompt.js";
 import { validateRunControls } from "./validate.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 export const ACP_PROTOCOL_VERSION = 1;
 

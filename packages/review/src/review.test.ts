@@ -2490,7 +2490,7 @@ describe("reviewEngine", () => {
     expect(res.routeProofs.every((p) => p.status === "unverified")).toBe(true);
   });
 
-  it("RR1: argv-echo (accepted_model_arg) does NOT satisfy crossFamilyVerified", async () => {
+  it("argv-echo (accepted_model_arg) does NOT satisfy crossFamilyVerified", async () => {
     // Reviewers that accepted an explicit model arg but never echoed an observed
     // model in the stream → metadata-tier proof. It must not unblock apply.
     const argvEcho = (id: string, family: ProviderFamily): ReviewerSpec => {

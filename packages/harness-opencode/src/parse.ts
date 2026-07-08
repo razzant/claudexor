@@ -1,7 +1,6 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
 function toolKindFor(name: string): ToolKind {

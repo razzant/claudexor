@@ -2,7 +2,7 @@
   "name": "@claudexor/workspace",
   "version": "0.15.0",
   "license": "MIT",
-  "description": "WorkspaceEnvelope manager: git worktree + env/HOME/config isolation + ports + dirty policy.",
+  "description": "WorkspaceEnvelope manager: git worktree + scoped HOME/harness-config isolation + dirty policy.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

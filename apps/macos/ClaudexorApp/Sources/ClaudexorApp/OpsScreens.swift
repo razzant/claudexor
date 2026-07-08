@@ -276,7 +276,7 @@ struct SettingsScreen: View {
                     .padding(.vertical, Theme.Spacing.xxs)
                     .background(health.color.opacity(0.14), in: Capsule())
             }
-            // The doctor's strict model verdict (T2#6c): a green harness must
+            // The doctor's strict model verdict: a green harness must
             // never hide a doomed configured default model.
             if let issue = info?.configuredModelIssue {
                 Label(issue, systemImage: "exclamationmark.triangle.fill")

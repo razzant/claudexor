@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fixture provenance + freshness gate (Tier7 #49).
+ * Fixture provenance + freshness gate.
  *
  * Structural rules (exit 1 — an unexplained fixture is a governance hole):
  * - every `packages/harness-<x>/fixtures/` directory has a `manifest.yaml`;

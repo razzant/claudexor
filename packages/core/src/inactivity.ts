@@ -1,5 +1,5 @@
 /**
- * Inactivity watchdog for harness event streams (T3.1#1): a wedged vendor CLI
+ * Inactivity watchdog for harness event streams: a wedged vendor CLI
  * that stops emitting events would otherwise park the run in `running`
  * forever — only reviewers had a timeout. The combinator pumps the source
  * iterator and re-arms a timer on EVERY event; when the window elapses with

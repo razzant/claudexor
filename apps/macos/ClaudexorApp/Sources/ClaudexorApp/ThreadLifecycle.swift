@@ -4,7 +4,7 @@ import ClaudexorKit
 /// Thread lifecycle actions (rename / archive / reopen) — server-owned via
 /// the one PATCH /threads/:id endpoint; the app never invents thread state.
 extension AppModel {
-    /// Rename a thread (B3): server-owned title via the existing PATCH.
+    /// Rename a thread: server-owned title via the existing PATCH.
     func renameThread(_ id: String, title: String) async {
         guard let client else { threadStatus = "Engine offline — reconnect to rename."; return }
         do {

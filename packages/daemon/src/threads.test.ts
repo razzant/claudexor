@@ -171,7 +171,7 @@ describe("ThreadStore", () => {
     expect(existsSync(`${path}.bak`)).toBe(false); // migration succeeded, no data loss
   });
 
-  it("coerces removed v0.9 enum values during migration instead of dropping (D5)", () => {
+  it("coerces removed v0.9 enum values during migration instead of dropping", () => {
     const { path } = store();
     const legacy = {
       threads: [{

@@ -16,14 +16,10 @@ export const EffortHint = z.enum(["low", "medium", "high", "xhigh", "max"]);
 export type EffortHint = z.infer<typeof EffortHint>;
 
 
-export const HarnessKind = z.enum([
-  "local_cli",
-  "local_server",
-  "sdk",
-  "remote_api",
-  "external_adapter",
-  "fake",
-]);
+// Staged-field rule: only kinds a shipped adapter declares. New adapter
+// categories (local servers, SDK embeddings, external bridges) add their
+// kind together with the adapter that produces it.
+export const HarnessKind = z.enum(["local_cli", "remote_api", "fake"]);
 export type HarnessKind = z.infer<typeof HarnessKind>;
 
 /**
@@ -41,11 +37,13 @@ export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 /**
  * Declared capabilities the ENGINE actually consumes (intent gating, routing,
- * knob support, disclosure). The v0.15 triage deleted every declared-but-never
- * -read boolean (spec/repair/shell/edit_files/apply_patch/structured_events/
- * structured_output/json_schema_output/resume/cancel/mcp/plugins/
- * worktree_native): a capability with no consumer is the same bug class as a
- * staged field. Re-add one only WITH its consumer in the same change.
+ * knob support, disclosure). Every field here has a reader; declared-but-
+ * never-read booleans (historically: spec/repair/shell/edit_files/
+ * apply_patch/structured_events/structured_output/resume/cancel/mcp/plugins/
+ * worktree_native) were deleted — a capability with no consumer is the same
+ * bug class as a staged field. Re-add one only WITH its consumer in the same
+ * change (as `json_schema_output` was, together with the structured-output
+ * gate that reads it).
  */
 export const HarnessCapabilities = z.object({
   plan: z.boolean().default(false),
@@ -74,7 +72,7 @@ export const HarnessCapabilities = z.object({
    */
   interactive: z.boolean().default(false),
   /**
-   * The harness can play the autonomous `orchestrate` brain intent (A3): plan
+   * The harness can play the autonomous `orchestrate` brain intent: plan
    * multi-harness work over the typed tool belt. NOT a privileged role — routed
    * like reviewers via doctor + capability + quota headroom.
    */
@@ -85,7 +83,7 @@ export const HarnessCapabilities = z.object({
    * The harness can constrain its FINAL message to a caller-supplied JSON
    * Schema (codex `--output-schema <file>`, claude `--json-schema <json>`).
    * Consumer: the engine passes HarnessRunSpec.output_schema only to routes
-   * declaring this; everything else keeps fenced-JSON parsing (D10).
+   * declaring this; everything else keeps fenced-JSON parsing.
    */
   json_schema_output: z.boolean().default(false),
   /**
@@ -97,7 +95,7 @@ export const HarnessCapabilities = z.object({
   /**
    * Known model ids/aliases this harness accepts — the manifest-declared model
    * truth source used when the adapter has no live `models()` inventory.
-   * STRICT (D3): an explicit model outside the active truth source is refused
+   * STRICT: an explicit model outside the active truth source is refused
    * at settings-write, run preflight, and reviewer resolution; a harness with
    * NO truth source (no `models()` and an empty list) refuses every explicit
    * model. Data-driven like `effort_levels` — no model id is hardcoded in
@@ -306,7 +304,7 @@ export const HarnessRunSpec = z.object({
    */
   browser: BrowserToolSpec.nullable().default(null),
   /**
-   * JSON Schema constraining the harness's FINAL message (D10). Producers:
+   * JSON Schema constraining the harness's FINAL message. Producers:
    * the orchestrate brain (OrchestratePlan schema) and spec-questions
    * grounding (InterviewQuestion block). Passed only to routes whose manifest
    * declares `json_schema_output`; consumers add the native CLI flag.
@@ -421,7 +419,7 @@ export const HarnessEvent = z.object({
     .optional(),
   observed_model: z.string().optional(),
   /**
-   * Typed quota/usage-window signal (D7): the harness CLI's OWN record of how
+   * Typed quota/usage-window signal: the harness CLI's OWN record of how
    * much of its subscription/rate window is consumed. Producers read native
    * machine-readable surfaces only (codex rollout `token_count.rate_limits`);
    * a harness with no native surface emits nothing (fail-honest, never
@@ -437,7 +435,7 @@ export const HarnessEvent = z.object({
     })
     .optional(),
   /**
-   * Typed live plan/todo progress (D14): adapters map their native plan tools
+   * Typed live plan/todo progress: adapters map their native plan tools
    * (codex `todo_list` items, claude `TodoWrite` todos) into this shape in
    * the parse layer; the orchestrator forwards the LAST-WINS list as a
    * `plan.progress` run event and the UI renders live checklists. Never

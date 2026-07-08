@@ -68,7 +68,7 @@ function stripNulls(value: unknown): unknown {
 }
 
 export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
-  // STRUCTURED-FIRST (D10): a schema-constrained route emits the plan as the
+  // STRUCTURED-FIRST: a schema-constrained route emits the plan as the
   // bare final message — try the whole report as JSON before fence-hunting.
   const bare = report.trim();
   if (bare.startsWith("{") && bare.endsWith("}")) {

@@ -1,15 +1,11 @@
 import { z } from "zod";
 import { Id } from "./primitives.js";
 
-export const WorkProductKind = z.enum([
-  "patch",
-  "new_repo",
-  "branch",
-  "commit",
-  "pr",
-  "report",
-  "artifact_bundle",
-]);
+// Staged-field rule: the enum ships only kinds runs actually PRODUCE
+// (patch / new_repo / report). Delivery-as-branch/commit/pr is a different,
+// fully-consumed vocabulary (`ControlApplyRequest.mode`) — those values were
+// never work-product kinds with a producer, so they do not live here.
+export const WorkProductKind = z.enum(["patch", "new_repo", "report"]);
 export type WorkProductKind = z.infer<typeof WorkProductKind>;
 
 export const WorkProduct = z.object({

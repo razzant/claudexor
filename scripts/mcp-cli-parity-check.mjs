@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP <-> CLI capability parity gate (Tier7 #48).
+ * MCP <-> CLI capability parity gate.
  *
  * The class of bug this pins: the MCP tool schema silently lagging the CLI's
  * run controls (pre-0.14 the cached Cursor descriptors exposed only

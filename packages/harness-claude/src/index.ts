@@ -309,7 +309,7 @@ export function claudeArgsForSpec(spec: HarnessRunSpec, interactive = false, sup
   const eff = normalizeEffort(spec.effort_hint, CLAUDE_EFFORT_LEVELS);
   if (eff) args.push("--effort", eff);
   if (spec.max_turns !== null && spec.max_turns > 0) args.push("--max-turns", String(spec.max_turns));
-  // Structured output (D10): constrain the FINAL message to the caller's JSON
+  // Structured output: constrain the FINAL message to the caller's JSON
   // Schema. LIVE-VERIFIED (2.1.165): `--json-schema <inline JSON>` with
   // --output-format stream-json. Passed only when the engine set it (the
   // engine gates on the json_schema_output capability).

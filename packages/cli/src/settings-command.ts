@@ -1,6 +1,6 @@
 /**
  * `claudexor settings show|set` — user defaults over the layered config, with
- * the same strict validation the daemon settings endpoint applies (D3): model
+ * the same strict validation the daemon settings endpoint applies: model
  * values pass the harness truth source, effort passes the declared ladder,
  * and routing ids must be REAL harnesses (fakes never persist).
  */
@@ -96,7 +96,7 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
       );
     }
     try {
-      // Harness-scoped model/effort keys (D2/INV-103: model choice is
+      // Harness-scoped model/effort keys (INV-103: model choice is
       // harness-scoped — there is no global model setting). Values are
       // validated against the harness's truth source BEFORE persisting, the
       // same strict gate the daemon settings endpoint applies.

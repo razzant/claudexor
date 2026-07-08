@@ -1,5 +1,5 @@
 /**
- * Passive registry of live harness child process groups (T3.1#4). Every
+ * Passive registry of live harness child process groups. Every
  * `spawnProcess` child registers on spawn and unregisters on close; the
  * daemon snapshots the registry into a pids file so a crashed/killed daemon
  * can REAP surviving orphans on the next start (children live in their own

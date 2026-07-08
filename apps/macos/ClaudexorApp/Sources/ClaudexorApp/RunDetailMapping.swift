@@ -2,7 +2,7 @@ import Foundation
 import ClaudexorKit
 
 /// Server-projection → domain-model mapping for the run inspector (one owner):
-/// candidate evidence cards (D13) and the live plan checklist (D14).
+/// candidate evidence cards and the live plan checklist.
 enum RunDetailMapping {
     /// Live plan checklist: nil when the run never emitted plan.progress
     /// (callers keep their existing plan, e.g. the plan.md fallback row).

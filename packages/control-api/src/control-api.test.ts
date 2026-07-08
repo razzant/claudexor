@@ -2299,7 +2299,7 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
-  it("thread apply 409s while the HEAD run is blocked without a typed decision, and passes once decided (D4/INV-113)", async () => {
+  it("thread apply 409s while the HEAD run is blocked without a typed decision, and passes once decided (INV-113)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-gate-"));
     const runDir = join(dir, "run-head");
     const { mkdirSync: mkd } = await import("node:fs");
@@ -2446,7 +2446,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("streams events for a QUEUED job (SSE waits with heartbeats, binds the run dir when it appears)", async () => {
-    // T3.1#6: GET /runs/:id/events on a queued job must open the stream and
+    // GET /runs/:id/events on a queued job must open the stream and
     // wait, not 404 — `follow <jobId>` works from enqueue time.
     const dir = mkdtempSync(join(tmpdir(), "claudexor-queued-sse-"));
     const runDir = join(dir, "run-q1");
@@ -2741,7 +2741,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("projects the LAST plan.progress event as planProgress (D14)", async () => {
+  it("projects the LAST plan.progress event as planProgress", async () => {
     const { daemon, record } = fakeDaemon();
     // Two plan.progress events: the projection must be LAST-WINS.
     const evPath = join(record.runDir!, "events.jsonl");
@@ -2769,7 +2769,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("projects candidate evidence cards from attempts/reviews/decision artifacts (D13)", async () => {
+  it("projects candidate evidence cards from attempts/reviews/decision artifacts", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
       const detail = await fetch(`${base}/runs/run-d1`, {
@@ -3591,7 +3591,7 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
-  it("rejects client-supplied turnId and thread-less planRunId on POST /runs (T5#8/#9)", async () => {
+  it("rejects client-supplied turnId and thread-less planRunId on POST /runs", async () => {
     const { daemon } = fakeDaemon();
     const server = new DaemonControlApiServer({ token, daemon });
     const { host, port } = await server.start();

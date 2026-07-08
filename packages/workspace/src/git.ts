@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { claudexorArtifactPredicate, trackedArtifactDirPaths } from "./artifact-paths.js";
 
-/** BYTE-FAITHFUL git capture (T3.2#1): raw buffers, never readline — CR
+/** BYTE-FAITHFUL git capture: raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
  * (trim-based consumers like revParse are unaffected: git ends its own
  * output with \n). */
@@ -215,7 +215,7 @@ export async function snapshotTree(repo: string): Promise<string> {
 }
 
 /** Net diff between two tree-ish shas (used for in-place per-turn diffs).
- * `--binary` (T3.2#2): binary changes carry an APPLYABLE payload instead of
+ * `--binary`: binary changes carry an APPLYABLE payload instead of
  * degrading to a "Binary files differ" stub that silently loses the work. */
 export async function diffTrees(repo: string, baseSha: string, endSha: string): Promise<string> {
   const r = await git(repo, ["diff", "--binary", baseSha, endSha]);
@@ -277,7 +277,7 @@ export async function revertWorkingTreeTo(
   // only reverts tracked modifications/deletions, never deletes extra files.
   // `--no-renames` forces a turn rename to surface as delete-old + ADD-new so the
   // new path is caught here (rename detection would hide it under an R status).
-  // `-z` (T3.2#4): NUL-separated RAW paths — git C-quotes special names on the
+  // `-z`: NUL-separated RAW paths — git C-quotes special names on the
   // newline format, and the quoted literal never exists on disk, so rmSync
   // "removed" nothing while the old code still reported reverted:true.
   const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", preTurnSha, expectedPostSha]);
@@ -340,7 +340,7 @@ export interface ProtectedApplyResult {
 }
 
 /**
- * The PROTECTED apply path (T3.2#3): `git apply --check` first (clean typed
+ * The PROTECTED apply path: `git apply --check` first (clean typed
  * refusal, tree untouched), then `--3way`; if 3way still fails (race with a
  * concurrent edit), RESTORE — `checkout -- .` for tracked content plus
  * removal of files the partial apply CREATED (from the shared diff parser's
@@ -354,7 +354,7 @@ export async function applyPatchProtected(repo: string, diff: string): Promise<P
   if (check.code !== 0) {
     return { ok: false, treeMutated: false, detail: `apply --check refused: ${check.stderr.trim()}` };
   }
-  const before = await statusFingerprint(repo);
+  const before = await statusPorcelain(repo);
   const ap = await git(repo, ["apply", "--3way", "--whitespace=nowarn", "-"], diff);
   if (ap.code === 0) return { ok: true, treeMutated: true };
   // 3way failed after a passing --check (concurrent mutation): restore.
@@ -369,7 +369,7 @@ export async function applyPatchProtected(repo: string, diff: string): Promise<P
     }
   }
   await git(repo, ["checkout", "--", "."]);
-  const after = await statusFingerprint(repo);
+  const after = await statusPorcelain(repo);
   const restored = after === before;
   return {
     ok: false,
@@ -378,11 +378,6 @@ export async function applyPatchProtected(repo: string, diff: string): Promise<P
       `apply --3way failed: ${ap.stderr.trim()}` +
       (restored ? "; tree restored to its pre-apply state" : "; RESTORE FAILED — tree left mutated, inspect manually"),
   };
-}
-
-async function statusFingerprint(repo: string): Promise<string> {
-  const r = await git(repo, ["status", "--porcelain"]);
-  return r.stdout;
 }
 
 export async function worktreePrune(repo: string): Promise<void> {

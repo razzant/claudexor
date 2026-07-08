@@ -229,7 +229,7 @@ export async function runCapture(
 }
 
 /**
- * BYTE-FAITHFUL capture (T3.2#1): `runCapture` rides readline, which splits
+ * BYTE-FAITHFUL capture: `runCapture` rides readline, which splits
  * on lone `\r` too and rejoins with `\n` — destroying CR bytes in CRLF file
  * content and fabricating trailing newlines. Diff-carrying git output MUST
  * come through here, or `final/patch.diff` is corrupted at the source and

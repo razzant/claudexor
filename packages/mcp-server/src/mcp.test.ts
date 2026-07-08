@@ -56,7 +56,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     w.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     await sleep(60);
     // The old hand-rolled loop awaited each call inline: a multi-minute race
-    // blocked ping/tools/list (T7 HIGH#1). The SDK dispatches concurrently —
+    // blocked ping/tools/list. The SDK dispatches concurrently —
     // the ping MUST answer while the slow tools/call is still running.
     w.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
     await sleep(80);
@@ -85,7 +85,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
 
     const text = w.responses.find((r) => r.id === 1)?.result?.content?.[0]?.text as string;
     // Summary first, then the artifact handle — an MCP host must be able to
-    // inspect/apply/follow the run it just started (T7 finding 2 fix; the
+    // inspect/apply/follow the run it just started (the
     // old "never contains runId" pin is deliberately retired).
     expect(text.startsWith("Did the thing.")).toBe(true);
     expect(text).toContain("runId: r1");

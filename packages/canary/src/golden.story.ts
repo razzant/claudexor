@@ -289,7 +289,7 @@ describe("canary golden stories", () => {
     expect(good.code).toBe(0);
     const show2 = cli(sb, ["settings", "show", "--json"]);
     expect(show2.stdout).toContain("gpt-5.5");
-    // Fakes are test fixtures, never persistable routing targets (T1#26).
+    // Fakes are test fixtures, never persistable routing targets.
     const fake = cli(sb, ["settings", "set", "harness.fake-success.default_model", "fake-model"]);
     expect(fake.code).toBe(1);
     expect(fake.stdout + fake.stderr).toMatch(/unknown harness 'fake-success'/);

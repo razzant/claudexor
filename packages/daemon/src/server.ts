@@ -104,7 +104,6 @@ export interface JobRecord {
   finishedAt?: string;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
  * Local daemon: Unix-socket JSON-RPC with token auth + a bounded-concurrency
@@ -140,7 +139,7 @@ export class DaemonServer {
       this.server = createServer((sock) => this.onConnection(sock));
       this.server.once("error", reject);
       this.server.listen(this.opts.socketPath, () => {
-        // Owner-only socket (T5#23): the bearer token is the auth layer, but a
+        // Owner-only socket: the bearer token is the auth layer, but a
         // world-connectable socket needlessly exposes the RPC surface to every
         // local user; chmod narrows it to the owning account.
         try {
@@ -337,7 +336,7 @@ export class DaemonServer {
       // policy) the review queue must keep across restarts.
       if (rec.state === "running") {
         rec.state = "interrupted";
-        // Stamp the orphaned event log with a TERMINAL event (T3.1#5d): the
+        // Stamp the orphaned event log with a TERMINAL event : the
         // canonical events.jsonl must agree with jobs.json, or SSE tailers and
         // `follow` wait forever on a log that will never terminate.
         if (rec.runDir && rec.runId) {

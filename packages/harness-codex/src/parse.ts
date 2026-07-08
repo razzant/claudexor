@@ -1,7 +1,6 @@
 import type { HarnessEvent, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
 // Native codex error phrasing that indicates a rate-limit / quota condition.
@@ -177,7 +176,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
       }
       case "todo_list": {
         // Codex's structured plan (re-emitted on revision; last wins). The
-        // TYPED plan_progress rides a message event (D14): the UI renders the
+        // TYPED plan_progress rides a message event: the UI renders the
         // live checklist from the typed field while the prose stays available
         // to plan-extraction. Verified shape: item.items[].{text,completed}.
         const items = Array.isArray(item.items) ? item.items : [];

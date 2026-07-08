@@ -76,7 +76,10 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         id,
         display_name: `Raw API (${providerFamily})`,
         kind: "remote_api",
-        version: defaultModel,
+        // A remote HTTP API has no CLI binary version; the endpoint contract
+        // is the closest honest "version" (UIs render this field verbatim —
+        // a model id here would read as a bogus harness version).
+        version: `${providerFamily} chat-completions API`,
         adapter_version: CLAUDEXOR_VERSION,
         provider_family: providerFamily,
         capabilities: {

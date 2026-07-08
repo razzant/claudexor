@@ -581,7 +581,7 @@ describe("Orchestrator", () => {
     });
     expect(res.status).not.toBe("failed");
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
-    // D2/INV-103: the scalar model expands to the RESOLVED PRIMARY only. The
+    // INV-103: the scalar model expands to the RESOLVED PRIMARY only. The
     // other pool member must NOT be poisoned by the primary's model id (the
     // old crash class: one vendor's model forwarded to every harness).
     expect(seen.find((s) => s.id === "claude")?.model).toBe("model-x");
@@ -1563,9 +1563,9 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: success_with_warnings");
   });
 
-  it("budget-degraded race keeps envelope isolation + adoption (requested semantics stick, T2#6)", async () => {
+  it("budget-degraded race keeps envelope isolation + adoption (requested semantics stick)", async () => {
     const repo = await initRepo();
-    // Cap sized so the DD-27 wave guard denies the SECOND slot: requested
+    // Cap sized so the wave guard denies the SECOND slot: requested
     // n=2, granted 1. The surviving candidate must still run in an isolated
     // envelope (never silently in-place) and its work be ADOPTED after.
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-degraded-race-"));
@@ -1603,7 +1603,7 @@ describe("Orchestrator", () => {
     }
   });
 
-  it("FinalVerifier (D12): a winner whose gates fail on a FRESH verify tree is blocked, not shipped", async () => {
+  it("FinalVerifier: a winner whose gates fail on a FRESH verify tree is blocked, not shipped", async () => {
     const repo = await initRepo();
     // fake-implement writes IMPLEMENTED.md into its worktree -> real patch.
     // The gate greps the file CONTENT on the verify tree: it passes only if
@@ -2123,7 +2123,6 @@ describe("Orchestrator", () => {
       async doctor() {
         return ConformanceReport.parse({ harness_id: "throwing", status: "ok" });
       },
-      // eslint-disable-next-line require-yield
       async *run() {
         throw new Error("boom");
       },
@@ -2961,7 +2960,7 @@ describe("Orchestrator", () => {
       "",
       [{ harness: "rev", model: "gpt-5.5-xhigh-1M" }],
     );
-    // STRICT (D3): a manifest MISS is a typed refusal naming the truth source
+    // STRICT: a manifest MISS is a typed refusal naming the truth source
     // (previously a warn-through for non-authoritative manifests).
     await expectRejected(
       new Map([
@@ -3069,7 +3068,7 @@ describe("Orchestrator", () => {
     expect(res.mode).toBe("agent");
   });
 
-  it("race auto-adopts the winner's patch into the live in-place tree (Р8)", async () => {
+  it("race auto-adopts the winner's patch into the live in-place tree", async () => {
     const repo = await initRepo();
     const orch = new Orchestrator({
       registry: new Map([
@@ -4058,7 +4057,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const repo = await initRepo();
     // A brain that talks prose without a fenced JSON plan: the typed-plan
     // contract fails, so the terminal must be failure-shaped, never
-    // run.completed (T3.1#3 — jobs.json and events.jsonl must agree).
+    // run.completed (jobs.json and events.jsonl must agree).
     const proseBrain: HarnessAdapter = {
       ...brainAdapter("brain", {}),
       async *run(spec) {
@@ -4206,7 +4205,6 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
           enabled_intents: ["implement"],
         });
       },
-      // eslint-disable-next-line require-yield
       async *run(): AsyncIterable<never> {
         throw new Error("adapter exploded before any work");
       },
@@ -4458,7 +4456,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
   });
 });
 
-describe("interaction late-answer honesty (T2#23)", () => {
+describe("interaction late-answer honesty", () => {
   it("emits interaction.answer_discarded when the answer arrives after the timeout", async () => {
     const { interactionChannelFor } = await import("./interaction.js");
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -4787,7 +4785,7 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
   });
 });
 
-describe("structured-first plan parsing (D10)", () => {
+describe("structured-first plan parsing", () => {
   it("accepts a BARE JSON final message (schema-constrained route) and falls back to fenced JSON", async () => {
     const { extractOrchestratePlan } = await import("./orchestrateBrain.js");
     const plan = { tool_calls: [{ tool: "status", run_id: "run-1", why: "check" }] };
@@ -4851,7 +4849,7 @@ describe("browser gate (INV-066): every unmet condition disarms; fully-armed inj
   });
 });
 
-describe("stall rotation (D7 headroom + coverage)", () => {
+describe("stall rotation (headroom + coverage)", () => {
   it("prefers UNTRIED candidates even when a tried one has more headroom", async () => {
     const { pickStallRotationIdx } = await import("./runSupport.js");
     const ledger = {

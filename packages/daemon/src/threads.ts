@@ -58,7 +58,7 @@ function coercePrimaryToPool(primary: string | null, pool: string[]): string | n
 }
 
 /**
- * Durable thread/session registry (A2 chat/session-first SSOT). The Thread is
+ * Durable thread/session registry (chat/session-first SSOT). The Thread is
  * the Claudexor-owned conversation; Sessions are re-hostable pointers to each
  * harness's native CLI session. Persisted as one JSON file with atomic writes
  * (temp + rename), mirroring the daemon job registry's durability contract.
@@ -93,7 +93,7 @@ export class ThreadStore {
         if (!parsed.success && item && typeof item === "object") {
           // Forward-migrate: bump schema_version AND coerce enum values removed in
           // v0.10 (Thread.state "blocked" -> "active", ThreadTurnKind "orchestrate"
-          // -> "followup") so a pre-v0.10 record is migrated, not dropped (D5).
+          // -> "followup") so a pre-v0.10 record is migrated, not dropped.
           const rec = item as Record<string, unknown>;
           const migrated: Record<string, unknown> = { ...rec, schema_version: SCHEMA_VERSION };
           if (migrated["state"] === "blocked") migrated["state"] = "active";
@@ -288,13 +288,6 @@ export class ThreadStore {
     this.persist();
   }
 
-
-  /** Convenience: create a turn and bind its run in one call (CLI/runner path). */
-  addTurn(threadId: string, runId: string | null, prompt: string, kind: ThreadTurn["kind"] = "followup", parentRunId?: string | null): ThreadTurn {
-    const turn = this.createTurn(threadId, prompt, { kind, parentRunId });
-    if (runId) this.bindTurnRun(turn.id, runId);
-    return this.state.turns.find((t) => t.id === turn.id) ?? turn;
-  }
 
   /** Record/refresh the native CLI session a harness emitted for this thread. */
   recordSession(threadId: string, harnessId: string, nativeSessionId: string, observedModel?: string | null): void {

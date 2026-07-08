@@ -54,7 +54,7 @@ export interface DeliverResult {
 /**
  * Deliver a WorkProduct patch according to a mutation mode. `pr` requires `gh`
  * and a configured remote. Commit identity is set per-command (no global config
- * mutation). Protected path (T3.2#3): `--check` before any mutation, restore
+ * mutation). Protected path: `--check` before any mutation, restore
  * on failure (detached-HEAD safe), and HONEST `treeMutated` when a restore
  * itself fails — never a clean-looking result over a conflicted tree.
  */

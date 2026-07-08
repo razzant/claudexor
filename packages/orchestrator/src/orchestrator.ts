@@ -1,10 +1,8 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AccessProfile,
   Attachment,
-  AttemptTelemetryRecord,
   ConformanceReport,
   ControlReviewerPanelEntry,
   EffortHint,
@@ -24,12 +22,10 @@ import type {
   TaskContract,
   ProviderFamily,
   AuthPreference,
-  ToolKind,
   WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
 import {
-  DEFAULT_ORCHESTRATE_TOOL_BELT,
   HarnessRunSpec,
   OrchestrateContract as OrchestrateContractSchema,
   type OrchestrateContract as OrchestrateContractT,
@@ -42,8 +38,6 @@ import {
   DecisionRecord as DecisionRecordSchema,
   FinalVerifyRecord,
   WorkProduct as WorkProductSchema,
-  FallbackReason as FallbackReasonSchema,
-  RouteFallbackPayload as RouteFallbackPayloadSchema,
   SessionReboundLineage as SessionReboundLineageSchema,
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
@@ -68,7 +62,6 @@ import {
   writeFailure,
 } from "./runTerminals.js";
 import {
-  type TransientRetryPolicy,
   transientRetryDelayMs,
   gateProtectedPaths,
   promptWithProtectedPathConstraint,
@@ -122,11 +115,8 @@ import {
 import {
   WorkspaceManager,
   applyPatchProtected,
-  branchDelete,
   ensureGitRepository,
   snapshotTree,
-  worktreeAdd,
-  worktreeRemove,
 } from "@claudexor/workspace";
 import { deliver, validateApplyGate } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
@@ -228,7 +218,7 @@ export interface RunInput {
   protectedPathApprovals?: ProtectedPathApproval[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
   maxUsd?: number | null;
-  /** Orchestrate executor: cap on plan tool calls (D9). */
+  /** Orchestrate executor: cap on plan tool calls. */
   maxToolCalls?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
   access?: AccessProfile;
@@ -237,7 +227,7 @@ export interface RunInput {
   externalContextPolicy?: ExternalContextPolicy;
   /**
    * Scalar model convenience: expands to the RESOLVED PRIMARY harness only
-   * (never the pool). Rejected when no primary is resolvable (D2/INV-103).
+   * (never the pool). Rejected when no primary is resolvable (INV-103).
    * Cleared during input resolution — routing reads `models`.
    */
   model?: string;
@@ -253,7 +243,7 @@ export interface RunInput {
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
-  /** Thread this run is a turn of (A2 chat/session-first); recorded in events. */
+  /** Thread this run is a turn of (chat/session-first); recorded in events. */
   threadId?: string;
   /** Preferred auth route for harness attempts (subscription/api_key/auto). */
   authPreference?: "subscription" | "api_key" | "auto";
@@ -406,10 +396,10 @@ interface RoutedAdapter {
   /** Manifest model truth source (used when the adapter has no live models()). */
   knownModels: readonly string[];
   /** Manifest `interactive` capability: only such routes are OFFERED an
-   * InteractionChannel (A2 gate). */
+   * InteractionChannel (gate). */
   supportsInteractive: boolean;
   /** Manifest `json_schema_output`: only such routes receive
-   * HarnessRunSpec.output_schema (D10 gate); others keep fenced-JSON parsing. */
+   * HarnessRunSpec.output_schema (gate); others keep fenced-JSON parsing. */
   supportsJsonSchemaOutput: boolean;
   settings: HarnessRouteSettings | null;
 }
@@ -469,7 +459,7 @@ export class Orchestrator {
     this.gateway = new HarnessGateway(deps.registry);
   }
 
-  /** Scoped DIFF review (D18) — thin delegate; mechanics live in diffReview.ts. */
+  /** Scoped DIFF review — thin delegate; mechanics live in diffReview.ts. */
   async reviewDiff(input: DiffReviewInput): Promise<DiffReviewResult> {
     return runDiffReview(input, {
       resolveReviewers: (root, pref) => this.resolveReviewers(root, pref),
@@ -509,8 +499,8 @@ export class Orchestrator {
     // creation, so a doomed explicit panel yields typed failure ARTIFACTS
     // (failure.yaml naming the refusal) instead of a bare pre-run throw.
     // ask/audit never spawn reviewers, so a panel there never spends doctor/
-    // model probes and never fails a run that would not use it (T2#12).
-    // Whole-strategy terminal net (T3.1#2): once a strategy ANNOUNCES its
+    // model probes and never fails a run that would not use it.
+    // Whole-strategy terminal net: once a strategy ANNOUNCES its
     // run, any escaped throw still stamps failure.yaml + summary + run.failed
     // instead of orphaning events.jsonl.
     return guardAnnouncedRun(resolved.signal, (announce) => {
@@ -586,7 +576,7 @@ export class Orchestrator {
           this.deps.reviewerModels?.[m.provider_family] ??
           harnessSettings[adapter.id]?.default_model ??
           null;
-        // STRICT (D3): the auto panel applies the SAME model truth gate as the
+        // STRICT: the auto panel applies the SAME model truth gate as the
         // explicit panel — a doomed reviewer model is refused here, never
         // forwarded to die as an opaque native error mid-review.
         if (requestedModel) {
@@ -625,7 +615,7 @@ export class Orchestrator {
    * panel whose harness/model/effort fails validation ends the run through
    * the routing-failure artifact path (failure.yaml + summary + run.failed
    * naming the refusal) BEFORE any candidate spends money — never a bare
-   * pre-announce throw with no artifacts (T2#12 artifact clause).
+   * pre-announce throw with no artifacts (artifact clause).
    */
   private async resolveReviewersWithArtifacts(
     input: RunInput,
@@ -752,12 +742,12 @@ export class Orchestrator {
 
   /**
    * Session fields for a route's run spec: auth route preference + native
-   * resume id (A2). Preference precedence: explicit per-run > per-harness
+   * resume id. Preference precedence: explicit per-run > per-harness
    * config > global routing config > auto.
    */
   /** The tree the harness reads/operates in: the thread worktree for an isolated
    * thread, else the project. Config/artifacts/contract stay anchored to repoRoot. */
-  /** Per-candidate reservation floor (DD-27) from user config. */
+  /** Per-candidate reservation floor from user config. */
   private estimateUsdFloor(repoRoot: string): number {
     return this.config(repoRoot)?.global.budget.estimate_usd_floor ?? 0.05;
   }
@@ -850,7 +840,7 @@ export class Orchestrator {
       );
     }
     const web = input.web ?? input.externalContextPolicy ?? "auto";
-    // D2/INV-103: model choice is harness-scoped end-to-end. The scalar
+    // INV-103: model choice is harness-scoped end-to-end. The scalar
     // `model` is a convenience that expands to the RESOLVED PRIMARY only —
     // never the whole pool (the old global fallback poisoned every pool
     // member with one vendor's model id). Specific beats general: an explicit
@@ -1076,7 +1066,7 @@ export class Orchestrator {
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
-    // Strict pre-run model gate (D3/INV-104) — see modelGovernance.ts.
+    // Strict pre-run model gate (INV-104) — see modelGovernance.ts.
     await assertRouteModelsAllowed(out, input.models, this.execRootOf(input));
     return out;
   }
@@ -1098,7 +1088,7 @@ export class Orchestrator {
       const routeLedger = ledger ?? new BudgetLedger();
       const portfolio = input.portfolio ?? this.deps.portfolio ?? "subscription-first";
       const byId = new Map(pool.map((r) => [r.adapter.id, r]));
-      // D7: real routing metrics — observed per-harness cost/latency averages
+      // real routing metrics — observed per-harness cost/latency averages
       // (single producer: attempt settlement) and operator-declared per-family
       // quality priors. Absent data rides the router's neutral defaults.
       const metrics = loadHarnessMetrics(globalConfigDir());
@@ -1147,7 +1137,7 @@ export class Orchestrator {
   }
 
   /**
-   * Lazy ContextPack (Q13): built ONLY for the read-only report modes
+   * Lazy ContextPack: built ONLY for the read-only report modes
    * (explore/plan/readonly_audit) that consume it. Persisted to
    * context/context_pack.yaml, announced via `context.pack.created`, and
    * rendered as a compact scope-atlas prompt section. Agent modes skip it —
@@ -1161,7 +1151,7 @@ export class Orchestrator {
     log: EventLog,
   ): Promise<string> {
     if (input.repoRoot === NO_PROJECT_ROOT || input.contextMode === "off") return "";
-    // SF6: the versioned project config drives the context pack — mandatory files
+    // the versioned project config drives the context pack — mandatory files
     // (fail-closed when listed), plus include/exclude globs for the Scope Atlas.
     const projectCtx = this.projectConfig(input.repoRoot).context;
     const pack = await buildContextPack(input.repoRoot, contract, {
@@ -1298,7 +1288,7 @@ export class Orchestrator {
     if (input.specPath) {
       try {
         const spec = SpecPackZ.parse(JSON.parse(readFileSync(input.specPath, "utf8")));
-        // Tamper fence (T3.2#7, INV-081): the frozen spec's recorded hash must
+        // Tamper fence (INV-081): the frozen spec's recorded hash must
         // match what we just read — a spec.json edited AFTER freeze would
         // otherwise silently rewrite success criteria/tests/protected paths
         // while the contract records the stale hash as provenance.
@@ -1399,13 +1389,13 @@ export class Orchestrator {
           input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
         // Run cap precedence: explicit run input > surface deps > the user's
         // configured global per-run default. ($/day caps were removed; the budget
-        // priority is respecting harness-reported subscription/OAuth quota — SF3.)
+        // priority is respecting harness-reported subscription/OAuth quota.)
         max_usd:
           this.resolveMaxUsdCap(input.maxUsd, resolvedCfg),
       },
       // The resolved harness-scoped model map (scalar already expanded to the
       // primary by resolveRunInput). The contract is what route spec building
-      // reads — there is no run-global model (D2/INV-103).
+      // reads — there is no run-global model (INV-103).
       routing_models: input.models ?? {},
     });
   }
@@ -1513,7 +1503,7 @@ export class Orchestrator {
     // The per-harness web default applies only when the run-level policy is the
     // default "auto"; an explicit run policy always wins.
     const webPolicy = contractPolicy === "auto" && s?.web ? s.web : contractPolicy;
-    // Harness-scoped model resolution (D2/INV-103): explicit per-attempt
+    // Harness-scoped model resolution (INV-103): explicit per-attempt
     // override (budget downgrade / fallback retry) beats the contract's
     // per-harness map, which beats the per-harness settings default. There is
     // no run-global model.
@@ -1659,7 +1649,7 @@ export class Orchestrator {
         // Per-TRY abort controller: the inactivity watchdog aborts THIS try's
         // stream (killing the process group through the existing abort
         // plumbing) without touching the run-level cancel signal, so a timeout
-        // and a user cancel stay distinguishable (T3.1#1). Recreated per
+        // and a user cancel stay distinguishable. Recreated per
         // nativeTry — a transient retry must get a LIVE signal, not the
         // previous try's already-aborted composite.
         const attemptAbort = new AbortController();
@@ -1691,7 +1681,7 @@ export class Orchestrator {
             if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
             observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
-            // Live plan checklist (D14): forward the adapter's typed plan
+            // Live plan checklist: forward the adapter's typed plan
             // progress as a run event (LAST WINS; the UI renders the latest).
             if (safeEv.plan_progress) {
               log?.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
@@ -1802,7 +1792,7 @@ export class Orchestrator {
     const diff = await wsm.diff(envelope);
     const answerText = messageParts.join("\n").trim() || undefined;
     const deliverablePresent = diff.trim().length > 0 || Boolean(answerText);
-    // Cancelled attempts skip gates entirely (T3.1#8): the operator asked to
+    // Cancelled attempts skip gates entirely: the operator asked to
     // stop NOW; running a 600s-per-gate suite after the abort delays the ack
     // and burns compute on a result nobody will adopt. Diff/attempt.yaml
     // still land, so partial work stays inspectable.
@@ -1869,7 +1859,7 @@ export class Orchestrator {
       ...telemetrySummary(telemetry),
       outcome: telemetry.outcome,
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
-      // Candidate-card evidence (D13): the Candidates tab renders per-attempt
+      // Candidate-card evidence: the Candidates tab renders per-attempt
       // diffstat without re-parsing patch bytes client-side.
       diffstat: {
         files: attemptDiffstat.paths.length,
@@ -2096,7 +2086,7 @@ export class Orchestrator {
       }
     }
 
-    // ContextPack is LAZY (Q13): agent/race candidates explore the live tree
+    // ContextPack is LAZY: agent/race candidates explore the live tree
     // themselves inside their envelopes; only the read-only report modes
     // (explore/plan/readonly_audit) build and attach the compact atlas.
 
@@ -2180,7 +2170,7 @@ export class Orchestrator {
         attemptId,
         intent: this.candidateIntent(input),
         harnessId: routed.adapter.id,
-        // DD-27 wave guard: every slot AFTER the first holds the estimate
+        // wave guard: every slot AFTER the first holds the estimate
         // floor at reservation, so concurrent candidates are visible to the
         // breaker BEFORE any usage streams and a parallel wave cannot blow
         // past the cap between settlements. The first slot holds nothing —
@@ -2232,7 +2222,7 @@ export class Orchestrator {
         return;
       }
       const adapter = slot.routed.adapter;
-      // SF2 soft + downgrade breaker (before the hard cap): soft = a one-time
+      // Soft + downgrade breaker (before the hard cap): soft = a one-time
       // warning; downgrade = run this attempt on the per-harness fallback_model
       // (cheaper) instead of hard-killing — gives fallback_model a real job.
       const breakerTier = slotLedger(slot).tier();
@@ -2285,7 +2275,7 @@ export class Orchestrator {
           // runs directly in the execution tree so the next turn sees its work
           // and the native session resumes. Race candidates (n>1) always stay in
           // isolated envelopes; the winner is auto-adopted into the tree after.
-          // REQUESTED width decides (T2#6): a budget-degraded race whose wave
+          // REQUESTED width decides: a budget-degraded race whose wave
           // guard trimmed it to one slot still runs enveloped + adoption —
           // never a silent switch to direct live-tree mutation.
           inPlace: input.inPlace === true && requestedSingleCandidate,
@@ -2558,7 +2548,7 @@ export class Orchestrator {
     log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
     let evidences: CandidateEvidence[];
     try {
-      // №25: reviewRuns internally SKIPS the paid reviewer call for empty-diff
+      // reviewRuns internally SKIPS the paid reviewer call for empty-diff
       // candidates ("привет" in agent mode no longer burns two reviewers on
       // "(empty diff)"). Candidates still flow through arbitration/gates so the
       // no_op/answer outcome and gate failures are unchanged.
@@ -2578,7 +2568,7 @@ export class Orchestrator {
       );
     } catch (err) {
       // Review preflight/evidence failures end TERMINALLY with artifacts —
-      // never as an escaped throw that orphans the run dir (#5).
+      // never as an escaped throw that orphans the run dir.
       return failTerminally(log, store, paths, runId, taskId, mode, "review", err, ledger.spend());
     } finally {
       // Review preflight failures must not leak candidate worktrees.
@@ -2606,7 +2596,7 @@ export class Orchestrator {
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
       const synthRouted = adapters[0] as RoutedAdapter;
-      // Per-harness child ledger (T3#10): synthesis spend counts against the
+      // Per-harness child ledger: synthesis spend counts against the
       // synthesizer harness's own cap, not only the run cap.
       const synthLedger = this.harnessLedger(harnessLedgers, ledger, synthRouted);
       const lease = synthLedger.reserve({
@@ -2741,7 +2731,7 @@ export class Orchestrator {
         estimatedSpend: runs.some((r) => r.costEstimated),
       });
     } catch (err) {
-      // Arbitration throws end terminally with artifacts, never as an orphan (#5).
+      // Arbitration throws end terminally with artifacts, never as an orphan.
       return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err, ledger.spend());
     }
     log.emit("arbitration.completed", {
@@ -2757,7 +2747,7 @@ export class Orchestrator {
     const needsHuman = evidences.some((e) =>
       e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)),
     );
-    // Run-level review_verified is the WINNER's verification (T2#8): an
+    // Run-level review_verified is the WINNER's verification: an
     // empty-diff loser's unverified route must not drag the shipped result's
     // flag false. No winner -> fall back to the all-candidates view.
     const actualReviewVerified = winnerRun
@@ -2766,7 +2756,7 @@ export class Orchestrator {
     let status: RunStatus =
       needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
 
-    // FinalVerifier (D12/INV-115): an otherwise-adoptable winner with a patch
+    // FinalVerifier (INV-115): an otherwise-adoptable winner with a patch
     // must ALSO apply cleanly onto a fresh tree at its own base and pass the
     // deterministic gates there, BEFORE adoption/apply eligibility. A failure
     // BLOCKS the run with a typed reason instead of shipping it.
@@ -2819,7 +2809,7 @@ export class Orchestrator {
       if (!hasDiff && winnerAnswer.length > 0) {
         store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
       }
-      // Р8: a single-candidate in-place turn already mutated the live tree (its
+      // a single-candidate in-place turn already mutated the live tree (its
       // diff IS the live change). A race (n>1) ran candidates in isolated
       // envelopes, so the winner's patch must be ADOPTED into the live tree for
       // the next turn to see it. Blockers / non-success stop adoption; a failed
@@ -2846,7 +2836,7 @@ export class Orchestrator {
           // edits made during review/arbitration are not folded into the target.
           postTurnSha = earlyPostTurnSha;
         } else if (adoptable) {
-          // Protected path (T3.2#3): --check first, restore on 3way failure —
+          // Protected path: --check first, restore on 3way failure —
           // adopted:false MUST mean the live tree is byte-identical (INV-114);
           // a failed restore is disclosed as tree_mutated, never hidden.
           const applied = await applyPatchProtected(execRoot, winnerRun.diff);
@@ -3226,7 +3216,7 @@ export class Orchestrator {
    * scoped harness HOME (B10/§6) so reviewer children (codex session rollouts,
    * claude config) never write native state into the operator's real ~/.codex /
    * ~/.claude. The codex route-proof transcript is read from this same scoped
-   * CODEX_HOME, so cross-family verification (B9) is unaffected. Every call site
+   * CODEX_HOME, so cross-family verification is unaffected. Every call site
    * MUST go through here so the scoping cannot drift. Disposed once the panel
    * settles (resolve OR reject).
    */
@@ -3262,7 +3252,7 @@ export class Orchestrator {
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
       try {
         this.writeTestsEvidence(candidateEvidenceDir, contract, run.gates);
-        // №25: a candidate that changed NO files has nothing to review — never
+        // a candidate that changed NO files has nothing to review — never
         // spend a reviewer panel on "(empty diff)" ("привет" in agent mode used to
         // cost two reviewers). It still flows through policy gates and arbitration
         // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
@@ -3791,7 +3781,7 @@ export class Orchestrator {
         }
 
         // The review round is wrapped so a preflight/revalidation throw ends the
-        // run TERMINALLY with artifacts instead of orphaning the run dir (#5).
+        // run TERMINALLY with artifacts instead of orphaning the run dir.
         let conv: ReturnType<typeof evaluateConvergence>;
         try {
           conv = await (async () => {
@@ -4365,7 +4355,7 @@ export class Orchestrator {
       harnessId: string;
       telemetry: AttemptTelemetry;
     }[] = [];
-    // B10: scope the planners' HOME/config dirs so claude-code plan files (and any
+    // scope the planners' HOME/config dirs so claude-code plan files (and any
     // native session state) stay inside the run's scoped home, never the
     // operator's real ~/.claude/plans. Disposed after the planners finish.
     const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
@@ -4474,7 +4464,7 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
-              // D7: read-only routes burn quota too (the orchestrate BRAIN is
+              // read-only routes burn quota too (the orchestrate BRAIN is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -4843,7 +4833,7 @@ export class Orchestrator {
   }
 
   /**
-   * orchestrate: the autonomous brain (A3). NOT a privileged harness — the brain
+   * orchestrate: the autonomous brain. NOT a privileged harness — the brain
    * is routed like reviewers (doctor-ok + `orchestrate` capability + headroom)
    * and runs READ-ONLY. With default `suggest` autonomy its work product is a
    * typed orchestration plan over the 6-tool belt (start_run / race / status /
@@ -5044,7 +5034,7 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    // B10: read-only routes still spawn harness processes that write native
+    // read-only routes still spawn harness processes that write native
     // state (plan files, session rollouts). Scope their HOME/config dirs so they
     // cannot escape into the operator's real ~/.claude, ~/.codex, etc. — the
     // adapters seed auth into these scoped dirs (§6). Disposed at run end.
@@ -5065,7 +5055,7 @@ export class Orchestrator {
     }[] = [];
     let fallbackOpen = false;
     let budgetStopped = false;
-    // №15: in a swarm the same harness appears in several slots; resuming the
+    // in a swarm the same harness appears in several slots; resuming the
     // ONE native session id from all of them races the vendor's session store
     // (and is semantically wrong — N explorers continuing one conversation).
     // Grant resume to the first slot of each harness only; the rest run fresh.
@@ -5130,7 +5120,7 @@ export class Orchestrator {
         max_turns: knobs.maxTurns,
         env_inheritance: envInheritance(this.config(input.repoRoot)),
         env: roHome.env,
-        // Structured output (D10): the orchestrate BRAIN's deliverable IS the
+        // Structured output: the orchestrate BRAIN's deliverable IS the
         // typed plan — constrain schema-capable routes to it. Capability-gated:
         // routes without json_schema_output keep fenced-JSON parsing. ALSO
         // gated off when this spec will ride the INTERACTIVE stream-json
@@ -5223,7 +5213,7 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
-              // D7: read-only routes burn quota too (the orchestrate BRAIN is
+              // read-only routes burn quota too (the orchestrate BRAIN is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -5725,7 +5715,7 @@ export class Orchestrator {
     const autonomy: OrchestrateAutonomy =
       opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
     let terminal: RunStatus = "success";
-    // D5: orchestrate's contract output IS the typed plan. If the brain failed to
+    // orchestrate's contract output IS the typed plan. If the brain failed to
     // produce a valid one, the run is NOT a clean success — disclose it honestly
     // (the markdown plan stays as a diagnostic artifact) rather than reporting
     // success alongside an orchestration_parse_error.md.
@@ -5743,7 +5733,7 @@ export class Orchestrator {
         paths,
         log,
         // The BRAIN's own settled spend counts against the same cap: the
-        // aggregate must start from it, not from zero (D9 completeness).
+        // aggregate must start from it, not from zero (completeness).
         ledger.spend(),
       );
       terminal = exec.terminal;
@@ -5809,7 +5799,7 @@ export class Orchestrator {
     } else if (terminal === "not_converged") {
       // Orchestrate's typed-plan contract failed (the brain produced no valid
       // plan): a failure-shaped terminal with artifacts, never run.completed —
-      // jobs.json and events.jsonl must agree the run did not converge (T3.1#3).
+      // jobs.json and events.jsonl must agree the run did not converge.
       writeFailure(store, paths, {
         phase: "plan",
         category: "harness_error",
@@ -5919,7 +5909,7 @@ export class Orchestrator {
     log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
 
     let executed = 0;
-    // Aggregate budget (D9): the brain's own spend plus every sub-run share
+    // Aggregate budget: the brain's own spend plus every sub-run share
     // ONE cap. Each sequential sub-run gets the REMAINING headroom (cap minus
     // settled spend so far) — never the full cap again per step.
     let aggregateSpentUsd = brainSpentUsd;
@@ -6115,7 +6105,7 @@ export class Orchestrator {
             runId: call.run_id,
             detail: `run ${call.run_id} has no patch.diff to review`,
           };
-        // Aggregate honesty (D9): reviewer panels spend real money on
+        // Aggregate honesty: reviewer panels spend real money on
         // API-keyed routes and the spend is charged AFTER the fact — with no
         // remaining headroom the review must not start at all.
         if (remainingUsd !== null && remainingUsd <= 0) {
@@ -6169,7 +6159,7 @@ export class Orchestrator {
           runId: call.run_id,
           detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
           // Reviewer panels can spend real money on API-keyed routes; the
-          // aggregate cap must charge it like any other step (D9).
+          // aggregate cap must charge it like any other step.
           spendUsd: result.reviewSpendUsd ?? null,
         };
       }

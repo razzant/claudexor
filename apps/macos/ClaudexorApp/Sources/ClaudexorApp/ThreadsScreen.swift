@@ -32,7 +32,7 @@ struct ThreadsScreen: View {
     /// Per-turn model override for the primary harness. Empty = harness default
     /// (the global default stays in Settings → Harnesses). Not sticky across threads.
     /// Harness-scoped per-turn models (harness id -> model id); built by the
-    /// per-harness pickers in the "⋯" popover (D2: no run-global model).
+    /// per-harness pickers in the "⋯" popover (no run-global model).
     @State private var composerModels: [String: String] = [:]
     /// Enumerated models for the current primary harness (ADP4). nil until loaded;
     /// an empty / non-enumerable response falls back to a free-text field.
@@ -218,7 +218,7 @@ struct ThreadsScreen: View {
     private var threadList: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // No "New" button here — it lives in the toolbar (square.and.pencil); a
-            // second one in the sidebar was a duplicate (В12). The header is just the
+            // second one in the sidebar was a duplicate. The header is just the
             // section title.
             Text("Threads")
                 .font(.headline)
@@ -294,7 +294,7 @@ struct ThreadsScreen: View {
             }
             Text(threadSubtitle(thread)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        // B3: rename/archive ride the existing PATCH /threads/:id (server-owned
+        // rename/archive ride the existing PATCH /threads/:id (server-owned
         // title/state); the row finally exposes the affordance.
         .contextMenu {
             Button("Rename…") {
@@ -499,7 +499,7 @@ struct ThreadsScreen: View {
                         Image(systemName: "slider.horizontal.3")
                             // Subtle active tint only while the panel is open, so the
                             // options control reads as a PEER of the other composer-row
-                            // controls — not the one prominent filled button (В: it
+                            // controls — not the one prominent filled button (it
                             // looked like the only clickable thing). No glass fill.
                             .foregroundStyle(showOptions ? Theme.accent : .secondary)
                             .padding(.horizontal, Theme.Spacing.xs)
@@ -508,7 +508,7 @@ struct ThreadsScreen: View {
                     }
                     .buttonStyle(.borderless)
                     .help("More options: harness pool, model, budget, access, web, repair strategies")
-                    // Native dismissible popover (В5) — no inline glass-on-glass panel.
+                    // Native dismissible popover — no inline glass-on-glass panel.
                     .popover(isPresented: $showOptions, arrowEdge: .bottom) { composerOptions }
                     Spacer(minLength: Theme.Spacing.sm)
                     composerHint
@@ -727,7 +727,7 @@ struct ThreadsScreen: View {
                 }
             }
             // Context depth is engine-owned "auto"; the retired "deep" tier and
-            // its picker were removed in the v0.15 triage (A3).
+            // its picker were removed in the v0.15 triage.
             // Workspace mode is FIXED at thread creation, so it's only editable while
             // drafting the first turn (no thread selected yet). Isolated keeps a thread
             // worktree; in_place (default) mutates the live tree so the next turn sees it.

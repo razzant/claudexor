@@ -203,7 +203,7 @@ export class SecretStore {
 }
 
 /**
- * The single allowlist of managed secret names (A17: previously duplicated in
+ * The single allowlist of managed secret names (previously duplicated in
  * the CLI and the control API, and BOTH were missing `claude_oauth` — the
  * claude adapter reads it, so it must be settable). Names are secret REFS,
  * never values; adding a name here makes it settable via CLI and HTTP alike.

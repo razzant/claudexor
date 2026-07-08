@@ -1,5 +1,5 @@
 /**
- * Candidate-card projection (D13): attempts/<id>/attempt.yaml +
+ * Candidate-card projection: attempts/<id>/attempt.yaml +
  * reviews/<id>.yaml + the decision winner -> ControlCandidate[]. Pure
  * artifact reads — the engine wrote the evidence; this only projects it.
  */

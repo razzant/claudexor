@@ -19,11 +19,8 @@ import {
   HarnessModel,
   InteractionQuestion,
 } from "./harness.js";
-import { DecisionRecord } from "./decision.js";
-import { WorkProduct } from "./workproduct.js";
-import { ReviewFinding } from "./review.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
-import { OrchestrateAutonomy, OrchestratePlanProgress } from "./orchestrate.js";
+import { OrchestrateAutonomy } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
 import { ProtectedPathApproval } from "./task.js";
 
@@ -79,7 +76,7 @@ export const ControlRunStartRequest = z
     portfolio: Portfolio.optional(),
     /** Scalar model convenience: expands to the RESOLVED PRIMARY harness only
      * (never the pool). With a multi-harness pool and no primary it is
-     * rejected — use `models` instead (D2/INV-103). */
+     * rejected — use `models` instead (INV-103). */
     model: NonBlankString.optional(),
     /** Harness-scoped model map (harness id → model id). Specific beats
      * general: an entry here wins over the scalar `model` and over the
@@ -115,7 +112,7 @@ export const ControlRunStartRequest = z
     specPath: NonBlankString.optional(),
     specId: z.string().optional(),
     specHash: ContentHash.optional(),
-    /** Thread/session linkage (A2): a run is a turn inside a thread. */
+    /** Thread/session linkage: a run is a turn inside a thread. */
     threadId: Id.optional(),
     /** INTERNAL single-writer handoff: control-api pre-creates the turn and
      * passes its id to the daemon runner. REJECTED (400) when supplied by a
@@ -136,7 +133,7 @@ export const ControlRunStartRequest = z
      * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;
      * consumed by the executor in runOrchestrate. */
     autonomy: OrchestrateAutonomy.optional(),
-    /** Orchestrate executor: cap on plan tool calls (D9). Only meaningful for
+    /** Orchestrate executor: cap on plan tool calls. Only meaningful for
      * mode=orchestrate; consumed by executeOrchestratePlan. */
     maxToolCalls: z.number().int().positive().optional(),
   })
@@ -624,7 +621,7 @@ export const ControlRunDecisionResponse = z.object({
 });
 export type ControlRunDecisionResponse = z.infer<typeof ControlRunDecisionResponse>;
 
-/* ---- Threads / Sessions (A2 chat/session-first; camelCase control projections) ---- */
+/* ---- Threads / Sessions (chat/session-first; camelCase control projections) ---- */
 
 export const ControlThread = z.object({
   id: Id,
@@ -779,7 +776,7 @@ export const HarnessStatusDto = z.object({
   reasons: z.array(z.string()).default([]),
   /** The user's configured per-harness default model, if any. */
   configuredModel: z.string().nullable().default(null),
-  /** Strict truth-source check of `configuredModel` (D3): null when no model
+  /** Strict truth-source check of `configuredModel`: null when no model
    * is configured; a rejection carries the actionable message so UIs render
    * the same honesty `claudexor doctor` prints. */
   configuredModelCheck: z

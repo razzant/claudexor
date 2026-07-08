@@ -1,15 +1,15 @@
 /**
  * Codex rollout-transcript readers: the CLI's own session record
  * (`$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`) is the
- * native machine-readable source for the observed model (route proof, B9)
- * and the rate-window quota (D7). One owner for rollout facts.
+ * native machine-readable source for the observed model (route proof)
+ * and the rate-window quota. One owner for rollout facts.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * B9 / route proof: recover the model codex ACTUALLY ran from its own session
+ * Route proof: recover the model codex ACTUALLY ran from its own session
  * rollout file (`$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-*-<threadId>.jsonl`,
  * `turn_context.payload.model`). This is the codex CLI's OWN record — a real
  * observation, not an argv echo — so it honestly upgrades the cross-family route

@@ -13,11 +13,7 @@
           "enum": [
             "patch",
             "new_repo",
-            "branch",
-            "commit",
-            "pr",
-            "report",
-            "artifact_bundle"
+            "report"
           ]
         },
         "source_task_id": {

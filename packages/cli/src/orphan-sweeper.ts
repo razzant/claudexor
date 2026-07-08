@@ -1,5 +1,5 @@
 /**
- * Crash GC (T3.1#5): a daemon crash leaves three kinds of debris behind —
+ * Crash GC: a daemon crash leaves three kinds of debris behind —
  * workspace envelopes (worktree + scoped home WITH SEEDED CREDENTIALS),
  * per-attempt `claudexor/<task>/<attempt>` branches, and `claudexor-ro-*`
  * read-only tmp homes. The sweep runs at daemon startup BEFORE any new work

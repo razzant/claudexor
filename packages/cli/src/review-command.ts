@@ -1,5 +1,5 @@
 /**
- * `claudexor review --diff <file>` (D18): thin surface over the engine's
+ * `claudexor review --diff <file>`: thin surface over the engine's
  * scoped diff review — the per-commit gate's PRIMARY route. FAIL CLOSED: an
  * inconclusive reviewer panel (unhealthy cross-family state or
  * INSUFFICIENT_EVIDENCE findings) never reads as a pass.
@@ -44,7 +44,7 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
     const blockers = result.findings.filter((f) => isBlocking(f));
     // FAIL CLOSED: reviewer setup/parse failures surface as
     // INSUFFICIENT_EVIDENCE findings that isBlocking never counts — an
-    // inconclusive panel must NOT read as a pass (D18). The pass bar matches
+    // inconclusive panel must NOT read as a pass. The pass bar matches
     // convergence's "clean review": cross-family HEALTHY (parseable findings
     // from >=2 families) AND VERIFIED (stream-observed route proofs).
     const inconclusive =

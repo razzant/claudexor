@@ -9,7 +9,6 @@ import { ControlSetupJob as ControlSetupJobSchema, type ControlSetupJob } from "
 import { buildGateway } from "./registry.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
-const SETUP_LOG = join(daemonDir(), "setup.log");
 
 type SetupProfile = {
   guideUrl: string;

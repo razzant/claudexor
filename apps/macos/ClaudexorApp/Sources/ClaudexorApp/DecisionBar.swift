@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Review-queue actions ON a blocked turn (B4): the three server-owned
+/// Review-queue actions ON a blocked turn: the three server-owned
 /// operator decisions, each producing an auditable, patch-hash-bound record —
 /// never client-faked state.
 ///

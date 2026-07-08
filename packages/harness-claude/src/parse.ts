@@ -1,7 +1,6 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -170,7 +169,7 @@ function parseClaudeEventStateful(
           const path = input.file_path ?? input.path ?? input.notebook_path;
           out.push({ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name, tool_use_id: block.id } });
         } else if (name === "TodoWrite" && Array.isArray(input.todos)) {
-          // Typed plan progress (D14), legacy surface: older claude CLIs plan
+          // Typed plan progress, legacy surface: older claude CLIs plan
           // via TodoWrite (whole-list updates; statuses map 1:1).
           const items = (input.todos as Array<{ content?: unknown; status?: unknown }>).map((t, i) => ({
             id: `claude-${i}`,
@@ -180,7 +179,7 @@ function parseClaudeEventStateful(
           }));
           out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, plan_progress: { items } });
         } else if (name === "TaskCreate" || name === "TaskUpdate") {
-          // Typed plan progress (D14), current surface (LIVE-VERIFIED 2.1.165):
+          // Typed plan progress, current surface (LIVE-VERIFIED 2.1.165):
           // claude plans via TaskCreate/TaskUpdate. The adapter accumulates the
           // session's task list and re-emits the WHOLE list on every change
           // (the run-event contract is last-wins).

@@ -2,7 +2,7 @@
  * Explicit reviewer-panel resolution (owner-configured panels). Every entry
  * must pass the SAME gates auto-selection uses — registered real harness,
  * enabled in settings, doctor-ok on the review route, readonly-review
- * capable — plus the STRICT model truth gate (D3/INV-104: live inventory
+ * capable — plus the STRICT model truth gate (INV-104: live inventory
  * when the adapter has `models()`, else manifest `known_models`; empty truth
  * refuses) and the declared effort ladder. Violations throw typed
  * HarnessUnavailableError; the orchestrator turns them into review_preflight
@@ -119,7 +119,7 @@ export async function resolveExplicitReviewerPanel(
       const requestedModel = entry.model ?? harnessSettings[entry.harness]?.default_model ?? null;
       if (requestedModel) {
         if (typeof adapter.models !== "function") {
-          // STRICT (D3): the manifest list is the truth source here; an empty
+          // STRICT: the manifest list is the truth source here; an empty
           // list means the harness cannot verify models and the explicit
           // model is refused (validateModel phrases both refusals).
           const check = validateModel(

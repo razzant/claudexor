@@ -5,7 +5,7 @@
  * — run.completed, run.blocked, or run.failed — plus failure.yaml/summary
  * artifacts on the failure paths. An escaped throw used to orphan the run
  * dir, leaving events.jsonl without a terminal and SSE tailers waiting
- * forever (T3.1#2).
+ * forever.
  */
 import { join } from "node:path";
 import type { ModeKind } from "@claudexor/schema";
@@ -62,7 +62,7 @@ export function writeFailure(
  * Terminal result for a cancelled run: emits run.failed with status
  * "cancelled" so every mode ends consistently. `writeTelemetry` carries the
  * PARTIAL attempt telemetry collected before the abort — a cancelled run
- * must still account for what it spent and observed (T2#16); it used to be
+ * must still account for what it spent and observed; it used to be
  * written only by convergence.
  */
 export function cancelledResult(

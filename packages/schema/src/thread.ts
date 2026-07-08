@@ -5,10 +5,8 @@ import {
   Id,
   IsoTimestamp,
   ModeKind,
-  ProviderFamily,
   SchemaVersion,
 } from "./primitives.js";
-import { Portfolio } from "./budget.js";
 import { Attachment } from "./attachment.js";
 
 /**
@@ -31,8 +29,10 @@ export type ThreadState = z.infer<typeof ThreadState>;
 export const SessionState = z.enum(["live", "stale", "rebound"]);
 export type SessionState = z.infer<typeof SessionState>;
 
-/** How a session can be continued on its native CLI. */
-export const SessionResumeKind = z.enum(["resume_by_id", "resume_latest", "rehost", "none"]);
+/** How a session can be continued on its native CLI. Staged-field rule:
+ * only values the daemon actually stamps (`resume_by_id` when a native
+ * session id exists, `none` otherwise). */
+export const SessionResumeKind = z.enum(["resume_by_id", "none"]);
 export type SessionResumeKind = z.infer<typeof SessionResumeKind>;
 
 export const ThreadTurnKind = z.enum(["initial", "followup", "decision"]);
@@ -128,7 +128,7 @@ export const TurnEnqueueError = z.object({
   /** Whether retry can REPLAY this turn: true when a job was recorded before
    * the failure (the registry holds the params to replay); false when the
    * enqueue itself threw and no job exists — surfaces then offer "send a new
-   * message" instead of a doomed Retry (DT-PT-2). */
+   * message" instead of a doomed Retry. */
   retryable: z.boolean().default(true),
   failed_at: IsoTimestamp,
 });

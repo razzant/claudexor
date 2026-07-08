@@ -312,7 +312,7 @@ describe("parseClaudeEvent", () => {
   });
 });
 
-describe("plan progress (D14)", () => {
+describe("plan progress", () => {
   it("accumulates TaskCreate/TaskUpdate into a whole-list plan_progress (current claude surface)", () => {
     const sid = "s-task-" + Math.random();
     const call = (name: string, input: Record<string, unknown>) =>
@@ -372,7 +372,7 @@ describe("plan progress (D14)", () => {
   });
 });
 
-describe("structured output flag (D10)", () => {
+describe("structured output flag", () => {
   it("claudeArgsForSpec adds inline --json-schema only when output_schema is set", async () => {
     const { claudeArgsForSpec } = await import("./index.js");
     const { HarnessRunSpec } = await import("@claudexor/schema");

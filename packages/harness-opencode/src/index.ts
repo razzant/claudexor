@@ -85,6 +85,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           verify: true,
           synthesize: true,
           read_files: true,
+          // No browser-MCP injection path exists for opencode yet —
           // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",

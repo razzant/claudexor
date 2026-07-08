@@ -3,7 +3,7 @@ import ClaudexorKit
 
 /// Model override control for one harness row (ADP4). A Picker over the
 /// harness's model TRUTH SOURCE (live inventory or manifest known-good
-/// hints). STRICT (D3): there is no free-text entry — a harness with no
+/// hints). STRICT: there is no free-text entry — a harness with no
 /// truth source runs its default only, and a model outside the source would
 /// be refused by the engine anyway. The view owns catalog loading so a
 /// transport failure is distinguishable from an ANSWERED "no truth source".

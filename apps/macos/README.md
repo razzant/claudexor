@@ -48,7 +48,7 @@ Dev/QA env switches:
 - `CLAUDEXOR_DEBUG_ROUTE`: open a run's inspector for deterministic screenshots.
   The code handles `task` and `convergence` (each opens a sample run's detail);
   setting any value also turns on sample data. The older per-screen routes were
-  removed in the v0.10 chat-first collapse.
+  removed in the chat-first collapse (see CHANGELOG).
 - `CLAUDEXOR_DEBUG_SIZE="WxH"`: deterministic window size.
 - `CLAUDEXOR_DEBUG_APPEARANCE=light|dark`: deterministic appearance.
 
@@ -103,7 +103,7 @@ Run detail uses the server-projected `primaryOutput` first, then artifact
 fallbacks. Active runs default to Timeline, completed runs to Outcome, and
 failures without output to Diagnostics. Cancel/interrupt uses the server control
 endpoint; live input forwarding is not part of the control surface (the former
-input stub was removed in v0.7.0), so the app shows no input UI for active runs.
+input stub was removed as dead code), so the app shows no input UI for active runs.
 
 The trailing Workbench bridges two artifact planes: Run Detail reads the run's
 internal tree via the artifacts endpoints, while the Canvas gallery and

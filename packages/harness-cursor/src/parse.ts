@@ -1,7 +1,6 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
 const FILE_WRITE_VARIANTS = new Set(["write", "edit", "multiEdit", "delete", "create", "apply"]);

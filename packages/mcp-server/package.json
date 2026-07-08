@@ -2,7 +2,7 @@
   "name": "@claudexor/mcp-server",
   "version": "0.15.0",
   "license": "MIT",
-  "description": "Minimal MCP server (stdio JSON-RPC) exposing Claudexor tools. Runner injected.",
+  "description": "MCP server (official SDK, stdio) exposing Claudexor run/status tools with elicitation-backed interactive questions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

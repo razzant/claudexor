@@ -170,7 +170,7 @@ describe("parseCodexEvent", () => {
   });
 });
 
-describe("plan progress (D14)", () => {
+describe("plan progress", () => {
   it("maps todo_list items to the TYPED plan_progress field (message kept for plan extraction)", () => {
     const out = parseCodexEvent(
       { type: "item.completed", item: { type: "todo_list", items: [{ text: "step one", completed: true }, { text: "step two", completed: false }] } },
@@ -185,7 +185,7 @@ describe("plan progress (D14)", () => {
   });
 });
 
-describe("structured output flag (D10)", () => {
+describe("structured output flag", () => {
   it("codexExecArgs adds --output-schema <file> in both fresh and resume branches", async () => {
     const { codexExecArgs } = await import("./index.js");
     const base = {

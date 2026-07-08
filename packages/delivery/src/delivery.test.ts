@@ -141,7 +141,7 @@ async function initRepo(): Promise<string> {
   return repo;
 }
 
-describe("protected apply path (T3.2#3/#6)", () => {
+describe("protected apply path", () => {
   it("a conflicting 3way apply refuses cleanly with the tree RESTORED (adopted:false means unchanged)", async () => {
     const repo = await initRepo();
     // Patch built against content the tree no longer has -> --check refuses.
@@ -220,7 +220,7 @@ describe("protected apply path (T3.2#3/#6)", () => {
   });
 });
 
-describe("final_verify apply-gate consumer (D12/INV-115)", () => {
+describe("final_verify apply-gate consumer (INV-115)", () => {
   const baseDecision = {
     winner: "a01",
     status: "success" as const,

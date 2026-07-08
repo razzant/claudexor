@@ -5,7 +5,6 @@ import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionAnswerSet, InteractionQuestion } from "@claudexor/schema";
 import { InteractionQuestion as InteractionQuestionSchema } from "@claudexor/schema";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const print = (s: string): void => {
   process.stdout.write(s + "\n");
@@ -150,7 +149,7 @@ export function controlApiAddress(): ControlApiAddress {
 /**
  * `claudexor follow <run_id>`: live SSE tail of a daemon-backed run with full
  * replay (persisted seq), bounded reconnects via Last-Event-ID, and
- * interactive TTY answering of harness questions. Exit honesty (T3.1#7): a
+ * interactive TTY answering of harness questions. Exit honesty: a
  * stream that ends WITHOUT a terminal event is a LOSS (exit 1, "stream
  * lost"), never a silent success — success requires an observed terminal or
  * an `end` frame the server sent after one.

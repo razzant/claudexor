@@ -85,7 +85,7 @@ final class AppModel {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
     }
     /// Recently-used project roots (MRU, most-recent first, capped) — powers the
-    /// composer's project chip so you Browse once, then pick from a menu (В6).
+    /// composer's project chip so you Browse once, then pick from a menu.
     var recentProjects: [String] = [] {
         didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
     }
@@ -401,7 +401,7 @@ final class AppModel {
                 let checks = status.checks.map { "\($0.id): \($0.status)" }
                 let acceptsImages = (status.manifest?["capability_profile"]?["image_input"]?.stringValue ?? "none") != "none"
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
-                // T2#6c: the doctor's configured-model verdict rides the DTO —
+                // The doctor's configured-model verdict rides the DTO —
                 // surface a rejection so a doomed default is visible in Settings.
                 let modelIssue: String? = {
                     guard let check = status.configuredModelCheck, check.status == "rejected" else { return nil }
@@ -756,7 +756,7 @@ final class AppModel {
             switch result {
             case .started(let info):
                 // Swap the optimistic row for one keyed by the real run id.
-                // A refresh may have raced in during the await (T6#14): drop
+                // A refresh may have raced in during the await: drop
                 // any server row already inserted under the real id (dedupe)
                 // and INSERT when the optimistic row is gone (never lose the
                 // started run from the list).
@@ -848,7 +848,7 @@ final class AppModel {
             let list = try await client.listThreads()
             threads = list.threads
             if list.droppedThreads > 0 {
-                // Per-row salvage disclosed (T6#5): the store carried rows this
+                // Per-row salvage disclosed: the store carried rows this
                 // app build cannot decode — say so instead of hiding them.
                 threadStatus = "\(list.droppedThreads) thread(s) could not be decoded by this app version and are hidden."
             } else if threadStatus?.contains("could not be decoded") == true {
@@ -1163,7 +1163,7 @@ final class AppModel {
     /// chat composer is never a silent no-op (the v0.9 bug). Returns once sent.
     /// Returns true when the turn was accepted by the engine (so the composer can
     /// clear its text). A POST-send thread reload failure does NOT make this false
-    /// (the turn is already on the server) — that would risk a duplicate send (#12).
+    /// (the turn is already on the server) — that would risk a duplicate send.
     @discardableResult
     /// `onThread` binds the turn to a SPECIFIC owning thread (Implement-plan /
     /// Implement-spec capture their card's thread at tap time). When nil, the turn
@@ -1266,7 +1266,7 @@ final class AppModel {
                 maxUsd: options.maxUsd,
                 // Per-turn model override (empty = harness default → don't send the key).
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
-                // Harness-scoped map (D2): specific beats the scalar and defaults.
+                // Harness-scoped map: specific beats the scalar and defaults.
                 models: normalizedTurnModels(options.models),
                 reviewerPanel: options.reviewerPanel,
                 access: writeMode ? options.access : nil,
@@ -1448,7 +1448,7 @@ final class AppModel {
     /// 400 by re-deriving the asking state with the error attached. `priorQuestions`/
     /// `priorPlanRunId` are passed in by the caller (not re-read from mutable state),
     /// and `gen` guards the post-await writes against a superseding start/cancel.
-    /// Multi-tier interview (Q14): record this tier's answers as prior decisions and
+    /// Multi-tier interview: record this tier's answers as prior decisions and
     /// re-run the grounding for the NEXT, DEEPER tier — or freeze if the model has no
     /// further questions. Drives the 8A backend (`priorDecisions`).
     func askDeeperSpec(threadId tid: String, decisions: [SpecPriorDecision]) async {
@@ -1495,7 +1495,7 @@ final class AppModel {
             let res = try await client.specFreeze(
                 // priorDecisions = every EARLIER tier's decisions (the current tier
                 // rides `answers`); folded into the frozen SpecPack so a multi-tier
-                // spec doesn't lose tiers 0..N-1 (#8/#9).
+                // spec doesn't lose tiers 0..N-1.
                 SpecFreezeRequest(prompt: prompt, scope: .project(root: repoRoot),
                                   planDir: planDir, answers: answers,
                                   priorDecisions: specPrior[tid] ?? [])
@@ -1672,7 +1672,7 @@ final class AppModel {
                 snapshotLoadDepth[id] = nil
                 let deferred = deferredEnvelopes[id] ?? []
                 deferredEnvelopes[id] = nil
-                // Seq fence for the REPLAY too (T6#6): the snapshot we just
+                // Seq fence for the REPLAY too: the snapshot we just
                 // merged reflects everything <= lastSeq; re-applying a
                 // deferred envelope from that range would double-count spend
                 // and duplicate timeline rows.
@@ -1731,7 +1731,7 @@ final class AppModel {
                 task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)
             }
             task.artifactPaths = detail.artifacts.map(\.path)
-            // Live plan checklist (D14) + candidate cards (D13): mapping owned
+            // Live plan checklist + candidate cards: mapping owned
             // by RunDetailMapping.swift.
             if let planItems = RunDetailMapping.planItems(detail.planProgress) { task.plan = planItems }
             task.candidates = RunDetailMapping.candidates(detail.candidates, runStatus: task.status)
@@ -2006,7 +2006,7 @@ final class AppModel {
                 let resumeFrom = self.lastEventIds[runId]
                 if resumeFrom == nil {
                     // Full replay rebuilds spend from budget.observation
-                    // increments (T6#7): seed from replay OR summary, never
+                    // increments: seed from replay OR summary, never
                     // both — a mid-run first attach used to double the money.
                     let box = self.ensureLiveBox(runId)
                     box.spendUsd = 0
@@ -2015,7 +2015,7 @@ final class AppModel {
                 do {
                     for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
                         // A delivering stream is a HEALTHY stream: reset the
-                        // reconnect budget (T6#8) so a long run with occasional
+                        // reconnect budget so a long run with occasional
                         // transient drops never falsely reports a lost stream.
                         attempt = 0
                         // Snapshot fence: a concurrent detail load may already
@@ -2054,7 +2054,7 @@ final class AppModel {
     /// 20+ events/sec; four renders per second read the same as fifteen but
     /// cost a quarter of the compositing). The batch applies synchronously, so
     /// SwiftUI renders the whole batch once.
-    /// Adaptive-coalescing tuning (DT-PT-19): the flush window starts snappy
+    /// Adaptive-coalescing tuning: the flush window starts snappy
     /// and widens exponentially under sustained bursts, capped so the feed
     /// still repaints ~4x/second at worst.
     private static let flushWindowCalm: TimeInterval = 0.064
@@ -2157,7 +2157,7 @@ final class AppModel {
                         // Live thread updates: events carry thread_id, so an event for
                         // the OPEN thread refreshes its conversation. On run.created we
                         // also start streaming the just-started run — this is how a
-                        // QUEUED (202) turn (which returned no runId) goes live (D4).
+                        // QUEUED (202) turn (which returned no runId) goes live.
                         if let threadId = env.event["thread_id"]?.stringValue, !threadId.isEmpty {
                             if threadId == self.selectedThreadId, (type == "run.created" || isTerminalEvent) {
                                 await self.openThread(threadId)

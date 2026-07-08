@@ -651,7 +651,7 @@ import Testing
     }
 
     @Test func threadTurnRequestEncodesHarnessScopedModels() throws {
-        // D2/INV-103: the harness-scoped map rides the turn; the pool is never
+        // INV-103: the harness-scoped map rides the turn; the pool is never
         // poisoned by one vendor's model id.
         let req = ThreadTurnRequest(prompt: "go", mode: "agent", models: ["codex": "gpt-5.5", "claude": "opus"])
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
@@ -697,7 +697,7 @@ import Testing
     }
 
     @Test func threadListDecodeSalvagesRowsAndCountsDrops() throws {
-        // ONE malformed row must not blank the whole sidebar (T6#5): good rows
+        // ONE malformed row must not blank the whole sidebar: good rows
         // survive, the drop is counted for disclosure.
         let now = "2026-07-02T12:00:00Z"
         let good: [String: Any] = [

@@ -202,7 +202,7 @@ describe("evidence packet", () => {
   });
 });
 
-describe("atlas walker symlink safety (T3#7)", () => {
+describe("atlas walker symlink safety", () => {
   it("survives a self-referencing symlink cycle and skips directory symlinks", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-atlas-cycle-"));
     writeFileSync(join(dir, "real.txt"), "content\n");

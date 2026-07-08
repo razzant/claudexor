@@ -5,7 +5,6 @@ import { daemonOutcomeSummary, ensureDaemon, enqueueAndAwait } from "./daemon-ru
 import { primaryOutputForCli } from "./primary-output.js";
 import type { ControlApiAddress } from "./live.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -77,7 +76,7 @@ export function orchestratorRunner() {
 }
 
 /**
- * The MCP surface runner (D27): MUTATING verbs (mode=agent — run/race/create)
+ * The MCP surface runner: MUTATING verbs (mode=agent — run/race/create)
  * are DAEMON-TRACKED exactly like the CLI (`GET /runs` sees them, `claudexor
  * decision` can unblock them, cancel works), read-only verbs stay in-process
  * — the same doctrine split as cli.ts. Interactive questions on daemon runs

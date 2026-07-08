@@ -13,7 +13,6 @@ import {
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { controlApiAddress, type ControlApiAddress } from "./live.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

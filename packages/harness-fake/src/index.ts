@@ -183,7 +183,7 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
       yield ev(s, "completed", { observed_model: observedModel });
       return;
     case "fake-hang": {
-      // Conformance fixture for the INACTIVITY WATCHDOG (T3.1#1): one event,
+      // Conformance fixture for the INACTIVITY WATCHDOG: one event,
       // then silence forever (until aborted). The deliberate exception to the
       // fakes' always-completed rule — a wedged CLI emits no terminal either.
       yield ev(s, "thinking", { text: "working... (and now silently wedged)" });

@@ -15,7 +15,7 @@ describe("parseReplLine", () => {
   });
 });
 
-describe("replModeIsMutating (CLI1: mutating turns are daemon-only)", () => {
+describe("replModeIsMutating (mutating turns are daemon-only)", () => {
   it("classifies agent as mutating and the read-only modes as not", () => {
     // The only mutating REPL mode is agent (bare text and /race). The local,
     // daemon-less REPL refuses these and serves read-only turns only.

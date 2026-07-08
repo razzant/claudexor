@@ -21,7 +21,7 @@ struct GlassField: View {
 
     var body: some View {
         // The focus ring needs more weight on a WHITE light-mode field than on a
-        // dark one (В11 light-mode audit): a 0.6-alpha hairline that reads fine on
+        // dark one (light-mode audit): a 0.6-alpha hairline that reads fine on
         // graphite nearly vanishes on white. Bump alpha + width in light.
         let ringAlpha = scheme == .light ? 0.85 : 0.6
         let ringWidth: CGFloat = scheme == .light ? 1.75 : 1.5
@@ -52,7 +52,7 @@ struct GlassField: View {
 /// the light glass — issue #5: "Send button invisible in the light theme"). Dims
 /// when disabled (empty field). Uses `Theme.accentSolid` (NOT the plain `accent`,
 /// which only reaches ~3.1:1 white contrast in Dark Mode) so white-on-fill clears
-/// WCAG AA 4.5:1 in BOTH schemes (В11).
+/// WCAG AA 4.5:1 in BOTH schemes.
 struct AccentButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

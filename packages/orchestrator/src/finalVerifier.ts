@@ -1,5 +1,5 @@
 /**
- * FinalVerifier (D12/INV-115): before a race winner becomes adoptable/
+ * FinalVerifier (INV-115): before a race winner becomes adoptable/
  * applyable, its patch is applied onto a FRESH worktree at the winner's own
  * base sha and the deterministic gates re-run there. This catches the class
  * of "reviewed green in the candidate tree, broken against the real base"

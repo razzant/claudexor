@@ -62,7 +62,7 @@ export function errCode(err: unknown): string | null {
  * INV-093). Shared by every pre-create-then-enqueue path OUTSIDE these
  * routes (direct POST /runs with threadId, rerun_with_feedback). Marked
  * retryable=false: these are enqueue-throw paths — no job was recorded, so
- * the retry endpoint has nothing to replay (DT-PT-2). Best-effort by
+ * the retry endpoint has nothing to replay. Best-effort by
  * contract: recording must never mask the original error (callers always
  * return it), and errCode yields null for absent/non-string codes.
  */
@@ -173,7 +173,7 @@ export function handleThreadTurnCreate(
       // the run reads them back from the turn at start).
       const { attachments: _att, ...enqueueParams } = params;
       // ENQUEUE phase: a throw here means NO job was recorded — persist the
-      // refusal as retryable:false (nothing to replay, DT-PT-2/39).
+      // refusal as retryable:false (nothing to replay).
       let job: { id: string };
       try {
         job = await ctx.daemon.enqueue({ ...enqueueParams, turnId: turn.id });

@@ -61,7 +61,7 @@ export const VerificationBasis = z.enum([
 export type VerificationBasis = z.infer<typeof VerificationBasis>;
 
 /**
- * FinalVerifier record (D12/INV-115): the winner's patch was applied onto a
+ * FinalVerifier record (INV-115): the winner's patch was applied onto a
  * FRESH worktree at the candidate's own base sha and the deterministic gates
  * were re-run there. Producer: orchestrator (race adoption preflight).
  * Consumers: validateApplyGate (a failed final verify refuses apply) and the

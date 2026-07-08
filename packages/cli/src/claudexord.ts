@@ -23,10 +23,8 @@ import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/
 import { deliver } from "@claudexor/delivery";
 import {
   containsSecretLikeToken,
-  newId,
   noProjectRepoRoot,
   readTextSafe,
-  redactSecrets,
 } from "@claudexor/util";
 import {
   type AttachmentInput,
@@ -46,7 +44,6 @@ import {
   persistSpec,
 } from "./spec.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -63,7 +60,7 @@ async function main(): Promise<void> {
   // harness questions park in the interaction registry until answered.
   const bus = new RunEventBus();
   const interactions = new InteractionRegistry();
-  // Thread/session SSOT (A2): durable conversation registry; vendor CLI session
+  // Thread/session SSOT: durable conversation registry; vendor CLI session
   // ids are the re-hostable cache that lets later turns resume natively.
   const threads = new ThreadStore(join(daemonDir(), "threads.json"));
 
@@ -110,7 +107,7 @@ async function main(): Promise<void> {
           executionRoot = wt.path;
           // Persist the base ONLY on creation: `apply` advances base_sha, and a
           // later turn must not clobber it back to the worktree HEAD (which never
-          // moves, since turns don't commit) — that would re-apply old work (D2).
+          // moves, since turns don't commit) — that would re-apply old work.
           if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
           inPlace = true; // isolated turns run in-place WITHIN the worktree
         }
@@ -216,7 +213,7 @@ async function main(): Promise<void> {
 
   // Crash GC before any new work (reap surviving children, sweep orphaned
   // envelopes/branches/tmp-homes), then arm live-children bookkeeping and
-  // graceful SIGTERM/SIGINT shutdown (T3.1#4/#5).
+  // graceful SIGTERM/SIGINT shutdown.
   await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
 
   await server.start();
@@ -412,7 +409,7 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       const statuses = await buildGateway({ includeFakes: false }).statusAll({
         cwd: NO_PROJECT_ROOT,
       });
-      // T2#6c: the doctor's configured-model truth check rides the status DTO
+      // The doctor's configured-model truth check rides the status DTO
       // so the UI renders the same honesty the CLI prints (never a green
       // harness with a doomed configured model).
       const cfg = loadConfig(NO_PROJECT_ROOT);

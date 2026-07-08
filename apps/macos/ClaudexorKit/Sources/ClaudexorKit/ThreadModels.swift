@@ -1,11 +1,11 @@
 /**
- * Thread/turn DTOs (A2 chat/session-first): thin decodable projections of
+ * Thread/turn DTOs (chat/session-first): thin decodable projections of
  * the control-api thread surface. ThreadListResponse decodes per-row
- * (lossy) so one schema-skewed record never blanks the sidebar (T6#5).
+ * (lossy) so one schema-skewed record never blanks the sidebar.
  */
 import Foundation
 
-// MARK: - Threads (A2 chat/session-first)
+// MARK: - Threads (chat/session-first)
 
 public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let id: String
@@ -167,7 +167,7 @@ public struct ThreadListResponse: Codable, Sendable {
     public let threads: [ThreadSummary]
     /** Rows the decoder had to DROP (schema-skewed records). Not a wire
      * field — computed at decode so the sidebar can disclose the loss
-     * instead of silently blanking (T6#5). */
+     * instead of silently blanking. */
     public var droppedThreads: Int = 0
 
     enum CodingKeys: String, CodingKey { case threads }

@@ -151,7 +151,7 @@ describe("RouteProof + HarnessManifest", () => {
       display_name: "Fake",
       kind: "fake",
       provider_family: "local",
-      capabilities: { implement: true, structured_events: true },
+      capabilities: { implement: true, review: true },
     });
     expect(m.capabilities.implement).toBe(true);
     expect(m.capabilities.quota_signal).toBe("unknown");

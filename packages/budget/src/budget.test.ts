@@ -142,7 +142,7 @@ describe("router", () => {
   });
 });
 
-describe("DD-27 wave guard (estimate holds)", () => {
+describe("wave guard (estimate holds)", () => {
   it("denies a wave slot whose estimate exceeds remaining headroom without poisoning granted work", () => {
     const ledger = new BudgetLedger({ maxUsd: 0.1 });
     const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
@@ -185,7 +185,7 @@ describe("DD-27 wave guard (estimate holds)", () => {
   });
 });
 
-describe("quota observation (D7)", () => {
+describe("quota observation", () => {
   it("maps a typed HarnessEvent.quota to a native used_percent observation that drives headroom()", async () => {
     const { observationsFromEvent } = await import("./observe.js");
     const { BudgetLedger } = await import("./ledger.js");
@@ -205,7 +205,7 @@ describe("quota observation (D7)", () => {
   });
 });
 
-describe("portfolio metrics (D7)", () => {
+describe("portfolio metrics", () => {
   it("EMA metrics store: records settled samples and orders cheapest by REAL cost spread", async () => {
     const { recordHarnessMetric, loadHarnessMetrics } = await import("./metrics.js");
     const { selectHarness } = await import("./router.js");

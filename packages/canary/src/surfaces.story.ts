@@ -1,6 +1,6 @@
 /**
  * Surface canaries — user-level contracts over the MCP/plugin surfaces of the
- * BUILT CLI (Tier7 #46: the battery's old integration blind spot, now pinned
+ * BUILT CLI (the real-harness battery's old integration blind spot, now pinned
  * offline with fake harnesses in the hermetic sandbox).
  */
 import { spawn } from "node:child_process";

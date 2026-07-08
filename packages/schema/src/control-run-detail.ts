@@ -73,7 +73,7 @@ export const ControlRunDetail = z.object({
    * refinements project their attempts too); empty only when no attempt
    * artifacts exist. */
   candidates: z.array(ControlCandidate).default([]),
-  /** Live plan checklist (D14): the LAST plan.progress event's items, or null
+  /** Live plan checklist: the LAST plan.progress event's items, or null
    * when the run never emitted one. */
   planProgress: z
     .object({

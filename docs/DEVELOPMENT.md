@@ -47,8 +47,11 @@ Read these together before changing shared behavior:
 - `packages/cli`, `packages/daemon`, `packages/control-api`,
   `packages/mcp-server`, `packages/acp-server`, and `apps/macos` are surfaces.
   Keep them thin.
-- `benchmarks/runner` holds benchmark scaffolds and is part of the pnpm
-  workspace.
+- `packages/canary` holds the canary golden stories: user-level E2E smokes
+  over the built CLI with offline fake harnesses, pinned to Bible invariant
+  tags (`pnpm canary`).
+- `benchmarks/runner` holds the SWE-bench benchmark runner and is part of the
+  pnpm workspace.
 
 ## Development Commands
 

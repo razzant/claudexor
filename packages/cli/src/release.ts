@@ -18,7 +18,7 @@ async function head(url: string): Promise<number> {
  * Naming gate: best-effort availability check across registries. 404 means the
  * name appears free; 200 means taken; anything else (403 forbidden/rate-limit,
  * 5xx, network failure) is UNKNOWN — never reported as "taken", since a
- * non-404/200 response is not evidence the name is unavailable (B5).
+ * non-404/200 response is not evidence the name is unavailable.
  */
 export async function checkName(name: string): Promise<NameCheck[]> {
   const lc = name.toLowerCase();

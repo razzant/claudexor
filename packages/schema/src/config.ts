@@ -75,7 +75,7 @@ export const GlobalConfig = z
         auth_preference: AuthPreference.default("auto"),
         /**
          * Operator-tunable per-provider-family quality priors (0..1) feeding
-         * RouterCandidate.qualityForIntent (D7). A DECLARED prior, not
+         * RouterCandidate.qualityForIntent. A DECLARED prior, not
          * invented magic: unset families ride the router's neutral 0.5.
          */
         quality_priors: z.record(ProviderFamily, z.number().min(0).max(1)).default({}),

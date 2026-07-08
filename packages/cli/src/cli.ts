@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -18,24 +18,21 @@ import {
   newId,
   noProjectRepoRoot,
   readTextSafe,
-  sha256,
   userConfigDir,
   writeJson,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
-import { initProjectConfig, loadConfig, updateGlobalConfig } from "@claudexor/config";
+import { initProjectConfig, loadConfig } from "@claudexor/config";
 import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
 import {
   DecisionRecord,
   EffortHint,
   ExternalContextPolicy,
-  GlobalConfig,
   type ProtectedPathApproval,
   type ControlReviewerPanelEntry,
   type Attachment,
-  ControlSettingsSnapshot,
   ModeKind as ModeKindSchema,
   type OrchestrateAutonomy,
   Portfolio,
@@ -103,7 +100,6 @@ import {
   parseReviewerPanelFlags,
 } from "./run-options.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Single version SSOT: the generated CLAUDEXOR_VERSION constant (from the root
 // package.json) so the banner / --version can never ship stale or drift.
@@ -550,7 +546,7 @@ async function orchestrate(
   // signal so harness children die via the process-group kill plumbing, gates
   // are skipped, and the run ends with a typed cancelled terminal — instead
   // of the node process dying and orphaning children + a terminal-less
-  // events.jsonl (T3.1#8). A second Ctrl-C force-exits.
+  // events.jsonl. A second Ctrl-C force-exits.
   const cancelController = new AbortController();
   let sigints = 0;
   const onSigint = (): void => {
@@ -1079,7 +1075,7 @@ const KNOWN_FLAGS = new Set([
   "feedback",
   "help",
   "version",
-  // review verb (D18 per-commit gate)
+  // review verb (per-commit gate)
   "diff",
   "intent",
   "tests",
@@ -1114,7 +1110,7 @@ const VALUE_FLAGS = [
   "backend",
   "apply-mode",
   "feedback",
-  // review verb (D18 per-commit gate)
+  // review verb (per-commit gate)
   "diff",
   "intent",
   "tests",
@@ -1189,7 +1185,7 @@ async function main(): Promise<number> {
           );
       }
       const filtered = statuses;
-      // B2: a configured default model that the harness does not recognize must
+      // a configured default model that the harness does not recognize must
       // not be silently masked by a smoke that ran a DIFFERENT model. Validate
       // each harness's configured default against its model truth source (live
       // inventory or manifest hints via the shared harnessModels SSOT) and
@@ -1557,7 +1553,7 @@ async function main(): Promise<number> {
           : null;
       // The default apply target is the run's ORIGINAL project (from its contract),
       // not the current working directory — so a daemon-tracked run resolved via
-      // the registry applies correctly from any cwd (CLI1 namespace unification).
+      // the registry applies correctly from any cwd (namespace unification).
       // Fall back to cwd only for a legacy run with no readable contract.
       const applyRoot = contract.success ? contract.data.repo.root : process.cwd();
       // Artifact-only path: the live daemon job state is unavailable, but the

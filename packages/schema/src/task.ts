@@ -65,7 +65,7 @@ export const ConvergencePredicate = z.object({
 });
 export type ConvergencePredicate = z.infer<typeof ConvergencePredicate>;
 
-/** One node of the spec-derived task graph (A3); edges are `depends_on`. */
+/** One node of the spec-derived task graph; edges are `depends_on`. */
 export const TaskGraphNode = z.object({
   id: Id,
   title: z.string().default(""),
@@ -110,7 +110,7 @@ export const TaskContract = z.object({
   non_goals: z.array(z.string()).default([]),
   forbidden_approaches: z.array(z.string()).default([]),
   decided_tradeoffs: z.array(z.string()).default([]),
-  /** Spec-derived task graph (A3); null until a frozen SpecPack with tasks is resolved. */
+  /** Spec-derived task graph; null until a frozen SpecPack with tasks is resolved. */
   task_graph: TaskGraph.nullable().default(null),
   constraints: TaskConstraints.default({}),
   tests: z.object({ commands: z.array(TestCommand).default([]) }).default({ commands: [] }),

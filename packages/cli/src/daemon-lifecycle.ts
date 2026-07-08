@@ -1,5 +1,5 @@
 /**
- * Daemon process-lifecycle wiring (T3.1#4/#5): pre-start crash GC (orphan
+ * Daemon process-lifecycle wiring: pre-start crash GC (orphan
  * reap + workspace sweep), live-children bookkeeping, and graceful shutdown
  * signals. Kept out of claudexord's main() so the entrypoint stays a thin
  * composition root.

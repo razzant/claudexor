@@ -1,4 +1,4 @@
-# Fixture provenance manifest (Tier7 #49). SYNTHETIC-ONLY today: no recorded
+# Fixture provenance manifest. SYNTHETIC-ONLY today: no recorded
 # real opencode stream exists yet (the route reports degraded — no isolated
 # smoke proof); record one when a live route is available and stamp its
 # version here. The freshness gate discloses this gap on every run.

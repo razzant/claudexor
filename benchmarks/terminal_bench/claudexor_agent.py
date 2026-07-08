@@ -122,7 +122,7 @@ class ClaudexorAgent(BaseInstalledAgent):
         return super().render_instruction(_PREAMBLE + instruction)
 
     # Where the host-side prebuilt CLI bundles live, and where they land in the
-    # container. BEN1: shipping prebuilt files replaces the in-container clone +
+    # container. Shipping prebuilt files replaces the in-container clone +
     # `pnpm install` + `tsc` (~30 packages) that kept blowing Harbor's
     # AgentSetupTimeout under Rosetta. Build them with `pnpm bench:bundle`.
     #

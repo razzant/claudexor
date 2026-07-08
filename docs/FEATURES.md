@@ -12,7 +12,7 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **84** (half-baked: 3, suspicious: 1, works-with-caveats: 80)
+Rows: **83** (half-baked: 3, suspicious: 1, works-with-caveats: 79)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|
@@ -77,7 +77,6 @@ Rows: **84** (half-baked: 3, suspicious: 1, works-with-caveats: 80)
 | engine/workspace+delivery | WS-DISPOSE | works-with-caveats | removes worktree (`--force`), deletes per-attempt branch, rm -rf of id-derived envelope base, prunes empty task dir, `worktree prune`. Crash GC at daemon startup sweeps orphaned envelopes/branches/tmp homes under daemon-known roots, with a LIVE-OWNER guard (owner.json pid+start-time; a live in-process CLI/MCP/ACP owner's envelopes survive). Caveat: reach is daemon-known roots only. | `packages/workspace/src/manager.ts` dispose/disposeOrphan; `packages/cli/src/orphan-sweeper.ts`; orphan-sweeper.test | v0.15 P5 |
 | engine/workspace+delivery | WS-INPLACE | works-with-caveats | in-place envelope: `worktree_path = repoRoot`, per-turn snapshot sha via `snapshotTree`, `diff` = `git diff --binary base end` over BYTE-FAITHFUL raw capture (CRLF survives; binary payloads applyable). Caveat: dirty_policy recorded but ignored for in-place. | `packages/workspace/src/manager.ts`; git.ts diffTrees; manager.test CRLF/binary round-trips | backlog |
 | engine/workspace+delivery | WS-NONGIT | works-with-caveats | best-effort `cpSync` baseline, `diff -ruN` vs live tree, 200k cap with in-band truncation marker | `packages/workspace/src/manager.ts:195-215,295-310` | v0.15 P2 |
-| engine/workspace+delivery | WS-PORTS | works-with-caveats | (documented TOCTOU) | `packages/workspace/src/ports.ts:3-20` | backlog |
 | engine/workspace+delivery | WS-SELFIGNORE | works-with-caveats | (never repaired if content differs) | `packages/workspace/src/manager.ts:79-92`; `packages/workspace/src/thread-tree.ts:41-51` | backlog |
 | engine/workspace+delivery | WS-THREADTREE | works-with-caveats | (partial-create orphan; "turns never commit" unenforced) | `packages/workspace/src/thread-tree.ts:26-54` | backlog |
 | harness adapters | F12 cursor parser | works-with-caveats | (no rate-limit/transient typing; synthetic fixtures only) | `harness-cursor/src/parse.ts:7-178`; fixtures `harness-cursor/fixtures/*.jsonl` | v0.15 P5 |

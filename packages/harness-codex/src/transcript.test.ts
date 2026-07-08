@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { codexTranscriptModel } from "./transcript.js";
 
-// B9: codex's `--json` stream never carries the model, but the CLI records it in
+// codex's `--json` stream never carries the model, but the CLI records it in
 // its own rollout transcript. codexTranscriptModel reads that file so the
 // cross-family route proof can verify honestly (a real observation, not argv).
 describe("codexTranscriptModel", () => {
@@ -57,7 +57,7 @@ describe("codexTranscriptModel", () => {
   });
 });
 
-describe("codexTranscriptRateLimits (D7 quota)", () => {
+describe("codexTranscriptRateLimits (quota)", () => {
   it("reads the LAST token_count rate_limits and picks the tighter window", async () => {
     const { codexTranscriptRateLimits } = await import("./transcript.js");
     const home = mkdtempSync(join(tmpdir(), "codex-home-"));

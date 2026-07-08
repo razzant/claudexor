@@ -73,7 +73,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
     public let failure: RunFailureInfo?
     /// Per-candidate evidence cards for race runs (empty otherwise).
     public let candidates: [CandidateInfo]
-    /// Live plan checklist (D14); nil when the run never emitted one.
+    /// Live plan checklist; nil when the run never emitted one.
     public let planProgress: PlanProgress?
     /// Server-persisted operator unblock decision (hash-bound); the apply
     /// affordance derives from THIS, never from local UI state.

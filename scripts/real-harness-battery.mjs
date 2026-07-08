@@ -769,7 +769,7 @@ function stdioServer(args, cwd) {
   return { send, waitFor, messages, close, stderrText: () => stderr };
 }
 
-/** Tier7 #46: MCP serve smoke against a REAL doctor-ok harness. */
+/** MCP serve smoke against a REAL doctor-ok harness. */
 async function runMcpServePhase() {
   const phase = "phase10";
   const [h] = available(requestedHarnesses);
@@ -806,7 +806,7 @@ async function runMcpServePhase() {
   }
 }
 
-/** Tier7 #46: ACP serve smoke against a REAL doctor-ok harness. */
+/** ACP serve smoke against a REAL doctor-ok harness. */
 async function runAcpServePhase() {
   const phase = "phase11";
   const [h] = available(requestedHarnesses);
@@ -832,7 +832,7 @@ async function runAcpServePhase() {
   }
 }
 
-/** Tier7 #46: plugin lifecycle in a SCRATCH HOME (never the real one). */
+/** plugin lifecycle in a SCRATCH HOME (never the real one). */
 function runPluginLifecyclePhase() {
   const phase = "phase12";
   const scratchHome = join(batteryRoot, "plugin-home");
