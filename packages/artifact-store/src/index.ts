@@ -35,6 +35,14 @@ export class ArtifactStore {
   }
 
   runPaths(runId: string): RunPaths {
+    // Id-shape fence at the single owner of run-dir layout: a runId is one
+    // path SEGMENT, never a path. This blocks `../`-style ids from escaping
+    // `.claudexor/runs` for every caller (HTTP surfaces already resolve ids
+    // via registry lookup — this is the defense-in-depth floor beneath them,
+    // the same reasoning as the envelope-id validation in dispose()).
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
+      throw new Error(`invalid run id '${runId}': a run id is a single path segment ([A-Za-z0-9._-], no separators)`);
+    }
     const root = join(this.runsDir(), runId);
     return {
       runId,

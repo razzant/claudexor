@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { summarizeDiffPaths } from "@claudexor/core";
 import { applyPatchProtected, ensureGitRepository, git, isGitRepo, revertWorkingTreeTo, snapshotTree } from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
@@ -136,11 +137,21 @@ describe("WorkspaceManager", () => {
     expect(env.base_sha).toBeNull();
     expect(existsSync(env.harness_config_dirs["codex_home"] as string)).toBe(true);
 
-    // Simulate the harness mutating the live tree in place.
+    // Simulate the harness mutating the live tree in place (incl. a file
+    // under a path that repo-relative protected globs like `test/**` watch).
     writeFileSync(join(dir, "a.txt"), "two\n");
     writeFileSync(join(dir, "b.txt"), "new file\n");
+    mkdirSync(join(dir, "test"), { recursive: true });
+    writeFileSync(join(dir, "test", "guard.spec.js"), "// protected\n");
     const diff = await mgr.diff(env);
     expect(diff).toContain("b.txt");
+    // Headers are RELATIVIZED to git-style a/<rel> b/<rel>: repo-relative
+    // policy globs must see `test/guard.spec.js`, never an absolute
+    // /tmp/.../test/... path they can never match (protected-path bypass).
+    const paths = summarizeDiffPaths(diff);
+    expect(paths.paths).toContain("b.txt");
+    expect(paths.paths).toContain("test/guard.spec.js");
+    expect(paths.paths.every((p) => !p.startsWith("/"))).toBe(true);
 
     await mgr.dispose(env);
     // The live tree and its files survive dispose (never rm the repo root)...

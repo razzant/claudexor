@@ -4,7 +4,7 @@
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 668,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ThreadsScreen.swift": 1583,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 980,
-  "packages/acp-server/src/index.ts": 539,
+  "packages/acp-server/src/index.ts": 459,
   "packages/cli/src/claudexord.ts": 620,
   "packages/cli/src/cli.ts": 1730,
   "packages/cli/src/plugins.ts": 1465,

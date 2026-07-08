@@ -61,7 +61,17 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       return 0;
     }
     if (sub === "logs") {
-      const tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
+      // A missing/unreadable log FILE is not a daemon-reachability problem —
+      // report it as what it is instead of the catch-all "not reachable".
+      let tail: string;
+      try {
+        tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
+      } catch (err) {
+        const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
+        if (json) printJson({ ok: false, error: message });
+        else process.stderr.write(`${message}\n`);
+        return 1;
+      }
       if (json) printJson({ ok: true, log_tail: tail });
       else print(tail);
       return 0;

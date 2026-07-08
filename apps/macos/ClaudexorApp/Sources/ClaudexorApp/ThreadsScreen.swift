@@ -901,35 +901,45 @@ struct ThreadsScreen: View {
 
     /// Pick files via NSOpenPanel, read each into a base64 AttachmentInput. Bytes
     /// ride inline to the loopback control API; the daemon writes them to a scoped
-    /// dir and the chosen harness gets them in its native shape.
+    /// dir and the chosen harness gets them in its native shape. Reading +
+    /// base64-encoding happens OFF the main actor (a large picked file would
+    /// otherwise beach-ball the composer — same pattern as runScreencapture).
     private func pickAttachments() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         guard panel.runModal() == .OK else { return }
-        var skippedImages = 0
-        for url in panel.urls {
-            guard let data = try? Data(contentsOf: url) else { continue }
-            let mime = Self.mimeType(for: url)
-            let isImage = mime.hasPrefix("image/")
-            if isImage && !primaryAcceptsImages {
-                skippedImages += 1
-                continue
+        let urls = panel.urls
+        let acceptsImages = primaryAcceptsImages
+        Task {
+            let loaded = await Task.detached(priority: .userInitiated) { () -> (attachments: [AttachmentInput], skippedImages: Int) in
+                var attachments: [AttachmentInput] = []
+                var skippedImages = 0
+                for url in urls {
+                    guard let data = try? Data(contentsOf: url) else { continue }
+                    let mime = Self.mimeType(for: url)
+                    let isImage = mime.hasPrefix("image/")
+                    if isImage && !acceptsImages {
+                        skippedImages += 1
+                        continue
+                    }
+                    attachments.append(AttachmentInput(
+                        kind: isImage ? "image" : "file", mime: mime, name: url.lastPathComponent,
+                        data: data.base64EncodedString()))
+                }
+                return (attachments, skippedImages)
+            }.value
+            composerAttachments.append(contentsOf: loaded.attachments)
+            if loaded.skippedImages > 0 {
+                model.threadStatus = loaded.skippedImages == 1
+                    ? "Image skipped — switch to a vision-capable primary harness to attach it."
+                    : "\(loaded.skippedImages) images skipped — switch to a vision-capable primary harness to attach them."
             }
-            let kind = isImage ? "image" : "file"
-            composerAttachments.append(AttachmentInput(
-                kind: kind, mime: mime, name: url.lastPathComponent,
-                data: data.base64EncodedString()))
-        }
-        if skippedImages > 0 {
-            model.threadStatus = skippedImages == 1
-                ? "Image skipped — switch to a vision-capable primary harness to attach it."
-                : "\(skippedImages) images skipped — switch to a vision-capable primary harness to attach them."
         }
     }
 
-    private static func mimeType(for url: URL) -> String {
+    nonisolated private static func mimeType(for url: URL) -> String {
         if let t = UTType(filenameExtension: url.pathExtension), let m = t.preferredMIMEType { return m }
         return "application/octet-stream"
     }

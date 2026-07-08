@@ -85,28 +85,20 @@ export function writeDiffEvidence(dir: string, diff: string): DiffEvidence {
 }
 
 function summarizeDiff(diff: string, displayDiff = diff): string {
-  const lines = diff.split(/\r?\n/);
-  const displayLines = displayDiff.split(/\r?\n/);
-  const allFiles = lines
-    .filter((line) => line.startsWith("diff --git "))
-    .map((line) => parseDiffGitHeader(line))
-    .filter((line): line is string => line !== null);
-  const displayFiles = displayLines
-    .filter((line) => line.startsWith("diff --git "))
-    .map((line) => parseDiffGitHeader(line))
-    .filter((line): line is string => line !== null);
+  // ONE parser owns diff structure (git-anchored AND plain GNU documents):
+  // counts come from the shared parseUnifiedDiff, never from local line
+  // scans — a `diff -ruN` patch must not summarize as "Files: 0" while the
+  // gates see its files.
+  const parsed = parseUnifiedDiff(diff);
+  const display = parseUnifiedDiff(displayDiff);
+  const fileLabel = (f: { oldPath: string | null; newPath: string | null }): string =>
+    `${f.oldPath ?? "/dev/null"} -> ${f.newPath ?? "/dev/null"}`;
+  const allFiles = parsed.files.filter((f) => f.oldPath || f.newPath);
+  const displayFiles = display.files.filter((f) => f.oldPath || f.newPath).map(fileLabel);
   const files = displayFiles.slice(0, 80);
-  const hunks = lines.filter((line) => line.startsWith("@@")).length;
-  // Display-only counters, but keep them honest for content lines that BEGIN
-  // with header-like glyphs: a removed "--- literal text" line is content
-  // (headers are only `--- a/...`, `--- b/...`, `--- /dev/null`).
-  const isMinusHeader = (line: string): boolean =>
-    line.startsWith("--- a/") || line.startsWith("--- b/") || line === "--- /dev/null" || line.startsWith('--- "a/') || line.startsWith('--- "b/');
-  const isPlusHeader = (line: string): boolean =>
-    line.startsWith("+++ b/") || line.startsWith("+++ a/") || line === "+++ /dev/null" || line.startsWith('+++ "b/') || line.startsWith('+++ "a/');
-  const additions = lines.filter((line) => line.startsWith("+") && !isPlusHeader(line)).length;
-  const deletions = lines.filter((line) => line.startsWith("-") && !isMinusHeader(line)).length;
-  const fallbackHeaders = displayLines
+  const lines = diff.split(/\r?\n/);
+  const fallbackHeaders = displayDiff
+    .split(/\r?\n/)
     .filter(
       (line) => /^#{1,6}\s+\S/.test(line) || line.startsWith("### ") || line.startsWith("## "),
     )
@@ -115,9 +107,9 @@ function summarizeDiff(diff: string, displayDiff = diff): string {
     `- Patch bytes: ${Buffer.byteLength(diff, "utf8")}`,
     `- Patch lines: ${lines.length}`,
     `- Files: ${allFiles.length}`,
-    `- Hunks: ${hunks}`,
-    `- Additions: ${additions}`,
-    `- Deletions: ${deletions}`,
+    `- Hunks: ${parsed.hunks}`,
+    `- Additions: ${parsed.additions}`,
+    `- Deletions: ${parsed.deletions}`,
   ];
   if (files.length) {
     body.push("", "Files:", ...files.map((file) => `- ${file}`));
@@ -134,14 +126,6 @@ function summarizeDiff(diff: string, displayDiff = diff): string {
     body.push("", "- No unified diff headers detected. Read DIFF.patch for the candidate content.");
   }
   return body.join("\n");
-}
-
-function parseDiffGitHeader(line: string): string | null {
-  // Shared quote-aware parser (T3.2#2): octal escapes now decode to the real
-  // utf8 path (the old local tokenizer stripped backslashes but left bytes).
-  const file = parseUnifiedDiff(line + "\n").files[0];
-  if (!file || (!file.oldPath && !file.newPath)) return null;
-  return `${file.oldPath ?? "/dev/null"} -> ${file.newPath ?? "/dev/null"}`;
 }
 
 export interface PreflightResult {
@@ -162,15 +146,3 @@ export function preflightEvidence(dir: string): PreflightResult {
   return { ok: missing.length === 0 && empty.length === 0, missing, empty };
 }
 
-export function readRound(dir: string): number {
-  const text = readTextSafe(join(dir, "round.txt"));
-  if (!text) return 0;
-  const n = Number.parseInt(text.trim(), 10);
-  return Number.isFinite(n) ? n : 0;
-}
-
-export function incrementRound(dir: string): number {
-  const next = readRound(dir) + 1;
-  writeText(join(dir, "round.txt"), String(next) + "\n");
-  return next;
-}

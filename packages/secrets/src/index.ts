@@ -229,10 +229,17 @@ export interface ResolveOptions {
 
 /**
  * Resolve a stored secret by name. (The env-var and helper-command indirection
- * options were retired in the v0.15 triage: no production caller ever passed
- * them — adapters read their own provider env vars directly, and a vault
- * helper belongs to a future typed config surface, not a dead parameter.)
+ * options were retired: no production caller ever passed them — adapters read
+ * their own provider env vars directly, and a vault helper belongs to a
+ * future typed config surface, not a dead parameter.)
+ *
+ * CLAUDEXOR_DISABLE_STORED_SECRETS=1 is the hermetic kill switch, honored HERE
+ * (the single owner) so every adapter's key resolution obeys it uniformly —
+ * tests and isolation envelopes must never read the operator's real store.
+ * Explicit `opts.store` (the test seam) bypasses the switch: an injected
+ * scoped store IS the hermetic fixture.
  */
 export function resolveSecret(name: string, opts: ResolveOptions = {}): string | null {
+  if (!opts.store && process.env.CLAUDEXOR_DISABLE_STORED_SECRETS === "1") return null;
   return (opts.store ?? new SecretStore()).get(name);
 }

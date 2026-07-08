@@ -31,18 +31,6 @@ export class ReadinessLedger {
   isStalled(signature: string, threshold = 2): boolean {
     return (this.debts.get(signature)?.count ?? 0) >= threshold;
   }
-
-  debtFor(signature: string): ReadinessDebt | undefined {
-    return this.debts.get(signature);
-  }
-
-  rounds(): number {
-    return this.round;
-  }
-
-  openDebts(): ReadinessDebt[] {
-    return [...this.debts.values()];
-  }
 }
 
 /** Stable signature for a set of failure reasons, for thrash detection. */

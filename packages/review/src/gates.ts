@@ -38,8 +38,12 @@ export async function runGate(spec: GateSpec, opts: RunGatesOptions): Promise<Ga
     stdout = r.stdout;
     stderr = r.stderr;
     if (r.signal === "SIGKILL") timedOut = true;
-  } catch {
+  } catch (err) {
+    // A gate whose SPAWN itself throws is still an honest `failed`, but the
+    // reason must survive as evidence — exit_code:null with empty tails is
+    // undiagnosable ("evidence beats summaries").
     code = null;
+    stderr = `gate spawn failed: ${err instanceof Error ? err.message : String(err)}`;
   }
   const status = timedOut ? "timed_out" : code === 0 ? "passed" : "failed";
   const includeOutput = status !== "passed";

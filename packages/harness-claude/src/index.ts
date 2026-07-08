@@ -79,9 +79,10 @@ function anthropicApiKey(): string | null {
   return process.env.CLAUDEXOR_ANTHROPIC_API_KEY || resolveSecret("anthropic") || process.env.ANTHROPIC_API_KEY || null;
 }
 
-/** A stored/long-lived Claude Code OAuth (`claude setup-token`) for headless subscription auth. */
+/** A stored/long-lived Claude Code OAuth (`claude setup-token`) for headless
+ * subscription auth. The hermetic kill switch is honored inside resolveSecret
+ * (single owner), so this reads env-only under CLAUDEXOR_DISABLE_STORED_SECRETS. */
 function claudeOAuthToken(): string | null {
-  if (process.env.CLAUDEXOR_DISABLE_STORED_SECRETS === "1") return process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
   return resolveSecret("claude_oauth") || process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
 }
 

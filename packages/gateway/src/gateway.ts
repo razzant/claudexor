@@ -1,6 +1,6 @@
 import type { ConformanceCheck, HarnessManifest, Intent } from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, runDoctor } from "@claudexor/core";
+import { runDoctor } from "@claudexor/core";
 import { allowedIntents } from "./gating.js";
 
 export interface HarnessStatus {
@@ -15,9 +15,9 @@ export interface HarnessStatus {
 }
 
 /**
- * Wraps an adapter registry with discovery, conformance role-gating, and
- * selection. Default selection prefers an available non-fake harness; fakes are
- * only used when explicitly requested by id.
+ * Wraps an adapter registry with discovery and conformance role-gating.
+ * (Route SELECTION lives in the budget router and orchestrator routing —
+ * this class only reports what exists and what each harness may do.)
  */
 export class HarnessGateway {
   constructor(private readonly registry: AdapterRegistry) {}
@@ -46,10 +46,14 @@ export class HarnessGateway {
     const out: HarnessStatus[] = [];
     for (const adapter of adapters) {
       let manifest: HarnessManifest | null = null;
+      let discoverError: string | null = null;
       try {
         manifest = await adapter.discover();
-      } catch {
+      } catch (err) {
+        // A crashed discover() must stay distinguishable from "not installed":
+        // the message rides the status reasons instead of vanishing.
         manifest = null;
+        discoverError = `discover failed: ${err instanceof Error ? err.message : String(err)}`;
       }
       const report = (await runDoctor(new Map([[adapter.id, adapter]]), spec))[0] ?? null;
       const status = report?.status ?? "unavailable";
@@ -61,7 +65,7 @@ export class HarnessGateway {
         enabledIntents: manifest ? allowedIntents(manifest, report) : [],
         disabledIntents: report?.disabled_intents ?? [],
         checks: report?.checks ?? [],
-        reasons: report?.reasons ?? [],
+        reasons: [...(discoverError ? [discoverError] : []), ...(report?.reasons ?? [])],
       });
     }
     return out;

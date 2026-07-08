@@ -23,6 +23,9 @@ export interface AnnouncedRunContext {
   mode: ModeKind;
   /** Failure phase label when the net has to stamp the terminal. */
   phase: string;
+  /** Settled ledger spend snapshot — failure/cancel terminals must account
+   * for money already spent exactly like success terminals do. */
+  spend?: () => number;
 }
 
 export function writeFailure(
@@ -70,6 +73,7 @@ export function cancelledResult(
   runDir: string,
   candidates: { attemptId: string; harnessId: string; status: string }[],
   writeTelemetry?: () => void,
+  spendUsd?: number | null,
 ): OrchestratorResult {
   if (writeTelemetry) {
     try {
@@ -88,6 +92,7 @@ export function cancelledResult(
     runDir,
     summary: "run cancelled",
     candidates,
+    ...(spendUsd !== undefined ? { spendUsd } : {}),
   };
 }
 
@@ -105,6 +110,7 @@ export function failTerminally(
   mode: ModeKind,
   phase: string,
   err: unknown,
+  spendUsd?: number | null,
 ): OrchestratorResult {
   const message = redactSecrets(err instanceof Error ? err.message : String(err));
   store.writeText(
@@ -134,6 +140,7 @@ export function failTerminally(
     runDir: paths.root,
     summary: message,
     candidates: [],
+    ...(spendUsd !== undefined ? { spendUsd } : {}),
   };
 }
 
@@ -157,9 +164,18 @@ export async function guardAnnouncedRun(
     // TS cannot see the closure assignment; the cast is safe (set-once).
     const a = announced as AnnouncedRunContext | null;
     if (!a) throw err;
-    if (signal?.aborted) {
-      return cancelledResult(a.log, a.runId, a.taskId, a.mode, a.paths.root, []);
+    // Settled-spend accounting is part of the terminal contract on EVERY
+    // path (the orchestrate executor aggregates it); a broken spend snapshot
+    // must not mask the original failure, so it degrades to null loudly-typed.
+    let spendUsd: number | null = null;
+    try {
+      spendUsd = a.spend ? a.spend() : null;
+    } catch {
+      spendUsd = null;
     }
-    return failTerminally(a.log, a.store, a.paths, a.runId, a.taskId, a.mode, a.phase, err);
+    if (signal?.aborted) {
+      return cancelledResult(a.log, a.runId, a.taskId, a.mode, a.paths.root, [], undefined, spendUsd);
+    }
+    return failTerminally(a.log, a.store, a.paths, a.runId, a.taskId, a.mode, a.phase, err, spendUsd);
   }
 }

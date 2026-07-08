@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ConformanceReport } from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec } from "./adapter.js";
 
@@ -29,7 +30,19 @@ export function invalidateDoctorCache(): void {
 }
 
 function doctorCacheKey(adapterId: string, spec: DoctorSpec): string {
-  return `${adapterId}::${spec.cwd ?? ""}`;
+  // The key covers EVERY spec field that can change a probe's outcome: cwd,
+  // the auth-route preference, and any scoped env overlay. Omitting them
+  // would let a scoped-route probe poison (or be served) the default-route
+  // report for the same cwd — a latent cross-route cache bug even though
+  // today's scoped callers bypass runDoctor. Env entries can carry key
+  // MATERIAL, so they enter the key only as a digest, never as plaintext.
+  const envDigest = spec.env
+    ? createHash("sha256")
+        .update(JSON.stringify(Object.entries(spec.env).sort(([a], [b]) => a.localeCompare(b))))
+        .digest("hex")
+        .slice(0, 16)
+    : "";
+  return `${adapterId}::${spec.cwd ?? ""}::${spec.authPreference ?? ""}::${envDigest}`;
 }
 
 /** Run conformance probes across all registered adapters; never throws. */

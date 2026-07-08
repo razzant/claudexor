@@ -283,7 +283,7 @@ import Testing
         try #"{"host":"127.0.0.1","port":12345,"tokenPath":"\#(token.path)"}"#.write(to: doc, atomically: true, encoding: .utf8)
 
         let discovery = try ControlApiDiscovery.load(from: doc)
-        #expect(discovery.baseURL.absoluteString == "http://127.0.0.1:12345")
+        #expect(discovery.baseURL?.absoluteString == "http://127.0.0.1:12345")
         #expect(try discovery.readToken() == "secret-token")
     }
 

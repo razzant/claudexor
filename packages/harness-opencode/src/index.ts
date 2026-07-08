@@ -41,12 +41,17 @@ function providerKey(env: Record<string, string | undefined> = process.env): { e
   for (const envVar of PROVIDER_KEY_ENV) {
     if (env[envVar]) return { envVar, value: env[envVar] as string };
   }
-  return (
-    (resolveSecret("opencode") && { envVar: "OPENCODE_API_KEY" as const, value: resolveSecret("opencode") as string }) ||
-    (resolveSecret("openai") && { envVar: "OPENAI_API_KEY" as const, value: resolveSecret("openai") as string }) ||
-    (resolveSecret("anthropic") && { envVar: "ANTHROPIC_API_KEY" as const, value: resolveSecret("anthropic") as string }) ||
-    null
-  );
+  // Resolve each stored candidate once (the store may spawn a keychain read
+  // per call); the hermetic kill switch is honored inside resolveSecret.
+  for (const [name, envVar] of [
+    ["opencode", "OPENCODE_API_KEY"],
+    ["openai", "OPENAI_API_KEY"],
+    ["anthropic", "ANTHROPIC_API_KEY"],
+  ] as const) {
+    const value = resolveSecret(name);
+    if (value) return { envVar, value };
+  }
+  return null;
 }
 
 function providerKeyAvailable(): boolean {
@@ -71,7 +76,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         adapter_version: CLAUDEXOR_VERSION,
         provider_family: "opencode",
         capabilities: {
-          plan: authReady,
+          // Capabilities are ABILITIES; auth readiness lives in auth_modes and
+          // doctor. opencode can draft plans whenever it can run at all.
+          plan: true,
           implement: true,
           create_from_scratch: true,
           review: true,
@@ -130,10 +137,16 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           { id: "isolated_smoke", status: "skip", detail: "no isolated smoke implemented for opencode yet" },
           { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
         ],
+        // COMPLETE intent bookkeeping: every declared-capability intent is in
+        // exactly one list, so routing can never lose an intent to a gap
+        // (review/plan/spec stay gated until an isolated smoke proves the
+        // route — the same conformance bar explain/audit wait on).
         enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "synthesize"] : [],
-        disabled_intents: authReady ? ["explain", "audit"] : ["implement", "repair", "create_from_scratch", "verify", "synthesize", "explain", "audit"],
+        disabled_intents: authReady
+          ? ["explain", "audit", "plan", "spec", "review", "orchestrate"]
+          : ["implement", "repair", "create_from_scratch", "verify", "synthesize", "explain", "audit", "plan", "spec", "review", "orchestrate"],
         reasons: authReady
-          ? ["key present but route unproven (no isolated smoke); readonly/audit not enabled until conformance-proven"]
+          ? ["key present but route unproven (no isolated smoke); read-only and reviewer intents stay disabled until conformance-proven"]
           : ["opencode provider auth not configured"],
       });
     },

@@ -279,6 +279,27 @@ export class WorkspaceManager {
     };
   }
 
+  /**
+   * Header-only rewrite of a plain GNU `diff -ruN <baseline> <live>` document:
+   * absolute baseline/live prefixes become git-style `a/<rel>` / `b/<rel>` so
+   * repo-relative protected-path and risk globs see the SAME shape they see
+   * for git diffs. Only structural lines are touched (`diff `, `--- `,
+   * `+++ `, `Binary files … differ`); hunk content is never rewritten.
+   */
+  private static relativizePlainDiffHeadersFor(text: string, baselineRoot: string, liveRoot: string): string {
+    const base = baselineRoot.endsWith("/") ? baselineRoot : `${baselineRoot}/`;
+    const live = liveRoot.endsWith("/") ? liveRoot : `${liveRoot}/`;
+    const swap = (s: string): string => s.split(base).join("a/").split(live).join("b/");
+    return text
+      .split("\n")
+      .map((line) =>
+        line.startsWith("diff ") || line.startsWith("--- ") || line.startsWith("+++ ") || (line.startsWith("Binary files ") && line.endsWith(" differ"))
+          ? swap(line)
+          : line,
+      )
+      .join("\n");
+  }
+
   async diff(env: WorkspaceEnvelope): Promise<string> {
     // In-place: there is no isolated worktree. For a git project, diff the
     // per-turn base snapshot against a fresh end snapshot — net change of THIS
@@ -298,8 +319,13 @@ export class WorkspaceManager {
           ["-ruN", "-x", ".git", "-x", ".claudexor", "-x", ".claudexor-review-evidence", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
           { timeoutMs: 120_000 },
         );
+        // Relativize the header paths to the git-style a/<rel> b/<rel> shape.
+        // Downstream consumers (diffstat, protected-path/risk gating) match
+        // REPO-RELATIVE globs like `test/**`; absolute `/…/repo/test/x`
+        // headers would silently bypass every one of them.
+        const relativized = WorkspaceManager.relativizePlainDiffHeadersFor(r.stdout, baseline, env.repo_root);
         const CAP = 200_000;
-        return r.stdout.length > CAP ? r.stdout.slice(0, CAP) + "\n... [diff truncated]\n" : r.stdout;
+        return relativized.length > CAP ? relativized.slice(0, CAP) + "\n... [diff truncated]\n" : relativized;
       } catch {
         // best-effort: if `diff` is unavailable the loop still works (reviewers read the live tree)
         return "";

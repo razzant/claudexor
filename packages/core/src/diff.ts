@@ -1,6 +1,6 @@
 /**
- * The ONE quote-aware unified-diff header parser (T3.2#2). Three divergent
- * parsers used to read patches: a regex in the orchestrator's diffStats that
+ * The ONE quote-aware unified-diff header parser. Three divergent parsers
+ * used to read patches: a regex in the orchestrator's diffStats that
  * missed git-quoted headers (non-ASCII/spaces → protected-path and
  * NEEDS_HUMAN gates silently skipped those files), a line-scan in the
  * delivery gate that read `--- `-prefixed CONTENT lines as paths (SQL
@@ -11,6 +11,20 @@
  * `rename from/to`, `new/deleted file mode`, binary markers) is honored only
  * in HEADER position — between a `diff --git` line and that file's first
  * `@@` hunk — so patch CONTENT can never masquerade as structure.
+ *
+ * PLAIN unified diffs (GNU `diff -ruN`, the workspace's non-git in-place
+ * fallback) have no `diff --git` anchors, so a document that opens with a
+ * plain file header is parsed in PLAIN mode: a file entry opens only on the
+ * full structural triple — a `--- ` line immediately followed by a `+++ `
+ * line and an `@@` hunk header — which keeps deleted `-- sql` content lines
+ * from masquerading as file boundaries. Without this mode every non-git
+ * in-place diff summarized to zero files, silently blinding diffstat and
+ * protected-path/risk gating for that whole run class. Inside a git-anchored
+ * document the git rules above apply unchanged (never mixed per document).
+ * Plain-mode entries default to modified (GNU diff marks absent files with
+ * epoch timestamps, not `/dev/null`, so added/deleted classification is
+ * honored only for explicit `/dev/null` headers) — conservative for gating:
+ * every touched path is visible to policy.
  */
 
 export interface DiffFileEntry {
@@ -115,9 +129,17 @@ function splitHeaderPaths(rest: string): [string, string] | null {
 const stripPrefix = (value: string, prefix: string): string =>
   value.startsWith(prefix) ? value.slice(prefix.length) : value;
 
+/** Strip the GNU-diff timestamp suffix (`\t2026-…`) from a plain header path. */
+function plainHeaderPath(raw: string): string {
+  const tab = raw.indexOf("\t");
+  return cUnquoteGitPath(tab >= 0 ? raw.slice(0, tab) : raw);
+}
+
 export function parseUnifiedDiff(diff: string): UnifiedDiffSummary {
   const files: DiffFileEntry[] = [];
   let current: DiffFileEntry | null = null;
+  /** Document-level mode, decided by the FIRST structural anchor seen. */
+  let plainDoc: boolean | null = null;
   let inHunk = false;
   let sawGitPayload = false;
   let sawBinaryStub = false;
@@ -134,8 +156,28 @@ export function parseUnifiedDiff(diff: string): UnifiedDiffSummary {
     sawBinaryStub = false;
   };
 
-  for (const line of diff.split("\n")) {
+  const lines = diff.split("\n");
+  // A plain-mode file boundary is the full structural triple: `--- ` +
+  // `+++ ` + `@@` on consecutive lines. INSIDE a hunk the bar is higher:
+  // content could forge the loose triple (a deleted `-- …` line + an added
+  // `++ …` line + the next hunk header), so a mid-hunk boundary must also
+  // carry a header witness — the GNU tab-separated timestamp (or /dev/null)
+  // on both path lines, which +/- content lines do not have.
+  const headerWitness = (l: string | undefined): boolean =>
+    l !== undefined && (l.includes("\t") || l.slice(4).trim() === "/dev/null");
+  const plainFileHeaderAt = (idx: number, midHunk: boolean): boolean => {
+    const triple =
+      (lines[idx]?.startsWith("--- ") ?? false) &&
+      (lines[idx + 1]?.startsWith("+++ ") ?? false) &&
+      (lines[idx + 2]?.startsWith("@@") ?? false);
+    if (!triple) return false;
+    return midHunk ? headerWitness(lines[idx]) && headerWitness(lines[idx + 1]) : true;
+  };
+
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx] as string;
     if (line.startsWith("diff --git ")) {
+      if (plainDoc === null) plainDoc = false;
       flush();
       inHunk = false;
       const paths = splitHeaderPaths(line.slice("diff --git ".length));
@@ -148,6 +190,59 @@ export function parseUnifiedDiff(diff: string): UnifiedDiffSummary {
         binary: false,
         binaryStub: false,
       };
+      continue;
+    }
+    // A GNU `diff <opts> old new` command echo (never emitted by git) or a
+    // top-level binary stub decides plain mode when it arrives first.
+    if (plainDoc === null && current === null && (line.startsWith("diff ") || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
+      plainDoc = true;
+    }
+    if (plainDoc !== false && (current === null || (plainDoc === true && inHunk)) && plainFileHeaderAt(idx, plainDoc === true && inHunk)) {
+      // Plain-mode file boundary: before any file, or right after the
+      // previous plain file's hunks (GNU diff concatenates files this way).
+      plainDoc = true;
+      flush();
+      inHunk = false;
+      const oldRaw = plainHeaderPath(line.slice(4));
+      const newRaw = plainHeaderPath((lines[idx + 1] as string).slice(4));
+      // Same prefix convention as git headers: relativized plain diffs (the
+      // workspace non-git fallback) arrive as a/<rel> b/<rel> and must
+      // project the bare repo-relative path for policy globs.
+      current = {
+        oldPath: oldRaw === "/dev/null" ? null : stripPrefix(oldRaw, "a/"),
+        newPath: newRaw === "/dev/null" ? null : stripPrefix(newRaw, "b/"),
+        added: oldRaw === "/dev/null",
+        deleted: newRaw === "/dev/null",
+        renamed: false,
+        binary: false,
+        binaryStub: false,
+      };
+      idx += 1; // consume the `+++ ` line; the `@@` line is handled next.
+      continue;
+    }
+    if (plainDoc === true && line.startsWith("Binary files ") && line.endsWith(" differ")) {
+      // Plain binary stub arrives with no ---/+++ header of its own. Hunk
+      // content cannot forge this line: content lines always carry a
+      // ' '/'+'/'-' prefix, so a bare `Binary files … differ` is structural.
+      flush();
+      inHunk = false;
+      const body = line.slice("Binary files ".length, -" differ".length);
+      const sep = body.indexOf(" and ");
+      files.push({
+        oldPath: sep >= 0 ? stripPrefix(body.slice(0, sep), "a/") : null,
+        newPath: sep >= 0 ? stripPrefix(body.slice(sep + " and ".length), "b/") : null,
+        added: false,
+        deleted: false,
+        renamed: false,
+        binary: true,
+        binaryStub: true,
+      });
+      continue;
+    }
+    if (plainDoc === true && line.startsWith("diff ")) {
+      // GNU `diff -ruN old new` command line between files: a separator.
+      flush();
+      inHunk = false;
       continue;
     }
     if (line.startsWith("@@")) {

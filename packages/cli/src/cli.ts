@@ -785,15 +785,14 @@ async function daemonAgentRun(
 async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const runId = args._[1];
   if (!runId) {
-    print(
-      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun [--feedback "<text>"]',
+    return printUsageError(
+      json,
+      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun --feedback "<text>"',
     );
-    return 2;
   }
   const resolved = resolveDecisionBody(args);
   if (!resolved.ok) {
-    process.stderr.write(`claudexor decision: ${resolved.message}\n`);
-    return 2;
+    return printUsageError(json, `claudexor decision: ${resolved.message}`);
   }
   const { action, body } = resolved;
 
@@ -854,6 +853,11 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
 async function resolveRunStore(
   runId: string,
 ): Promise<{ store: ArtifactStore; root: string } | null> {
+  // An id that fails the store's shape fence (separators, `..`) can never
+  // name a run: report it as "no such run" through the normal typed path —
+  // the fence must not turn a typo'd id into a raw crash that breaks --json
+  // purity on inspect/apply/follow.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) return null;
   // 1. project cwd store
   const cwdStore = new ArtifactStore(process.cwd());
   if (existsSync(cwdStore.runPaths(runId).root))
@@ -895,14 +899,13 @@ async function resolveRunStore(
 async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const prompt = args._.slice(1).join(" ").trim();
   if (!prompt) {
-    process.stderr.write("claudexor: missing spec prompt\n");
-    return 2;
+    return printUsageError(json, "claudexor: missing spec prompt");
   }
   if (containsSecretLikeToken(prompt)) {
-    process.stderr.write(
-      "claudexor spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt\n",
+    return printUsageError(
+      json,
+      "claudexor spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt",
     );
-    return 2;
   }
   const answersPath = flagStr(args, "answers");
   try {
@@ -1242,6 +1245,19 @@ async function main(): Promise<number> {
     case "run": {
       const specStrategyError =
         "claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'";
+      // ONE gate for both spellings: `run --spec` and `run --mode agent --spec`
+      // must enforce the same gated-strategy requirement (a flag spelling must
+      // never bypass a policy the bare verb enforces).
+      const agentSpecGateError = (): string | null => {
+        if (!flagStr(args, "spec") || flagBool(args, "until-clean")) return null;
+        try {
+          const hasGatedStrategy =
+            intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
+          return hasGatedStrategy ? null : specStrategyError;
+        } catch (err) {
+          return `claudexor: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      };
       const modeStr = flagStr(args, "mode");
       if (modeStr !== undefined) {
         const mode = normalizeMode(modeStr);
@@ -1254,21 +1270,14 @@ async function main(): Promise<number> {
         if ((mode === "ask" || mode === "audit") && flagStr(args, "spec")) {
           return printUsageError(json, specStrategyError);
         }
+        if (mode === "agent") {
+          const gateError = agentSpecGateError();
+          if (gateError) return printUsageError(json, gateError);
+        }
         return orchestrate(args, mode, json);
       }
-      if (flagStr(args, "spec") && !flagBool(args, "until-clean")) {
-        let hasGatedStrategy = false;
-        try {
-          hasGatedStrategy =
-            intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
-        } catch (err) {
-          return printUsageError(
-            json,
-            `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        if (!hasGatedStrategy) return printUsageError(json, specStrategyError);
-      }
+      const gateError = agentSpecGateError();
+      if (gateError) return printUsageError(json, gateError);
       return orchestrate(args, "agent", json);
     }
 
@@ -1357,8 +1366,7 @@ async function main(): Promise<number> {
     case "inspect": {
       const runId = args._[1];
       if (!runId) {
-        print("usage: claudexor inspect <run_id>");
-        return 2;
+        return printUsageError(json, "usage: claudexor inspect <run_id>");
       }
       // Resolve the owning store from any cwd: project store, user-level Ask
       // store, or a daemon-tracked run that started in another project.
@@ -1499,8 +1507,7 @@ async function main(): Promise<number> {
     case "apply": {
       const runId = args._[1];
       if (!runId) {
-        print("usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]");
-        return 2;
+        return printUsageError(json, "usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]");
       }
       // Resolve the owning store from any cwd (project / user Ask / daemon-tracked
       // run in another project) before reading the patch artifact.

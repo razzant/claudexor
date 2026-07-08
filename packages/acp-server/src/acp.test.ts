@@ -708,6 +708,81 @@ function startServer(runner: (p: any, hooks?: any) => Promise<unknown>, updates:
   return { c2s, s2c, responses, requests, arrivals, serving };
 }
 
+describe("ACP honesty fixes (publication pass)", () => {
+  it("inlines embedded resource blocks into the prompt (embeddedContext is honored, not just declared)", async () => {
+    let received: any = null;
+    const { c2s, responses, serving } = startServer(async (p) => {
+      received = p;
+      return "ok";
+    });
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(40);
+    const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0", id: 2, method: "session/prompt",
+        params: {
+          sessionId,
+          prompt: [
+            { type: "text", text: "Fix the bug." },
+            { type: "resource", resource: { uri: "file:///proj/src/app.ts", mimeType: "text/plain", text: "export const broken = 1;" } },
+            { type: "resource_link", uri: "file:///proj/README.md", name: "README.md" },
+          ],
+        },
+      }) + "\n",
+    );
+    await sleep(60);
+    c2s.end();
+    await serving;
+    expect(responses.find((r) => r.id === 2)?.result?.stopReason).toBe("end_turn");
+    expect(received?.prompt).toContain("Fix the bug.");
+    expect(received?.prompt).toContain("Context from file:///proj/src/app.ts");
+    expect(received?.prompt).toContain("export const broken = 1;");
+    expect(received?.prompt).toContain("Referenced resource: file:///proj/README.md (README.md)");
+  });
+
+  it("answers a malformed frame with JSON-RPC -32700 (never a silent drop)", async () => {
+    const { c2s, responses, serving } = startServer(async () => "ok");
+    c2s.write("this is not json\n");
+    await sleep(40);
+    c2s.end();
+    await serving;
+    const parseErr = responses.find((r) => r.error?.code === -32700);
+    expect(parseErr).toBeTruthy();
+    expect(parseErr?.id).toBeNull();
+  });
+
+  it("bounds session/request_permission by the interaction deadline — the announced tool_call reaches failed, never hangs", async () => {
+    const updates: any[] = [];
+    const { c2s, responses, serving } = startServer(async (_p: any, hooks: any) => {
+      const answers = await hooks?.onInteraction?.({
+        timeoutAt: new Date(Date.now() + 120).toISOString(),
+        request: {
+          interaction_id: "int-t",
+          timeout_at: new Date(Date.now() + 120).toISOString(),
+          questions: [{ id: "q1", question: "Pick", header: null, options: [{ label: "A", description: null }], multi_select: false }],
+        },
+      });
+      return answers ? "answered" : "declined";
+    }, updates);
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    await sleep(40);
+    const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
+    // The client NEVER answers the permission request; the deadline resolves it.
+    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    await sleep(400);
+    c2s.end();
+    await serving;
+    expect(responses.find((r) => r.id === 2)?.result?.stopReason).toBe("end_turn");
+    const started = updates.filter((u) => u.update?.sessionUpdate === "tool_call").map((u) => u.update.toolCallId);
+    const terminal = updates.filter((u) => u.update?.sessionUpdate === "tool_call_update");
+    expect(started.length).toBeGreaterThan(0);
+    for (const idStarted of started) {
+      expect(terminal.find((u) => u.update.toolCallId === idStarted)?.update.status).toBe("failed");
+    }
+  });
+});
+
 describe("ACP conformance fixes (Phase 5)", () => {
   it("initialize includes authMethods: [] (strict ACP clients deserialize it)", async () => {
     const { c2s, responses, serving } = startServer(async () => "ok");

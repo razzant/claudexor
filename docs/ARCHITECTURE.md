@@ -92,8 +92,8 @@ are NOT aliases: they hard-error at every wire boundary.
   agent, orchestrate) with strategy flags (race width, attempt caps,
   until-clean, swarm, create); owns run telemetry and policy gates (trust,
   risk, protected paths), typed transient retry policy, and no-progress outcomes.
-- `packages/gateway`: harness discovery, capability gating, default available
-  harness resolution.
+- `packages/gateway`: harness discovery and capability/intent gating (route
+  selection itself lives in the budget router and orchestrator routing).
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
   translate native CLI/API streams into typed `HarnessEvent`s. The `fake-*` kinds
   are deterministic offline test fixtures (incl. `fake-implement`, which writes a

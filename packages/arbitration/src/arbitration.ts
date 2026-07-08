@@ -73,7 +73,7 @@ export function scoreTuple(c: CandidateEvidence): number[] {
     requiredGatesPassed(c) ? 1 : 0, // hard gates
     acceptanceFraction(c), // acceptance coverage
     -openBlockerCount(c), // fewer accepted blockers
-    effectiveTestFraction(c), // tests/repro (held-out authoritative)
+    effectiveTestFraction(c), // deterministic test pass fraction
     c.finalReviewClean ? 1 : 0, // final clean review
     -(c.toolWarningsCount ?? 0), // cleaner tool hygiene
     -(c.diffSize ?? 0), // simplicity
@@ -146,11 +146,31 @@ const CRITERIA: { key: string; better: (a: CandidateEvidence, b: CandidateEviden
   },
 ];
 
+/** Concrete per-criterion evidence values, so the persisted pairwise reason
+ * says WHAT differed (not just which axis name was consulted). */
+function criterionValue(key: string, c: CandidateEvidence): string {
+  switch (key) {
+    case "gates":
+      return requiredGatesPassed(c) ? "required gates passed" : "required gates FAILED";
+    case "gates_coverage":
+      return `acceptance ${(acceptanceFraction(c) * 100).toFixed(0)}%`;
+    case "blockers":
+      return `${openBlockerCount(c)} open blocker(s)`;
+    case "tests":
+      return `tests ${testEvidenceLabel(c)}`;
+    default:
+      return key;
+  }
+}
+
 function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseComparison {
   const criteria: PairwiseComparison["criteria"] = {};
   for (const c of CRITERIA) {
     const winner = c.better(a, b);
-    criteria[c.key] = { winner, reason: `${c.key}` };
+    criteria[c.key] = {
+      winner,
+      reason: `${a.label}: ${criterionValue(c.key, a)} vs ${b.label}: ${criterionValue(c.key, b)}`,
+    };
   }
   return { candidate_a: a.label, candidate_b: b.label, criteria };
 }

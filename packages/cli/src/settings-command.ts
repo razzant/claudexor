@@ -13,17 +13,10 @@ import {
   Portfolio,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
+import { print, printJson, printUsageError } from "./cli-io.js";
 import { connectDaemonIfRunning } from "./daemon-run.js";
 import { buildRegistry, harnessModels } from "./registry.js";
 import { daemonRuntimeDiffLines } from "./settings-display.js";
-
-function print(s: string): void {
-  process.stdout.write(s + "\n");
-}
-
-function printJson(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
-}
 
 /**
  * A REAL harness id (fakes excluded), for `settings set` validation. A persistent
@@ -97,10 +90,10 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
     const key = args._[2];
     const value = args._[3];
     if (!key || value === undefined) {
-      print(
+      return printUsageError(
+        json,
         "usage: claudexor settings set default_portfolio|primary_harness|eligible_harnesses|harness.<id>.default_model|harness.<id>.fallback_model|harness.<id>.effort|env_inheritance|routing_policy|budget_max_usd_per_run|interaction_timeout_ms <value>",
       );
-      return 2;
     }
     try {
       // Harness-scoped model/effort keys (D2/INV-103: model choice is
@@ -222,12 +215,11 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
       else print(`updated ${key} in ${res.path}`);
       return 0;
     } catch (err) {
-      process.stderr.write(
-        `claudexor settings: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      const message = `claudexor settings: ${err instanceof Error ? err.message : String(err)}`;
+      if (json) printJson({ ok: false, exitCode: 1, error: message });
+      else process.stderr.write(`${message}\n`);
       return 1;
     }
   }
-  print("usage: claudexor settings show|set");
-  return 2;
+  return printUsageError(json, "usage: claudexor settings show|set");
 }

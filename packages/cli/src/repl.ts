@@ -166,7 +166,7 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
         try {
           const detail = await api("GET", `/threads/${encodeURIComponent(thread.id)}`);
           process.stdout.write(`thread ${detail.thread.id} (${detail.thread.title ?? "untitled"})\n`);
-          for (const t of detail.turns ?? []) process.stdout.write(`  turn ${t.id} run=${t.runId ?? "-"} [${t.state ?? "?"}] :: ${String(t.prompt).slice(0, 80)}\n`);
+          for (const t of detail.turns ?? []) process.stdout.write(`  turn ${t.id} run=${t.runId ?? "-"} [${t.run?.state ?? "?"}] :: ${String(t.prompt).slice(0, 80)}\n`);
           for (const s of detail.sessions ?? []) process.stdout.write(`  session ${s.harnessId} native=${s.nativeSessionId ?? "-"} state=${s.state ?? "?"}\n`);
         } catch (err) {
           process.stdout.write(`thread fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);

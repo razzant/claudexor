@@ -22,10 +22,13 @@ interface Price {
 
 // Approximate public list prices (USD / 1M tokens). Matched by substring so
 // versioned model ids (gpt-5.1-codex, gpt-5-codex, ...) resolve to a family.
+// ORDER MATTERS: mini/nano rows come FIRST — a `gpt-5.x-mini` must resolve to
+// the mini price, not fall into the broad gpt-5 row above it (that ordering
+// bug over-estimated mini turns ~8x in the budget ledger).
 const TABLE: { match: RegExp; price: Price }[] = [
+  { match: /mini|nano/i, price: { input: 0.15, output: 0.6, cached: 0.075 } },
   { match: /gpt-5[.\d]*-codex|gpt-5[.\d]*-pro/i, price: { input: 1.25, output: 10, cached: 0.125 } },
   { match: /gpt-5|o3|o4/i, price: { input: 1.25, output: 10, cached: 0.125 } },
-  { match: /gpt-4o-mini|mini/i, price: { input: 0.15, output: 0.6, cached: 0.075 } },
   { match: /gpt-4o|gpt-4\.1/i, price: { input: 2.5, output: 10, cached: 1.25 } },
 ];
 

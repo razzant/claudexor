@@ -548,7 +548,8 @@ describe("readiness", () => {
     expect(ledger.isStalled(sig)).toBe(false);
     ledger.recordRound(sig, "x");
     expect(ledger.isStalled(sig)).toBe(true);
-    expect(ledger.rounds()).toBe(2);
+    // A different signature is independent — no cross-signature stall bleed.
+    expect(ledger.isStalled(failureSignature(["other"]))).toBe(false);
   });
 });
 

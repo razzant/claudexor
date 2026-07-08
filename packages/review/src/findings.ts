@@ -158,11 +158,19 @@ export function parseFindingsDetailed(
       malformed += 1;
       continue;
     }
+    // A finding WITHOUT a severity is malformed, not "WARN by default": the
+    // fail-closed verdict parse must never silently downgrade what might have
+    // been a blocker into a non-blocking level (the one lenient branch this
+    // parser used to have).
+    if (r.severity === undefined || r.severity === null) {
+      malformed += 1;
+      continue;
+    }
     try {
       out.push(
         ReviewFindingSchema.parse({
           id: r.id ?? newId("f"),
-          severity: r.severity ?? "WARN",
+          severity: r.severity,
           category: r.category ?? "correctness",
           claim: String(r.claim ?? r.message ?? "(no claim)"),
           linked_acceptance_criteria: r.linked_acceptance_criteria ?? [],

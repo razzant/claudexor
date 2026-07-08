@@ -6,7 +6,7 @@ import { TaskContract } from "@claudexor/schema";
 import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
 import { buildScopeAtlas } from "./atlas.js";
 import { assertMandatoryContext, buildContextPack } from "./contextpack.js";
-import { incrementRound, preflightEvidence, readRound, writeEvidencePacket } from "./evidence.js";
+import { preflightEvidence, writeEvidencePacket } from "./evidence.js";
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), "claudexor-ctx-"));
@@ -110,14 +110,11 @@ describe("assertMandatoryContext (uniform preflight)", () => {
 });
 
 describe("evidence packet", () => {
-  it("writes mandatory files, preflight passes, round increments", () => {
+  it("writes mandatory files and preflight passes", () => {
     const dir = join(tmp(), ".adversarial-review");
     writeEvidencePacket(dir, { userIntent: "do X", diff: "diff --git a b\n" });
     expect(preflightEvidence(dir).ok).toBe(true);
     expect(readFileSync(join(dir, "DIFF_SUMMARY.md"), "utf8")).toContain("Digest: sha256:");
-    expect(readRound(dir)).toBe(0);
-    expect(incrementRound(dir)).toBe(1);
-    expect(readRound(dir)).toBe(1);
   });
 
   it("preflight fails closed when a mandatory file is missing", () => {

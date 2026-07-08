@@ -90,6 +90,7 @@ import {
   reviewerTimeoutMs,
   harnessInactivityTimeoutMs,
   observeAuthSwitch,
+  relayPriorPlansSection,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
@@ -365,7 +366,8 @@ interface CandidateRun {
   errored: boolean;
   /** True when any of `cost` is token-estimated (not natively reported). */
   costEstimated: boolean;
-  /** Redacted runtime error summaries (harness errors + unrecovered tool errors). */
+  /** Redacted runtime error summaries (harness stream errors + unsatisfied web
+   * evidence). Non-web tool errors flow through `toolWarnings`, not here. */
   errors: string[];
   telemetry: AttemptTelemetry;
   /**
@@ -1791,7 +1793,6 @@ export class Orchestrator {
       });
     }
     const attemptStreamEndedMs = Date.now();
-    const unrecovered = unrecoveredToolErrors(telemetry);
     if (webUnsatisfied(telemetry)) {
       errors.push(
         `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`,
@@ -2052,8 +2053,8 @@ export class Orchestrator {
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    announce?.({ log, store, paths, runId, taskId, mode, phase: "race" });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    announce?.({ log, store, paths, runId, taskId, mode, phase: "race", spend: () => ledger.spend() });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -2420,6 +2421,7 @@ export class Orchestrator {
           runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
           null,
         ),
+        ledger.spend(),
       );
     }
 
@@ -2463,6 +2465,7 @@ export class Orchestrator {
         runDir: paths.root,
         summary: why,
         candidates: [],
+        spendUsd: ledger.spend(),
       };
     }
 
@@ -2548,6 +2551,7 @@ export class Orchestrator {
           harnessId: r.harnessId,
           status: "red",
         })),
+        spendUsd: ledger.spend(),
       };
     }
 
@@ -2575,7 +2579,7 @@ export class Orchestrator {
     } catch (err) {
       // Review preflight/evidence failures end TERMINALLY with artifacts —
       // never as an escaped throw that orphans the run dir (#5).
-      return failTerminally(log, store, paths, runId, taskId, mode, "review", err);
+      return failTerminally(log, store, paths, runId, taskId, mode, "review", err, ledger.spend());
     } finally {
       // Review preflight failures must not leak candidate worktrees.
       await disposeReviewEnvelopes();
@@ -2592,6 +2596,7 @@ export class Orchestrator {
           runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
           null,
         ),
+        ledger.spend(),
       );
     }
 
@@ -2693,6 +2698,7 @@ export class Orchestrator {
                   runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
                   null,
                 ),
+                ledger.spend(),
               );
             }
           } finally {
@@ -2724,6 +2730,7 @@ export class Orchestrator {
           runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
           null,
         ),
+        ledger.spend(),
       );
     }
 
@@ -2735,7 +2742,7 @@ export class Orchestrator {
       });
     } catch (err) {
       // Arbitration throws end terminally with artifacts, never as an orphan (#5).
-      return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err);
+      return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err, ledger.spend());
     }
     log.emit("arbitration.completed", {
       winner: result.decision.winner,
@@ -3465,7 +3472,7 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    announce?.({ log, store, paths, runId, taskId, mode, phase: "convergence" });
+    announce?.({ log, store, paths, runId, taskId, mode, phase: "convergence", spend: () => ledger.spend() });
 
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
@@ -3654,8 +3661,8 @@ export class Orchestrator {
         const attemptId = `a${String(attempt).padStart(2, "0")}`;
 
         // Repair prompts must include the RUNTIME errors that actually failed the
-        // previous attempt (tool/web errors), not only the review findings —
-        // otherwise the harness repairs blind.
+        // previous attempt (harness stream errors / unsatisfied web evidence),
+        // not only the review findings — otherwise the harness repairs blind.
         const runtimeErrors = lastRun?.errors?.length
           ? `\n\nRuntime errors from the previous attempt (fix or recover these):\n${lastRun.errors.map((e) => `- ${e}`).join("\n")}`
           : "";
@@ -3938,7 +3945,7 @@ export class Orchestrator {
             }
           })();
         } catch (err) {
-          return failTerminally(log, store, paths, runId, taskId, mode, "review", err);
+          return failTerminally(log, store, paths, runId, taskId, mode, "review", err, ledger.spend());
         }
 
         if (conv.converged) {
@@ -4244,21 +4251,6 @@ export class Orchestrator {
     ].join("\n");
   }
 
-  /**
-   * Relay cross-share (G/Q4): the prior planners' plans, injected into a later
-   * planner's prompt so the harnesses CONVERGE on an aligned plan instead of
-   * each planning in isolation. `runPlan` already iterates planners sequentially,
-   * so each leg after the first sees what the earlier ones proposed and is asked
-   * to reconcile/extend them (not blindly repeat).
-   */
-  private relayPriorPlansSection(plans: { id: string; text: string }[]): string {
-    if (plans.length === 0) return "";
-    const blocks = plans
-      .map((p) => `### Plan already proposed by ${p.id}\n${p.text.slice(0, 4000)}`)
-      .join("\n\n");
-    return `\n\n---\nOTHER HARNESSES HAVE ALREADY PROPOSED PLANS FOR THIS SAME TASK (below). Read them, then produce YOUR plan: build on what is solid, RECONCILE the differences, and EXPLICITLY call out where you disagree and why. Do not blindly repeat them — converge toward one aligned plan.\n\n${blocks}\n---\n`;
-  }
-
   private async runPlan(
     input: RunInput,
     announce?: (a: AnnouncedRunContext) => void,
@@ -4273,12 +4265,12 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
-    announce?.({ log, store, paths, runId, taskId, mode: "plan", phase: "plan" });
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    announce?.({ log, store, paths, runId, taskId, mode: "plan", phase: "plan", spend: () => ledger.spend() });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, "plan");
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
@@ -4398,7 +4390,7 @@ export class Orchestrator {
           session_id: newId("ses"),
           intent: "plan",
           prompt:
-            this.planPrompt(input.prompt) + contextSection + this.relayPriorPlansSection(plans),
+            this.planPrompt(input.prompt) + contextSection + relayPriorPlansSection(plans),
           cwd: this.execRootOf(input),
           access: "readonly",
           // Planners must SEE any image/file the user attached (e.g. "plan a fix for
@@ -4571,6 +4563,7 @@ export class Orchestrator {
           status: p.status,
         })),
         () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
+        ledger.spend(),
       );
     }
 
@@ -4714,6 +4707,7 @@ export class Orchestrator {
           status: p.status,
         })),
         () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
+        ledger.spend(),
       );
     }
 
@@ -4942,7 +4936,8 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
-    announce?.({ log, store, paths, runId, taskId, mode: opts.mode, phase: "report" });
+    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    announce?.({ log, store, paths, runId, taskId, mode: opts.mode, phase: "report", spend: () => ledger.spend() });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -5049,7 +5044,6 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
     // B10: read-only routes still spawn harness processes that write native
     // state (plan files, session rollouts). Scope their HOME/config dirs so they
     // cannot escape into the operator's real ~/.claude, ~/.codex, etc. — the
@@ -5470,6 +5464,7 @@ export class Orchestrator {
           status: a.status,
         })),
         () => this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null),
+        ledger.spend(),
       );
     }
 

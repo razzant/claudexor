@@ -27,7 +27,8 @@ const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xh
  * dedicated `CLAUDEXOR_CODEX_API_KEY` can override it for multi-key setups.
  */
 function codexApiKey(): string | undefined {
-  const stored = process.env.CLAUDEXOR_DISABLE_STORED_SECRETS === "1" ? null : resolveSecret("openai");
+  // The hermetic kill switch is honored inside resolveSecret (single owner).
+  const stored = resolveSecret("openai");
   return process.env.CLAUDEXOR_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
 }
 
@@ -547,16 +548,21 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // config codex will actually load (the resolved CODEX_HOME, else ~/.codex)
   // already defines it — never create a transport-less partial entry on a scoped
   // home (that broke codex startup, the "invalid transport" regression).
-  // Structured output (D10): codex takes a FILE path; write the schema into
-  // the scoped CODEX_HOME (outside the worktree — never lands in a diff).
+  // Structured output: codex takes a FILE path; write the schema into the
+  // scoped CODEX_HOME (outside the worktree — never lands in a diff). A
+  // native-session run has no scoped home, so the schema goes to a private
+  // tmp dir instead — the capability must not silently vanish on that route.
   let outputSchemaPath: string | null = null;
+  let tempSchemaDir: string | null = null;
   if (spec.output_schema !== undefined && spec.output_schema !== null) {
     try {
-      const home = env["CODEX_HOME"];
-      if (home) {
-        outputSchemaPath = join(home, `claudexor-output-schema-${spec.session_id}.json`);
-        writeFileSync(outputSchemaPath, JSON.stringify(spec.output_schema));
+      let dir = env["CODEX_HOME"];
+      if (!dir) {
+        tempSchemaDir = mkdtempSync(join(tmpdir(), "claudexor-codex-schema-"));
+        dir = tempSchemaDir;
       }
+      outputSchemaPath = join(dir, `claudexor-output-schema-${spec.session_id}.json`);
+      writeFileSync(outputSchemaPath, JSON.stringify(spec.output_schema));
     } catch {
       outputSchemaPath = null; // fail-open to fenced-JSON parsing
     }
@@ -632,6 +638,13 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     if (tempCodexHome) {
       try {
         rmSync(tempCodexHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch {
+        /* best-effort: OS tmp reaper owns the leftovers */
+      }
+    }
+    if (tempSchemaDir) {
+      try {
+        rmSync(tempSchemaDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {
         /* best-effort: OS tmp reaper owns the leftovers */
       }

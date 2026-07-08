@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cUnquoteGitPath, parseUnifiedDiff } from "./diff.js";
+import { cUnquoteGitPath, parseUnifiedDiff, summarizeDiffPaths } from "./diff.js";
 
 describe("cUnquoteGitPath", () => {
   it("decodes octal escapes to utf8 and standard escapes", () => {
@@ -107,5 +107,126 @@ describe("parseUnifiedDiff", () => {
     ].join("\n");
     const res = parseUnifiedDiff(diff);
     expect(res.files[0]?.newPath).toBe("my file.txt");
+  });
+});
+
+describe("parseUnifiedDiff — plain GNU diffs (non-git in-place fallback)", () => {
+  // Shape produced by the workspace manager's `diff -ruN <baseline> <live>`:
+  // absolute paths, tab-separated timestamps, `diff …` command separators.
+  const plain = [
+    "diff -ruN -x .git /tmp/base/src/app.js /repo/src/app.js",
+    "--- /tmp/base/src/app.js\t2026-07-08 10:00:00.000000000 +0300",
+    "+++ /repo/src/app.js\t2026-07-08 10:05:00.000000000 +0300",
+    "@@ -1,3 +1,3 @@",
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 3;",
+    "diff -ruN -x .git /tmp/base/auth/token.js /repo/auth/token.js",
+    "--- /tmp/base/auth/token.js\t2026-07-08 10:00:00.000000000 +0300",
+    "+++ /repo/auth/token.js\t2026-07-08 10:05:00.000000000 +0300",
+    "@@ -1 +1,2 @@",
+    " export {};",
+    "+leaked();",
+    "",
+  ].join("\n");
+
+  it("summarizes every touched file — the class that used to project files:[] and blind path gates", () => {
+    const res = parseUnifiedDiff(plain);
+    expect(res.files).toHaveLength(2);
+    expect(res.files[0]?.oldPath).toBe("/tmp/base/src/app.js");
+    expect(res.files[0]?.newPath).toBe("/repo/src/app.js");
+    expect(res.files[1]?.newPath).toBe("/repo/auth/token.js");
+    expect(res.additions).toBe(2);
+    expect(res.deletions).toBe(1);
+    expect(res.hunks).toBe(2);
+    const paths = summarizeDiffPaths(plain);
+    expect(paths.paths).toEqual(["/repo/src/app.js", "/repo/auth/token.js"]);
+    // Protected-path globs (e.g. **/auth/**) must see the touched auth file.
+    expect(paths.paths.some((p) => p.includes("/auth/"))).toBe(true);
+  });
+
+  it("opens plain files only on the full ---/+++/@@ triple (SQL-comment content stays content)", () => {
+    const tricky = [
+      "--- /tmp/base/q.sql\t2026-07-08 10:00:00 +0300",
+      "+++ /repo/q.sql\t2026-07-08 10:05:00 +0300",
+      "@@ -1,3 +1,1 @@",
+      " select 1;",
+      "--- a removed sql comment line",
+      "-another removed line",
+      "",
+    ].join("\n");
+    const res = parseUnifiedDiff(tricky);
+    expect(res.files).toHaveLength(1);
+    expect(res.files[0]?.newPath).toBe("/repo/q.sql");
+    expect(res.deletions).toBe(2);
+  });
+
+  it("a forged mid-hunk triple (deleted '-- x' + added '++ y' + next hunk) never opens a file", () => {
+    const forged = [
+      "--- /tmp/base/q.sql\t2026-07-08 10:00:00 +0300",
+      "+++ /repo/q.sql\t2026-07-08 10:05:00 +0300",
+      "@@ -1,4 +1,4 @@",
+      " select 1;",
+      "--- removed sql comment", // deleted content line, no tab witness
+      "+++ added odd line", // added content line, no tab witness
+      "@@ -9,1 +9,1 @@",
+      "-a",
+      "+b",
+      "",
+    ].join("\n");
+    const res = parseUnifiedDiff(forged);
+    expect(res.files).toHaveLength(1);
+    expect(res.files[0]?.newPath).toBe("/repo/q.sql");
+    expect(res.hunks).toBe(2);
+  });
+
+  it("consecutive plain files without command separators still split on the header triple", () => {
+    const noSep = [
+      "--- /tmp/base/a.txt\t2026-01-01",
+      "+++ /repo/a.txt\t2026-01-02",
+      "@@ -1 +1 @@",
+      "-x",
+      "+y",
+      "--- /tmp/base/b.txt\t2026-01-01",
+      "+++ /repo/b.txt\t2026-01-02",
+      "@@ -1 +1 @@",
+      "-p",
+      "+q",
+      "",
+    ].join("\n");
+    const res = parseUnifiedDiff(noSep);
+    expect(res.files.map((f) => f.newPath)).toEqual(["/repo/a.txt", "/repo/b.txt"]);
+  });
+
+  it("captures plain binary stubs and /dev/null adds", () => {
+    const doc = [
+      "diff -ruN /tmp/base/img.png /repo/img.png",
+      "Binary files /tmp/base/img.png and /repo/img.png differ",
+      "--- /dev/null\t1970-01-01",
+      "+++ /repo/new.txt\t2026-01-02",
+      "@@ -0,0 +1 @@",
+      "+hello",
+      "",
+    ].join("\n");
+    const res = parseUnifiedDiff(doc);
+    expect(res.files).toHaveLength(2);
+    expect(res.files[0]).toMatchObject({ binary: true, binaryStub: true, newPath: "/repo/img.png" });
+    expect(res.files[1]).toMatchObject({ added: true, oldPath: null, newPath: "/repo/new.txt" });
+  });
+
+  it("git-anchored documents keep git semantics — a plain-looking triple inside hunk content never opens a file", () => {
+    const gitDoc = [
+      "diff --git a/notes.md b/notes.md",
+      "--- a/notes.md",
+      "+++ b/notes.md",
+      "@@ -1,3 +1,3 @@",
+      "--- looks like a plain header",
+      "+++ but is content",
+      "@@ escaped-looking content is a new hunk header only when bare",
+      "",
+    ].join("\n");
+    const res = parseUnifiedDiff(gitDoc);
+    expect(res.files).toHaveLength(1);
+    expect(res.files[0]?.newPath).toBe("notes.md");
   });
 });

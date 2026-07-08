@@ -2,12 +2,8 @@ import { existsSync, lstatSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
-import {
-  ModeKind,
-  validateOptionalNonEmptyString,
-  validateSurfaceRunControls,
-} from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
+import { extractPromptText, summarizeResult } from "./prompt.js";
+import { validateRunControls } from "./validate.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -65,6 +61,9 @@ export class AcpServer {
       try {
         msg = JSON.parse(trimmed);
       } catch {
+        // JSON-RPC 2.0 prescribes a Parse Error response with id null —
+        // a malformed frame must never vanish silently (fail-loud surface).
+        this.write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error: invalid JSON frame" } });
         continue;
       }
       // Responses to OUR outgoing requests carry an id and no method.
@@ -110,11 +109,28 @@ export class AcpServer {
     this.write({ jsonrpc: "2.0", method, params });
   }
 
-  /** Server->client JSON-RPC request (e.g. session/request_permission). */
-  private request(method: string, params: unknown): Promise<any> {
+  /**
+   * Server->client JSON-RPC request (e.g. session/request_permission),
+   * bounded by a deadline: an editor that never answers must not leave the
+   * request pending forever (the engine's own interaction timeout would
+   * eventually fire, but the ACP surface owns its half of the contract —
+   * every request resolves, and the pending slot is always reclaimed).
+   * Resolves null on deadline.
+   */
+  private request(method: string, params: unknown, deadlineMs?: number): Promise<any> {
     const id = `srv-${this.nextRequestId++}`;
     return new Promise((resolve) => {
-      this.pendingRequests.set(id, resolve);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (deadlineMs !== undefined && Number.isFinite(deadlineMs)) {
+        timer = setTimeout(() => {
+          if (this.pendingRequests.delete(id)) resolve(null);
+        }, Math.max(0, deadlineMs));
+        timer.unref?.();
+      }
+      this.pendingRequests.set(id, (result) => {
+        if (timer) clearTimeout(timer);
+        resolve(result);
+      });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
@@ -136,30 +152,25 @@ export class AcpServer {
         const sessionId = `acp-${Math.random().toString(36).slice(2, 10)}`;
         // The editor's cwd anchors all of this session's runs to the project the
         // user is actually in (previously ignored -> runs hit the server's cwd).
-        const cwdProvided = params && Object.prototype.hasOwnProperty.call(params, "cwd");
-        const cwd = cwdProvided && typeof params?.cwd === "string" ? params.cwd.trim() : undefined;
-        if (!cwdProvided) {
+        if (!params || !Object.prototype.hasOwnProperty.call(params, "cwd")) {
           this.error(id, -32600, "session/new cwd is required");
           return;
         }
-        if (cwdProvided && typeof params?.cwd !== "string") {
+        if (typeof params.cwd !== "string" || !params.cwd.trim()) {
           this.error(id, -32600, "session/new cwd must be a non-empty absolute path string");
           return;
         }
-        if (cwdProvided && !cwd) {
-          this.error(id, -32600, "session/new cwd must be a non-empty absolute path");
-          return;
-        }
-        if (cwd && !isAbsolute(cwd)) {
+        const cwd = params.cwd.trim();
+        if (!isAbsolute(cwd)) {
           this.error(id, -32600, "session/new cwd must be an absolute path");
           return;
         }
-        if (cwd && (!existsSync(cwd) || !lstatSync(cwd).isDirectory())) {
+        if (!existsSync(cwd) || !lstatSync(cwd).isDirectory()) {
           this.error(id, -32600, "session/new cwd must be an existing directory");
           return;
         }
         this.sessions.add(sessionId);
-        if (cwd) this.sessionCwds.set(sessionId, cwd);
+        this.sessionCwds.set(sessionId, cwd);
         this.reply(id, { sessionId });
         return;
       }
@@ -182,27 +193,23 @@ export class AcpServer {
         // One active run per session: a second prompt while one is running is
         // a protocol misuse. ACP StopReason has no "error" member, so fail loudly
         // as a JSON-RPC error (-32600 Invalid Request) rather than inventing one.
-        if (sessionId && this.activeRuns.has(sessionId)) {
+        if (this.activeRuns.has(sessionId)) {
           this.error(id, -32600, `session ${sessionId} already has an active prompt`);
           return;
         }
         const controller = new AbortController();
-        if (sessionId) this.activeRuns.set(sessionId, controller);
+        this.activeRuns.set(sessionId, controller);
         try {
           const hooks: RunnerHooks = {
             signal: controller.signal,
-            ...(sessionId
-              ? {
-                  onEvent: (event: any) => this.forwardRunEvent(sessionId, event),
-                  onInteraction: (ctx: any) => this.requestAnswers(sessionId, ctx),
-                }
-              : {}),
+            onEvent: (event: any) => this.forwardRunEvent(sessionId, event),
+            onInteraction: (ctx: any) => this.requestAnswers(sessionId, ctx),
           };
           const result = await this.opts.runner(
             {
               prompt: text,
               mode: params?.mode ?? "agent",
-              ...(sessionId && this.sessionCwds.has(sessionId) ? { repoPath: this.sessionCwds.get(sessionId) } : {}),
+              repoPath: this.sessionCwds.get(sessionId),
               ...(params?.harness !== undefined ? { harness: params.harness } : {}),
               ...(params?.primaryHarness !== undefined
                 ? { primaryHarness: params.primaryHarness }
@@ -234,16 +241,14 @@ export class AcpServer {
             },
             hooks,
           );
-          if (sessionId) {
-            // The turn result is the human-readable summary/answer (the run's
-            // primary output), not a raw dumped JSON object the editor can't show.
-            const summary = summarizeResult(result);
-            if (summary) {
-              this.notify("session/update", {
-                sessionId,
-                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } },
-              });
-            }
+          // The turn result is the human-readable summary/answer (the run's
+          // primary output), not a raw dumped JSON object the editor can't show.
+          const summary = summarizeResult(result);
+          if (summary) {
+            this.notify("session/update", {
+              sessionId,
+              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } },
+            });
           }
           this.reply(id, { stopReason: controller.signal.aborted ? "cancelled" : "end_turn" });
         } catch (err) {
@@ -255,7 +260,7 @@ export class AcpServer {
             this.error(id, -32603, err instanceof Error ? err.message : String(err));
           }
         } finally {
-          if (sessionId && this.activeRuns.get(sessionId) === controller) this.activeRuns.delete(sessionId);
+          if (this.activeRuns.get(sessionId) === controller) this.activeRuns.delete(sessionId);
         }
         return;
       }
@@ -352,9 +357,17 @@ export class AcpServer {
       return;
     }
     if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
+      // Human sentences, not raw event ids — this text lands in the editor's
+      // chat timeline as-is.
+      const text =
+        type === "run.completed"
+          ? "[claudexor] run completed."
+          : type === "run.failed"
+            ? "[claudexor] run failed — inspect the run artifacts for diagnostics."
+            : "[claudexor] run blocked — a typed operator decision is required before this result can be applied.";
       this.notify("session/update", {
         sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `[claudexor] ${type}` } },
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
       });
     }
   }
@@ -401,17 +414,27 @@ export class AcpServer {
           status: "pending",
         },
       });
-      const response = await this.request("session/request_permission", {
-        sessionId,
-        toolCall: { toolCallId, title: String(q?.question ?? "Question") },
-        options,
-      });
-      this.notify("session/update", {
-        sessionId,
-        update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
-      });
+      // Bound the wait by the interaction's own deadline (the engine stamps
+      // timeoutAt on every interaction request); a silent editor then yields
+      // a null response instead of a forever-pending server request.
+      const deadlineMs = Date.parse(String(request?.timeout_at ?? ctx?.timeoutAt ?? "")) - Date.now();
+      const response = await this.request(
+        "session/request_permission",
+        {
+          sessionId,
+          toolCall: { toolCallId, title: String(q?.question ?? "Question") },
+          options,
+        },
+        Number.isFinite(deadlineMs) ? deadlineMs : 900_000,
+      );
       const optionId = response?.outcome?.optionId ?? response?.optionId;
       const picked = typeof optionId === "string" ? options.find((o: any) => o.optionId === optionId) : undefined;
+      // Terminal status for the announced call either way: completed on an
+      // answer, failed on decline/timeout — a started tool_call never hangs.
+      this.notify("session/update", {
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId, status: picked ? "completed" : "failed" },
+      });
       if (picked) {
         answers.push({ question_id: String(q?.id ?? ""), selected_labels: [picked.name], free_text: null });
       }
@@ -431,108 +454,5 @@ export class AcpServer {
     // Returning answers only for the choice questions; an empty set is a benign
     // decline (orchestrator/adapter then continue with assumptions).
     return answers.length > 0 ? { interaction_id: String(request?.interaction_id ?? ""), answers } : null;
-  }
-}
-
-/**
- * Reduce a run result to the human-readable text the editor should show. The
- * orchestrator returns an OrchestratorResult whose `summary` is the primary
- * output; prefer it over dumping the whole internal object. Falls back to a
- * compact JSON string only when no summary/text field is present.
- */
-function summarizeResult(result: unknown): string {
-  if (typeof result === "string") return result.trim();
-  if (result && typeof result === "object") {
-    const r = result as Record<string, unknown>;
-    for (const key of ["summary", "answer", "text"]) {
-      const v = r[key];
-      if (typeof v === "string" && v.trim()) return v.trim();
-    }
-    return JSON.stringify(result);
-  }
-  return result === undefined || result === null ? "" : String(result);
-}
-
-function extractPromptText(prompt: unknown): string {
-  if (typeof prompt === "string") return prompt;
-  if (Array.isArray(prompt)) {
-    return prompt
-      .map((p: any) => (typeof p === "string" ? p : (p?.text ?? "")))
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (prompt && typeof prompt === "object" && typeof (prompt as any).text === "string") {
-    return (prompt as any).text;
-  }
-  return "";
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function validateRunControls(params: unknown): string | null {
-  if (!isPlainRecord(params)) return null;
-  const allowedKeys = new Set([
-    "sessionId",
-    "prompt",
-    "mode",
-    "harness",
-    "primaryHarness",
-    "web",
-    "externalContextPolicy",
-    "model",
-    "effort",
-    "n",
-    "race",
-    "untilClean",
-    "swarm",
-    "create",
-    "tests",
-    "maxUsd",
-    "access",
-    "protectedPathApprovals",
-    "reviewerPanel",
-    "reviewerModels",
-    "reviewerEfforts",
-  ]);
-  for (const key of Object.keys(params)) {
-    // `_meta` is the PROTOCOL's forward-compat envelope (other parties'
-    // standard field), not a Claudexor knob — tolerate it, reject the rest.
-    // Unknown CLAUDEXOR fields still fail loudly (typo'd knobs never no-op).
-    if (key === "_meta") continue;
-    if (!allowedKeys.has(key)) return `unknown session/prompt field: ${key}`;
-  }
-  // ACP-specific rules first (mode/harness/n/booleans), then the SHARED
-  // semantic run-control rules (one owner in @claudexor/schema).
-  if (params.mode !== undefined && (typeof params.mode !== "string" || !ModeKind.safeParse(params.mode).success)) {
-    return "mode must be a valid mode";
-  }
-  const harnessError = validateOptionalNonEmptyString(params.harness, "harness");
-  if (harnessError) return harnessError;
-  for (const flag of ["race", "untilClean", "swarm", "create"] as const) {
-    if (params[flag] !== undefined && typeof params[flag] !== "boolean") {
-      return `${flag} must be a boolean`;
-    }
-  }
-  if (params.n !== undefined) {
-    // A race needs >= 2 candidates; other routes accept any positive width.
-    const min = params.race === true ? 2 : 1;
-    if (!Number.isInteger(params.n) || (params.n as number) < min) {
-      return params.race === true ? "race n must be an integer >= 2" : "n must be a positive integer";
-    }
-  }
-  const shared = validateSurfaceRunControls(params);
-  if (shared) return shared;
-  return validateNoInlineSecrets(params, "ACP session/prompt params");
-}
-
-
-function validateNoInlineSecrets(value: unknown, context: string): string | null {
-  try {
-    assertNoInlineSecretValues(value, "$", context);
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
   }
 }
