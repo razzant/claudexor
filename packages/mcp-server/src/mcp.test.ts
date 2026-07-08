@@ -43,7 +43,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 9 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 12 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -70,7 +70,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(9);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(12);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -97,9 +97,32 @@ describe("Claudexor MCP server (SDK v2)", () => {
   });
 
   it("no-argument tools (status/capabilities) are callable with {} — prompt is required only where the schema requires it", async () => {
+    // The capabilities tool declares the FULL catalog outputSchema, so the
+    // fake must return a schema-valid catalog (an invalid one is an isError —
+    // that strictness is the point of declared structured outputs).
+    const fakeCatalog = {
+      ok: true,
+      version: "0.0.0-test",
+      generatedAt: new Date().toISOString(),
+      harnesses: [],
+      availableHarnesses: [],
+      modes: ["ask", "plan", "audit", "agent", "orchestrate"],
+      runControlKeys: ["prompt"],
+      mutability: {
+        readOnlyModes: ["ask", "plan", "audit"],
+        writeModes: ["agent", "orchestrate"],
+        isolationKinds: ["envelope", "live"],
+        workspaceModes: ["in_place", "isolated"],
+        accessProfiles: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],
+        applyModes: ["apply", "commit", "branch", "pr"],
+      },
+      cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
+      mcpTools: ["claudexor_ask"],
+      applyEligibilityVocabulary: ["not_applied", "applied", "applied_review_blocked", "reverted"],
+    };
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "__status") return { harnesses: [], available: [] };
-      if (p.mode === "__capabilities") return { ok: true, version: "0.0.0-test", harnesses: [] };
+      if (p.mode === "__capabilities") return fakeCatalog;
       return { summary: "unexpected" };
     });
     const w = wire(tools);
@@ -187,6 +210,42 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(textOf(23)).toContain("inline_secret_rejected");
     expect(textOf(24)).toContain("durable run artifacts");
     expect(textOf(24)).toContain("inline_secret_rejected");
+  });
+
+  it("run tools return structuredContent mirroring the text (summary, handles, applyEligibility)", async () => {
+    const tools = defaultClaudexorTools(async () => ({
+      runId: "r-s1",
+      runDir: "/tmp/r-s1",
+      status: "succeeded",
+      summary: "Did the thing.",
+      applyEligibility: { eligible: false, state: "blocked", reason: "review found blockers", requiredAction: "decision" },
+    }));
+    const w = wire(tools);
+    await w.initialize();
+    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    await sleep(150);
+    await w.close();
+    const res = w.responses.find((r) => r.id === 1)?.result;
+    expect(res?.isError).not.toBe(true);
+    const sc = res?.structuredContent as Record<string, any>;
+    expect(sc?.summary).toBe("Did the thing.");
+    expect(sc?.runId).toBe("r-s1");
+    expect(sc?.status).toBe("succeeded");
+    expect(sc?.applyEligibility?.eligible).toBe(false);
+    expect(sc?.applyEligibility?.requiredAction).toBe("decision");
+    // Read-only vs mutating annotations ride tools/list.
+    const w2 = wire(tools);
+    await w2.initialize();
+    w2.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    await sleep(80);
+    await w2.close();
+    const list = w2.responses.find((r) => r.id === 2)?.result?.tools as Array<Record<string, any>>;
+    const byName = Object.fromEntries(list.map((t) => [t.name, t]));
+    expect(byName["claudexor_ask"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_orchestrate"]?.annotations?.readOnlyHint).toBe(true); // MCP orchestrate is suggest-only
+    expect(byName["claudexor_run"]?.annotations?.readOnlyHint).toBe(false);
+    expect(byName["claudexor_apply_check"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_run"]?.outputSchema).toBeTruthy();
   });
 
   it("bridges engine interactions to MCP elicitation and maps answers back", async () => {

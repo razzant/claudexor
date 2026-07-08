@@ -113,12 +113,21 @@ the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
 the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
-MCP is one-shot: a host receives the final Claudexor output from the nine
+MCP is one-shot: a host receives the final Claudexor output from the twelve
 implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
 `claudexor_race`, `claudexor_plan`, `claudexor_create`,
-`claudexor_orchestrate`, `claudexor_status`, and `claudexor_capabilities`
+`claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
-the mutability matrix, run-control keys) — not live thread parity.
+the mutability matrix, run-control keys), and the read-only recovery tools
+`claudexor_runs`, `claudexor_inspect`, and `claudexor_apply_check` — not
+live thread parity.
+
+Tools declare MCP behavior annotations (readOnlyHint for every non-agent
+route — MCP orchestrate is suggest-autonomy only) and, for run tools and
+the capability catalog, an outputSchema with a structuredContent mirror of
+the text result: `{summary, runId, runDir, status, applyEligibility}` —
+`applyEligibility` is the derived apply-gate verdict `{eligible, state,
+reason, requiredAction}` the control API serves on `GET /runs/:id`.
 
 Current operational behavior:
 

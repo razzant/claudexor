@@ -75,6 +75,8 @@ import {
   ControlThreadListResponse,
   ControlTrustListResponse,
   AgentCapabilityCatalog,
+  ApplyEligibility,
+  McpRunToolResult,
   ControlTrustState,
   ControlTrustUpdateRequest,
 } from "../src/index.js";
@@ -155,6 +157,8 @@ const schemas = {
   ControlThreadDetail,
   ControlTrustListResponse,
   AgentCapabilityCatalog,
+  ApplyEligibility,
+  McpRunToolResult,
   ControlTrustState,
   ControlTrustUpdateRequest,
 } as const;

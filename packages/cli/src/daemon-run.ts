@@ -266,6 +266,30 @@ export function exitCodeForState(state: string): number {
 }
 
 /**
+ * The run's derived apply-gate verdict from GET /runs/:id (single producer:
+ * the delivery gate via the control API). Soft-fails to null — a detail
+ * hiccup must never eat a finished run's result. Shared by the CLI post-run
+ * hints and the MCP structured results so both surfaces tell the same truth.
+ */
+export async function fetchApplyEligibility(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<{ eligible: boolean; state: string | null; reason: string | null; requiredAction: string | null } | null> {
+  if (!runId) return null;
+  try {
+    const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return null;
+    const detail = (await res.json()) as Record<string, unknown>;
+    const v = detail["applyEligibility"];
+    return v && typeof v === "object" ? (v as { eligible: boolean; state: string | null; reason: string | null; requiredAction: string | null }) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Machine-readable reason for a non-success DAEMON terminal (P2). `blocked` is a
  * needs-human terminal that carries no `error`, so surface the actionable decision
  * hint (mirrors text mode); other non-success terminals use the error or a state

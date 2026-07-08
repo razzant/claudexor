@@ -66,6 +66,7 @@ import {
   ensureDaemon,
   enqueueAndAwait,
   exitCodeForState,
+  fetchApplyEligibility,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
@@ -651,6 +652,10 @@ async function daemonAgentRun(
       // for EVERY non-success terminal incl. `blocked`, which carries no error)
       // so this path matches the in-process one (P2: one machine surface).
       const reason = daemonOutcomeSummary(out);
+      // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
+      // apply-gate verdict, so machine callers act on truth instead of
+      // re-implying eligibility from status.
+      const applyEligibility = await fetchApplyEligibility(addr, out.runId);
       printJson({
         runId: out.runId,
         runDir: out.runDir,
@@ -659,6 +664,7 @@ async function daemonAgentRun(
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
         ...(reason ? { summary: reason } : {}),
+        ...(applyEligibility ? { applyEligibility } : {}),
       });
       return exitCodeForState(out.status);
     }
@@ -681,7 +687,20 @@ async function daemonAgentRun(
         `  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
       );
     } else if (exitCodeForState(status) === 0) {
-      print(`  apply with: claudexor apply ${started.runId}`);
+      // Honest post-run hint: "apply with" is printed ONLY when the apply
+      // gate verifiably accepts the patch. A null verdict means no patch
+      // artifact (answer/no-op runs) or an unreachable detail endpoint —
+      // either way, promising `claudexor apply` would be a lie, so print the
+      // inspect handle instead. Ineligible runs get the honest unblock hint
+      // (ungated/review_not_run used to get a doomed apply command here).
+      const eligibility = await fetchApplyEligibility(addr, started.runId);
+      if (eligibility?.eligible) {
+        print(`  apply with: claudexor apply ${started.runId}`);
+      } else if (eligibility?.requiredAction) {
+        print(`  not applyable yet: ${eligibility.requiredAction}`);
+      } else {
+        print(`  inspect with: claudexor inspect ${started.runId}`);
+      }
     }
     return exitCodeForState(status);
   } catch (err) {

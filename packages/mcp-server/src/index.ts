@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
@@ -16,6 +17,57 @@ import {
   type InteractionQuestion,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
+
+// Generated JSON Schemas from @claudexor/schema (the SSOT): declared to hosts
+// as tool outputSchema so structured results are validated shapes, not blobs.
+// zod-to-json-schema emits a `$ref`+`definitions` wrapper; the SDK's
+// fromJsonSchema wants a self-contained schema, so internal refs are inlined
+// once at load (cycle-safe: a cyclic ref degrades to a permissive subschema).
+function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, unknown> {
+  // zod-to-json-schema dedupes with FULL JSON-pointer refs (e.g.
+  // "#/definitions/X/properties/y/items"), so resolution walks pointers over
+  // the whole document, not just top-level definition names.
+  const resolvePointer = (pointer: string): unknown => {
+    let node: unknown = schema;
+    for (const rawSegment of pointer.split("/").slice(1)) {
+      const segment = rawSegment.replaceAll("~1", "/").replaceAll("~0", "~");
+      if (Array.isArray(node)) node = node[Number(segment)];
+      else if (node && typeof node === "object") node = (node as Record<string, unknown>)[segment];
+      else return undefined;
+    }
+    return node;
+  };
+  const resolve = (node: unknown, stack: readonly string[]): unknown => {
+    if (Array.isArray(node)) return node.map((child) => resolve(child, stack));
+    if (!node || typeof node !== "object") return node;
+    const obj = node as Record<string, unknown>;
+    const ref = obj["$ref"];
+    if (typeof ref === "string" && ref.startsWith("#/")) {
+      // Claudexor's generated schemas are trees; a cycle would mean a schema
+      // refactor introduced recursion — fail LOUDLY at server start rather
+      // than silently degrading validation to permissive.
+      if (stack.includes(ref)) throw new Error(`cyclic $ref '${ref}' in a generated tool schema — flatten the schema or drop its outputSchema`);
+      const target = resolvePointer(ref);
+      if (target === undefined) throw new Error(`unresolved $ref '${ref}' in a generated tool schema`);
+      return resolve(target, [...stack, ref]);
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === "definitions") continue;
+      out[key] = resolve(value, stack);
+    }
+    return out;
+  };
+  return resolve(schema, []) as Record<string, unknown>;
+}
+
+const require = createRequire(import.meta.url);
+const mcpRunToolResultSchema = inlineJsonSchemaRefs(
+  require("@claudexor/schema/generated/McpRunToolResult.schema.json") as Record<string, unknown>,
+);
+const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
+  require("@claudexor/schema/generated/AgentCapabilityCatalog.schema.json") as Record<string, unknown>,
+);
 
 
 /**
@@ -46,11 +98,24 @@ export interface McpToolContext {
   signal?: AbortSignal;
 }
 
+/** Behavior hints per the MCP ToolAnnotations contract (all advisory). */
+export interface McpToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+}
+
+/** Tool output: plain text, or text plus a structured mirror (structuredContent). */
+export type McpToolOutput = string | { text: string; structured?: Record<string, unknown> };
+
 export interface McpTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: any, ctx: McpToolContext) => Promise<string>;
+  /** JSON Schema of the structured result (declared to hosts as outputSchema). */
+  outputSchema?: Record<string, unknown>;
+  annotations?: McpToolAnnotations;
+  handler: (args: any, ctx: McpToolContext) => Promise<McpToolOutput>;
 }
 
 export interface McpServerOptions {
@@ -73,6 +138,10 @@ export function buildMcpServer(opts: { name?: string; version?: string; tools: M
       {
         description: tool.description,
         inputSchema: fromJsonSchema(tool.inputSchema as any) as any,
+        // Structured results are DECLARED (outputSchema) and mirrored in text;
+        // annotations are the MCP behavior hints (read-only vs mutating).
+        ...(tool.outputSchema ? { outputSchema: fromJsonSchema(tool.outputSchema as any) as any } : {}),
+        ...(tool.annotations ? { annotations: tool.annotations } : {}),
       },
       (async (args: unknown, ctx: any) => {
         const provided = (args ?? {}) as Record<string, unknown>;
@@ -92,11 +161,16 @@ export function buildMcpServer(opts: { name?: string; version?: string; tools: M
         // channel exists (it would offer the harness a channel whose every
         // question dies as a decline).
         const canElicit = Boolean(server.server.getClientCapabilities()?.elicitation);
-        const text = await tool.handler(provided, {
+        const out = await tool.handler(provided, {
           elicit: canElicit ? elicitBridge(ctx) : null,
           signal: ctx?.mcpReq?.signal,
         });
-        return { content: [{ type: "text" as const, text }] };
+        const text = typeof out === "string" ? out : out.text;
+        const structured = typeof out === "string" ? undefined : out.structured;
+        return {
+          content: [{ type: "text" as const, text }],
+          ...(structured !== undefined ? { structuredContent: structured } : {}),
+        };
       }) as any,
     );
   }
@@ -273,6 +347,27 @@ function formatRunResult(result: unknown): string {
   return result === undefined || result === null ? "" : String(result);
 }
 
+/**
+ * Structured mirror of a run result (McpRunToolResult shape): the SAME facts
+ * the text trailer carries, machine-readable — summary, recovery handles, and
+ * the derived apply-gate verdict when the runner surfaced one.
+ */
+function structuredRunResult(result: unknown): Record<string, unknown> {
+  const r = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  let summary = typeof result === "string" ? result.trim() : "";
+  for (const key of ["summary", "answer", "text"]) {
+    const v = r[key];
+    if (!summary && typeof v === "string" && v.trim()) summary = v.trim();
+  }
+  return {
+    summary,
+    runId: typeof r["runId"] === "string" && r["runId"] ? r["runId"] : null,
+    runDir: typeof r["runDir"] === "string" && r["runDir"] ? r["runDir"] : null,
+    status: typeof r["status"] === "string" && r["status"] ? r["status"] : null,
+    applyEligibility: r["applyEligibility"] && typeof r["applyEligibility"] === "object" ? r["applyEligibility"] : null,
+  };
+}
+
 /** Default Claudexor tool surface for MCP (v0.9: 5 canonical modes + strategy flags). */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   const reviewerModelProperties = Object.fromEntries(
@@ -347,37 +442,51 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     },
     required: ["prompt"],
   });
+  // Behavior hints derive from the tool's MODE (data, not per-name hardcode):
+  // ask/audit/plan are read-only by construction, and MCP orchestrate is
+  // suggest-autonomy only (a read-only plan). Only agent-mode tools mutate.
+  const annotationsFor = (params: Record<string, unknown>): McpToolAnnotations =>
+    params["mode"] === "agent" ? { readOnlyHint: false, destructiveHint: false } : { readOnlyHint: true };
   const mk = (name: string, description: string, params: Record<string, unknown>, minN = 1): McpTool => ({
     name,
     description,
     inputSchema: promptSchema(minN),
-    // Summary first, then the runId/artifacts trailer (hosts get a handle).
+    outputSchema: mcpRunToolResultSchema,
+    annotations: annotationsFor(params),
+    // Summary first, then the runId/artifacts trailer (hosts get a handle);
+    // the structured mirror carries the same facts machine-readably.
     // The elicitation bridge rides the hooks: the runner surfaces the engine's
     // interactive questions and this tool answers them via the host.
-    handler: async (args, ctx) =>
-      formatRunResult(
-        await runner(
-          { ...args, ...params },
-          {
-            ...(ctx.signal ? { signal: ctx.signal } : {}),
-            ...(ctx.elicit
-              ? {
-                  onInteraction: async (ictx: any) => {
-                    const interactionId = ictx?.request?.interaction_id ?? "";
-                    const answers = await ctx.elicit!({
-                      interaction_id: interactionId,
-                      questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
-                    });
-                    // The TYPED InteractionAnswerSet carries the interaction id
-                    // (ACP/daemon parity; the engine keys the set to the request).
-                    return answers ? { interaction_id: interactionId, answers } : null;
-                  },
-                }
-              : {}),
-          },
-        ),
-      ),
+    handler: async (args, ctx) => {
+      const result = await runner(
+        { ...args, ...params },
+        {
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+          ...(ctx.elicit
+            ? {
+                onInteraction: async (ictx: any) => {
+                  const interactionId = ictx?.request?.interaction_id ?? "";
+                  const answers = await ctx.elicit!({
+                    interaction_id: interactionId,
+                    questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
+                  });
+                  // The TYPED InteractionAnswerSet carries the interaction id
+                  // (ACP/daemon parity; the engine keys the set to the request).
+                  return answers ? { interaction_id: interactionId, answers } : null;
+                },
+              }
+            : {}),
+        },
+      );
+      return { text: formatRunResult(result), structured: structuredRunResult(result) };
+    },
   });
+  const runIdSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { runId: { type: "string", minLength: 1, description: "Daemon run id (from a run tool's runId trailer or claudexor_runs)." } },
+    required: ["runId"],
+  };
   return [
     mk("claudexor_ask", "One-shot read-only answer through Claudexor; returns final output, not a live thread.", { mode: "ask" }),
     mk("claudexor_explore", "One-shot bounded read-only exploration and synthesis through Claudexor.", { mode: "audit", swarm: true }),
@@ -388,16 +497,74 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     mk("claudexor_orchestrate", "One-shot typed Claudexor orchestration plan over the tool belt.", { mode: "orchestrate" }),
     {
       name: "claudexor_status",
-      description: "Return doctor-backed Claudexor runtime status for this MCP server.",
+      description:
+        "Return doctor-backed Claudexor runtime status: per-harness verdicts with enabled/disabled intents, doctor reasons and checks, and the configured model.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
-      handler: async () => formatRunResult(await runner({ mode: "__status" })),
+      annotations: { readOnlyHint: true },
+      handler: async () => {
+        const result = await runner({ mode: "__status" });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+        };
+      },
     },
     {
       name: "claudexor_capabilities",
       description:
         "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and apply-eligibility vocabulary.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
-      handler: async () => formatRunResult(await runner({ mode: "__capabilities" })),
+      outputSchema: agentCapabilityCatalogSchema,
+      annotations: { readOnlyHint: true },
+      handler: async () => {
+        const result = await runner({ mode: "__capabilities" });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+        };
+      },
+    },
+    // Recovery tools — thin read-only wrappers over the daemon control API,
+    // so a host that lost a run handle (timeout, restart) can find it again.
+    {
+      name: "claudexor_runs",
+      description: "List recent daemon-tracked Claudexor runs (recovery: find a lost runId).",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      annotations: { readOnlyHint: true },
+      handler: async () => {
+        const result = await runner({ mode: "__runs_list" });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+        };
+      },
+    },
+    {
+      name: "claudexor_inspect",
+      description:
+        "Inspect a daemon-tracked run: status, summary, decision verdict, and the derived applyEligibility (what unblocks apply).",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: true },
+      handler: async (args) => {
+        const result = await runner({ mode: "__run_inspect", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+        };
+      },
+    },
+    {
+      name: "claudexor_apply_check",
+      description: "Dry-check whether a run's patch would apply cleanly to its original project (no mutation).",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+      handler: async (args) => {
+        const result = await runner({ mode: "__apply_check", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+        };
+      },
     },
   ];
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApplyEligibility } from "./apply-eligibility.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
@@ -62,6 +63,8 @@ export const ControlRunDetail = z.object({
     .nullable()
     .default(null),
   workProduct: WorkProduct.nullable().default(null),
+  /** Derived apply-gate verdict (single producer: the delivery gate); null when the run has no patch artifact. */
+  applyEligibility: ApplyEligibility.nullable().default(null),
   reviewFindings: z.array(ReviewFinding).default([]),
   pendingInteractions: z.array(ControlPendingInteraction).default([]),
   /** Typed executor progress for an orchestrate run (auto_safe/auto_full);

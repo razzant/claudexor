@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, join, relative, sep } from "node:path";
-import { checkPatch, deliver, revertInPlace, validateApplyGate } from "@claudexor/delivery";
+import { type ApplyGateInput, checkPatch, deliver, deriveApplyEligibility, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
@@ -12,6 +12,7 @@ import { normalizeRunStart, validateAbsoluteRepoRoot, validateDirectRunAttachmen
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import {
+  type ApplyEligibility,
   AccessProfile,
   AttachmentInput,
   ControlWebEvidence,
@@ -1779,6 +1780,9 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     decision,
     operatorDecision: operatorDecisionRaw,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
+    // Derived apply-gate verdict (single producer: delivery's
+    // deriveApplyEligibility) — null when the run has no patch artifact.
+    applyEligibility: applyEligibilityFor(rec),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
     // Typed executor progress for an orchestrate auto_safe/auto_full run; null
@@ -2002,7 +2006,11 @@ function applyTargetRoot(target: ControlApplyCheckRequest["target"] | ControlApp
 
 /** Project the run record into the delivery package's single-owner apply gate. */
 function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: string): string | null {
-  return validateApplyGate({
+  return validateApplyGate(applyGateInputFor(rec, patch, targetRepoRoot));
+}
+
+function applyGateInputFor(rec: DaemonRunRecord, patch: string, targetRepoRoot: string): ApplyGateInput {
+  return {
     state: rec.state,
     decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
@@ -2010,7 +2018,20 @@ function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: str
     originalRepoRoot: runRepoRoot(rec),
     targetRepoRoot,
     operatorDecision: readOperatorDecision(rec),
-  });
+  };
+}
+
+/**
+ * The GET /runs/:id projection of the apply gate: null when the run has no
+ * patch artifact (nothing to apply); otherwise the derived verdict against
+ * the run's own original project root.
+ */
+function applyEligibilityFor(rec: DaemonRunRecord): ApplyEligibility | null {
+  const patch = readPatch(rec);
+  if (patch === null || patch.trim() === "") return null;
+  const root = runRepoRoot(rec);
+  if (!root) return null;
+  return deriveApplyEligibility(applyGateInputFor(rec, patch, root));
 }
 
 /**

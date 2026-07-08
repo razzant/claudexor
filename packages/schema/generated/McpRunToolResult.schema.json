@@ -1,0 +1,91 @@
+{
+  "$ref": "#/definitions/McpRunToolResult",
+  "definitions": {
+    "McpRunToolResult": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "Human-readable outcome summary (same text as the tool's text content)."
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Daemon run id (recovery handle for inspect/follow/apply/decision); null for in-process read-only runs."
+        },
+        "runDir": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Artifact directory of the run; null when not persisted."
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Terminal run status (success | blocked | failed | cancelled | ...)."
+        },
+        "applyEligibility": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "eligible": {
+                  "type": "boolean",
+                  "description": "True when the apply gate would accept this run's patch right now."
+                },
+                "state": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The gate's refusal text when not eligible (null when eligible)."
+                },
+                "requiredAction": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Honest guidance for what actually unblocks apply (typed operator decision, add gates, re-run, or nothing to apply)."
+                }
+              },
+              "required": [
+                "eligible",
+                "state",
+                "reason",
+                "requiredAction"
+              ],
+              "additionalProperties": false,
+              "description": "Derived apply-gate verdict for a run's WorkProduct (single producer in the delivery gate)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Apply-gate verdict for mutating runs; null for read-only routes or when no patch exists."
+        }
+      },
+      "required": [
+        "summary",
+        "runId",
+        "runDir",
+        "status",
+        "applyEligibility"
+      ],
+      "additionalProperties": false,
+      "description": "Structured MCP tool result for Claudexor run tools."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

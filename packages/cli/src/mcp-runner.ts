@@ -1,8 +1,9 @@
 import { Orchestrator } from "@claudexor/orchestrator";
 import { AccessProfile, EffortHint, ExternalContextPolicy } from "@claudexor/schema";
+import { loadConfig } from "@claudexor/config";
 import { buildGateway, buildRegistry } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import { daemonOutcomeSummary, ensureDaemon, enqueueAndAwait } from "./daemon-run.js";
+import { daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, fetchApplyEligibility } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import type { ControlApiAddress } from "./live.js";
 
@@ -24,12 +25,27 @@ export function orchestratorRunner() {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
     if (p?.mode === "__status") {
       // Doctor-backed truth (probe-cheap): fakes and unavailable harnesses are
-      // never presented as available tools to an MCP host.
+      // never presented as available tools to an MCP host. Enriched view:
+      // disabled intents, doctor reasons/checks, and the configured model
+      // (same facts GET /harnesses serves).
       const statuses = await buildGateway({ includeFakes: false }).statusAll({
         cwd: process.cwd(),
       });
+      const cfg = loadConfig(process.cwd());
+      // ADD-ONLY contract: {harnesses:[{id,status,intents}],available} is the
+      // pre-existing shape deployed MCP hosts parse; the enrichment fields
+      // (disabledIntents/reasons/checks/configuredModel) may grow but the
+      // original keys must not be renamed or removed.
       return {
-        harnesses: statuses.map((s) => ({ id: s.id, status: s.status, intents: s.enabledIntents })),
+        harnesses: statuses.map((s) => ({
+          id: s.id,
+          status: s.status,
+          intents: s.enabledIntents,
+          disabledIntents: s.disabledIntents,
+          reasons: s.reasons,
+          checks: s.checks.map((c) => ({ id: c.id, status: c.status })),
+          configuredModel: cfg.global.harnesses[s.id]?.default_model ?? null,
+        })),
         available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
       };
     }
@@ -37,6 +53,9 @@ export function orchestratorRunner() {
       // The derived AgentCapabilityCatalog — same composer as the CLI verb
       // and the daemon's GET /agent-capabilities.
       return buildAgentCapabilityCatalog();
+    }
+    if (p?.mode === "__runs_list" || p?.mode === "__run_inspect" || p?.mode === "__apply_check") {
+      return recoveryQuery(p.mode, typeof p?.runId === "string" ? p.runId : "");
     }
     const reviewerPanel = Array.isArray(p?.reviewerPanel) ? p.reviewerPanel : undefined;
     const reviewerModels =
@@ -143,8 +162,70 @@ export function mcpSurfaceRunner() {
       primary && primary.kind !== "patch"
         ? primary.text.trim()
         : (reason ?? (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
-    return { runId: out.runId, runDir: out.runDir, status: out.status, summary };
+    // The derived apply verdict rides the result (single producer: the run
+    // detail endpoint). Soft-fail: a detail hiccup never eats the run result.
+    const applyEligibility = await fetchApplyEligibility(addr, out.runId);
+    return { runId: out.runId, runDir: out.runDir, status: out.status, summary, applyEligibility };
   };
+}
+
+/**
+ * Recovery queries — thin read-only projections over the daemon control API
+ * (auto-starting it like every daemon-tracked path). A host that lost a run
+ * handle finds it again without shelling out to the CLI.
+ */
+async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
+  const { addr } = await ensureDaemon();
+  const get = async (path: string): Promise<Record<string, unknown>> => {
+    const res = await fetch(`${addr.baseUrl}${path}`, { headers: { authorization: `Bearer ${addr.token}` } });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw new Error(typeof body["error"] === "string" ? (body["error"] as string) : `HTTP ${res.status} for ${path}`);
+    return body;
+  };
+  if (mode === "__runs_list") {
+    const body = await get("/runs");
+    const runs = Array.isArray(body["runs"]) ? (body["runs"] as Record<string, unknown>[]) : [];
+    return {
+      summary: `${runs.length} daemon-tracked run(s)`,
+      runs: runs.map((r) => ({
+        runId: r["runId"] ?? r["id"] ?? null,
+        status: r["status"] ?? r["state"] ?? null,
+        mode: r["mode"] ?? null,
+        createdAt: r["createdAt"] ?? null,
+      })),
+    };
+  }
+  if (!runId) throw new Error("runId is required");
+  if (mode === "__run_inspect") {
+    const detail = await get(`/runs/${encodeURIComponent(runId)}`);
+    const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
+    const decision = (detail["decision"] ?? null) as Record<string, unknown> | null;
+    return {
+      summary: typeof detail["finalSummary"] === "string" && detail["finalSummary"] ? detail["finalSummary"] : `run ${runId}: ${String(summary["status"] ?? "unknown")}`,
+      runId,
+      status: summary["status"] ?? null,
+      decisionStatus: decision ? (decision["status"] ?? null) : null,
+      applyEligibility: detail["applyEligibility"] ?? null,
+      pendingInteractions: Array.isArray(detail["pendingInteractions"]) ? (detail["pendingInteractions"] as unknown[]).length : 0,
+    };
+  }
+  // __apply_check: the server-side dry gate + patch check (no mutation).
+  const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/apply/check`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    return { summary: `apply check refused: ${typeof body["error"] === "string" ? body["error"] : `HTTP ${res.status}`}`, runId, eligible: false };
+  }
+  // HTTP 200 carries the ApplyResult; `ok:false` means `git apply --check`
+  // itself failed — an honest conflict verdict, never "applies cleanly".
+  if (body["ok"] !== true) {
+    const stderr = typeof body["stderr"] === "string" && body["stderr"].trim() ? `: ${body["stderr"].trim()}` : "";
+    return { summary: `apply check failed: the patch does NOT apply cleanly${stderr}`, runId, eligible: false, check: body };
+  }
+  return { summary: "apply check passed: the patch applies cleanly to the original project", runId, eligible: true, check: body };
 }
 
 /**

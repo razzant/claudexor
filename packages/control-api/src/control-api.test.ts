@@ -2866,7 +2866,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("serves run detail and artifact index from the run directory", async () => {
-    const { daemon } = fakeDaemon();
+    const { daemon, record } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
       const detail = await fetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
@@ -2903,6 +2903,20 @@ describe("DaemonControlApiServer", () => {
       expect(body.reviewFindings[0]?.claim).toBe("persisted finding");
       expect(body.reviewFindings[0]?.reviewer.requested_effort).toBe("max");
       expect(body.artifacts.some((a) => a.path === "final/summary.md")).toBe(true);
+      // Derived apply-gate verdict rides the detail (single producer): this
+      // fixture run has a patch, so the verdict is non-null and typed.
+      const eligibility = (body as unknown as { applyEligibility: { eligible: boolean; reason: string | null; requiredAction: string | null } | null })
+        .applyEligibility;
+      expect(eligibility).not.toBeNull();
+      expect(typeof eligibility?.eligible).toBe("boolean");
+      if (eligibility && !eligibility.eligible) {
+        expect(eligibility.reason).toBeTruthy();
+        expect(eligibility.requiredAction).toBeTruthy();
+      } else if (eligibility) {
+        // Eligible verdicts carry explicit nulls, never empty-string debris.
+        expect(eligibility.reason).toBeNull();
+        expect(eligibility.requiredAction).toBeNull();
+      }
 
       const artifacts = await fetch(`${base}/runs/run-d1/artifacts`, {
         headers: { authorization: `Bearer ${token}` },
@@ -2915,6 +2929,17 @@ describe("DaemonControlApiServer", () => {
       });
       expect(summary.status).toBe(200);
       expect(await summary.text()).toContain("Summary");
+
+      // A run with NO patch artifact serves detail fine with a NULL verdict —
+      // the no-patch path is a null projection, never a crash (missing
+      // artifacts resolve to null in safeArtifactPath before any lstat).
+      rmSync(join(record.runDir as string, "final", "patch.diff"), { force: true });
+      const noPatchDetail = await fetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(noPatchDetail.status).toBe(200);
+      const noPatchBody = (await noPatchDetail.json()) as { applyEligibility: unknown };
+      expect(noPatchBody.applyEligibility).toBeNull();
     });
   });
 

@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import type { DecisionRecord, WorkProduct } from "@claudexor/schema";
+import type { ApplyEligibility, DecisionRecord, WorkProduct } from "@claudexor/schema";
 import { parseUnifiedDiff } from "@claudexor/core";
 import { pathGuard } from "@claudexor/policy";
 import { sha256 } from "@claudexor/util";
@@ -113,6 +113,26 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     if (!guard.allowed) return `patch path escapes the target repo: ${guard.reason}`;
   }
   return null;
+}
+
+/**
+ * Derived ApplyEligibility (the ONE producer): runs the same gate the apply
+ * endpoints enforce and projects a typed verdict for surfaces (GET /runs/:id,
+ * MCP structured results, CLI --json) — {eligible, state, reason,
+ * requiredAction} instead of every consumer re-implying eligibility.
+ */
+export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility {
+  const reason = validateApplyGate(input);
+  const state = input.state ?? input.decision?.status ?? null;
+  if (reason === null) {
+    return { eligible: true, state, reason: null, requiredAction: null };
+  }
+  return {
+    eligible: false,
+    state,
+    reason,
+    requiredAction: applyHint(state ?? ""),
+  };
 }
 
 /** Paths touched by a unified git diff (both old and new sides, excluding /dev/null). */

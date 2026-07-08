@@ -28,3 +28,4 @@ export * from "./orchestrate.js";
 export * from "./control.js";
 export * from "./control-trust.js";
 export * from "./agent-capabilities.js";
+export * from "./apply-eligibility.js";

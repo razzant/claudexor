@@ -1,0 +1,44 @@
+{
+  "$ref": "#/definitions/ApplyEligibility",
+  "definitions": {
+    "ApplyEligibility": {
+      "type": "object",
+      "properties": {
+        "eligible": {
+          "type": "boolean",
+          "description": "True when the apply gate would accept this run's patch right now."
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The gate's refusal text when not eligible (null when eligible)."
+        },
+        "requiredAction": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Honest guidance for what actually unblocks apply (typed operator decision, add gates, re-run, or nothing to apply)."
+        }
+      },
+      "required": [
+        "eligible",
+        "state",
+        "reason",
+        "requiredAction"
+      ],
+      "additionalProperties": false,
+      "description": "Derived apply-gate verdict for a run's WorkProduct (single producer in the delivery gate)."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
