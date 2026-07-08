@@ -74,6 +74,18 @@ body by the `prepare-commit-msg` hook. Local hooks are opt-in:
 bash scripts/install-hooks.sh   # pre-commit review + bypass disclosure
 ```
 
+**External contributors without working harness auth or an OpenRouter key:**
+the CI gate suite above is what your PR must pass; the multi-model review
+gate is then run by the maintainer during review — you are not expected to
+pay for reviewer models to contribute. Say in the PR description that the
+review gate was not run locally.
+
+Contributions are accepted under the repository's MIT license
+(inbound = outbound); by opening a PR you license your change under MIT.
+Historical `Dxx` codes in old commit messages are archival ids from the
+maintainer's decision registry — current rationale lives in the Bible's
+invariants, not behind those codes.
+
 Then self-check, honestly, in the commit body:
 
 - Which Bible invariants does this change touch, and how?

@@ -427,6 +427,49 @@ cd apps/macos/ClaudexorKit && swift test
 cd ../ClaudexorApp && swift build
 ```
 
+## Privacy
+
+Claudexor collects **no telemetry**: no analytics, no crash reporting, no
+auto-update pings. The only outbound network traffic is what you configure —
+the vendor harness CLIs and model APIs your runs use (plus the user-invoked
+`claudexor release check-name`, which queries public package registries when
+YOU run it). The `telemetry/` names you may see under `~/.claudexor/` and in
+run artifacts are **local files only** (per-harness cost/latency averages and
+per-run evidence); nothing is transmitted.
+
+## Uninstall / where your data lives
+
+Claudexor owns these locations:
+
+- `~/.claudexor/` — global config (`config.yaml`), per-repo trust grants
+  (`trust/`), the file-backend secret store (`secrets.json`, when the OS
+  keychain is unavailable), daemon state (`daemon/`: token, socket, log, job
+  and thread registries), local harness metrics (`telemetry/`), host-plugin
+  ownership state (`plugins/`), and user-level runs for no-project asks.
+- macOS Keychain items under the service name `claudexor` (secret values
+  stored via `claudexor secrets set`) — delete them in Keychain Access if you
+  remove the file tree.
+- `~/Library/LaunchAgents/com.claudexor.claudexord.plist` — only if you opted
+  into the launchd autostart.
+- Per-project `.claudexor/` — run artifacts (`runs/`), and for isolated
+  threads `workspaces/` **may hold unapplied work** (persistent worktrees).
+  Apply or export anything you care about before deleting it.
+- Host-plugin artifacts in vendor config trees — remove them with
+  `claudexor plugin uninstall all` (ownership-aware; it only deletes
+  Claudexor-owned files).
+
+Uninstalling is: `claudexor plugin uninstall all`, `claudexor daemon stop`,
+then delete the paths above (and npm/global install or the app bundle).
+
+## Upgrading from 0.x
+
+The config loader migrates forward automatically: retired keys are stripped
+with a disclosure at load, unknown keys fail loudly, and old wire mode ids
+hard-error with the canonical replacement named. After upgrading, run
+`claudexor plugin repair all` so generated host-plugin files match the new
+version, and restart the daemon (`claudexor daemon stop` — the next command
+starts the new build).
+
 ## Version History
 
 The current version is **v0.15.0** (the root `package.json` is the version
@@ -434,4 +477,5 @@ SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) (c) 2026 joi-lab
+[MIT](LICENSE) (c) 2026 joi-lab — inbound contributions are accepted under
+the same license.

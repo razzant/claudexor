@@ -30,7 +30,7 @@ export function relayPriorPlansSection(plans: { id: string; text: string }[]): s
   const blocks = plans
     .map((p) => {
       const cut = p.text.length > CAP;
-      const body = cut ? `${p.text.slice(0, CAP)}\n[... plan truncated at ${CAP} chars — full text in that run's final/plan.md]` : p.text;
+      const body = cut ? `${p.text.slice(0, CAP)}\n[... plan truncated at ${CAP} chars — the source run's plan artifact carries the full text]` : p.text;
       return `### Plan already proposed by ${p.id}\n${body}`;
     })
     .join("\n\n");

@@ -274,6 +274,21 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   };
 
   const startTerminalLoginJob = (job: ControlSetupJob, command: string): ControlSetupJob => {
+    // The Terminal-handoff login uses macOS `open -a Terminal`. On non-darwin
+    // there is no such affordance: fail with a typed, actionable state rather
+    // than spawn a missing binary (whose unhandled ENOENT `error` event could
+    // take down the daemon). The manual command is disclosed so the user can
+    // run the native login themselves.
+    if (process.platform !== "darwin") {
+      const failed = update(job.jobId, {
+        state: "failed",
+        startedAt: nowForDto(),
+        finishedAt: nowForDto(),
+        message: `Terminal-handoff login is macOS-only. Run the ${job.harness} native login yourself, then recheck Harness Doctor: ${command}`,
+      });
+      writeJobLog(failed, failed.message);
+      return failed;
+    }
     const scriptPath = join(SETUP_JOBS_DIR, `${job.jobId}.command`);
     const script = `#!/usr/bin/env bash
 set -euo pipefail
@@ -285,12 +300,40 @@ IFS= read -r _
     chmodSync(scriptPath, 0o700);
     writeJobLog(job, `Terminal script: ${scriptPath}`);
     const child = spawn("/usr/bin/open", ["-a", "Terminal", scriptPath], { detached: true, stdio: "ignore" });
-    child.unref();
+    // The waiting transition lands FIRST (same synchronous tick as spawn —
+    // child 'error'/'exit' events cannot fire mid-tick), so startedAt is
+    // always stamped before any handler can run.
     const waiting = update(job.jobId, {
       state: "waiting_for_input",
       startedAt: nowForDto(),
       message: `Opened allowlisted ${job.harness} login in Terminal. Complete native auth there, then recheck Harness Doctor.`,
     });
+    // A missing/blocked `open` must land as a typed failure, never an
+    // unhandled 'error' event that crashes the daemon. `open` can also fail
+    // AFTER spawning (nonzero exit, or killed by signal) — that path must not
+    // leave the job parked on waiting_for_input either. One transition wins
+    // (settled flag), and a job the user already CANCELLED (or any other
+    // terminal state) is never overwritten by a late child event — the same
+    // cancel-race guard the doctor path uses.
+    let settled = false;
+    const failJob = (detail: string): void => {
+      if (settled) return;
+      settled = true;
+      const current = jobs.get(job.jobId);
+      if (!current || current.state !== "waiting_for_input") return;
+      const failed = update(job.jobId, {
+        state: "failed",
+        finishedAt: nowForDto(),
+        message: `Could not open Terminal for ${job.harness} login: ${detail}. Run it yourself, then recheck Harness Doctor: ${command}`,
+      });
+      writeJobLog(failed, failed.message);
+    };
+    child.on("error", (err) => failJob(err.message));
+    child.on("exit", (code, signal) => {
+      if (code === 0) return;
+      failJob(code === null ? `\`open -a Terminal\` was terminated by signal ${signal ?? "unknown"}` : `\`open -a Terminal\` exited with code ${code}`);
+    });
+    child.unref();
     return waiting;
   };
 

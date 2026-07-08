@@ -1,12 +1,13 @@
 # Claudexor project config (versioned). Safe settings only.
 # Sensitive settings (full access, secrets, budget-above-cap, plugin install,
 # MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.
+#
+# mandatory_files (optional, empty on a fresh `claudexor init`) pins files as
+# required run context — fail-closed if missing, enforced in every mode.
+# THIS repo opts in: runs here must always read the README and the
+# architecture map before acting.
 version: 1
-project:
-  language_stack: []
 context:
-  agents_md_first: true
-  never_silent_truncate: true
   mandatory_files:
     - README.md
     - docs/ARCHITECTURE.md
@@ -14,9 +15,5 @@ context:
   exclude: []
 tests:
   commands: []
-delivery: {}
-review:
-  default_attempts: 3
-  strictness: block
 budget:
   portfolio: subscription-first

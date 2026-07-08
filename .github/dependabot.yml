@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # npm (pnpm workspace) — grouped so the flood of transitive bumps arrives as
+  # a small number of reviewable PRs, not one per package.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+      production-dependencies:
+        dependency-type: "production"
+
+  # GitHub Actions used by CI and the release workflow.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
