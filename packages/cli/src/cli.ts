@@ -55,6 +55,7 @@ import {
 } from "./args.js";
 import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
 import { KNOWN_FLAGS, VALUE_FLAGS, helpJson, renderHelp, restrictedFlagAllowlist } from "./command-registry.js";
+import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
@@ -1554,6 +1555,26 @@ async function main(): Promise<number> {
         return 0;
       }
       return printUsageError(json, "usage: claudexor harness list [--all]");
+    }
+
+    case "capabilities": {
+      // The derived AgentCapabilityCatalog — same composer as the daemon's
+      // GET /agent-capabilities and the MCP claudexor_capabilities tool.
+      const catalog = await buildAgentCapabilityCatalog();
+      if (json) printJson(catalog);
+      else {
+        print(`claudexor ${catalog.version} — capability catalog`);
+        print(`modes: ${catalog.modes.join(", ")}`);
+        print(`available harnesses: ${catalog.availableHarnesses.join(", ") || "(none)"}`);
+        for (const h of catalog.harnesses) {
+          const model = h.configuredModel ? ` model=${h.configuredModel}${h.configuredModelValid === false ? " (REJECTED)" : ""}` : "";
+          print(`  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${h.models.count} (${h.models.source})${model}`);
+        }
+        print(`mcp tools: ${catalog.mcpTools.join(", ")}`);
+        print(`run-control keys: ${catalog.runControlKeys.join(", ")}`);
+        print(`full JSON: claudexor capabilities --json (or GET /agent-capabilities on the daemon)`);
+      }
+      return 0;
     }
 
     case "help":

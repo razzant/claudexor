@@ -35,6 +35,7 @@ import {
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
 import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { applyHarnessSettingsPatches, assertSettingsPatchValid } from "./settings-service.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import {
@@ -431,6 +432,9 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
     },
     harnessModels: async (input: { harnessId: string }) =>
       harnessModels(input.harnessId, NO_PROJECT_ROOT),
+    // Derived catalog for external agents; same composer the CLI verb and the
+    // MCP tool use, so all three surfaces answer identically.
+    agentCapabilities: async () => buildAgentCapabilityCatalog(),
     createSetupJob: async (input: unknown) => setupJobs.create(input),
     listSetupJobs: async () => ({ jobs: setupJobs.list() }),
     setupJobStatus: async (input: unknown) => setupJobs.status(input),

@@ -202,7 +202,11 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) return `unknown argument: ${key}`;
   }
-  if (tool.name !== "claudexor_status") {
+  // Prompt is required exactly when the tool's own schema REQUIRES it — no
+  // per-tool-name special cases (no-argument tools like status/capabilities
+  // simply do not declare a prompt property).
+  const requiredKeys = Array.isArray(tool.inputSchema.required) ? (tool.inputSchema.required as string[]) : [];
+  if (requiredKeys.includes("prompt")) {
     if (typeof obj.prompt !== "string" || obj.prompt.trim().length === 0) return "prompt must be a non-empty string";
   }
   const harnessError = validateOptionalNonEmptyString(obj.harness, "harness");
@@ -383,6 +387,13 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       description: "Return doctor-backed Claudexor runtime status for this MCP server.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
       handler: async () => formatRunResult(await runner({ mode: "__status" })),
+    },
+    {
+      name: "claudexor_capabilities",
+      description:
+        "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and apply-eligibility vocabulary.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      handler: async () => formatRunResult(await runner({ mode: "__capabilities" })),
     },
   ];
 }

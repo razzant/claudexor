@@ -400,6 +400,13 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     stability: "stable",
   },
   {
+    id: "capabilities",
+    summary: "Machine-readable capability catalog (harnesses, modes, mutability matrix) for agents",
+    flags: ["json"],
+    mutability: "read",
+    stability: "stable",
+  },
+  {
     id: "help",
     summary: "Show this help",
     flags: ["json"],

@@ -17,6 +17,7 @@ import {
   ControlWebEvidence,
   ControlApplyCheckRequest,
   ControlApplyRequest,
+  AgentCapabilityCatalog,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlSetupJob,
@@ -110,6 +111,8 @@ export interface DaemonControlApiOptions {
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
     harnesses?: () => Promise<unknown>;
+    /** Derived AgentCapabilityCatalog (GET /agent-capabilities). */
+    agentCapabilities?: () => Promise<unknown>;
     /** Enumerable models for one harness (ADP4); thin projection over the adapter's optional models(). */
     harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
     createSetupJob?: (input: unknown) => Promise<unknown>;
@@ -922,6 +925,7 @@ export class DaemonControlApiServer {
     }
 
     if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
+    if (method === "GET" && path === "/agent-capabilities") return this.service(res, "agentCapabilities", undefined, AgentCapabilityCatalog);
     const harnessModelsMatch = /^\/harnesses\/([^/]+)\/models$/.exec(path);
     if (method === "GET" && harnessModelsMatch) {
       return this.service(res, "harnessModels", { harnessId: decodeURIComponent(harnessModelsMatch[1] as string) }, ControlHarnessModelsResponse);

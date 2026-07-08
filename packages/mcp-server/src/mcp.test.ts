@@ -43,7 +43,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 8 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 9 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -70,7 +70,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(8);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(9);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -94,6 +94,25 @@ describe("Claudexor MCP server (SDK v2)", () => {
     // Still never a raw JSON dump of the internal run object.
     expect(text).not.toContain("winner");
     expect(text).not.toContain("{");
+  });
+
+  it("no-argument tools (status/capabilities) are callable with {} — prompt is required only where the schema requires it", async () => {
+    const tools = defaultClaudexorTools(async (p) => {
+      if (p.mode === "__status") return { harnesses: [], available: [] };
+      if (p.mode === "__capabilities") return { ok: true, version: "0.0.0-test", harnesses: [] };
+      return { summary: "unexpected" };
+    });
+    const w = wire(tools);
+    await w.initialize();
+    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_capabilities", arguments: {} } });
+    w.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "claudexor_status", arguments: {} } });
+    await sleep(150);
+    await w.close();
+    const cap = w.responses.find((r) => r.id === 1);
+    expect(cap?.result?.isError).not.toBe(true);
+    expect(String(cap?.result?.content?.[0]?.text ?? "")).toContain("0.0.0-test");
+    const status = w.responses.find((r) => r.id === 2);
+    expect(status?.result?.isError).not.toBe(true);
   });
 
   it("rejects invalid tool arguments as isError tool results before invoking the runner", async () => {

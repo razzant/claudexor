@@ -8,7 +8,7 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask, explore, run, race, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), and ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release). | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask, explore, run, race, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
@@ -113,10 +113,12 @@ the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
 the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
-MCP is one-shot: a host receives the final Claudexor output from the eight
+MCP is one-shot: a host receives the final Claudexor output from the nine
 implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
 `claudexor_race`, `claudexor_plan`, `claudexor_create`,
-`claudexor_orchestrate`, and `claudexor_status` — not live thread parity.
+`claudexor_orchestrate`, `claudexor_status`, and `claudexor_capabilities`
+(the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
+the mutability matrix, run-control keys) — not live thread parity.
 
 Current operational behavior:
 

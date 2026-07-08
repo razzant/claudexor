@@ -1,6 +1,7 @@
 import { Orchestrator } from "@claudexor/orchestrator";
 import { AccessProfile, EffortHint, ExternalContextPolicy } from "@claudexor/schema";
 import { buildGateway, buildRegistry } from "./registry.js";
+import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { daemonOutcomeSummary, ensureDaemon, enqueueAndAwait } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import type { ControlApiAddress } from "./live.js";
@@ -31,6 +32,11 @@ export function orchestratorRunner() {
         harnesses: statuses.map((s) => ({ id: s.id, status: s.status, intents: s.enabledIntents })),
         available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
       };
+    }
+    if (p?.mode === "__capabilities") {
+      // The derived AgentCapabilityCatalog — same composer as the CLI verb
+      // and the daemon's GET /agent-capabilities.
+      return buildAgentCapabilityCatalog();
     }
     const reviewerPanel = Array.isArray(p?.reviewerPanel) ? p.reviewerPanel : undefined;
     const reviewerModels =

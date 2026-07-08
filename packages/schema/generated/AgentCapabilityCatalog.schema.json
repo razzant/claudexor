@@ -1,0 +1,380 @@
+{
+  "$ref": "#/definitions/AgentCapabilityCatalog",
+  "definitions": {
+    "AgentCapabilityCatalog": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "const": true,
+          "description": "Envelope marker (matches the CLI JSON convention)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Claudexor version serving this catalog (compare with CLAUDEXOR_PLUGIN_VERSION to detect plugin skew)."
+        },
+        "generatedAt": {
+          "type": "string",
+          "description": "ISO timestamp when the catalog was composed."
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Harness id (codex, claude, cursor, opencode, raw-api, openrouter, ...)."
+              },
+              "displayName": {
+                "type": "string",
+                "description": "Human display name from the manifest."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "degraded",
+                  "unavailable"
+                ],
+                "description": "Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s)."
+              },
+              "providerFamily": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "anthropic",
+                  "google",
+                  "cursor",
+                  "opencode",
+                  "xai",
+                  "local",
+                  "unknown"
+                ],
+                "description": "Vendor family the harness routes to."
+              },
+              "enabledIntents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Intents the gateway will route to this harness right now."
+              },
+              "disabledIntents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Intents the doctor disabled (with reasons in `reasons`)."
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Human-readable doctor/discovery reasons for degraded or unavailable status."
+              },
+              "configuredModel": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The user's configured per-harness default model, if any (null = engine default routing)."
+              },
+              "configuredModelValid": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Strict truth-source check of configuredModel (null when no model is configured)."
+              },
+              "models": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "api",
+                      "manifest",
+                      "none"
+                    ],
+                    "description": "Where the model list comes from: a live vendor API enumeration, the adapter manifest's curated hints, or nothing (model overrides are refused for source=none)."
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of enumerable models (GET /harnesses/:id/models has the full list)."
+                  },
+                  "verifiedAgainst": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Vendor CLI version the manifest hints were last verified against (null for api/none sources)."
+                  }
+                },
+                "required": [
+                  "source",
+                  "count",
+                  "verifiedAgainst"
+                ],
+                "additionalProperties": false,
+                "description": "Summary of a harness's model truth source (full list via the models endpoint/verb)."
+              },
+              "webPolicy": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "tools",
+                  "uncontrolled",
+                  "none"
+                ],
+                "description": "How external web/search is controlled for this harness."
+              },
+              "imageInput": {
+                "type": "string",
+                "enum": [
+                  "file_path",
+                  "base64_stream",
+                  "base64_inline",
+                  "none"
+                ],
+                "description": "Attachment/vision delivery mechanism the adapter supports."
+              },
+              "effortLevels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
+                "description": "Reasoning-effort ladder the adapter declares (normalized by the engine)."
+              },
+              "accessProfilesSupported": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "workspace_write",
+                    "full",
+                    "external_sandbox_full",
+                    "inherit_native"
+                  ]
+                },
+                "description": "Access profiles the adapter can enforce."
+              },
+              "readonlyMechanism": {
+                "type": "string",
+                "enum": [
+                  "fs_sandbox",
+                  "permission_deny",
+                  "tool_allowlist",
+                  "none"
+                ],
+                "description": "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness."
+              }
+            },
+            "required": [
+              "id",
+              "displayName",
+              "status",
+              "providerFamily",
+              "enabledIntents",
+              "disabledIntents",
+              "reasons",
+              "configuredModel",
+              "configuredModelValid",
+              "models",
+              "webPolicy",
+              "imageInput",
+              "effortLevels",
+              "accessProfilesSupported",
+              "readonlyMechanism"
+            ],
+            "additionalProperties": false,
+            "description": "Per-harness live capability row (manifest + doctor + model truth)."
+          },
+          "description": "Live per-harness capabilities (doctor-backed)."
+        },
+        "availableHarnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Convenience: ids with doctor status ok."
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "plan",
+              "audit",
+              "agent",
+              "orchestrate"
+            ]
+          },
+          "description": "Canonical run modes (strategies like --n/--until-clean/--swarm are flags, not modes)."
+        },
+        "runControlKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these)."
+        },
+        "mutability": {
+          "type": "object",
+          "properties": {
+            "readOnlyModes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AgentCapabilityCatalog/properties/modes/items"
+              },
+              "description": "Canonical modes that never mutate the project tree (ask/plan/audit; orchestrate in suggest autonomy is also read-only)."
+            },
+            "writeModes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AgentCapabilityCatalog/properties/modes/items"
+              },
+              "description": "Canonical modes that may mutate a tree (agent always; orchestrate only above suggest autonomy)."
+            },
+            "isolationKinds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "envelope",
+                  "live"
+                ]
+              },
+              "description": "Run isolation: envelope = isolated worktree under .claudexor/workspaces (default), live = the project tree itself."
+            },
+            "workspaceModes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "in_place",
+                  "isolated"
+                ]
+              },
+              "description": "Thread workspace modes (in_place | isolated)."
+            },
+            "accessProfiles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AgentCapabilityCatalog/properties/harnesses/items/properties/accessProfilesSupported/items"
+              },
+              "description": "Access vocabulary; `full` additionally requires the per-repo trust allow (claudexor trust --allow-full-access)."
+            },
+            "applyModes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "apply",
+                  "commit",
+                  "branch",
+                  "pr"
+                ]
+              },
+              "description": "Delivery modes for applying a run's WorkProduct to the project."
+            }
+          },
+          "required": [
+            "readOnlyModes",
+            "writeModes",
+            "isolationKinds",
+            "workspaceModes",
+            "accessProfiles",
+            "applyModes"
+          ],
+          "additionalProperties": false,
+          "description": "The mutability matrix: every way a Claudexor run can (or cannot) touch a tree, from the schema's closed vocabularies."
+        },
+        "cliCommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "CLI verb."
+              },
+              "mutability": {
+                "type": "string",
+                "enum": [
+                  "read",
+                  "write",
+                  "delivery",
+                  "ops"
+                ],
+                "description": "read = never mutates the tree; write = produces tree changes (envelope or live); delivery = moves an existing WorkProduct into the tree/VCS; ops = local config/daemon plumbing."
+              },
+              "stability": {
+                "type": "string",
+                "enum": [
+                  "stable",
+                  "experimental"
+                ],
+                "description": "Contract stability of the verb."
+              },
+              "recovery": {
+                "type": "boolean",
+                "description": "True for post-run recovery verbs (inspect/follow/apply/decision)."
+              }
+            },
+            "required": [
+              "id",
+              "mutability",
+              "stability",
+              "recovery"
+            ],
+            "additionalProperties": false,
+            "description": "CLI verb projection from the command registry (same data `claudexor help --json` serves)."
+          },
+          "description": "CLI verbs with mutability/stability (full flag detail via `claudexor help --json`)."
+        },
+        "mcpTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "MCP tool names `claudexor mcp serve` exposes."
+        },
+        "applyEligibilityVocabulary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted)."
+        }
+      },
+      "required": [
+        "ok",
+        "version",
+        "generatedAt",
+        "harnesses",
+        "availableHarnesses",
+        "modes",
+        "runControlKeys",
+        "mutability",
+        "cliCommands",
+        "mcpTools",
+        "applyEligibilityVocabulary"
+      ],
+      "additionalProperties": false,
+      "description": "Machine-readable capability catalog for external agents — derived, never hand-maintained."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -74,6 +74,7 @@ import {
   ControlThreadDetail,
   ControlThreadListResponse,
   ControlTrustListResponse,
+  AgentCapabilityCatalog,
   ControlTrustState,
   ControlTrustUpdateRequest,
 } from "../src/index.js";
@@ -153,6 +154,7 @@ const schemas = {
   ControlThreadListResponse,
   ControlThreadDetail,
   ControlTrustListResponse,
+  AgentCapabilityCatalog,
   ControlTrustState,
   ControlTrustUpdateRequest,
 } as const;

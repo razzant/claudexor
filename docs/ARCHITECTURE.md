@@ -420,6 +420,7 @@ from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
 README and INTEGRATIONS link here instead of maintaining duplicates.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
+- `GET /agent-capabilities`
 - `GET /events`
 - `GET /harnesses`
 - `GET /harnesses/:id/models`
