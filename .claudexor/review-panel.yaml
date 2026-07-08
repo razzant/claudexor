@@ -19,7 +19,7 @@ fallback_models:
 quorum: 2
 
 # Per-commit review budget; the release triad remains the deep gate.
-# (Live-measured: a codex+claude cross-family review of a large staged diff
-# runs 4-7 min on this machine depending on vendor load; 180s starved the
+# (Live-measured locally: a codex+claude cross-family review of a large
+# staged diff runs 4-7 minutes depending on vendor load; 180s starved the
 # primary route.)
 budget_seconds: 600

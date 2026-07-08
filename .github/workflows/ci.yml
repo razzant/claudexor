@@ -41,7 +41,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24.16.0
+          # Single pinning site: .node-version (three hardcoded copies drifted before).
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install dependencies

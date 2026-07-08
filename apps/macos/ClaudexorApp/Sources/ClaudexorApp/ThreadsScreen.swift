@@ -70,7 +70,7 @@ struct ThreadsScreen: View {
         model.effectivePrimaryHarness.flatMap { HarnessFamily(rawValue: $0) }
     }
     /// The eligible pool (Race runs this); resolved from thread sticky > global.
-    private var poolFamilies: [HarnessFamily] {
+    private var resolvedPoolFamilies: [HarnessFamily] {
         model.effectiveEligiblePool.compactMap { HarnessFamily(rawValue: $0) }
     }
     /// Per-turn options the "⋯" panel collects, mapped onto engine run-start fields.
@@ -486,7 +486,7 @@ struct ThreadsScreen: View {
                                 onPick: { model.pickProject($0) },
                                 onBrowse: { model.browseProject() })
                     if threadHasProject {
-                        PrimaryHarnessChip(current: primaryFamily, pool: poolFamilies) { picked in
+                        PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
                             Task { await model.setPrimaryHarness(picked?.rawValue) }
                         }
                     }
@@ -531,7 +531,7 @@ struct ThreadsScreen: View {
                 // Models are harness-scoped now: a primary switch keeps each
                 // harness's own selection valid. Only prune entries for harnesses
                 // that LEFT the pool, so a dropped chip can't smuggle a model in.
-                .onChange(of: poolFamilies) { _, families in
+                .onChange(of: resolvedPoolFamilies) { _, families in
                     let ids = Set(families.map(\.rawValue))
                     composerModels = composerModels.filter { ids.contains($0.key) }
                 }
@@ -591,7 +591,7 @@ struct ThreadsScreen: View {
     }
 
     /// Inline guidance on the controls row: the no-project gate (only Ask works
-    /// without a project — В8) or, in the draft state, where the new thread lands.
+    /// without a project) or, in the draft state, where the new thread lands.
     @ViewBuilder private var composerHint: some View {
         if capUsdInvalid {
             // Highest priority: a bad budget cap blocks Send — say so even with the
@@ -608,7 +608,7 @@ struct ThreadsScreen: View {
         }
     }
 
-    /// The advanced options popover ("⋯", В5): clean SOLID sections on the popover's
+    /// The advanced options popover ("⋯"): clean SOLID sections on the popover's
     /// own material — harness pool, per-turn budget/access/web, agent repair strategies.
     private var composerOptions: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -618,7 +618,7 @@ struct ThreadsScreen: View {
                         let avail = model.availability(for: family, mode: composerMode)
                         FilterChip(label: family.label,
                                    systemImage: avail.available ? family.glyph : "\(family.glyph).slash",
-                                   isActive: poolFamilies.contains(family), tint: family.color) {
+                                   isActive: resolvedPoolFamilies.contains(family), tint: family.color) {
                             togglePool(family)
                         }
                         .disabled(!avail.available)
@@ -628,7 +628,7 @@ struct ThreadsScreen: View {
             }
             OptionSection(title: "Models — per harness for THIS turn") {
                 ComposerModelsSection(
-                    families: poolFamilies.isEmpty ? [primaryFamily].compactMap { $0 } : poolFamilies,
+                    families: resolvedPoolFamilies.isEmpty ? [primaryFamily].compactMap { $0 } : resolvedPoolFamilies,
                     primary: primaryFamily,
                     selections: $composerModels,
                     catalogs: $poolModelCatalogs,
@@ -833,7 +833,7 @@ struct ThreadsScreen: View {
     /// image input. Race is pool-wide: every available raced harness must accept
     /// images because each candidate receives the same attachment set.
     private var primaryAcceptsImages: Bool {
-        let configuredPool = poolFamilies.isEmpty ? Self.poolFamilies : poolFamilies
+        let configuredPool = resolvedPoolFamilies.isEmpty ? Self.poolFamilies : resolvedPoolFamilies
         let availablePool = configuredPool.filter { family in
             model.availability(for: family, mode: composerMode).available
         }
@@ -1338,7 +1338,7 @@ private struct ApplyThreadBar: View {
     @State private var applying = false
     /// Honest outcome of the apply, distinguishing the three states unambiguously
     /// (the old `String?` conflated "applied OK" and "no attempt" as empty-ish and
-    /// left the buttons live after success — В: repeat-click re-applied the thread).
+    /// left the buttons live after success: repeat-click re-applied the thread).
     private enum Outcome {
         case idle              // no attempt yet — offer Apply / As branch
         case applied           // a completed apply SUCCEEDED — lock the buttons
@@ -1406,7 +1406,7 @@ private struct ApplyThreadBar: View {
 
 /// Renders a turn's live transcript: reasoning (collapsible), tool calls (compact
 /// mono rows with a status glyph), and assistant messages. Built from the
-/// `TranscriptReducer` fold of the SSE stream (v0.10 Р7).
+/// `TranscriptReducer` fold of the SSE stream.
 private struct TranscriptView: View {
     let blocks: [TranscriptBlock]
     /// Oldest blocks the reducer's cap dropped (honest truncation marker).

@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         applyDebugSizeIfRequested()
         // Make the window non-opaque so the behind-window material (GlassBackground)
-        // blends with the DESKTOP, not a solid panel — the Р5 "desktop shows faintly
+        // blends with the DESKTOP, not a solid panel — the "desktop shows faintly
         // through the window" look. Done reliably here (the window exists by now);
         // the previous per-frame guard in the SwiftUI representable never fired.
         makeWindowsTranslucent()

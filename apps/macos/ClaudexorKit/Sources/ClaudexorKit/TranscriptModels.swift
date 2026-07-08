@@ -2,7 +2,7 @@ import Foundation
 
 /// One rendered unit of a turn's live transcript. The reducer folds the raw
 /// `harness.event` SSE stream into these so the chat shows working progress
-/// (reasoning + tools) as it happens, not just the final answer (v0.10 Р7).
+/// (reasoning + tools) as it happens, not just the final answer.
 public enum TranscriptBlock: Identifiable, Sendable, Equatable {
     case thinking(id: String, text: String)
     case message(id: String, text: String)

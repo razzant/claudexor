@@ -250,20 +250,6 @@ final class AppModel {
 
     var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
 
-    // A run parked on a pending question NEEDS the user even though its daemon
-    // state is still "running".
-    var attentionTasks: [TaskRun] { tasks.filter { $0.status.needsAttention || $0.waitingOnUser } }
-    var activeTasks: [TaskRun] { tasks.filter { $0.status.isActive && !$0.waitingOnUser } }
-    var allFindings: [Finding] {
-        tasks.flatMap { task in
-            task.findings.map { finding in
-                var f = finding
-                if f.taskId == nil { f.taskId = task.id }
-                return f
-            }
-        }.sorted { $0.severity.rank < $1.severity.rank }
-    }
-
     func task(_ id: String) -> TaskRun? { tasks.first { $0.id == id } }
 
     func harnessInfo(for family: HarnessFamily) -> HarnessInfo? {
@@ -509,13 +495,6 @@ final class AppModel {
     var currentProjectName: String {
         guard hasCurrentProject else { return "No project" }
         return URL(fileURLWithPath: normalizedProjectRoot).lastPathComponent
-    }
-
-    /// The composer ProjectChip's "Browse…" — open the panel and set the project
-    /// (+ record MRU) without touching thread selection. (Project selection lives
-    /// only in the chat ProjectChip; Settings no longer owns a project picker.)
-    func chooseProject() {
-        if let path = runProjectPanel() { selectProject(path) }
     }
 
     /// Set the working project and push it to the MRU (used everywhere a project is chosen).

@@ -9,17 +9,13 @@ build/
 coverage/
 *.tsbuildinfo
 
-# Claudexor repo-local runtime artifacts (canonical artifacts are committed selectively per-project)
+# Claudexor repo-local runtime artifacts (canonical artifacts are committed
+# selectively per-project): ignore everything under .claudexor/ except the two
+# versioned config files. The per-commit review panel chooses reviewers only
+# and is reviewed like code.
 .claudexor/*
-!.claudexor/
 !.claudexor/config.yaml
-# Versioned per-commit review panel (D18): chooses reviewers only, reviewed like code.
 !.claudexor/review-panel.yaml
-.claudexor/runs/
-.claudexor/workspaces/
-.claudexor/cache/
-.claudexor/logs/
-.claudexor/local.yaml
 
 # Adversarial review evidence packets (local by default)
 .adversarial-review/

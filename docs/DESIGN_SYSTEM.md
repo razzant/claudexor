@@ -124,7 +124,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 ### 2.4 Spacing, shape, elevation
 
-- Spacing scale (pt): `2, 4, 8, 12, 16, 24, 32, 48` (`Theme.Spacing.xxs…xxxl`). Default gutter
+- Spacing scale (pt): `2, 4, 8, 12, 16, 24, 32` (`Theme.Spacing.xxs…xxl`). Default gutter
   16; compact 12. Screen gutter is `xxl` (32). Use tokens — never off-scale literals
   (`1,3,5,6` etc.).
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),

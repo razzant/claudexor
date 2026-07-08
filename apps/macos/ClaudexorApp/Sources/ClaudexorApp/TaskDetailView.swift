@@ -83,7 +83,6 @@ struct TaskDetailView: View {
                 }
                 .scrollContentBackground(.hidden)
             }
-            .glowBackdrop()
             .onAppear {
                 tab = defaultTab(for: task)
                 userSelectedTab = false
@@ -97,7 +96,6 @@ struct TaskDetailView: View {
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")
-                .glowBackdrop()
         }
     }
 

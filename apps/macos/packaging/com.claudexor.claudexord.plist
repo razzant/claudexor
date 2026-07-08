@@ -7,12 +7,15 @@
   whenever it is running — but a LaunchAgent keeps the durable engine alive across logins.
 
   Substitute the __PLACEHOLDERS__ for your install (the build script / installer does this):
-    __NODE_BIN__   absolute path to the notarized Node (e.g. ~/.claudex/node/bin/node)
+    __NODE_BIN__   absolute path to the Node binary to run the daemon with
+                   (a notarized/official build, e.g. /usr/local/bin/node or
+                   ~/.claudexor/node/bin/node)
     __CLAUDEXORD_JS__ absolute path to packages/cli/dist/claudexord.js (or a bundled copy)
     __HOME__       the user's home directory
 
-  Modern alternative: SMAppService.agent(plistName:) registers this from inside the app
-  bundle without writing to ~/Library/LaunchAgents directly. See README.
+  Modern alternative: SMAppService.agent(plistName:) can register this from
+  inside the app bundle without writing to ~/Library/LaunchAgents directly
+  (not wired today; this template is installed manually as described above).
 -->
 <plist version="1.0">
 <dict>

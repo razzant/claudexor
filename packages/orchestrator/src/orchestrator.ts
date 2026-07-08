@@ -2549,7 +2549,7 @@ export class Orchestrator {
     let evidences: CandidateEvidence[];
     try {
       // reviewRuns internally SKIPS the paid reviewer call for empty-diff
-      // candidates ("привет" in agent mode no longer burns two reviewers on
+      // candidates (a trivial greeting in agent mode no longer burns two reviewers on
       // "(empty diff)"). Candidates still flow through arbitration/gates so the
       // no_op/answer outcome and gate failures are unchanged.
       evidences = await this.reviewRuns(
@@ -3253,7 +3253,7 @@ export class Orchestrator {
       try {
         this.writeTestsEvidence(candidateEvidenceDir, contract, run.gates);
         // a candidate that changed NO files has nothing to review — never
-        // spend a reviewer panel on "(empty diff)" ("привет" in agent mode used to
+        // spend a reviewer panel on "(empty diff)" (a trivial greeting in agent mode used to
         // cost two reviewers). It still flows through policy gates and arbitration
         // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
         const hasDiff = run.diff.trim().length > 0;
@@ -5104,7 +5104,7 @@ export class Orchestrator {
         cwd: this.execRootOf(input),
         access: "readonly",
         // ASK/EXPLORE/AUDIT read-only runs must forward the user's attachments —
-        // "что видишь на картинке?" sent an image that was being dropped here, so
+        // a live "describe this image" turn sent an image that was being dropped here, so
         // the model honestly reported it saw nothing (the v0.13 attachment bug).
         attachments: input.attachments ?? [],
         auth_preference: sessionFields.auth_preference,

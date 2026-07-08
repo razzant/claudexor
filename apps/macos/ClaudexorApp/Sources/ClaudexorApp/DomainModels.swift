@@ -579,9 +579,6 @@ struct Finding: Identifiable, Hashable {
     var evidenceLine: Int?
     var status: FindingStatus = .proposed
     var taskTitle: String = ""
-    /// Run id the finding belongs to — the review queue routes here for the
-    /// typed decision actions (decide/apply live on the run/turn surfaces).
-    var taskId: String?
     var hasEvidence: Bool { evidenceFile != nil }
 }
 

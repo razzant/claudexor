@@ -14,7 +14,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,7 +30,6 @@ const check = (phase, name, ok, detail = {}) => {
 // macOS caps socket paths at 104 bytes — the default $TMPDIR (/var/folders/…)
 // alone burns ~49 of them (the canary sandbox documents the same OS limit).
 const scratch = mkdtempSync("/tmp/cxi-");
-void tmpdir;
 const scratchHome = join(scratch, "home");
 const fixtureRepo = join(scratch, "repo");
 mkdirSync(scratchHome, { recursive: true });

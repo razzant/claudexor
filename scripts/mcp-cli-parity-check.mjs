@@ -165,7 +165,6 @@ for (const flag of cliBooleanFlags) {
   }
 }
 for (const declared of Object.keys(BOOLEAN_FLAG_MAP)) {
-  if (declared === "until-clean-unused") continue; // documented placeholder
   if (!cliBooleanFlags.includes(declared)) {
     failures.push(`BOOLEAN_FLAG_MAP declares '--${declared}' which is not a CLI boolean flag — stale mapping`);
   }

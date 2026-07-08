@@ -90,7 +90,6 @@ enum Theme {
         static let lg: CGFloat = 16
         static let xl: CGFloat = 24
         static let xxl: CGFloat = 32
-        static let xxxl: CGFloat = 48
     }
 
     // MARK: Content measure (one set of widths so every screen aligns its column).
@@ -123,8 +122,6 @@ enum Theme {
     // MARK: Layout metrics derived from icon/avatar columns (not magic numbers).
 
     enum Metrics {
-        /// Leading inset for inter-row dividers so they start past the row's icon column.
-        static let rowDividerInset: CGFloat = 56
         /// Inset of the floating threads sidebar from the window edges. Between
         /// `Spacing.sm` (8) and `Spacing.md` (12): this is a chrome composition
         /// metric, not generic content spacing.
@@ -340,8 +337,3 @@ private struct BehindWindowMaterial: NSViewRepresentable {
     }
 }
 
-extension View {
-    /// Deprecated screen-level glow hook, kept as identity so existing call sites
-    /// compile; the single window backdrop now lives in `RootView`.
-    func glowBackdrop() -> some View { self }
-}
