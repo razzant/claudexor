@@ -5,19 +5,15 @@ export interface ReadinessDebt {
 }
 
 /**
- * Tracks "commit-readiness debts" and round history to detect thrashing. When a
+ * Tracks "commit-readiness debts" to detect thrashing. When a
  * failure signature repeats, the loop should change strategy (in
  * until_clean) or stop and ask (in adversarial-review), rather than
  * re-running the same failing approach.
  */
 export class ReadinessLedger {
   private readonly debts = new Map<string, ReadinessDebt>();
-  private readonly history: { round: number; signature: string }[] = [];
-  private round = 0;
 
   recordRound(signature: string, reason: string): void {
-    this.round += 1;
-    this.history.push({ round: this.round, signature });
     const debt = this.debts.get(signature);
     if (debt) {
       debt.count += 1;

@@ -995,7 +995,15 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
     }
     return 0;
   } catch (err) {
-    process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
+    // Same runtime-error envelope contract as the run/race commands: --json
+    // callers get a machine-readable {ok:false} on stdout, never bare stderr.
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 1,
+        error: `claudexor spec: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    else process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
