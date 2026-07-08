@@ -727,7 +727,7 @@ import Testing
 
     @Test func updateThreadEncodesArchiveAndReopenStates() throws {
         // The server ThreadState enum is active|closed — reopen must send
-        // "active" ("open" 400s against the strict DTO; the B2 regression).
+        // "active" ("open" 400s against the strict DTO — a live-caught regression).
         let archive = UpdateThreadRequest(state: "closed")
         let archiveObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(archive)) as? [String: Any]
         #expect(archiveObj?["state"] as? String == "closed")

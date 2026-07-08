@@ -4,7 +4,7 @@ import Foundation
 // satellites (candidates, live plan checklist). Split from Models.swift —
 // one coherent owner for the /runs/:id projection shapes.
 
-/// Live plan checklist item (server-projected from plan.progress events; D14).
+/// Live plan checklist item (server-projected from plan.progress events).
 public struct PlanProgressItem: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let title: String
@@ -15,7 +15,7 @@ public struct PlanProgress: Codable, Sendable, Equatable {
     public let items: [PlanProgressItem]
 }
 
-/// Per-candidate evidence card for a race run (server-projected; D13).
+/// Per-candidate evidence card for a race run (server-projected).
 public struct CandidateInfo: Codable, Sendable, Identifiable, Equatable {
     public let attemptId: String
     public let harnessId: String

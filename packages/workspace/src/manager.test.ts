@@ -162,6 +162,65 @@ describe("WorkspaceManager", () => {
     expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
   });
 
+  it("in-place non-git: header relativization never rewrites hunk CONTENT that looks like a header (INV-041)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-inplace-fidelity-"));
+    // Content lines that RENDER as `--- `/`+++ ` in a unified diff: a removed
+    // line starting `-- <baseline path>` and an added line starting
+    // `++ <live path>`. The relativizer must leave those bytes alone while
+    // still relativizing the real file header.
+    writeFileSync(join(dir, "notes.txt"), `keep\n-- ${dir}/replaced\n`);
+    const mgr = new WorkspaceManager(dir);
+    const env = await mgr.create({ taskId: "t-fid", attemptId: "converge", inPlace: true });
+    writeFileSync(join(dir, "notes.txt"), `keep\n++ ${dir}/added\n`);
+    const diff = await mgr.diff(env);
+    // Real header relativized: policy sees repo-relative notes.txt.
+    expect(summarizeDiffPaths(diff).paths).toContain("notes.txt");
+    // Content bytes untouched: the removed/added CONTENT lines still carry
+    // the raw absolute paths and were never rewritten to a/ b/ shape.
+    expect(diff).toContain(`--- ${dir}/replaced`);
+    expect(diff).toContain(`+++ ${dir}/added`);
+    expect(diff).not.toContain("--- b/replaced");
+    expect(diff).not.toContain("+++ b/added");
+    await mgr.dispose(env);
+  });
+
+  it("relativizer: a mid-hunk FORGED full triple (---/+++/@@ from content) is never rewritten without a header witness", () => {
+    // The parser demands a GNU timestamp (or /dev/null) witness on mid-hunk
+    // header lines; the relativizer must apply the SAME bar. Here hunk content
+    // forges the loose triple: a removed `-- <path>` line, an added
+    // `++ <path>` line, then the NEXT hunk's real `@@` header.
+    const base = "/tmp/claudexor-forge/baseline";
+    const live = "/tmp/claudexor-forge/live";
+    const doc = [
+      `diff -ruN ${base}/notes.txt ${live}/notes.txt`,
+      `--- ${base}/notes.txt\t2026-01-01 00:00:00`,
+      `+++ ${live}/notes.txt\t2026-01-01 00:00:01`,
+      "@@ -1,3 +1,3 @@",
+      " keep",
+      `--- ${base}/forged-old`, // removed content line, rendered with --- prefix
+      `+++ ${live}/forged-new`, // added content line, rendered with +++ prefix
+      "@@ -10,2 +10,2 @@",
+      " tail",
+      `-old ${base}/inline`,
+      `+new ${live}/inline`,
+      "",
+    ].join("\n");
+    type Relativize = (text: string, baselineRoot: string, liveRoot: string) => string;
+    const relativize = (WorkspaceManager as unknown as Record<string, Relativize>)["relativizePlainDiffHeadersFor"] as Relativize;
+    const out = relativize(doc, base, live);
+    // Real header (witnessed by timestamps) relativized.
+    expect(out).toContain("--- a/notes.txt\t2026-01-01 00:00:00");
+    expect(out).toContain("+++ b/notes.txt\t2026-01-01 00:00:01");
+    // Forged mid-hunk triple: content bytes untouched.
+    expect(out).toContain(`--- ${base}/forged-old`);
+    expect(out).toContain(`+++ ${live}/forged-new`);
+    expect(out).not.toContain("--- a/forged-old");
+    expect(out).not.toContain("+++ b/forged-new");
+    // Ordinary +/- content lines with absolute paths are untouched too.
+    expect(out).toContain(`-old ${base}/inline`);
+    expect(out).toContain(`+new ${live}/inline`);
+  });
+
   it("in-place on a GIT repo: per-turn diff shows only this turn's net change", async () => {
     const repo = await initRepo();
     // A prior turn already left an uncommitted edit in the live tree.

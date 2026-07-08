@@ -31,9 +31,10 @@ function keychainAvailable(): boolean {
 
 /**
  * Secret store mirroring how Codex/Claude store credentials: OS keychain where
- * available (macOS), otherwise a 0600 file under the config dir. Env vars and a
- * helper command take precedence (CI/vault). Subscriptions are NOT stored here —
- * Claudexor reuses each harness's own native login.
+ * available (macOS), otherwise a 0600 file under the config dir. (Adapters read
+ * their own provider env vars directly; the env-var/helper-command indirection
+ * was retired.) Subscriptions are NOT stored here — Claudexor reuses each
+ * harness's own native login.
  */
 export class SecretStore {
   constructor(private readonly backend: SecretBackend = "auto") {}

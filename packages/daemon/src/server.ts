@@ -336,7 +336,7 @@ export class DaemonServer {
       // policy) the review queue must keep across restarts.
       if (rec.state === "running") {
         rec.state = "interrupted";
-        // Stamp the orphaned event log with a TERMINAL event : the
+        // Stamp the orphaned event log with a TERMINAL event: the
         // canonical events.jsonl must agree with jobs.json, or SSE tailers and
         // `follow` wait forever on a log that will never terminate.
         if (rec.runDir && rec.runId) {

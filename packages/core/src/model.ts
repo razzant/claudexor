@@ -4,7 +4,7 @@
  * Data-driven: the caller supplies the truth list (live `models()` inventory
  * or manifest `known_models`); this never hardcodes a model list in logic.
  *
- * STRICT semantics (locked D3, INV-104): there is no "warn and pass through".
+ * STRICT semantics (locked owner decision, INV-104): there is no "warn and pass through".
  * - no model requested (null/empty) → ok (the harness default is used).
  * - truth list empty → rejected: the harness cannot verify models, so an
  *   EXPLICIT model is refused with actionable text instead of being forwarded

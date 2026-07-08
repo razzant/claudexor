@@ -26,12 +26,6 @@ log() { printf '[claudexor-swe] %s\n' "$*" >&2; }
 die() { printf '[claudexor-swe] ERROR: %s\n' "$*" >&2; exit 1; }
 have_key() { [ -n "${!1:-}" ] && log "$1: present" || log "$1: MISSING"; }
 
-claudexor() {
-  local cli="$CLAUDEXOR_REPO_ROOT/packages/cli/dist/cli.js"
-  [ -f "$cli" ] || die "claudexor CLI not built; run: (cd $CLAUDEXOR_REPO_ROOT && pnpm build)"
-  node "$cli" "$@"
-}
-
 load_keys() {
   local f="${CLAUDEXOR_KEYS_FILE:-}"
   [ -n "$f" ] || { log "CLAUDEXOR_KEYS_FILE not set (relying on already-exported env)"; return 0; }

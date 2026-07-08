@@ -235,7 +235,7 @@ export class WorkspaceManager {
    * ask, audit, orchestrate, reviewers). Read-only modes build no git worktree,
    * but a harness still writes native state — claude-code plan files, codex
    * session rollouts, transcripts — into `$HOME/.claude`, `$CODEX_HOME`, etc.
-   * Without this, those land in the operator's REAL home (the B10 leak: a
+   * Without this, those land in the operator's REAL home (a live-caught leak: a
    * read-only `plan` wrote into `~/.claude/plans`). Same env shape as `envFor`,
    * so the adapters seed auth (subscription creds / api key) into these scoped
    * dirs exactly as they do for a write envelope (CLAUDEXOR_BIBLE §6). Caller
@@ -267,21 +267,61 @@ export class WorkspaceManager {
    * Header-only rewrite of a plain GNU `diff -ruN <baseline> <live>` document:
    * absolute baseline/live prefixes become git-style `a/<rel>` / `b/<rel>` so
    * repo-relative protected-path and risk globs see the SAME shape they see
-   * for git diffs. Only structural lines are touched (`diff `, `--- `,
-   * `+++ `, `Binary files … differ`); hunk content is never rewritten.
+   * for git diffs. STATEFUL, mirroring the shared plain-diff parser's
+   * structural rules: only the GNU `diff …` command echo, the `--- `/`+++ `
+   * pair of a real file-header triple (`--- ` + `+++ ` + `@@` on consecutive
+   * lines), and structural `Binary files … differ` lines are rewritten.
+   * Hunk CONTENT is never touched — a removed/added content line that merely
+   * starts with `-- `/`++ ` (rendering as `--- `/`+++ ` in the diff) keeps
+   * its bytes, per the diff-fidelity contract (INV-041).
    */
   private static relativizePlainDiffHeadersFor(text: string, baselineRoot: string, liveRoot: string): string {
     const base = baselineRoot.endsWith("/") ? baselineRoot : `${baselineRoot}/`;
     const live = liveRoot.endsWith("/") ? liveRoot : `${liveRoot}/`;
     const swap = (s: string): string => s.split(base).join("a/").split(live).join("b/");
-    return text
-      .split("\n")
-      .map((line) =>
-        line.startsWith("diff ") || line.startsWith("--- ") || line.startsWith("+++ ") || (line.startsWith("Binary files ") && line.endsWith(" differ"))
-          ? swap(line)
-          : line,
-      )
-      .join("\n");
+    const lines = text.split("\n");
+    // Same structural rule as the shared plain-diff parser: INSIDE a hunk the
+    // loose triple can be forged by content (a deleted `-- …` line + an added
+    // `++ …` line + the next `@@`), so a mid-hunk boundary must also carry a
+    // header witness — the GNU tab-separated timestamp (or /dev/null) on both
+    // path lines, which +/- content lines never have.
+    const headerWitness = (l: string | undefined): boolean =>
+      l !== undefined && (l.includes("\t") || l.slice(4).trim() === "/dev/null");
+    const isFileHeaderTriple = (idx: number, midHunk: boolean): boolean => {
+      const triple =
+        (lines[idx]?.startsWith("--- ") ?? false) &&
+        (lines[idx + 1]?.startsWith("+++ ") ?? false) &&
+        (lines[idx + 2]?.startsWith("@@") ?? false);
+      if (!triple) return false;
+      return midHunk ? headerWitness(lines[idx]) && headerWitness(lines[idx + 1]) : true;
+    };
+    let inHunk = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i] as string;
+      if (line.startsWith("diff ")) {
+        // GNU command echo between files: structural, resets hunk state.
+        inHunk = false;
+        lines[i] = swap(line);
+        continue;
+      }
+      if (isFileHeaderTriple(i, inHunk)) {
+        // Real file boundary — same rule as the shared parser (a full triple
+        // opens a file even mid-document without a `diff` echo).
+        lines[i] = swap(line);
+        lines[i + 1] = swap(lines[i + 1] as string);
+        inHunk = false;
+        i += 1; // the `+++ ` line is handled; `@@` flips state next.
+        continue;
+      }
+      if (line.startsWith("@@")) {
+        inHunk = true;
+        continue;
+      }
+      if (line.startsWith("Binary files ") && line.endsWith(" differ") && !inHunk) {
+        lines[i] = swap(line);
+      }
+    }
+    return lines.join("\n");
   }
 
   async diff(env: WorkspaceEnvelope): Promise<string> {

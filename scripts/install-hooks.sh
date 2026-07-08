@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in git hooks for THIS repository (D18). Not auto-installed: run
+# Opt-in git hooks for THIS repository. Not auto-installed: run
 #   bash scripts/install-hooks.sh
 # to enable the per-commit review gate locally. CI/external agents run
 # `node scripts/commit-review.mjs` directly (see CONTRIBUTING.md).

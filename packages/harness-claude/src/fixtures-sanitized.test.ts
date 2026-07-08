@@ -33,9 +33,12 @@ function allFixtureFiles(): string[] {
 }
 
 const FORBIDDEN: Array<{ name: string; re: RegExp }> = [
-  // Real Anthropic wire identifiers (sanitized fixtures use *_fixture_* ids).
+  // Real Anthropic wire identifiers. Sanitized fixtures use `msg_fixture_*`/
+  // `req_fixture_*` ids, which cannot match these shapes ("f" follows the
+  // underscore, and real ids carry a long base62 tail right after msg_01/
+  // req_011 — digits included, e.g. msg_018vxe…).
   { name: "real Anthropic request id", re: /req_011[A-Za-z0-9]{10,}/ },
-  { name: "real Anthropic message id", re: /msg_01(?!\d)[A-Za-z0-9]{16,}/ },
+  { name: "real Anthropic message id", re: /msg_01[A-Za-z0-9]{16,}/ },
   { name: "real server tool-use id", re: /srvtoolu_(?!fixture)[A-Za-z0-9]{10,}/ },
   // Opaque thinking-signature blobs are account artifacts, not stream shape.
   { name: "unredacted thinking signature blob", re: /"signature":"[A-Za-z0-9+/=]{80,}"/ },

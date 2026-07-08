@@ -72,6 +72,23 @@ describe("setup jobs in-process doctor", () => {
     expect(manager.status({ jobId: job.jobId }).message).toContain("gateway exploded");
   });
 
+  it("refuses Terminal-handoff login on non-darwin with a typed failure that discloses the manual command", () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      const manager = createSetupJobManager({ statusAll: async () => [okStatus("codex")] });
+      const job = manager.create({ harness: "codex", action: "login" });
+      // Typed terminal state, no spawn of a missing `open` binary (whose
+      // unhandled ENOENT 'error' event would crash the daemon).
+      expect(job.state).toBe("failed");
+      expect(job.message).toContain("macOS-only");
+      expect(job.message).toContain("codex login");
+      expect(job.finishedAt).not.toBeNull();
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+    }
+  });
+
   it("a cancel during the in-flight doctor is never overwritten by the late verdict", async () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((r) => { release = r; });

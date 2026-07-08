@@ -152,17 +152,15 @@ if (!panelMeetsCrossVendorBar && !ackActive) {
 }
 // First-run pinning: the release gate runs on a PINNED panel (local gate
 // config), never on ephemeral env alone. When no lock file exists yet, the
-// first COMPLETE panel (triad AND scope) becomes the pin — disclosed here and
-// in summary.json — so every later substitution needs the explicit ack. A
-// --skip-scope bootstrap deliberately does NOT pin: a lock missing its scope
-// entry would let a later scope substitution slip past the override guard.
+// first COMPLETE panel (triad AND scope) becomes the pin — disclosed on stderr
+// and in summary.json — so every later substitution needs the explicit ack.
+// The write is deferred until the panel PROVES itself this run (triad quorum
+// met and the scope reviewer responded): a botched first run (bad key, wrong
+// model ids) must not freeze a dead panel into the gate config. A --skip-scope
+// bootstrap deliberately does NOT pin: a lock missing its scope entry would
+// let a later scope substitution slip past the override guard.
+const panelPinPending = !panelLock.triad && !panelLock.scope && Boolean(scopePanelValue);
 let panelPinnedNow = false;
-if (!panelLock.triad && !panelLock.scope && scopePanelValue) {
-  mkdirSync(resolve(".adversarial-review"), { recursive: true });
-  writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
-  panelPinnedNow = true;
-  console.error(`panel pinned: wrote ${PANEL_LOCK_PATH} — future runs enforce this panel (override needs the explicit ack).`);
-}
 const SCOPE_ITEMS = [
   "intent_alignment",
   "forgotten_touchpoints",
@@ -578,9 +576,11 @@ async function callOpenAI(model, prompt) {
 }
 
 function anthropicModelId(model) {
+  // OpenRouter ids use dotted minor versions (claude-opus-4.8); Anthropic's
+  // direct API uses dashes (claude-opus-4-8). Generic dot->dash on version
+  // tails, no per-model hardcode.
   const direct = model.replace(/^anthropic\//, "");
-  if (direct === "claude-opus-4.8") return "claude-opus-4-8";
-  return direct;
+  return direct.replace(/(\d)\.(\d)/g, "$1-$2");
 }
 
 async function callAnthropic(model, prompt) {
@@ -844,6 +844,16 @@ async function main() {
       scope = { status: scopeStatus, findings: scopeFindings, missing_items: SCOPE_ITEMS, error: scopeResult.error ?? null, metadata: scopeMeta };
     }
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
+  }
+
+  // "responded" only: a partial/parse-failed scope pass exits this run FAILED
+  // (missing items are release-blocking), and a failed first run must never
+  // freeze its panel into the gate config.
+  if (panelPinPending && quorumMet && scope?.status === "responded") {
+    mkdirSync(resolve(".adversarial-review"), { recursive: true });
+    writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
+    panelPinnedNow = true;
+    console.error(`panel pinned: wrote ${PANEL_LOCK_PATH} — future runs enforce this panel (override needs the explicit ack).`);
   }
 
   const summary = {

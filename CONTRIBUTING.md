@@ -51,6 +51,10 @@ pnpm staged:check
 pnpm knip
 node scripts/complexity-ratchet.mjs
 pnpm canary
+node scripts/concept-gate.mjs             # Bible edits need a CONCEPT-CHANGE(INV-xxx) marker
+node scripts/model-hints-freshness.mjs    # curated model hints stay fresh against adapter inventories
+node scripts/mcp-cli-parity-check.mjs     # MCP tools stay in lockstep with CLI verbs
+node scripts/fixture-freshness-check.mjs  # recorded fixtures carry provenance + sanitization
 ```
 
 Run the per-commit review gate on your staged diff:

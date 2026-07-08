@@ -16,7 +16,7 @@ export interface RunGatesOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   /** Cancellation: checked between gates AND passed into each gate's process
-   * (a cancel must not wait out a 600s gate before acknowledging ). */
+   * (a cancel must not wait out a 600s gate before acknowledging). */
   signal?: AbortSignal;
 }
 

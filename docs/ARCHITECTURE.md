@@ -705,7 +705,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
 5. **Thread apply** — `POST /threads/:id/apply` delivers an isolated thread's
    accumulated worktree diff. Fences: a HEAD-RUN STATE GATE (a thread whose
    head run is blocked or failed 409s unless a typed operator decision covers
-   that run — the audited `control.rejected` event records the refusal; D4),
+   that run — the audited `control.rejected` event records the refusal),
    a secret-like-token scan refuses the patch, a project-HEAD-moved check is
    disclosed as an advisory, and delivery reuses the shared protected
    `deliver` path (`--check` first, restore on failure, honest

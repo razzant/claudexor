@@ -1,6 +1,6 @@
 /**
- * The ONE owner of "Claudexor's own artifact dirs are not user tree state"
- *. Eight call sites used five different mechanisms — `:(exclude)`
+ * The ONE owner of "Claudexor's own artifact dirs are not user tree state".
+ * Eight call sites used five different mechanisms — `:(exclude)`
  * pathspecs (which HARD-ERROR when the project gitignores `.claudexor`),
  * prefix filters (which over-match `.claudexorfoo`), skip-sets, and
  * hardcoded name pairs. They converge here.

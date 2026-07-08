@@ -88,7 +88,7 @@ async function daemonAddress(): Promise<ControlApiAddress | null> {
  * project in the current directory. The REPL is a THIN CLIENT of the control
  * API — threads live in the daemon SSOT and appear in the macOS app; turns
  * stream live through the same follow pipeline. If no daemon is up we AUTO-START
- * one (the same path `claudexor run` uses) so mutating turns are daemon-tracked
+ * one (the same path `claudexor run` uses) so mutating turns are daemon-tracked.
  * Only when the daemon cannot be started at all do we fall back to an
  * in-process engine — and that fallback serves READ-ONLY turns only; a mutating
  * (agent) turn there FAILS LOUDLY rather than silently running an in-process

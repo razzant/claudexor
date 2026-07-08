@@ -2,7 +2,7 @@
   "name": "@claudexor/orchestrator",
   "version": "0.15.0",
   "license": "MIT",
-  "description": "Hub that composes all subsystems and implements the execution modes (ask, agent, best-of-N, convergence, plan, create, audit).",
+  "description": "Hub that composes all subsystems and implements the five canonical modes (ask, plan, audit, agent, orchestrate) with their strategy flags (best-of-N race, attempt caps, until-clean, swarm, create).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

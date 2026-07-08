@@ -3213,7 +3213,7 @@ export class Orchestrator {
 
   /**
    * SINGLE funnel for every reviewer-panel invocation: run it inside a per-review
-   * scoped harness HOME (B10/§6) so reviewer children (codex session rollouts,
+   * scoped harness HOME (Bible §6) so reviewer children (codex session rollouts,
    * claude config) never write native state into the operator's real ~/.codex /
    * ~/.claude. The codex route-proof transcript is read from this same scoped
    * CODEX_HOME, so cross-family verification is unaffected. Every call site
