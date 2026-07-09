@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "description": "MCP server (official SDK, stdio) exposing Claudexor run/status tools with elicitation-backed interactive questions.",
   "type": "module",

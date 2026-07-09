@@ -97,13 +97,16 @@ Release verification is wrapped by:
 pnpm release:verify
 ```
 
-It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
+It runs Node/schema checks, Swift build/test checks, and local (unsigned)
+app packaging; the CI release build signs and notarizes when the Apple
+secrets are present.
 
 Publishing happens FROM THE TAG: pushing `v<semver>` runs
 `.github/workflows/release.yml`, which re-runs the full gate battery on a
 macOS runner, enforces tag/manifest version parity UNCONDITIONALLY (every
-public workspace manifest must equal the tag), packages the unsigned
-DMG/ZIP, and creates the DRAFT GitHub Release with notes generated from
+public workspace manifest must equal the tag), packages the DMG/ZIP
+(signed + notarized when the Apple signing secrets are configured;
+honest `-unsigned` names otherwise), and creates the DRAFT GitHub Release with notes generated from
 that version's `CHANGELOG.md` entry (the changelog is the notes SSOT —
 write it before tagging). A separate `publish-npm` job publishes every
 public workspace package to npm with provenance (`--provenance` flag,

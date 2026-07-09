@@ -69,11 +69,11 @@ NOTARY_PROFILE="claudexor-notary" MAKE_DMG=1 \
 apps/macos/scripts/build-app.sh
 ```
 
-Unsigned artifacts are named `Claudexor-<version>-unsigned.zip` and
-`Claudexor-<version>-unsigned.dmg`, with sibling `.sha256` checksum files. They
-are unsigned local artifacts:
-Gatekeeper blocks them on other Macs (unsigned distribution is the current
-posture; the root README documents the bypass). The public GitHub Release assets are built by
+Local builds without signing env produce `Claudexor-<version>-unsigned.zip`
+and `Claudexor-<version>-unsigned.dmg`, with sibling `.sha256` checksum
+files — Gatekeeper blocks those on other Macs (local smoke only). The
+public GitHub Release assets are SIGNED + NOTARIZED (the CI build imports
+the Developer ID certificate from repository secrets) and are built by
 `.github/workflows/release.yml` on a macOS runner from the pushed tag/sha, then
 attached to the draft release with `GITHUB_TOKEN`. Do not upload local
 `apps/macos/dist` artifacts as final release assets. Release notes must also

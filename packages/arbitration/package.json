@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/arbitration",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "description": "Evidence-first arbitration: rank candidates on typed gate/review evidence, pairwise tie-breaks, DecisionRecord.",
   "type": "module",

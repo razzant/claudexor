@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
 that declares the capability can be assigned the intent.
 
-Current status: **v1.0.0**. See "Stability at 1.0" below for what is a
+Current status: **v1.0.1**. See "Stability at 1.0" below for what is a
 stable contract and what remains experimental; retired verbs and mode ids
 hard-error with the new spelling instead of silently aliasing.
 
@@ -25,24 +25,22 @@ hard-error with the new spelling instead of silently aliasing.
 
 ## Install
 
-The CLI and daemon build from source today (see Quickstart below); the npm
-packages (`npm install -g claudexor`) are prepared and publish once the
-registry namespace is provisioned and publishing is armed.
-
-The macOS app ships as an unsigned DMG on the
-[Releases](https://github.com/razzant/claudexor/releases) page. Because it is
-unsigned (code signing is not currently provided), Gatekeeper refuses the
-first launch. On current macOS the right-click-Open trick no longer bypasses this;
-instead: double-click the app once (Gatekeeper shows the refusal), then open
-**System Settings → Privacy & Security**, scroll to the security prompt, and
-click **Open Anyway**. Or clear the quarantine attribute from a terminal:
+CLI + daemon from npm (installs the `claudexor` and `claudexord` bins):
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/Claudexor.app
+npm install -g claudexor
+claudexor doctor
 ```
 
-The app is self-contained: it bundles its own daemon runtime and starts it on
-launch. Installing the CLI is only needed for terminal use.
+You can also build from source — see Quickstart below.
+
+The macOS app ships as a signed and notarized DMG on the
+[Releases](https://github.com/razzant/claudexor/releases) page — download,
+drag to Applications, open. The app is self-contained: it bundles its own
+daemon runtime and starts it on launch; installing the CLI is only needed
+for terminal use. (The v1.0.0 DMG was unsigned — if you kept it, either
+upgrade or approve it via System Settings → Privacy & Security → Open
+Anyway.)
 
 ## Quickstart
 
@@ -445,8 +443,8 @@ pnpm docs:check   # docs-truth gate: endpoints, mode ids, CLI flags vs source
 pnpm knip         # dead exports/files gate
 ```
 
-`pnpm release:verify` runs Node/schema checks, Swift tests/build, and unsigned
-local app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by
+`pnpm release:verify` runs Node/schema checks, Swift tests/build, and local
+app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by
 the `Release` GitHub Actions workflow from the pushed `v*` tag; do not upload
 stale local `apps/macos/dist` artifacts.
 
@@ -546,7 +544,7 @@ starts the new build).
 
 ## Version History
 
-The current version is **v1.0.0** (the root `package.json` is the version
+The current version is **v1.0.1** (the root `package.json` is the version
 SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License

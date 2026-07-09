@@ -3,6 +3,22 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v1.0.1** (2026-07-09) — the macOS app is now SIGNED (Developer ID +
+  hardened runtime), NOTARIZED, and stapled: no Gatekeeper bypass needed.
+  Fixed the v1.0.0 app's self-contained daemon, which crashed at load in
+  the single-file bundle (`createRequire(import.meta.url)` is undefined in
+  CJS bundles; the generated-schema loads are now static JSON imports and
+  the build runs a boot smoke on the freshly built bundle, so a load-crash
+  can never ship again). The bundled Node runtime is signed with the JIT
+  entitlements hardened runtime requires. Release automation: signing is
+  data-driven off repository secrets (secret-less builds still produce
+  honest `-unsigned` artifacts), re-packaging a published release no
+  longer demotes it to draft, and npm publishing completes the package
+  set. CLI: `spec --answers` now refuses grounding-only flags
+  (`--harness/--n/--web/--effort/--max-usd/--reviewer-*`) instead of
+  silently ignoring them, and the spec grounding run honors
+  `--effort`/`--max-usd` cost controls.
+
 - **v1.0.0** (2026-07-09) — the first public release. Three programs land
   on top of v0.15: PUBLICATION HYGIENE — provenance sweep of the whole tree
   (private paths, internal codenames, decision-register markers), sanitized
