@@ -55,8 +55,8 @@ live surface disagree, trust the live surface.
 
 Every mutating result carries a `runId`. The decision tree:
 
-1. a success terminal (`succeeded` from daemon-tracked runs; `success` from
-   in-process read-only runs) + `applyEligibility.eligible: true` →
+1. `status: succeeded` (the daemon-tracked terminal for mutating runs) +
+   `applyEligibility.eligible: true` →
    `claudexor apply <runId>` (or `--mode commit|branch|pr`).
 2. `applyEligibility.eligible: false` → read `requiredAction`. Typical
    verdicts: add a `--test` gate and re-run (`ungated` / `review_not_run`),
