@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "applied": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether anything was delivered."
         },
         "status": {
           "type": "string",
@@ -17,25 +18,29 @@
             "empty",
             "conflict",
             "rejected"
-          ]
+          ],
+          "description": "Delivery outcome: applied, branched, committed, pr_opened, empty (no diff), conflict, or rejected."
         },
         "headMoved": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "True when the project HEAD moved past the thread base since the thread started."
         },
         "detail": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Human-readable detail."
         }
       },
       "required": [
         "applied",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response to a thread apply."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

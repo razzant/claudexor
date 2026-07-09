@@ -5,14 +5,16 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "description": "Model id as the vendor enumerates it."
         },
         "label": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Human-readable model label; null when the enumeration source has none."
         },
         "context_window": {
           "anyOf": [
@@ -24,13 +26,15 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Context window in tokens; null when the enumeration source does not report it."
         }
       },
       "required": [
         "id"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "One enumerable model offered by a harness, limited to fields a real enumeration source can honestly populate."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

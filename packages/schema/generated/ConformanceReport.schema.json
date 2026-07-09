@@ -6,7 +6,8 @@
       "properties": {
         "harness_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Harness the report is about."
         },
         "status": {
           "type": "string",
@@ -14,7 +15,8 @@
             "ok",
             "degraded",
             "unavailable"
-          ]
+          ],
+          "description": "Doctor verdict for a harness: ok (usable), degraded (usable with limitations), or unavailable."
         },
         "checks": {
           "type": "array",
@@ -22,7 +24,8 @@
             "type": "object",
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "description": "Check id."
               },
               "status": {
                 "type": "string",
@@ -30,23 +33,28 @@
                   "pass",
                   "fail",
                   "skip"
-                ]
+                ],
+                "description": "Outcome of the check: pass, fail, or skip."
               },
               "detail": {
-                "type": "string"
+                "type": "string",
+                "description": "Human-readable detail for the outcome."
               },
               "duration_ms": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "How long the check took, in milliseconds."
               }
             },
             "required": [
               "id",
               "status"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Result of a conformance probe for one capability check."
           },
-          "default": []
+          "default": [],
+          "description": "Individual probe results."
         },
         "enabled_intents": {
           "type": "array",
@@ -64,30 +72,35 @@
               "explain",
               "audit",
               "orchestrate"
-            ]
+            ],
+            "description": "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes)."
           },
-          "default": []
+          "default": [],
+          "description": "Intents the gateway will route to this harness."
         },
         "disabled_intents": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ConformanceReport/properties/enabled_intents/items"
           },
-          "default": []
+          "default": [],
+          "description": "Intents the doctor disabled."
         },
         "reasons": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Human-readable reasons for degraded/unavailable status or disabled intents."
         }
       },
       "required": [
         "harness_id",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Doctor/conformance report for one harness: status, probe results, and the intents enabled or disabled by it."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

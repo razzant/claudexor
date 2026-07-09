@@ -6,13 +6,18 @@
       "properties": {
         "lease_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Lease id."
         },
         "task_id": {
-          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Task the lease belongs to."
         },
         "attempt_id": {
-          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Attempt the lease covers, when scoped to one."
         },
         "intent": {
           "type": "string",
@@ -28,34 +33,41 @@
             "explain",
             "audit",
             "orchestrate"
-          ]
+          ],
+          "description": "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes)."
         },
         "harness_id": {
-          "$ref": "#/definitions/BudgetLease/properties/lease_id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Harness the reservation is for."
         },
         "model_hint": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Requested model for the reserved call; null = harness default."
         },
         "max_usd": {
           "type": [
             "number",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "USD cap reserved for the call; null = no cap."
         },
         "reason": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Human-readable reasons the lease was created."
         },
         "created_at": {
-          "type": "string"
+          "type": "string",
+          "description": "When the lease was created."
         },
         "state": {
           "type": "string",
@@ -64,7 +76,8 @@
             "settled",
             "cancelled"
           ],
-          "default": "reserved"
+          "default": "reserved",
+          "description": "Lifecycle state: reserved before work, settled after, or cancelled."
         }
       },
       "required": [
@@ -74,7 +87,8 @@
         "harness_id",
         "created_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A pre-call budget reservation, created before work and settled after; never post-hoc only."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,10 +6,13 @@
       "properties": {
         "task_contract_hash": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Hash of the TaskContract this pack was built from."
         },
         "hash": {
-          "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash of the pack itself."
         },
         "files": {
           "type": "object",
@@ -20,26 +23,32 @@
                 "type": "object",
                 "properties": {
                   "path": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Repo-relative path of the included file."
                   },
                   "hash": {
-                    "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Content hash of the file as included."
                   }
                 },
                 "required": [
                   "path",
                   "hash"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Reference to a file included in the context pack."
               },
-              "default": []
+              "default": [],
+              "description": "Files every harness must receive."
             },
             "included": {
               "type": "array",
               "items": {
                 "$ref": "#/definitions/ContextPack/properties/files/properties/mandatory/items"
               },
-              "default": []
+              "default": [],
+              "description": "Additional files included in the pack."
             },
             "omitted": {
               "type": "array",
@@ -47,10 +56,12 @@
                 "type": "object",
                 "properties": {
                   "path": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Repo-relative path that was omitted."
                   },
                   "reason": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Why the path was omitted."
                   },
                   "replacement": {
                     "type": "string",
@@ -60,22 +71,28 @@
                       "index",
                       "none"
                     ],
-                    "default": "none"
+                    "default": "none",
+                    "description": "What stands in for the omitted content: a summary, a map, an index, or nothing."
                   },
                   "hash": {
-                    "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Content hash of the omitted file, when known."
                   }
                 },
                 "required": [
                   "path",
                   "reason"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Explicit record of a file omitted from the context; nothing is silently cut."
               },
-              "default": []
+              "default": [],
+              "description": "Files explicitly omitted, with reasons."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Files included in or explicitly omitted from the pack."
         },
         "atlas": {
           "type": "array",
@@ -83,7 +100,8 @@
             "type": "object",
             "properties": {
               "path": {
-                "type": "string"
+                "type": "string",
+                "description": "Repo-relative path."
               },
               "disposition": {
                 "type": "string",
@@ -98,51 +116,61 @@
                   "oversized",
                   "read_error",
                   "omitted"
-                ]
+                ],
+                "description": "How a tracked path was accounted for in the Scope Atlas (full/included content, manifest_only, or excluded/sensitive/binary/vendored/oversized/read_error/omitted); no path is ever silently dropped."
               },
               "hash": {
-                "$ref": "#/definitions/ContextPack/properties/task_contract_hash"
+                "$ref": "#/definitions/ContextPack/properties/files/properties/omitted/items/properties/hash",
+                "description": "Content hash of the path, when read."
               },
               "bytes": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "Size of the path in bytes, when known."
               },
               "reason": {
-                "type": "string"
+                "type": "string",
+                "description": "Why the path got this disposition."
               }
             },
             "required": [
               "path",
               "disposition"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Accounting entry for one tracked path in the Scope Atlas."
           },
-          "default": []
+          "default": [],
+          "description": "Scope Atlas: per-path accounting of the whole tracked tree."
         },
         "instructions": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Instruction strings passed alongside the files."
         },
         "token_budget": {
           "type": "object",
           "properties": {
             "limit": {
               "type": "integer",
-              "exclusiveMinimum": 0
+              "exclusiveMinimum": 0,
+              "description": "Token budget limit for the pack."
             },
             "estimated_used": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Estimated tokens consumed by the pack."
             }
           },
           "required": [
             "limit",
             "estimated_used"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Token budget accounting for the pack, when computed."
         }
       },
       "required": [
@@ -150,7 +178,8 @@
         "hash",
         "files"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The deterministic, hashable context bundle every harness receives, built from the TaskContract plus repo state; omissions are explicit."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

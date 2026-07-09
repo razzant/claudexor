@@ -5,23 +5,28 @@
       "type": "object",
       "properties": {
         "jobId": {
-          "type": "string"
+          "type": "string",
+          "description": "Daemon job id backing the run."
         },
         "runId": {
-          "type": "string"
+          "type": "string",
+          "description": "Run id."
         },
         "taskId": {
-          "type": "string"
+          "type": "string",
+          "description": "Task id, when already allocated."
         },
         "runDir": {
-          "type": "string"
+          "type": "string",
+          "description": "On-disk run artifact directory."
         }
       },
       "required": [
         "runId",
         "runDir"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response for a successfully enqueued run."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

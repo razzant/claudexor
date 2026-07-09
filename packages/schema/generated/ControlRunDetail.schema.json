@@ -8,13 +8,16 @@
           "type": "object",
           "properties": {
             "jobId": {
-              "type": "string"
+              "type": "string",
+              "description": "Daemon job id backing the run."
             },
             "runId": {
-              "type": "string"
+              "type": "string",
+              "description": "Run id."
             },
             "taskId": {
-              "type": "string"
+              "type": "string",
+              "description": "Task id, when allocated."
             },
             "state": {
               "type": "string",
@@ -32,13 +35,16 @@
                 "exhausted",
                 "not_converged",
                 "stuck_no_progress"
-              ]
+              ],
+              "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted, exhausted, not_converged, stuck_no_progress)."
             },
             "runDir": {
-              "type": "string"
+              "type": "string",
+              "description": "On-disk run artifact directory."
             },
             "error": {
-              "type": "string"
+              "type": "string",
+              "description": "Error message, when the run failed."
             },
             "failure": {
               "anyOf": [
@@ -47,7 +53,8 @@
                   "properties": {
                     "phase": {
                       "type": "string",
-                      "default": "unknown"
+                      "default": "unknown",
+                      "description": "Pipeline phase where the failure happened."
                     },
                     "category": {
                       "type": "string",
@@ -63,70 +70,81 @@
                         "internal",
                         "unknown"
                       ],
-                      "default": "unknown"
+                      "default": "unknown",
+                      "description": "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown)."
                     },
                     "harnessId": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Harness involved in the failure, when known."
                     },
                     "attemptId": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Attempt involved in the failure, when known."
                     },
                     "safeMessage": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Redacted human-readable failure message."
                     },
                     "rawDetailRef": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Artifact path holding the raw (redacted) failure detail."
                     },
                     "logRefs": {
                       "type": "array",
                       "items": {
                         "type": "string"
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Log artifact paths relevant to the failure."
                     },
                     "eventRefs": {
                       "type": "array",
                       "items": {
                         "type": "string"
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Event references relevant to the failure."
                     },
                     "runDir": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Run artifact directory."
                     },
                     "nextActions": {
                       "type": "array",
                       "items": {
                         "type": "string"
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Suggested operator next actions."
                     }
                   },
                   "required": [
                     "safeMessage"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "Typed failure record for a run: phase, category, evidence references, and suggested next actions."
                 },
                 {
                   "type": "null"
                 }
               ],
+              "description": "Typed failure record; null unless the run failed.",
               "default": null
             },
             "project": {
@@ -138,21 +156,24 @@
                     "project",
                     "none"
                   ],
-                  "default": "none"
+                  "default": "none",
+                  "description": "Whether the run was anchored to a project."
                 },
                 "root": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Project root, when anchored."
                 },
                 "projectName": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Project display name, when anchored."
                 },
                 "context": {
                   "type": "string",
@@ -160,10 +181,12 @@
                     "off",
                     "auto"
                   ],
-                  "default": "off"
+                  "default": "off",
+                  "description": "Project context depth used for the run."
                 }
               },
               "additionalProperties": false,
+              "description": "Project metadata projected onto a run summary.",
               "default": {}
             },
             "mode": {
@@ -174,7 +197,8 @@
                 "audit",
                 "agent",
                 "orchestrate"
-              ]
+              ],
+              "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes."
             },
             "strategy": {
               "anyOf": [
@@ -191,19 +215,23 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "description": "Engine strategy flag on the mode (race width / attempt caps / until-clean / swarm / create); flags, not modes."
             },
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The user's prompt for the run."
             },
             "harnesses": {
               "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "description": "Harness pool the run used."
             },
             "primaryHarness": {
-              "type": "string"
+              "type": "string",
+              "description": "Primary harness the run preferred."
             },
             "portfolio": {
               "type": "string",
@@ -217,10 +245,12 @@
                 "api-overflow",
                 "conserve-claude",
                 "conserve-codex"
-              ]
+              ],
+              "description": "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor)."
             },
             "model": {
-              "type": "string"
+              "type": "string",
+              "description": "Scalar model requested for the run."
             },
             "reviewerPanel": {
               "type": "array",
@@ -230,10 +260,14 @@
                   "harness": {
                     "type": "string",
                     "minLength": 1,
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
                   },
                   "model": {
-                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "Per-reviewer model hint, passed to that harness only."
                   },
                   "effort": {
                     "type": "string",
@@ -243,14 +277,17 @@
                       "high",
                       "xhigh",
                       "max"
-                    ]
+                    ],
+                    "description": "Per-reviewer effort hint, passed to that harness only."
                   }
                 },
                 "required": [
                   "harness"
                 ],
-                "additionalProperties": false
-              }
+                "additionalProperties": false,
+                "description": "One reviewer of an explicit reviewer panel."
+              },
+              "description": "Explicit reviewer panel used for the run."
             },
             "protectedPathApprovals": {
               "type": "array",
@@ -258,35 +295,45 @@
                 "type": "object",
                 "properties": {
                   "path": {
-                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "Glob approved by the operator/user for this run; consumed only by the auto-protected gate/test path policy, not by built-in critical-path gates."
                   },
                   "reason": {
-                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/harness"
+                    "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/model",
+                    "description": "Optional human-readable reason for the approval."
                   }
                 },
                 "required": [
                   "path"
                 ],
-                "additionalProperties": false
-              }
+                "additionalProperties": false,
+                "description": "Per-run typed operator approval allowing changes under an auto-protected gate/test path."
+              },
+              "description": "Per-run protected-path approvals supplied."
             },
             "n": {
-              "type": "integer"
+              "type": "integer",
+              "description": "Race width, when the run was a race."
             },
             "maxUsd": {
               "type": [
                 "number",
                 "null"
-              ]
+              ],
+              "description": "USD cap for the run; null = no cap."
             },
             "spendUsd": {
               "type": [
                 "number",
                 "null"
-              ]
+              ],
+              "description": "Settled spend in USD; null when unknown."
             },
             "spendEstimated": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "True when spend is token-derived rather than natively reported."
             },
             "access": {
               "type": "string",
@@ -296,13 +343,16 @@
                 "full",
                 "external_sandbox_full",
                 "inherit_native"
-              ]
+              ],
+              "description": "Access profile of the run: the effective profile when known, else the requested one (prefer requestedAccess/effectiveAccess)."
             },
             "requestedAccess": {
-              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access"
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access",
+              "description": "Access profile the caller requested."
             },
             "effectiveAccess": {
-              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access"
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/access",
+              "description": "Access profile actually enforced by the engine."
             },
             "externalContextPolicy": {
               "type": "string",
@@ -311,36 +361,44 @@
                 "auto",
                 "cached",
                 "live"
-              ]
+              ],
+              "description": "Requested web policy for the run."
             },
             "webRequired": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Whether the run required web evidence."
             },
             "webMode": {
-              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy"
+              "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy",
+              "description": "Web policy actually executed by the selected route."
             },
             "webEvidence": {
               "type": "object",
               "properties": {
                 "required": {
                   "type": "boolean",
-                  "default": false
+                  "default": false,
+                  "description": "Whether the run required web evidence."
                 },
                 "mode": {
                   "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy",
-                  "default": "auto"
+                  "default": "auto",
+                  "description": "Requested external-context policy for the run."
                 },
                 "effectiveMode": {
                   "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/externalContextPolicy",
-                  "default": "auto"
+                  "default": "auto",
+                  "description": "Policy the selected route actually executed (disclosed upgrades, e.g. cached to live)."
                 },
                 "attempted": {
                   "type": "boolean",
-                  "default": false
+                  "default": false,
+                  "description": "Whether any web activity was attempted."
                 },
                 "satisfied": {
                   "type": "boolean",
-                  "default": false
+                  "default": false,
+                  "description": "Whether the web-evidence requirement was satisfied."
                 },
                 "status": {
                   "type": "string",
@@ -351,47 +409,55 @@
                     "failed",
                     "unverified"
                   ],
-                  "default": "none"
+                  "default": "none",
+                  "description": "Web-evidence verdict for the run."
                 },
                 "tool": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Web tool that produced the evidence, when any."
                 },
                 "target": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Redacted target (query/url) of the web activity, when any."
                 },
                 "errorSummary": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Redacted error detail when web activity failed."
                 },
                 "rawDetailRef": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Artifact path holding the raw (redacted) evidence detail."
                 },
                 "available": {
                   "type": "boolean",
-                  "default": true
+                  "default": true,
+                  "description": "False when the run predates the telemetry artifact; surfaces must render \"telemetry unavailable\"."
                 }
               },
               "additionalProperties": false,
+              "description": "Web evidence projected onto a run summary from the telemetry artifact.",
               "default": {}
             },
             "toolPermissionPolicy": {
               "type": "object",
-              "additionalProperties": {}
+              "additionalProperties": {},
+              "description": "Tool allow/deny policy applied to the run."
             },
             "outputReadyState": {
               "type": "string",
@@ -401,12 +467,14 @@
                 "ready",
                 "diagnostic"
               ],
+              "description": "Whether a terminal run also has a loaded user-facing output artifact: pending (not yet), finalizing (being produced), ready (loaded), diagnostic (only diagnostic output).",
               "default": "pending"
             },
             "toolWarningsTotal": {
               "type": "integer",
               "minimum": 0,
-              "default": 0
+              "default": 0,
+              "description": "Non-blocking tool warnings projected from the telemetry artifact."
             },
             "result": {
               "type": "object",
@@ -420,7 +488,8 @@
                     "report",
                     "none"
                   ],
-                  "default": "none"
+                  "default": "none",
+                  "description": "What the turn actually produced: a patch, an answer, a plan (no files changed), a report, or nothing."
                 },
                 "diffStat": {
                   "anyOf": [
@@ -429,15 +498,18 @@
                       "properties": {
                         "files": {
                           "type": "integer",
-                          "minimum": 0
+                          "minimum": 0,
+                          "description": "Files changed."
                         },
                         "additions": {
                           "type": "integer",
-                          "minimum": 0
+                          "minimum": 0,
+                          "description": "Lines added."
                         },
                         "deletions": {
                           "type": "integer",
-                          "minimum": 0
+                          "minimum": 0,
+                          "description": "Lines deleted."
                         }
                       },
                       "required": [
@@ -451,19 +523,22 @@
                       "type": "null"
                     }
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Diff statistics; null unless a patch exists."
                 },
                 "blockers": {
                   "type": "integer",
                   "minimum": 0,
-                  "default": 0
+                  "default": 0,
+                  "description": "Count of accepted blocking review findings."
                 },
                 "adopted": {
                   "type": [
                     "boolean",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "True when the live in-place tree was mutated this turn (regardless of review); null when unknown."
                 },
                 "applyState": {
                   "type": "string",
@@ -473,6 +548,7 @@
                     "applied_review_blocked",
                     "reverted"
                   ],
+                  "description": "Honest application state of a run's changes: not_applied (no in-place mutation), applied (applied and review clean), applied_review_blocked (applied but review blocked/unconverged), or reverted.",
                   "default": "not_applied"
                 },
                 "preTurnSha": {
@@ -480,26 +556,31 @@
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Tree SHA before this turn mutated the in-place tree (revert restore target)."
                 },
                 "postTurnSha": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since."
                 },
                 "revertable": {
                   "type": "boolean",
-                  "default": false
+                  "default": false,
+                  "description": "Revert metadata is available so a Revert affordance may be offered; not a live-safe guarantee — the server re-checks tree divergence at revert time."
                 }
               },
               "additionalProperties": false,
+              "description": "Honest terminal outcome of a run (what the turn actually did), projected from the work product and answer artifacts.",
               "default": {}
             },
             "waitingOnUser": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "True while at least one interactive question is awaiting the user's answer."
             },
             "route": {
               "anyOf": [
@@ -511,56 +592,68 @@
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Model requested for the run."
                     },
                     "observedModel": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Model the harness stream actually reported."
                     },
                     "harnessId": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Harness that ran the final attempt."
                     },
                     "verified": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "True only when an observed model was actually reported by the harness stream — never inferred from the request."
                     }
                   },
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "Run-level route evidence projected from telemetry (requested vs observed model)."
                 },
                 {
                   "type": "null"
                 }
               ],
+              "description": "Route evidence from telemetry; null when no telemetry exists (legacy runs).",
               "default": null
             },
             "tests": {
               "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "description": "Test commands configured as gates."
             },
             "specId": {
-              "type": "string"
+              "type": "string",
+              "description": "SpecPack id the run was held to."
             },
             "specHash": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Content hash of the SpecPack the run was held to."
             },
             "createdAt": {
-              "type": "string"
+              "type": "string",
+              "description": "When the run was created."
             },
             "startedAt": {
-              "type": "string"
+              "type": "string",
+              "description": "When the run started."
             },
             "finishedAt": {
-              "type": "string"
+              "type": "string",
+              "description": "When the run finished."
             }
           },
           "required": [
@@ -568,12 +661,14 @@
             "runId",
             "state"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Run summary row served by GET /runs and embedded in run detail: state, routing, budget, policies, and honest outcome."
         },
         "lastSeq": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "default": 0,
+          "description": "Highest event seq included in this snapshot; clients subscribe to the event stream from this cursor (snapshot-then-subscribe, no gaps, no dupes)."
         },
         "artifacts": {
           "type": "array",
@@ -581,30 +676,36 @@
             "type": "object",
             "properties": {
               "path": {
-                "type": "string"
+                "type": "string",
+                "description": "Artifact path relative to the run directory."
               },
               "kind": {
                 "type": "string",
                 "enum": [
                   "file",
                   "directory"
-                ]
+                ],
+                "description": "Whether the artifact is a file or a directory."
               },
               "bytes": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "Size in bytes; absent for directories."
               },
               "mime": {
-                "type": "string"
+                "type": "string",
+                "description": "MIME type derived from the extension; absent for directories."
               }
             },
             "required": [
               "path",
               "kind"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One artifact in the run's artifact tree."
           },
-          "default": []
+          "default": [],
+          "description": "Artifacts recorded in the run tree."
         },
         "primaryOutput": {
           "anyOf": [
@@ -620,33 +721,39 @@
                     "summary",
                     "patch",
                     "diagnostic"
-                  ]
+                  ],
+                  "description": "What kind of output this is: answer, report, plan, summary, patch, or diagnostic."
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Artifact path of the output."
                 },
                 "text": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Inline text content, when loaded."
                 },
                 "bytes": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "description": "Size of the output in bytes."
                 }
               },
               "required": [
                 "kind",
                 "path"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "The run's primary user-facing output artifact."
             },
             {
               "type": "null"
             }
           ],
+          "description": "The run's primary user-facing output; null while pending.",
           "default": null
         },
         "timeline": {
@@ -655,34 +762,40 @@
             "type": "object",
             "properties": {
               "type": {
-                "type": "string"
+                "type": "string",
+                "description": "Run event type."
               },
               "ts": {
-                "type": "string"
+                "type": "string",
+                "description": "Event timestamp."
               },
               "harnessId": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Harness involved, when any."
               },
               "attemptId": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Attempt involved, when any."
               },
               "title": {
-                "type": "string"
+                "type": "string",
+                "description": "Human-readable event title."
               },
               "detail": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Human-readable event detail."
               },
               "severity": {
                 "type": "string",
@@ -691,44 +804,51 @@
                   "warning",
                   "error"
                 ],
-                "default": "info"
+                "default": "info",
+                "description": "Display severity of the event."
               },
               "toolName": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Tool name for tool events."
               },
               "target": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Redacted tool target for tool events."
               },
               "errorSummary": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Redacted error detail for error events."
               },
               "rawRef": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Reference to the raw underlying event/artifact."
               }
             },
             "required": [
               "type",
               "title"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One projected timeline row of a run for display."
           },
-          "default": []
+          "default": [],
+          "description": "Projected timeline of run events."
         },
         "budget": {
           "type": "object",
@@ -738,25 +858,29 @@
                 "number",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "USD cap for the run; null = no cap."
             },
             "spendUsd": {
               "type": [
                 "number",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Spend so far in USD; null when unknown."
             },
             "remainingUsd": {
               "type": [
                 "number",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Remaining budget in USD; null when no cap or unknown spend."
             },
             "estimated": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "True when spend is token-derived rather than natively reported."
             },
             "source": {
               "type": "string",
@@ -766,10 +890,12 @@
                 "settings",
                 "unknown"
               ],
-              "default": "unknown"
+              "default": "unknown",
+              "description": "Where the snapshot came from: the decision record, live events, settings, or unknown."
             }
           },
           "additionalProperties": false,
+          "description": "Budget snapshot for a run: cap, spend, and provenance.",
           "default": {}
         },
         "finalSummary": {
@@ -777,7 +903,8 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Final summary text; null when the run has none."
         },
         "decision": {
           "anyOf": [
@@ -788,12 +915,14 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "description": "Non-empty identifier string."
                     },
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Winning attempt/candidate id; null when nothing won."
                 },
                 "status": {
                   "type": "string",
@@ -808,7 +937,8 @@
                     "failed",
                     "exhausted",
                     "cancelled"
-                  ]
+                  ],
+                  "description": "Terminal status of a run: success, no_op (nothing to change), ungated (no gates configured), review_not_run, blocked (accepted blocking findings), not_converged, stuck_no_progress, failed, exhausted (attempt/budget caps), or cancelled."
                 },
                 "outcome": {
                   "type": "string",
@@ -819,39 +949,45 @@
                     "review_not_run",
                     "blocked"
                   ],
+                  "description": "Arbitration outcome for the winning candidate: ready (verified applyable), no_op (no changes), ungated (no gates configured), review_not_run, or blocked.",
                   "default": "blocked"
                 },
                 "why_winner": {
                   "type": "string",
-                  "default": ""
+                  "default": "",
+                  "description": "Why the winner was chosen."
                 },
                 "why_not_others": {
                   "type": "object",
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "default": {}
+                  "default": {},
+                  "description": "Per-candidate reasons the others lost, keyed by candidate id."
                 },
                 "accepted_risks": {
                   "type": "array",
                   "items": {
                     "type": "string"
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Risks explicitly accepted in the decision."
                 },
                 "final_checks": {
                   "type": "array",
                   "items": {
                     "type": "string"
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Final checks performed before the decision."
                 },
                 "evidence_facts": {
                   "type": "array",
                   "items": {
                     "type": "string"
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Evidence facts the decision rests on."
                 },
                 "budget_summary": {
                   "type": "object",
@@ -861,18 +997,21 @@
                         "number",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Total settled spend in USD; null when unknown."
                     },
                     "estimated": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "True when any of the spend is token-derived rather than natively reported."
                     }
                   },
                   "additionalProperties": false,
                   "default": {
                     "spend_usd": null,
                     "estimated": false
-                  }
+                  },
+                  "description": "Settled spend for the run; estimates are disclosed, never presented as exact."
                 },
                 "apply_recommendation": {
                   "type": "string",
@@ -883,6 +1022,7 @@
                     "split_task",
                     "human_review"
                   ],
+                  "description": "Recommended next action for the run's work product: apply it, inspect first, continue working, split the task, or get human review.",
                   "default": "inspect"
                 },
                 "verification_basis": {
@@ -892,6 +1032,7 @@
                     "cross_family_review",
                     "both"
                   ],
+                  "description": "What backed an applyable outcome: none (non-applyable), cross_family_review (a clean cross-family verified review), or both (deterministic gates and that review).",
                   "default": "none"
                 },
                 "final_verify": {
@@ -900,28 +1041,32 @@
                       "type": "object",
                       "properties": {
                         "attempted": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "Whether the final verify was attempted."
                         },
                         "base_sha": {
                           "type": [
                             "string",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Base SHA the verify tree was created from (the winner envelope's base)."
                         },
                         "applied_cleanly": {
                           "type": [
                             "boolean",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Whether the patch applied cleanly onto the fresh tree; null when not attempted."
                         },
                         "gates_passed": {
                           "type": [
                             "boolean",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Whether the re-run deterministic gates passed; null when not attempted."
                         },
                         "gates": {
                           "type": "array",
@@ -929,10 +1074,12 @@
                             "type": "object",
                             "properties": {
                               "id": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Gate id."
                               },
                               "status": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Gate status."
                               }
                             },
                             "required": [
@@ -941,7 +1088,8 @@
                             ],
                             "additionalProperties": false
                           },
-                          "default": []
+                          "default": [],
+                          "description": "Per-gate re-run results."
                         },
                         "duration_ms": {
                           "anyOf": [
@@ -953,25 +1101,29 @@
                               "type": "null"
                             }
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "How long the verify took, in milliseconds."
                         },
                         "reason": {
                           "type": [
                             "string",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail."
                         }
                       },
                       "required": [
                         "attempted"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "description": "FinalVerifier record: the winner's patch was applied onto a fresh worktree at the candidate's own base SHA and the deterministic gates were re-run there; no model involvement."
                     },
                     {
                       "type": "null"
                     }
                   ],
+                  "description": "Final verify record; present only for write runs with a patch (or a recorded reason why the verifier did not run).",
                   "default": null
                 }
               },
@@ -979,12 +1131,14 @@
                 "winner",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "The arbitration decision for a run: winner, status/outcome, reasons, spend, and the verification that backs applyability."
             },
             {
               "type": "null"
             }
           ],
+          "description": "The arbitration decision; null before arbitration.",
           "default": null
         },
         "operatorDecision": {
@@ -993,14 +1147,16 @@
               "type": "object",
               "properties": {
                 "action": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Operator decision action (e.g. accept_risk, override)."
                 },
                 "decidedAt": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "When the decision was made."
                 }
               },
               "required": [
@@ -1012,7 +1168,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Persisted operator unblock decision (accept_risk/override), hash-bound; null when none was made."
         },
         "workProduct": {
           "anyOf": [
@@ -1020,7 +1177,9 @@
               "type": "object",
               "properties": {
                 "id": {
-                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Work product id."
                 },
                 "kind": {
                   "type": "string",
@@ -1028,28 +1187,35 @@
                     "patch",
                     "new_repo",
                     "report"
-                  ]
+                  ],
+                  "description": "Kind of work product a run produces: a patch against the base tree, a newly created repository, or a report document."
                 },
                 "source_task_id": {
-                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Task the work product came from."
                 },
                 "producer_attempt_id": {
-                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                  "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0",
+                  "description": "Attempt that produced it, when known."
                 },
                 "evidence_dir": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Directory holding run evidence artifacts."
                 },
                 "files": {
                   "type": "object",
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "default": {}
+                  "default": {},
+                  "description": "Kind-specific file payload, e.g. artifact name to path (validated loosely here; specialized per kind by callers)."
                 },
                 "meta": {
                   "type": "object",
                   "additionalProperties": {},
-                  "default": {}
+                  "default": {},
+                  "description": "Kind-specific metadata."
                 }
               },
               "required": [
@@ -1057,12 +1223,14 @@
                 "kind",
                 "source_task_id"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "The deliverable a run produced (patch, new repo, or report), referenced by apply/delivery verbs."
             },
             {
               "type": "null"
             }
           ],
+          "description": "The run's work product; null when none was produced.",
           "default": null
         },
         "applyEligibility": {
@@ -1109,7 +1277,7 @@
               "type": "null"
             }
           ],
-          "description": "Derived apply-gate verdict for a run's WorkProduct (single producer in the delivery gate).",
+          "description": "Derived apply-gate verdict (single producer: the delivery gate); null when the run has no patch artifact.",
           "default": null
         },
         "reviewFindings": {
@@ -1118,7 +1286,9 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                "type": "string",
+                "minLength": 1,
+                "description": "Finding id."
               },
               "severity": {
                 "type": "string",
@@ -1130,7 +1300,8 @@
                   "OUT_OF_SCOPE",
                   "INSUFFICIENT_EVIDENCE",
                   "NEEDS_HUMAN"
-                ]
+                ],
+                "description": "Reviewer-assigned severity of a finding: BLOCK and FIX_FIRST can block convergence when accepted with evidence, WARN/NIT are advisory, OUT_OF_SCOPE and INSUFFICIENT_EVIDENCE are triage verdicts, NEEDS_HUMAN escalates to a human decision."
               },
               "category": {
                 "type": "string",
@@ -1145,17 +1316,20 @@
                   "deploy",
                   "architecture",
                   "ux"
-                ]
+                ],
+                "description": "Subject-matter category of a review finding."
               },
               "claim": {
-                "type": "string"
+                "type": "string",
+                "description": "The reviewer's claim, stated concretely."
               },
               "linked_acceptance_criteria": {
                 "type": "array",
                 "items": {
                   "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
                 },
-                "default": []
+                "default": [],
+                "description": "Ids of acceptance criteria this finding relates to."
               },
               "evidence": {
                 "type": "object",
@@ -1166,29 +1340,34 @@
                       "type": "object",
                       "properties": {
                         "path": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Repo-relative file path."
                         },
                         "lines": {
                           "type": [
                             "string",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Line range in the file (e.g. \"10-42\"); null when the whole file is cited."
                         }
                       },
                       "required": [
                         "path"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "description": "File citation supporting a finding."
                     },
-                    "default": []
+                    "default": [],
+                    "description": "File citations."
                   },
                   "diff_hunks": {
                     "type": "array",
                     "items": {
                       "type": "string"
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Diff hunks quoted as evidence."
                   },
                   "commands": {
                     "type": "array",
@@ -1196,15 +1375,18 @@
                       "type": "object",
                       "properties": {
                         "command": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Command whose output supports the finding."
                         }
                       },
                       "required": [
                         "command"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "description": "Command citation supporting a finding."
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Commands whose output supports the finding."
                   },
                   "logs": {
                     "type": "array",
@@ -1212,7 +1394,8 @@
                       "type": "object",
                       "properties": {
                         "path": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Log file path."
                         }
                       },
                       "required": [
@@ -1220,10 +1403,12 @@
                       ],
                       "additionalProperties": false
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Log files cited as evidence."
                   }
                 },
                 "additionalProperties": false,
+                "description": "Evidence backing a finding; a finding without evidence cannot block.",
                 "default": {}
               },
               "proposed_fix": {
@@ -1231,34 +1416,40 @@
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Reviewer-proposed fix; null when none was offered."
               },
               "reviewer": {
                 "type": "object",
                 "properties": {
                   "harness_id": {
-                    "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Harness that produced the review."
                   },
                   "requested_model": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Model requested for the reviewer route."
                   },
                   "requested_effort": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Reasoning effort requested for the reviewer route."
                   },
                   "observed_model": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Model the harness actually reported using."
                   },
                   "route_proof_status": {
                     "type": "string",
@@ -1268,13 +1459,15 @@
                       "unverified",
                       "same_model_fallback"
                     ],
+                    "description": "How strongly the executed route is proven: verified (observed evidence matches the request), accepted_model_arg (the requested model arg was accepted without stream evidence), unverified, or same_model_fallback (a fallback landed on the same model).",
                     "default": "unverified"
                   }
                 },
                 "required": [
                   "harness_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Who reviewed: the harness/model route and its verification status."
               },
               "status": {
                 "type": "string",
@@ -1289,10 +1482,12 @@
                   "out_of_scope",
                   "insufficient_evidence"
                 ],
+                "description": "Lifecycle status of a finding, from proposed through accepted/rebutted/fixed to terminal triage states (accepted_risk, duplicate, stale, out_of_scope, insufficient_evidence).",
                 "default": "proposed"
               },
               "revalidation_note": {
-                "type": "string"
+                "type": "string",
+                "description": "Note recorded when the finding was revalidated against a changed tree."
               }
             },
             "required": [
@@ -1302,9 +1497,11 @@
               "claim",
               "reviewer"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One evidence-backed review finding produced by a reviewer harness."
           },
-          "default": []
+          "default": [],
+          "description": "Review findings recorded for the run."
         },
         "pendingInteractions": {
           "type": "array",
@@ -1312,31 +1509,38 @@
             "type": "object",
             "properties": {
               "interactionId": {
-                "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                "type": "string",
+                "minLength": 1,
+                "description": "Interaction id used to answer."
               },
               "runId": {
-                "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                "type": "string",
+                "minLength": 1,
+                "description": "Run the interaction belongs to."
               },
               "attemptId": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Attempt the interaction was raised in, when known."
               },
               "harnessId": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Harness that raised the interaction."
               },
               "sourceTool": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Native tool that raised the request."
               },
               "questions": {
                 "type": "array",
@@ -1344,17 +1548,21 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/winner/anyOf/0"
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Question id."
                     },
                     "question": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "The question text."
                     },
                     "header": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Short chip/header text some harnesses attach to a question."
                     },
                     "options": {
                       "type": "array",
@@ -1362,45 +1570,54 @@
                         "type": "object",
                         "properties": {
                           "label": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Option label shown to the user."
                           },
                           "description": {
                             "type": [
                               "string",
                               "null"
                             ],
-                            "default": null
+                            "default": null,
+                            "description": "Optional longer explanation of the option."
                           }
                         },
                         "required": [
                           "label"
                         ],
-                        "additionalProperties": false
+                        "additionalProperties": false,
+                        "description": "One multiple-choice option of an interactive question."
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Selectable options; empty for free-text-only questions."
                     },
                     "multi_select": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "Whether multiple options may be selected."
                     }
                   },
                   "required": [
                     "id",
                     "question"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "One question of an interactive user-input request."
                 },
-                "default": []
+                "default": [],
+                "description": "Questions awaiting answers."
               },
               "requestedAt": {
-                "type": "string"
+                "type": "string",
+                "description": "When the interaction was requested."
               },
               "timeoutAt": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "When the interaction times out into a benign decline; null = no timeout."
               }
             },
             "required": [
@@ -1408,9 +1625,11 @@
               "runId",
               "requestedAt"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "A live interactive question awaiting the user's answer (snapshot projection)."
           },
-          "default": []
+          "default": [],
+          "description": "Interactive questions currently awaiting answers."
         },
         "orchestrate": {
           "anyOf": [
@@ -1424,7 +1643,8 @@
                     "properties": {
                       "index": {
                         "type": "integer",
-                        "minimum": 0
+                        "minimum": 0,
+                        "description": "Position of the step in the plan."
                       },
                       "tool": {
                         "type": "string",
@@ -1435,14 +1655,16 @@
                           "answer_question",
                           "apply",
                           "review"
-                        ]
+                        ],
+                        "description": "Tool in the orchestrate planner's belt, mapping 1:1 onto engine entry points: start_run, race (best-of-N), status, answer_question, apply, and review."
                       },
                       "risk": {
                         "type": "string",
                         "enum": [
                           "safe",
                           "risky"
-                        ]
+                        ],
+                        "description": "Risk class of the step: safe (no live-tree mutation) or risky."
                       },
                       "status": {
                         "type": "string",
@@ -1453,21 +1675,24 @@
                           "skipped",
                           "blocked",
                           "failed"
-                        ]
+                        ],
+                        "description": "Executor status of one plan step: pending, running, done, skipped, blocked (risky step awaiting a human), or failed."
                       },
                       "run_id": {
                         "type": [
                           "string",
                           "null"
                         ],
-                        "default": null
+                        "default": null,
+                        "description": "Sub-run id this step started/targeted, when known."
                       },
                       "detail": {
                         "type": [
                           "string",
                           "null"
                         ],
-                        "default": null
+                        "default": null,
+                        "description": "Human-readable step detail."
                       }
                     },
                     "required": [
@@ -1478,7 +1703,8 @@
                     ],
                     "additionalProperties": false
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Per-step outcomes, in plan order."
                 },
                 "autonomy": {
                   "type": "string",
@@ -1486,25 +1712,29 @@
                     "suggest",
                     "auto_safe",
                     "auto_full"
-                  ]
+                  ],
+                  "description": "How much the orchestrate planner may act without confirmation: suggest (user executes the plan), auto_safe (auto-runs only provably safe steps), auto_full (auto-runs everything)."
                 },
                 "stopped_reason": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Set when the executor stopped early (first risky step under auto_safe, budget, abort)."
                 }
               },
               "required": [
                 "autonomy"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Typed executor progress over a plan's tool calls, persisted as final/orchestration_progress.yaml and projected into run detail."
             },
             {
               "type": "null"
             }
           ],
+          "description": "Typed executor progress for an orchestrate run; null for non-orchestrate runs or suggest autonomy.",
           "default": null
         },
         "candidates": {
@@ -1513,59 +1743,71 @@
             "type": "object",
             "properties": {
               "attemptId": {
-                "type": "string"
+                "type": "string",
+                "description": "Attempt id of the candidate."
               },
               "harnessId": {
-                "type": "string"
+                "type": "string",
+                "description": "Harness that produced the candidate."
               },
               "label": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Human-readable candidate label, when set."
               },
               "costUsd": {
                 "type": "number",
-                "default": 0
+                "default": 0,
+                "description": "Spend attributed to the candidate, in USD."
               },
               "costEstimated": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "True when the cost is token-derived rather than natively reported."
               },
               "errored": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "True when the candidate's attempt errored."
               },
               "gatesPassed": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "Number of deterministic gates that passed."
               },
               "gatesTotal": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "Total deterministic gates run for the candidate."
               },
               "blockers": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "Count of accepted blocking review findings."
               },
               "reviewVerified": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "Whether the candidate's review route was verified."
               },
               "finalReviewClean": {
                 "type": [
                   "boolean",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Whether the final review was clean; null when no final review ran."
               },
               "winner": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "True for the adopted/winning candidate."
               },
               "diffstat": {
                 "anyOf": [
@@ -1575,17 +1817,20 @@
                       "files": {
                         "type": "integer",
                         "minimum": 0,
-                        "default": 0
+                        "default": 0,
+                        "description": "Files changed."
                       },
                       "additions": {
                         "type": "integer",
                         "minimum": 0,
-                        "default": 0
+                        "default": 0,
+                        "description": "Lines added."
                       },
                       "deletions": {
                         "type": "integer",
                         "minimum": 0,
-                        "default": 0
+                        "default": 0,
+                        "description": "Lines deleted."
                       }
                     },
                     "additionalProperties": false
@@ -1594,16 +1839,19 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Diff statistics of the candidate's patch; null when there is no patch."
               }
             },
             "required": [
               "attemptId",
               "harnessId"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Per-candidate evidence card for a race run, projected from attempt, review, and decision artifacts."
           },
-          "default": []
+          "default": [],
+          "description": "Per-candidate evidence cards for every envelope-producing mode; empty only when no attempt artifacts exist."
         },
         "planProgress": {
           "anyOf": [
@@ -1616,10 +1864,12 @@
                     "type": "object",
                     "properties": {
                       "id": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Plan item id."
                       },
                       "title": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Plan item title."
                       },
                       "status": {
                         "type": "string",
@@ -1627,7 +1877,8 @@
                           "pending",
                           "in_progress",
                           "completed"
-                        ]
+                        ],
+                        "description": "Progress state of the item."
                       }
                     },
                     "required": [
@@ -1637,7 +1888,8 @@
                     ],
                     "additionalProperties": false
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Plan items, last-wins."
                 }
               },
               "additionalProperties": false
@@ -1646,7 +1898,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Live plan checklist from the last plan.progress event; null when the run never emitted one."
         },
         "failure": {
           "anyOf": [
@@ -1657,13 +1910,15 @@
               "type": "null"
             }
           ],
+          "description": "Typed failure info; null unless the run failed.",
           "default": null
         }
       },
       "required": [
         "summary"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Full run detail snapshot served by GET /runs/:id: summary, artifacts, timeline, decision, findings, and progress."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

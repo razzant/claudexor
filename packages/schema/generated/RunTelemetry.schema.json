@@ -6,14 +6,18 @@
       "properties": {
         "schema_version": {
           "type": "number",
-          "const": 2
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
         },
         "run_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Run the telemetry belongs to."
         },
         "task_id": {
-          "$ref": "#/definitions/RunTelemetry/properties/run_id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Task the run belongs to."
         },
         "mode": {
           "type": "string",
@@ -23,7 +27,8 @@
             "audit",
             "agent",
             "orchestrate"
-          ]
+          ],
+          "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes."
         },
         "requested_access": {
           "type": "string",
@@ -33,10 +38,19 @@
             "full",
             "external_sandbox_full",
             "inherit_native"
-          ]
+          ],
+          "description": "Access profile the caller requested."
         },
         "effective_access": {
-          "$ref": "#/definitions/RunTelemetry/properties/requested_access"
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ],
+          "description": "Access profile actually enforced by the engine."
         },
         "external_context_policy": {
           "type": "string",
@@ -45,24 +59,36 @@
             "auto",
             "cached",
             "live"
-          ]
+          ],
+          "description": "Requested web policy for the run."
         },
         "effective_web_mode": {
-          "$ref": "#/definitions/RunTelemetry/properties/external_context_policy"
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "cached",
+            "live"
+          ],
+          "description": "Web policy actually executed by the selected route."
         },
         "web_required": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Whether the run required web evidence."
         },
         "final_attempt_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RunTelemetry/properties/run_id"
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
             },
             {
               "type": "null"
             }
           ],
+          "description": "Attempt whose output became the final answer/patch; null when no attempt succeeded.",
           "default": null
         },
         "web": {
@@ -70,23 +96,34 @@
           "properties": {
             "required": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "Whether the run required web evidence."
             },
             "policy": {
-              "$ref": "#/definitions/RunTelemetry/properties/external_context_policy",
+              "type": "string",
+              "enum": [
+                "off",
+                "auto",
+                "cached",
+                "live"
+              ],
+              "description": "Requested web policy for the run.",
               "default": "auto"
             },
             "effective_mode": {
-              "$ref": "#/definitions/RunTelemetry/properties/external_context_policy",
-              "default": "auto"
+              "$ref": "#/definitions/RunTelemetry/properties/web/properties/policy",
+              "default": "auto",
+              "description": "Policy actually executed by the harness route (disclosed upgrades, e.g. cached to live)."
             },
             "attempted": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "Whether any web activity was attempted."
             },
             "satisfied": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "Whether the web-evidence requirement was satisfied."
             },
             "status": {
               "type": "string",
@@ -97,6 +134,7 @@
                 "failed",
                 "unverified"
               ],
+              "description": "Web-evidence verdict for an attempt/run: none (no web activity), attempted, satisfied (required evidence produced), failed, or unverified.",
               "default": "none"
             },
             "tool": {
@@ -104,24 +142,28 @@
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Web tool that produced the evidence, when any."
             },
             "target": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Redacted target (query/url) of the web activity, when any."
             },
             "error_summary": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Redacted error detail when web activity failed."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence."
         },
         "attempts": {
           "type": "array",
@@ -129,20 +171,56 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/definitions/RunTelemetry/properties/run_id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Attempt id."
               },
               "harness_id": {
-                "$ref": "#/definitions/RunTelemetry/properties/run_id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Harness that ran the attempt."
               },
               "observed_model": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed)."
               },
               "web": {
-                "$ref": "#/definitions/RunTelemetry/properties/web"
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/required"
+                  },
+                  "policy": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/policy"
+                  },
+                  "effective_mode": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/effective_mode"
+                  },
+                  "attempted": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/attempted"
+                  },
+                  "satisfied": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/satisfied"
+                  },
+                  "status": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/status"
+                  },
+                  "tool": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/tool"
+                  },
+                  "target": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/target"
+                  },
+                  "error_summary": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/error_summary"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events."
               },
               "tool_errors": {
                 "type": "array",
@@ -150,7 +228,8 @@
                   "type": "object",
                   "properties": {
                     "tool": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Native tool name that errored."
                     },
                     "kind": {
                       "type": "string",
@@ -162,6 +241,7 @@
                         "search",
                         "other"
                       ],
+                      "description": "Coarse tool classification used for typed governance; adapters map native tool names to a kind.",
                       "default": "other"
                     },
                     "target": {
@@ -169,50 +249,60 @@
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Redacted target of the tool use, when known."
                     },
                     "summary": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Redacted error summary."
                     },
                     "recovered": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "True when a later successful result of the same tool exists in the same attempt."
                     },
                     "tool_use_id": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Tool use id correlating the error to its call, when known."
                     }
                   },
                   "required": [
                     "tool",
                     "summary"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "One tool error observed during an attempt."
                 },
-                "default": []
+                "default": [],
+                "description": "Tool errors, bounded by the writer (most recent first when truncated; tool_errors_total keeps the true count)."
               },
               "tool_errors_total": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "True total count of tool errors."
               },
               "unrecovered_tool_errors": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "Tool errors with no later successful recovery."
               },
               "statusless_tool_results": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "tool_result events that arrived without a status field (never treated as ok)."
               },
               "dropped_events": {
                 "type": "integer",
                 "minimum": 0,
-                "default": 0
+                "default": 0,
+                "description": "Native lines/events the adapter could not parse or did not recognize (never silently zero)."
               },
               "transient_failures": {
                 "type": "array",
@@ -228,7 +318,8 @@
                         "timeout",
                         "unknown"
                       ],
-                      "default": "unknown"
+                      "default": "unknown",
+                      "description": "Kind of transient failure."
                     },
                     "retry_delay_ms": {
                       "anyOf": [
@@ -240,39 +331,47 @@
                           "type": "null"
                         }
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Suggested retry delay in milliseconds, when reported."
                     }
                   },
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "An adapter-declared transient failure that informed bounded retry policy."
                 },
-                "default": []
+                "default": [],
+                "description": "Adapter-declared transient failures that informed bounded retry policy."
               },
               "outcome": {
                 "type": "object",
                 "properties": {
                   "deliverable_present": {
                     "type": "boolean",
-                    "default": false
+                    "default": false,
+                    "description": "Whether the attempt produced the deliverable the intent asked for."
                   },
                   "gates_passed": {
                     "type": [
                       "boolean",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Whether deterministic gates passed; null when no gates ran."
                   },
                   "harness_errored": {
                     "type": "boolean",
-                    "default": false
+                    "default": false,
+                    "description": "Whether the harness itself errored."
                   },
                   "web_required_unsatisfied": {
                     "type": "boolean",
-                    "default": false
+                    "default": false,
+                    "description": "True when required web evidence was not satisfied."
                   },
                   "tool_warnings_count": {
                     "type": "integer",
                     "minimum": 0,
-                    "default": 0
+                    "default": 0,
+                    "description": "Count of tool warnings in the attempt."
                   },
                   "status": {
                     "type": "string",
@@ -282,10 +381,12 @@
                       "blocked",
                       "failed"
                     ],
+                    "description": "Outcome of one attempt: success, success_with_warnings, blocked, or failed.",
                     "default": "success"
                   }
                 },
                 "additionalProperties": false,
+                "description": "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",
                 "default": {}
               }
             },
@@ -294,18 +395,22 @@
               "harness_id",
               "web"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Telemetry for one attempt: route evidence, web evidence, tool errors, dropped events, and outcome."
           },
-          "default": []
+          "default": [],
+          "description": "Per-attempt telemetry records."
         },
         "tool_warnings_total": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "default": 0,
+          "description": "Sum of attempt tool warnings; rendered separately from terminal state."
         },
         "generated_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When the telemetry artifact was generated."
         }
       },
       "required": [
@@ -320,7 +425,8 @@
         "web",
         "generated_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Run telemetry artifact (final/telemetry.yaml), the single computed source of web/tool evidence; surfaces project it and never re-derive evidence from raw events."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

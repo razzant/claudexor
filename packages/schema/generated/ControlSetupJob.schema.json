@@ -6,7 +6,8 @@
       "properties": {
         "jobId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Setup job id."
         },
         "harness": {
           "type": "string",
@@ -16,7 +17,8 @@
             "cursor",
             "opencode",
             "raw"
-          ]
+          ],
+          "description": "Harness ids that have a managed setup flow."
         },
         "action": {
           "type": "string",
@@ -25,7 +27,8 @@
             "login",
             "doctor",
             "store_key"
-          ]
+          ],
+          "description": "Setup action to perform: install the vendor CLI, log in, run the doctor, or store an API key."
         },
         "state": {
           "type": "string",
@@ -37,14 +40,16 @@
             "failed",
             "cancelled",
             "not_supported"
-          ]
+          ],
+          "description": "Lifecycle state of a setup job, including waiting_for_input (needs user confirmation/input) and not_supported."
         },
         "command": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Shell command the job runs, when applicable."
         },
         "guideUrl": {
           "anyOf": [
@@ -56,64 +61,75 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Vendor guide URL for manual steps, when applicable."
         },
         "logPath": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "On-disk log path for the job's output."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable status message."
         },
         "riskFlags": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Risk flags for the action (e.g. network_download, shell_pipe), surfaced before confirmation."
         },
         "requiresConfirmation": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Whether the job waits for explicit user confirmation before running."
         },
         "createdAt": {
-          "type": "string"
+          "type": "string",
+          "description": "When the job was created."
         },
         "startedAt": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "When the job started running."
         },
         "firstOutputAt": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "When the job produced its first output."
         },
         "lastOutputAt": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "When the job last produced output."
         },
         "finishedAt": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "When the job finished."
         },
         "retryCount": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "default": 0,
+          "description": "How many times the job was retried."
         }
       },
       "required": [
@@ -124,7 +140,8 @@
         "message",
         "createdAt"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "One managed harness setup job (install/login/doctor/store_key) with its lifecycle timestamps."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

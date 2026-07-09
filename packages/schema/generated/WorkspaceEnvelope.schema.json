@@ -6,46 +6,59 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Envelope id."
         },
         "task_id": {
-          "$ref": "#/definitions/WorkspaceEnvelope/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Task the envelope belongs to."
         },
         "attempt_id": {
-          "$ref": "#/definitions/WorkspaceEnvelope/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Attempt the envelope belongs to."
         },
         "repo_root": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path of the source repository root."
         },
         "base_ref": {
-          "type": "string"
+          "type": "string",
+          "description": "Git ref the worktree was created from."
         },
         "base_sha": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Resolved base commit SHA; null when not recorded."
         },
         "worktree_path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path of the isolated git worktree."
         },
         "branch_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Branch created for the worktree."
         },
         "home_dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Scoped HOME directory for the harness process (kept outside the worktree)."
         },
         "harness_config_dirs": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
-          "default": {}
+          "default": {},
+          "description": "Scoped per-harness config directories keyed by harness id (kept outside the worktree)."
         },
         "policy_profile": {
           "type": "string",
-          "default": "workspace_write"
+          "default": "workspace_write",
+          "description": "Access profile the envelope enforces."
         },
         "dirty_policy": {
           "type": "string",
@@ -53,11 +66,13 @@
             "refuse",
             "snapshot"
           ],
+          "description": "How a dirty working tree is handled when creating an envelope: snapshot captures the dirty state as the base SHA without touching the live tree; refuse fails loudly.",
           "default": "refuse"
         },
         "created_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When the envelope was created."
         }
       },
       "required": [
@@ -71,7 +86,8 @@
         "home_dir",
         "created_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "An isolated execution envelope: a git worktree for files plus scoped env/HOME/harness-config isolation."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

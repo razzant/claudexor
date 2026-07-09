@@ -9,21 +9,24 @@
           "properties": {
             "id": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Thread id."
             },
             "title": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Thread title; null until set."
             },
             "repoRoot": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Project root the thread is anchored to; null for a no-project thread."
             },
             "mode": {
               "type": "string",
@@ -33,7 +36,8 @@
                 "audit",
                 "agent",
                 "orchestrate"
-              ]
+              ],
+              "description": "Default mode for new turns."
             },
             "workspaceMode": {
               "type": "string",
@@ -41,6 +45,7 @@
                 "in_place",
                 "isolated"
               ],
+              "description": "Per-thread workspace mode: in_place mutates the live project tree directly (the default); isolated keeps a persistent git worktree per thread that apply merges into the project.",
               "default": "in_place"
             },
             "authPreference": {
@@ -50,6 +55,7 @@
                 "api_key",
                 "auto"
               ],
+              "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
               "default": "auto"
             },
             "primaryHarness": {
@@ -57,14 +63,16 @@
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Sticky primary harness for the thread; null = engine routing."
             },
             "eligibleHarnesses": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Sticky eligible harness pool; empty = the engine auto-pools."
             },
             "state": {
               "type": "string",
@@ -72,35 +80,43 @@
                 "active",
                 "closed"
               ],
+              "description": "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
               "default": "active"
             },
             "runIds": {
               "type": "array",
               "items": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Non-empty identifier string."
               },
-              "default": []
+              "default": [],
+              "description": "Ordered run lineage of the thread."
             },
             "headRunId": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                  "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/runIds/items"
                 },
                 {
                   "type": "null"
                 }
               ],
+              "description": "Most recent run of the thread; null before the first turn runs.",
               "default": null
             },
             "needsHuman": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "True when the head turn is blocked on a human decision (needs-me inbox)."
             },
             "createdAt": {
-              "type": "string"
+              "type": "string",
+              "description": "When the thread was created."
             },
             "updatedAt": {
-              "type": "string"
+              "type": "string",
+              "description": "When the thread was last updated."
             }
           },
           "required": [
@@ -108,7 +124,8 @@
             "createdAt",
             "updatedAt"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Control-plane projection of a thread (camelCase view of the Thread artifact)."
         },
         "sessions": {
           "type": "array",
@@ -116,27 +133,35 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Session id."
               },
               "threadId": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Thread the session belongs to."
               },
               "harnessId": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Harness the session is bound to."
               },
               "nativeSessionId": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "The vendor CLI session id; null when none exists."
               },
               "observedModel": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Model last observed on the session's stream."
               },
               "state": {
                 "type": "string",
@@ -145,7 +170,8 @@
                   "stale",
                   "rebound"
                 ],
-                "default": "live"
+                "default": "live",
+                "description": "Session cache state: live, stale, or rebound."
               }
             },
             "required": [
@@ -153,9 +179,11 @@
               "threadId",
               "harnessId"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Control-plane projection of a vendor CLI session bound to a thread."
           },
-          "default": []
+          "default": [],
+          "description": "Vendor sessions bound to the thread."
         },
         "turns": {
           "type": "array",
@@ -163,42 +191,49 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Turn id."
               },
               "threadId": {
-                "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Thread the turn belongs to."
               },
               "runId": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/runIds/items"
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Run backing this turn; null while unbound.",
                 "default": null
               },
               "parentRunId": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/runIds/items"
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Run this turn follows up on, when any.",
                 "default": null
               },
               "planRunId": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/id"
+                    "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/runIds/items"
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Set when this turn implements an approved plan from an earlier run.",
                 "default": null
               },
               "kind": {
@@ -208,11 +243,13 @@
                   "followup",
                   "decision"
                 ],
+                "description": "Kind of thread turn: the initial message, a followup, or an operator decision turn.",
                 "default": "followup"
               },
               "prompt": {
                 "type": "string",
-                "default": ""
+                "default": "",
+                "description": "The user's message for this turn."
               },
               "run": {
                 "anyOf": [
@@ -235,10 +272,12 @@
                           "exhausted",
                           "not_converged",
                           "stuck_no_progress"
-                        ]
+                        ],
+                        "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted, exhausted, not_converged, stuck_no_progress)."
                       },
                       "mode": {
-                        "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/mode"
+                        "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/mode",
+                        "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes."
                       },
                       "strategy": {
                         "anyOf": [
@@ -255,10 +294,12 @@
                           {
                             "type": "null"
                           }
-                        ]
+                        ],
+                        "description": "Engine strategy flag on the mode, when any."
                       },
                       "n": {
-                        "type": "integer"
+                        "type": "integer",
+                        "description": "Race width, when the run was a race."
                       },
                       "result": {
                         "type": "object",
@@ -272,7 +313,8 @@
                               "report",
                               "none"
                             ],
-                            "default": "none"
+                            "default": "none",
+                            "description": "What the turn actually produced: a patch, an answer, a plan (no files changed), a report, or nothing."
                           },
                           "diffStat": {
                             "anyOf": [
@@ -281,15 +323,18 @@
                                 "properties": {
                                   "files": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "description": "Files changed."
                                   },
                                   "additions": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "description": "Lines added."
                                   },
                                   "deletions": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "description": "Lines deleted."
                                   }
                                 },
                                 "required": [
@@ -303,19 +348,22 @@
                                 "type": "null"
                               }
                             ],
-                            "default": null
+                            "default": null,
+                            "description": "Diff statistics; null unless a patch exists."
                           },
                           "blockers": {
                             "type": "integer",
                             "minimum": 0,
-                            "default": 0
+                            "default": 0,
+                            "description": "Count of accepted blocking review findings."
                           },
                           "adopted": {
                             "type": [
                               "boolean",
                               "null"
                             ],
-                            "default": null
+                            "default": null,
+                            "description": "True when the live in-place tree was mutated this turn (regardless of review); null when unknown."
                           },
                           "applyState": {
                             "type": "string",
@@ -325,6 +373,7 @@
                               "applied_review_blocked",
                               "reverted"
                             ],
+                            "description": "Honest application state of a run's changes: not_applied (no in-place mutation), applied (applied and review clean), applied_review_blocked (applied but review blocked/unconverged), or reverted.",
                             "default": "not_applied"
                           },
                           "preTurnSha": {
@@ -332,28 +381,33 @@
                               "string",
                               "null"
                             ],
-                            "default": null
+                            "default": null,
+                            "description": "Tree SHA before this turn mutated the in-place tree (revert restore target)."
                           },
                           "postTurnSha": {
                             "type": [
                               "string",
                               "null"
                             ],
-                            "default": null
+                            "default": null,
+                            "description": "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since."
                           },
                           "revertable": {
                             "type": "boolean",
-                            "default": false
+                            "default": false,
+                            "description": "Revert metadata is available so a Revert affordance may be offered; not a live-safe guarantee — the server re-checks tree divergence at revert time."
                           }
                         },
                         "additionalProperties": false,
+                        "description": "Honest terminal outcome of a run (what the turn actually did), projected from the work product and answer artifacts.",
                         "default": {}
                       },
                       "spendUsd": {
                         "type": [
                           "number",
                           "null"
-                        ]
+                        ],
+                        "description": "Settled spend in USD; null when unknown."
                       },
                       "outputReadyState": {
                         "type": "string",
@@ -363,29 +417,34 @@
                           "ready",
                           "diagnostic"
                         ],
+                        "description": "Whether a terminal run also has a loaded user-facing output artifact: pending (not yet), finalizing (being produced), ready (loaded), diagnostic (only diagnostic output).",
                         "default": "pending"
                       },
                       "waitingOnUser": {
                         "type": "boolean",
-                        "default": false
+                        "default": false,
+                        "description": "True while an interactive question is awaiting the user's answer."
                       },
                       "finishedAt": {
                         "type": [
                           "string",
                           "null"
                         ],
-                        "default": null
+                        "default": null,
+                        "description": "When the run finished; null while live."
                       }
                     },
                     "required": [
                       "state"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "description": "Compact run state embedded on a turn so a chat surface renders the whole conversation from one thread fetch."
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Embedded run card (outcome/state); null while no run is bound.",
                 "default": null
               },
               "enqueueError": {
@@ -394,21 +453,25 @@
                     "type": "object",
                     "properties": {
                       "message": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Human-readable refusal message."
                       },
                       "code": {
                         "type": [
                           "string",
                           "null"
                         ],
-                        "default": null
+                        "default": null,
+                        "description": "Machine-readable refusal code; remedies key on it, never on the message text."
                       },
                       "retryable": {
                         "type": "boolean",
-                        "default": true
+                        "default": true,
+                        "description": "False when no recorded job exists to replay — surfaces offer a new message instead of a doomed retry."
                       },
                       "failedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "When the enqueue failed."
                       }
                     },
                     "required": [
@@ -421,10 +484,12 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Why this turn has no run (enqueue/preflight refusal); null once a run binds."
               },
               "createdAt": {
-                "type": "string"
+                "type": "string",
+                "description": "When the turn was created."
               }
             },
             "required": [
@@ -432,15 +497,18 @@
               "threadId",
               "createdAt"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Control-plane projection of one thread turn with its embedded run card."
           },
-          "default": []
+          "default": [],
+          "description": "Turns of the conversation, in order."
         }
       },
       "required": [
         "thread"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Full thread detail served by GET /threads/:id: the thread, its vendor sessions, and its turns."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,43 +6,52 @@
       "properties": {
         "schema_version": {
           "type": "number",
-          "const": 2
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
         },
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "SpecPack id."
         },
         "created_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When this SpecPack revision was created."
         },
         "version": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "default": 1
+          "default": 1,
+          "description": "Monotonic revision; each freeze increments it."
         },
         "frozen": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Whether the spec is frozen (immutable and runnable)."
         },
         "intent": {
           "type": "object",
           "properties": {
             "raw": {
-              "type": "string"
+              "type": "string",
+              "description": "The user's original request, verbatim."
             },
             "normalized": {
-              "type": "string"
+              "type": "string",
+              "description": "Optional normalized restatement of the request."
             }
           },
           "required": [
             "raw"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "The user intent this spec captures."
         },
         "summary": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "Short human-readable summary of the spec."
         },
         "success_criteria": {
           "type": "array",
@@ -50,44 +59,53 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecPack/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Criterion id."
               },
               "behavior": {
-                "type": "string"
+                "type": "string",
+                "description": "Required behavior, EARS style (WHEN <condition>, THE SYSTEM SHALL <behavior>)."
               },
               "required": {
                 "type": "boolean",
-                "default": true
+                "default": true,
+                "description": "Whether this criterion is required (vs advisory)."
               }
             },
             "required": [
               "id",
               "behavior"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Acceptance criterion in EARS style."
           },
-          "default": []
+          "default": [],
+          "description": "Acceptance criteria the implementation is held to."
         },
         "non_goals": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Explicitly out-of-scope outcomes."
         },
         "forbidden_approaches": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Approaches the implementation must not take."
         },
         "decided_tradeoffs": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Tradeoffs already decided during the interview."
         },
         "constraints": {
           "type": "object",
@@ -97,10 +115,12 @@
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Spec-owned protected path globs that raise review risk; per-run approvals cannot be frozen into a spec."
             }
           },
           "additionalProperties": false,
+          "description": "Constraints frozen into the spec.",
           "default": {}
         },
         "tests": {
@@ -109,23 +129,29 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecPack/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Test command id."
               },
               "command": {
-                "type": "string"
+                "type": "string",
+                "description": "Shell command executed as a deterministic gate."
               },
               "required": {
                 "type": "boolean",
-                "default": true
+                "default": true,
+                "description": "Whether this test must pass (vs advisory)."
               }
             },
             "required": [
               "id",
               "command"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "A deterministic test command used as a verification gate."
           },
-          "default": []
+          "default": [],
+          "description": "Deterministic test commands frozen into the spec."
         },
         "tasks": {
           "type": "array",
@@ -133,30 +159,39 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecPack/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Task id."
               },
               "title": {
-                "type": "string"
+                "type": "string",
+                "description": "Human-readable task title."
               },
               "depends_on": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecPack/properties/id"
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
                 },
-                "default": []
+                "default": [],
+                "description": "Ids of tasks that must complete first."
               },
               "done": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "Whether the task has been completed."
               }
             },
             "required": [
               "id",
               "title"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "A dependency-ordered task in the implementation checklist."
           },
-          "default": []
+          "default": [],
+          "description": "Dependency-ordered implementation checklist."
         },
         "open_questions": {
           "type": "array",
@@ -164,10 +199,13 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecPack/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Clarification id."
               },
               "claim": {
-                "type": "string"
+                "type": "string",
+                "description": "The ambiguous claim or open question that needs resolution."
               },
               "status": {
                 "type": "string",
@@ -175,23 +213,27 @@
                   "open",
                   "resolved"
                 ],
-                "default": "open"
+                "default": "open",
+                "description": "Whether the ambiguity is still open or has been resolved."
               },
               "resolution": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "How the ambiguity was resolved; null while open."
               }
             },
             "required": [
               "id",
               "claim"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "An explicit unresolved ambiguity (NEEDS_CLARIFICATION); the interview refuses to freeze while any is open."
           },
-          "default": []
+          "default": [],
+          "description": "Unresolved ambiguities; must all be resolved before freezing."
         },
         "interview": {
           "type": "object",
@@ -202,15 +244,19 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "$ref": "#/definitions/SpecPack/properties/id"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Question id."
                   },
                   "tier": {
                     "type": "integer",
                     "minimum": 0,
-                    "default": 0
+                    "default": 0,
+                    "description": "Hierarchical depth of the question (0 = foundational)."
                   },
                   "prompt": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The question text shown to the user."
                   },
                   "kind": {
                     "type": "string",
@@ -219,6 +265,7 @@
                       "multi",
                       "text"
                     ],
+                    "description": "Answer shape of an interview question: single choice, multiple choice, or free text.",
                     "default": "single"
                   },
                   "options": {
@@ -227,35 +274,44 @@
                       "type": "object",
                       "properties": {
                         "id": {
-                          "$ref": "#/definitions/SpecPack/properties/id"
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Option id."
                         },
                         "label": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Human-readable option label."
                         }
                       },
                       "required": [
                         "id",
                         "label"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "description": "One selectable option of an interview question."
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Selectable options; empty for pure free-text questions."
                   },
                   "allow_text": {
                     "type": "boolean",
-                    "default": false
+                    "default": false,
+                    "description": "Whether free-text is accepted in addition to or instead of options."
                   },
                   "rationale": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Why this question matters for the spec."
                   }
                 },
                 "required": [
                   "id",
                   "prompt"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "One quiz card of the spec interview."
               },
-              "default": []
+              "default": [],
+              "description": "Questions asked during the interview."
             },
             "answers": {
               "type": "array",
@@ -263,36 +319,43 @@
                 "type": "object",
                 "properties": {
                   "question_id": {
-                    "$ref": "#/definitions/SpecPack/properties/id"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Id of the question being answered."
                   },
                   "option_ids": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/definitions/SpecPack/properties/id"
+                      "$ref": "#/definitions/SpecPack/properties/tasks/items/properties/depends_on/items"
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Ids of the selected options."
                   },
                   "text": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Free-text answer; null when only options were selected."
                   }
                 },
                 "required": [
                   "question_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "The user's answer to one interview question."
               },
-              "default": []
+              "default": [],
+              "description": "The user's answers."
             }
           },
           "additionalProperties": false,
           "default": {
             "questions": [],
             "answers": []
-          }
+          },
+          "description": "The clarify-quiz transcript this spec was built from."
         }
       },
       "required": [
@@ -301,7 +364,8 @@
         "created_at",
         "intent"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The frozen, versioned, diffable specification produced by the spec interview; the SSOT a run is held to, mapping deterministically into a TaskContract."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

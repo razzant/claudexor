@@ -6,10 +6,12 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Gate id."
         },
         "command": {
-          "type": "string"
+          "type": "string",
+          "description": "Command the gate ran."
         },
         "exit_code": {
           "anyOf": [
@@ -19,7 +21,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Process exit code; null when the gate never ran to completion."
         },
         "status": {
           "type": "string",
@@ -28,34 +31,40 @@
             "failed",
             "skipped",
             "timed_out"
-          ]
+          ],
+          "description": "Outcome of a deterministic gate: passed, failed, skipped, or timed_out."
         },
         "duration_ms": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "default": 0,
+          "description": "How long the gate took, in milliseconds."
         },
         "required": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "Whether the gate must pass (vs advisory)."
         },
         "stdout_tail": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Tail of the gate's stdout, for diagnostics."
         },
         "stderr_tail": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Tail of the gate's stderr, for diagnostics."
         },
         "output_truncated": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "True when the stored output tails were truncated."
         }
       },
       "required": [
@@ -64,7 +73,8 @@
         "exit_code",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Result of a deterministic gate (build/test/lint/etc), decided by exit code, not text."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -11,144 +11,210 @@ import {
 } from "./primitives.js";
 import { Portfolio } from "./budget.js";
 
-export const SuccessCriterion = z.object({
-  id: Id,
-  text: z.string(),
-  required: z.boolean().default(true),
-});
+export const SuccessCriterion = z
+  .object({
+    id: Id.describe("Criterion id."),
+    text: z.string().describe("Human-readable statement of what must hold for the run to succeed."),
+    required: z.boolean().default(true).describe("Whether this criterion is required (vs advisory)."),
+  })
+  .describe("A single success criterion the run is held to.");
 export type SuccessCriterion = z.infer<typeof SuccessCriterion>;
 
-export const TestCommand = z.object({
-  id: Id,
-  command: z.string(),
-  required: z.boolean().default(true),
-});
+export const TestCommand = z
+  .object({
+    id: Id.describe("Test command id."),
+    command: z.string().describe("Shell command executed as a deterministic gate."),
+    required: z.boolean().default(true).describe("Whether this test must pass (vs advisory)."),
+  })
+  .describe("A deterministic test command used as a verification gate.");
 export type TestCommand = z.infer<typeof TestCommand>;
 
 export const ProtectedPathApproval = z
   .object({
     /** Glob approved by the operator/user for this run; consumed only by the
      * auto-protected gate/test path policy, not by built-in critical-path gates. */
-    path: NonBlankString,
-    reason: NonBlankString.optional(),
+    path: NonBlankString.describe(
+      "Glob approved by the operator/user for this run; consumed only by the auto-protected gate/test path policy, not by built-in critical-path gates.",
+    ),
+    reason: NonBlankString.optional().describe("Optional human-readable reason for the approval."),
   })
-  .strict();
+  .strict()
+  .describe("Per-run typed operator approval allowing changes under an auto-protected gate/test path.");
 export type ProtectedPathApproval = z.infer<typeof ProtectedPathApproval>;
 
-export const TaskConstraints = z.object({
-  /** Globs whose changes escalate risk to a human-approval gate (wired into
-   * classifyRisk/requireHuman). These are spec/config-owned and cannot be
-   * suppressed by per-run protected-path approvals. The other constraint kinds
-   * were unwired and removed. */
-  protected_paths: z.array(z.string()).default([]),
-  /** Engine-derived gate/test path protections. Per-run approvals can narrow
-   * only this auto-protected set, never spec/config-owned protected_paths. */
-  auto_protected_paths: z.array(z.string()).default([]),
-  /** Per-run typed approvals for protected gate/test path changes. These are
-   * produced by explicit surfaces (CLI/control/IDE), then consumed by policy. */
-  protected_path_approvals: z.array(ProtectedPathApproval).default([]),
-});
+export const TaskConstraints = z
+  .object({
+    /** Globs whose changes escalate risk to a human-approval gate (wired into
+     * classifyRisk/requireHuman). These are spec/config-owned and cannot be
+     * suppressed by per-run protected-path approvals. The other constraint kinds
+     * were unwired and removed. */
+    protected_paths: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "Spec/config-owned globs whose changes escalate risk to a human-approval gate; cannot be suppressed by per-run protected-path approvals.",
+      ),
+    /** Engine-derived gate/test path protections. Per-run approvals can narrow
+     * only this auto-protected set, never spec/config-owned protected_paths. */
+    auto_protected_paths: z
+      .array(z.string())
+      .default([])
+      .describe("Engine-derived gate/test path protections; per-run approvals can narrow only this set."),
+    /** Per-run typed approvals for protected gate/test path changes. These are
+     * produced by explicit surfaces (CLI/control/IDE), then consumed by policy. */
+    protected_path_approvals: z
+      .array(ProtectedPathApproval)
+      .default([])
+      .describe("Per-run typed approvals for protected gate/test path changes, produced by explicit surfaces and consumed by policy."),
+  })
+  .describe("Path-protection constraints applied to a run.");
 export type TaskConstraints = z.infer<typeof TaskConstraints>;
 
-export const ConvergencePredicate = z.object({
-  require_tests_pass: z.boolean().default(true),
-  require_no_accepted_block_open: z.boolean().default(true),
-  require_no_accepted_fix_first_open: z.boolean().default(true),
-  require_final_cross_family_clean_review: z.boolean().default(true),
-  require_final_diff_stable_after_review: z.boolean().default(true),
-  /**
-   * Block convergence while an accepted NEEDS_HUMAN escalation is still open.
-   * Closes the v0.8 hole where, with cross-family clean review disabled, a run
-   * could converge to success with an open NEEDS_HUMAN finding.
-   */
-  require_no_accepted_needs_human_open: z.boolean().default(true),
-});
+export const ConvergencePredicate = z
+  .object({
+    require_tests_pass: z.boolean().default(true).describe("Require all configured test commands to pass before convergence."),
+    require_no_accepted_block_open: z
+      .boolean()
+      .default(true)
+      .describe("Block convergence while an accepted BLOCK review finding is still open."),
+    require_no_accepted_fix_first_open: z
+      .boolean()
+      .default(true)
+      .describe("Block convergence while an accepted FIX_FIRST review finding is still open."),
+    require_final_cross_family_clean_review: z
+      .boolean()
+      .default(true)
+      .describe("Require a final clean review from a different provider family before convergence."),
+    require_final_diff_stable_after_review: z
+      .boolean()
+      .default(true)
+      .describe("Require the diff to be unchanged after the final review (a mutated diff makes the review stale)."),
+    /**
+     * Block convergence while an accepted NEEDS_HUMAN escalation is still open.
+     * Closes the v0.8 hole where, with cross-family clean review disabled, a run
+     * could converge to success with an open NEEDS_HUMAN finding.
+     */
+    require_no_accepted_needs_human_open: z
+      .boolean()
+      .default(true)
+      .describe("Block convergence while an accepted NEEDS_HUMAN escalation is still open."),
+  })
+  .describe("Predicate deciding when an until-clean/convergence run may stop as successful.");
 export type ConvergencePredicate = z.infer<typeof ConvergencePredicate>;
 
 /** One node of the spec-derived task graph; edges are `depends_on`. */
-export const TaskGraphNode = z.object({
-  id: Id,
-  title: z.string().default(""),
-  depends_on: z.array(Id).default([]),
-});
+export const TaskGraphNode = z
+  .object({
+    id: Id.describe("Task node id."),
+    title: z.string().default("").describe("Human-readable task title."),
+    depends_on: z.array(Id).default([]).describe("Ids of tasks this node depends on (graph edges)."),
+  })
+  .describe("One node of the spec-derived task graph; edges are depends_on.");
 export type TaskGraphNode = z.infer<typeof TaskGraphNode>;
 
 /** A topologically-ordered task graph built from a frozen SpecPack's tasks. */
-export const TaskGraph = z.object({
-  nodes: z.array(TaskGraphNode).default([]),
-  /** Topological execution order (node ids); empty when there are no tasks. */
-  order: z.array(Id).default([]),
-});
+export const TaskGraph = z
+  .object({
+    nodes: z.array(TaskGraphNode).default([]).describe("Task nodes of the graph."),
+    /** Topological execution order (node ids); empty when there are no tasks. */
+    order: z.array(Id).default([]).describe("Topological execution order (node ids); empty when there are no tasks."),
+  })
+  .describe("A topologically-ordered task graph built from a frozen SpecPack's tasks.");
 export type TaskGraph = z.infer<typeof TaskGraph>;
 
 /**
  * Immutable contract describing a single run. Built once, hashed, never mutated.
  */
-export const TaskContract = z.object({
-  schema_version: SchemaVersion,
-  task_id: Id,
-  created_at: IsoTimestamp,
-  repo: z.object({
-    root: z.string(),
-    base_ref: z.string(),
-    base_sha: z.string().optional(),
-    dirty_policy: DirtyPolicy.default("refuse"),
-  }),
-  mode: z.object({ kind: ModeKind }),
-  user_intent: z.object({
-    raw: z.string(),
-    normalized: z.string().optional(),
-  }),
-  spec: z
-    .object({
-      id: Id.optional(),
-      hash: z.string().optional(),
-      path: z.string().optional(),
-    })
-    .optional(),
-  success_criteria: z.array(SuccessCriterion).default([]),
-  non_goals: z.array(z.string()).default([]),
-  forbidden_approaches: z.array(z.string()).default([]),
-  decided_tradeoffs: z.array(z.string()).default([]),
-  /** Spec-derived task graph; null until a frozen SpecPack with tasks is resolved. */
-  task_graph: TaskGraph.nullable().default(null),
-  constraints: TaskConstraints.default({}),
-  tests: z.object({ commands: z.array(TestCommand).default([]) }).default({ commands: [] }),
-  access: z
-    .object({
-      requested_profile: AccessProfile.default("workspace_write"),
-      /** Profile actually enforced by the engine (mode/trust clamps applied; never client-supplied). */
-      effective_profile: AccessProfile.default("workspace_write"),
-    })
-    .default({
-      requested_profile: "workspace_write",
-      effective_profile: "workspace_write",
-    }),
-  external_context: z
-    .object({
-      policy: ExternalContextPolicy.default("auto"),
-      web_required: z.boolean().default(false),
-      /** Mode the selected route actually executes (disclosed upgrades, e.g. claude cached->live). */
-      effective_mode: ExternalContextPolicy.default("auto"),
-    })
-    .default({ policy: "auto", web_required: false, effective_mode: "auto" }),
-  tool_permission_policy: z
-    .object({
-      web: ExternalContextPolicy.default("auto"),
-      allow: z.array(z.string()).default([]),
-      deny: z.array(z.string()).default([]),
-    })
-    .default({ web: "auto", allow: [], deny: [] }),
-  budget: z
-    .object({
-      portfolio: Portfolio.default("subscription-first"),
-      max_usd: z.number().nullable().default(null),
-    })
-    .default({}),
-  /** Resolved harness-scoped model map for this run (harness id → model id),
-   * after scalar→primary expansion. The contract is the SSOT the route spec
-   * builder reads; empty = every route uses its per-harness settings default. */
-  routing_models: z.record(z.string(), z.string()).default({}),
-  convergence: ConvergencePredicate.default({}),
-});
+export const TaskContract = z
+  .object({
+    schema_version: SchemaVersion,
+    task_id: Id.describe("Task id this contract belongs to."),
+    created_at: IsoTimestamp.describe("When the contract was built."),
+    repo: z
+      .object({
+        root: z.string().describe("Absolute path to the project repository root."),
+        base_ref: z.string().describe("Git ref the run is based on."),
+        base_sha: z.string().optional().describe("Resolved base commit SHA, when known."),
+        dirty_policy: DirtyPolicy.default("refuse"),
+      })
+      .describe("Repository the run operates on and how a dirty tree is handled."),
+    mode: z.object({ kind: ModeKind }).describe("Canonical run mode for this task."),
+    user_intent: z
+      .object({
+        raw: z.string().describe("The user's original prompt, verbatim."),
+        normalized: z.string().optional().describe("Optional normalized restatement of the prompt."),
+      })
+      .describe("The user's request this run is held to."),
+    spec: z
+      .object({
+        id: Id.optional().describe("SpecPack id."),
+        hash: z.string().optional().describe("Content hash of the frozen SpecPack."),
+        path: z.string().optional().describe("On-disk path of the SpecPack artifact."),
+      })
+      .optional()
+      .describe("Reference to the frozen SpecPack this contract was derived from, if any."),
+    success_criteria: z.array(SuccessCriterion).default([]).describe("Criteria the run must satisfy to succeed."),
+    non_goals: z.array(z.string()).default([]).describe("Explicitly out-of-scope outcomes."),
+    forbidden_approaches: z.array(z.string()).default([]).describe("Approaches the run must not take."),
+    decided_tradeoffs: z.array(z.string()).default([]).describe("Tradeoffs already decided; reviewers must not re-litigate them."),
+    /** Spec-derived task graph; null until a frozen SpecPack with tasks is resolved. */
+    task_graph: TaskGraph.nullable()
+      .default(null)
+      .describe("Spec-derived task graph; null until a frozen SpecPack with tasks is resolved."),
+    constraints: TaskConstraints.default({}),
+    tests: z
+      .object({ commands: z.array(TestCommand).default([]).describe("Deterministic test commands configured as gates.") })
+      .default({ commands: [] })
+      .describe("Deterministic test gates for the run."),
+    access: z
+      .object({
+        requested_profile: AccessProfile.default("workspace_write").describe("Access profile the caller requested."),
+        /** Profile actually enforced by the engine (mode/trust clamps applied; never client-supplied). */
+        effective_profile: AccessProfile.default("workspace_write").describe(
+          "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied).",
+        ),
+      })
+      .default({
+        requested_profile: "workspace_write",
+        effective_profile: "workspace_write",
+      })
+      .describe("Requested vs engine-enforced access profile."),
+    external_context: z
+      .object({
+        policy: ExternalContextPolicy.default("auto").describe("Requested external web/context policy."),
+        web_required: z.boolean().default(false).describe("Whether the task requires live web evidence."),
+        /** Mode the selected route actually executes (disclosed upgrades, e.g. claude cached->live). */
+        effective_mode: ExternalContextPolicy.default("auto").describe(
+          "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live).",
+        ),
+      })
+      .default({ policy: "auto", web_required: false, effective_mode: "auto" })
+      .describe("External web/context policy for the run."),
+    tool_permission_policy: z
+      .object({
+        web: ExternalContextPolicy.default("auto").describe("Web policy forwarded to tool permissioning."),
+        allow: z.array(z.string()).default([]).describe("Tool names explicitly allowed."),
+        deny: z.array(z.string()).default([]).describe("Tool names explicitly denied."),
+      })
+      .default({ web: "auto", allow: [], deny: [] })
+      .describe("Tool permission policy passed to harnesses that support allow/deny lists."),
+    budget: z
+      .object({
+        portfolio: Portfolio.default("subscription-first"),
+        max_usd: z.number().nullable().default(null).describe("Hard USD cap for the run; null = no cap."),
+      })
+      .default({})
+      .describe("Budget portfolio and spend cap for the run."),
+    /** Resolved harness-scoped model map for this run (harness id → model id),
+     * after scalar→primary expansion. The contract is the SSOT the route spec
+     * builder reads; empty = every route uses its per-harness settings default. */
+    routing_models: z
+      .record(z.string(), z.string())
+      .default({})
+      .describe(
+        "Resolved harness-scoped model map for this run (harness id to model id); empty means every route uses its per-harness settings default.",
+      ),
+    convergence: ConvergencePredicate.default({}),
+  })
+  .describe("Immutable contract describing a single run; built once, hashed, never mutated.");
 export type TaskContract = z.infer<typeof TaskContract>;

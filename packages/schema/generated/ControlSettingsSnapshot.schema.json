@@ -9,7 +9,8 @@
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Config file paths that contributed to the snapshot."
         },
         "defaultPortfolio": {
           "type": "string",
@@ -24,12 +25,14 @@
             "conserve-claude",
             "conserve-codex"
           ],
+          "description": "Budget portfolio used when a run does not specify one.",
           "default": "subscription-first"
         },
         "interactionTimeoutMs": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "default": 900000
+          "default": 900000,
+          "description": "How long a run waits for an interactive answer before a benign decline, in milliseconds."
         },
         "routing": {
           "type": "object",
@@ -41,21 +44,24 @@
                 "primary",
                 "portfolio"
               ],
-              "default": "auto"
+              "default": "auto",
+              "description": "Default routing policy."
             },
             "primaryHarness": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Global default primary harness; null = engine decides."
             },
             "eligibleHarnesses": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Harness pool eligible for routing/races; empty = all available."
             },
             "envInheritance": {
               "type": "string",
@@ -63,7 +69,8 @@
                 "mirror_native",
                 "clean"
               ],
-              "default": "mirror_native"
+              "default": "mirror_native",
+              "description": "How the child harness env is built: mirror_native inherits the shell env; clean spawns from a minimal allowlist."
             },
             "authPreference": {
               "type": "string",
@@ -72,11 +79,13 @@
                 "api_key",
                 "auto"
               ],
+              "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
               "default": "auto"
             }
           },
           "additionalProperties": false,
-          "default": {}
+          "default": {},
+          "description": "Global routing settings."
         },
         "budget": {
           "type": "object",
@@ -86,11 +95,13 @@
                 "number",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Global USD cap per run; null = no cap."
             }
           },
           "additionalProperties": false,
-          "default": {}
+          "default": {},
+          "description": "Global budget limits."
         },
         "runtime": {
           "type": "object",
@@ -98,12 +109,14 @@
             "reviewerTimeoutMs": {
               "type": "integer",
               "exclusiveMinimum": 0,
-              "default": 600000
+              "default": 600000,
+              "description": "Wall-clock timeout for a reviewer run, in milliseconds."
             },
             "harnessInactivityTimeoutMs": {
               "type": "integer",
               "exclusiveMinimum": 0,
-              "default": 1200000
+              "default": 1200000,
+              "description": "Inactivity watchdog for harness streams, in milliseconds."
             },
             "transientRetry": {
               "type": "object",
@@ -111,25 +124,30 @@
                 "maxRetries": {
                   "type": "integer",
                   "minimum": 0,
-                  "default": 2
+                  "default": 2,
+                  "description": "Maximum retries for a transient failure."
                 },
                 "initialDelayMs": {
                   "type": "integer",
                   "minimum": 0,
-                  "default": 1000
+                  "default": 1000,
+                  "description": "Initial retry delay in milliseconds."
                 },
                 "maxDelayMs": {
                   "type": "integer",
                   "minimum": 0,
-                  "default": 10000
+                  "default": 10000,
+                  "description": "Maximum retry delay in milliseconds."
                 }
               },
               "additionalProperties": false,
-              "default": {}
+              "default": {},
+              "description": "Bounded retry policy for transient failures."
             }
           },
           "additionalProperties": false,
-          "default": {}
+          "default": {},
+          "description": "Global runtime timeouts and retry policy."
         },
         "harnesses": {
           "type": "object",
@@ -138,14 +156,16 @@
             "properties": {
               "enabled": {
                 "type": "boolean",
-                "default": true
+                "default": true,
+                "description": "Whether the harness participates in routing."
               },
               "defaultModel": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Per-harness default model; null = the harness's own default."
               },
               "effort": {
                 "anyOf": [
@@ -157,12 +177,14 @@
                       "high",
                       "xhigh",
                       "max"
-                    ]
+                    ],
+                    "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Default reasoning effort; null = harness default.",
                 "default": null
               },
               "maxTurns": {
@@ -175,7 +197,8 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Default max agent turns; null = no limit."
               },
               "maxRounds": {
                 "anyOf": [
@@ -187,7 +210,8 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Default max convergence rounds; null = engine default."
               },
               "maxUsd": {
                 "anyOf": [
@@ -199,28 +223,32 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Per-harness USD cap; null = no cap."
               },
               "toolsAllow": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "default": []
+                "default": [],
+                "description": "Tool names allowed for this harness."
               },
               "toolsDeny": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "default": []
+                "default": [],
+                "description": "Tool names denied for this harness."
               },
               "fallbackModel": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Model to fall back to on typed fallback signals; null = none."
               },
               "web": {
                 "type": "string",
@@ -230,19 +258,24 @@
                   "cached",
                   "live"
                 ],
+                "description": "Default web policy for this harness.",
                 "default": "auto"
               },
               "authPreference": {
                 "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/authPreference",
-                "default": "auto"
+                "default": "auto",
+                "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret."
               }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Per-harness settings."
           },
-          "default": {}
+          "default": {},
+          "description": "Per-harness settings keyed by harness id."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Effective settings snapshot served by GET /settings."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "prompt": {
-          "type": "string"
+          "type": "string",
+          "description": "The user's request the interview is clarifying."
         },
         "scope": {
           "type": "object",
@@ -15,13 +16,15 @@
               "const": "project"
             },
             "root": {
-              "type": "string"
+              "type": "string",
+              "description": "Absolute path of the project root."
             },
             "context": {
               "type": "string",
               "enum": [
                 "auto"
               ],
+              "description": "Project context depth; auto is the only mode.",
               "default": "auto"
             }
           },
@@ -29,15 +32,18 @@
             "kind",
             "root"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Project the spec is about."
         },
         "harnesses": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "pattern": "\\S"
-          }
+            "pattern": "\\S",
+            "description": "User-supplied string that must contain visible content, not just whitespace."
+          },
+          "description": "Harnesses eligible to generate the questions."
         },
         "priorDecisions": {
           "type": "array",
@@ -45,10 +51,12 @@
             "type": "object",
             "properties": {
               "question": {
-                "type": "string"
+                "type": "string",
+                "description": "Question asked in a prior tier."
               },
               "answer": {
-                "type": "string"
+                "type": "string",
+                "description": "The user's answer."
               }
             },
             "required": [
@@ -56,14 +64,16 @@
               "answer"
             ],
             "additionalProperties": false
-          }
+          },
+          "description": "Already-answered decisions from prior tiers, carried so each round goes deeper instead of re-asking."
         }
       },
       "required": [
         "prompt",
         "scope"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body to generate the next tier of spec interview questions."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

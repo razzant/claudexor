@@ -5,35 +5,41 @@
       "type": "object",
       "properties": {
         "title": {
-          "type": "string"
+          "type": "string",
+          "description": "New thread title."
         },
         "state": {
           "type": "string",
           "enum": [
             "active",
             "closed"
-          ]
+          ],
+          "description": "New thread state (active/closed)."
         },
         "primaryHarness": {
           "anyOf": [
             {
               "type": "string",
               "minLength": 1,
-              "pattern": "\\S"
+              "pattern": "\\S",
+              "description": "User-supplied string that must contain visible content, not just whitespace."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New sticky primary harness; null clears back to engine routing."
         },
         "eligibleHarnesses": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ControlThreadUpdateRequest/properties/primaryHarness/anyOf/0"
-          }
+          },
+          "description": "New sticky eligible harness pool."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body for PATCH /threads/:id: rename, archive, or switch sticky routing."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

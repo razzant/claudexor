@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "prompt": {
-          "type": "string"
+          "type": "string",
+          "description": "The user's request the spec captures."
         },
         "scope": {
           "type": "object",
@@ -15,13 +16,15 @@
               "const": "project"
             },
             "root": {
-              "type": "string"
+              "type": "string",
+              "description": "Absolute path of the project root."
             },
             "context": {
               "type": "string",
               "enum": [
                 "auto"
               ],
+              "description": "Project context depth; auto is the only mode.",
               "default": "auto"
             }
           },
@@ -29,17 +32,21 @@
             "kind",
             "root"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Project the spec is about."
         },
         "planDir": {
-          "type": "string"
+          "type": "string",
+          "description": "Directory to write the frozen spec artifacts into."
         },
         "plan": {
-          "type": "string"
+          "type": "string",
+          "description": "Plan text to fold into the spec."
         },
         "answers": {
           "type": "array",
-          "items": {}
+          "items": {},
+          "description": "Interview answers for the current tier."
         },
         "priorDecisions": {
           "type": "array",
@@ -47,10 +54,12 @@
             "type": "object",
             "properties": {
               "question": {
-                "type": "string"
+                "type": "string",
+                "description": "Question asked in a prior tier."
               },
               "answer": {
-                "type": "string"
+                "type": "string",
+                "description": "The user's answer."
               }
             },
             "required": [
@@ -58,14 +67,16 @@
               "answer"
             ],
             "additionalProperties": false
-          }
+          },
+          "description": "Accumulated prior-tier interview decisions, folded into the frozen SpecPack's decided tradeoffs."
         }
       },
       "required": [
         "prompt",
         "scope"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body to freeze a SpecPack from the interview."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

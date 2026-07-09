@@ -151,7 +151,8 @@
                     "high",
                     "xhigh",
                     "max"
-                  ]
+                  ],
+                  "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
                 },
                 "description": "Reasoning-effort ladder the adapter declares (normalized by the engine)."
               },
@@ -165,7 +166,8 @@
                     "full",
                     "external_sandbox_full",
                     "inherit_native"
-                  ]
+                  ],
+                  "description": "Filesystem/command access profile for a run: readonly (no writes), workspace_write (writes inside the workspace only), full (unrestricted; requires the per-repo trust allow), external_sandbox_full (full access inside an external sandbox), inherit_native (defer to the harness's own native sandbox settings)."
                 },
                 "description": "Access profiles the adapter can enforce."
               },
@@ -219,7 +221,8 @@
               "audit",
               "agent",
               "orchestrate"
-            ]
+            ],
+            "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes."
           },
           "description": "Canonical run modes (strategies like --n/--until-clean/--swarm are flags, not modes)."
         },
@@ -265,7 +268,8 @@
                 "enum": [
                   "in_place",
                   "isolated"
-                ]
+                ],
+                "description": "Per-thread workspace mode: in_place mutates the live project tree directly (the default); isolated keeps a persistent git worktree per thread that apply merges into the project."
               },
               "description": "Thread workspace modes (in_place | isolated)."
             },

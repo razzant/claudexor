@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "harnessId": {
-          "type": "string"
+          "type": "string",
+          "description": "Harness the models belong to."
         },
         "models": {
           "type": "array",
@@ -13,14 +14,16 @@
             "type": "object",
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "description": "Model id as the vendor enumerates it."
               },
               "label": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Human-readable model label; null when the enumeration source has none."
               },
               "context_window": {
                 "anyOf": [
@@ -32,15 +35,18 @@
                     "type": "null"
                   }
                 ],
-                "default": null
+                "default": null,
+                "description": "Context window in tokens; null when the enumeration source does not report it."
               }
             },
             "required": [
               "id"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One enumerable model offered by a harness, limited to fields a real enumeration source can honestly populate."
           },
-          "default": []
+          "default": [],
+          "description": "Enumerable models; empty when the harness has no model truth source."
         },
         "source": {
           "type": "string",
@@ -48,21 +54,24 @@
             "api",
             "manifest",
             "none"
-          ]
+          ],
+          "description": "Provenance of the list: api (a live vendor enumeration), manifest (the manifest's known-good hint set), or none (no model truth source; explicit models are refused)."
         },
         "verifiedAgainst": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Vendor CLI version the manifest hints were last verified against; null for api/none sources."
         }
       },
       "required": [
         "harnessId",
         "source"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Models enumerable for one harness, with honest provenance."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

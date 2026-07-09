@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "title": {
-          "type": "string"
+          "type": "string",
+          "description": "Initial thread title."
         },
         "scope": {
           "anyOf": [
@@ -17,13 +18,15 @@
                   "const": "project"
                 },
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the project root."
                 },
                 "context": {
                   "type": "string",
                   "enum": [
                     "auto"
                   ],
+                  "description": "Project context depth; auto is the only mode.",
                   "default": "auto"
                 }
               },
@@ -31,7 +34,8 @@
                 "kind",
                 "root"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Run anchored to a project."
             },
             {
               "type": "object",
@@ -44,9 +48,11 @@
               "required": [
                 "kind"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Run with no project (pure ask)."
             }
           ],
+          "description": "What the run operates on: a project (with root) or nothing.",
           "default": {
             "kind": "none"
           }
@@ -59,14 +65,16 @@
             "audit",
             "agent",
             "orchestrate"
-          ]
+          ],
+          "description": "Default mode for new turns."
         },
         "workspace": {
           "type": "string",
           "enum": [
             "in_place",
             "isolated"
-          ]
+          ],
+          "description": "Workspace mode for the thread (in_place or isolated)."
         },
         "authPreference": {
           "type": "string",
@@ -74,21 +82,25 @@
             "subscription",
             "api_key",
             "auto"
-          ]
+          ],
+          "description": "Per-thread auth preference override."
         },
         "primaryHarness": {
           "type": "string",
           "minLength": 1,
-          "pattern": "\\S"
+          "pattern": "\\S",
+          "description": "Sticky primary harness for the thread."
         },
         "eligibleHarnesses": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ControlThreadCreateRequest/properties/primaryHarness"
-          }
+          },
+          "description": "Sticky eligible harness pool; turns inherit it when unset."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body for POST /threads."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

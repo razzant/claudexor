@@ -11,21 +11,24 @@
             "properties": {
               "questionId": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Id of the question being answered."
               },
               "selectedLabels": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "default": []
+                "default": [],
+                "description": "Labels of the selected options."
               },
               "freeText": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Free-text answer; null when only options were selected."
               }
             },
             "required": [
@@ -33,10 +36,12 @@
             ],
             "additionalProperties": false
           },
-          "default": []
+          "default": [],
+          "description": "Answers, one per question."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body answering a pending interactive question."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

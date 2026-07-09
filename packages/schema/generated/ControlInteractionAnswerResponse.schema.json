@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "accepted": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether the answer was accepted."
         },
         "status": {
           "type": "string",
@@ -14,17 +15,20 @@
             "not_found",
             "already_resolved",
             "rejected"
-          ]
+          ],
+          "description": "Delivery outcome: delivered into the live session, interaction not found, already resolved, or rejected."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable detail."
         }
       },
       "required": [
         "accepted",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response to an interaction answer."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

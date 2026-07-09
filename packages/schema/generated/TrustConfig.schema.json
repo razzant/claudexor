@@ -7,7 +7,8 @@
         "version": {
           "type": "number",
           "const": 1,
-          "default": 1
+          "default": 1,
+          "description": "Config format version."
         },
         "access_default": {
           "type": "string",
@@ -18,21 +19,25 @@
             "external_sandbox_full",
             "inherit_native"
           ],
+          "description": "Default access profile for runs in this repo.",
           "default": "workspace_write"
         },
         "allow_full_access": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Per-repo allow required before any run may use the full access profile."
         },
         "repo_root": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Provenance only: repo root this trust file was written for; never gates anything. Null on legacy files written before this field."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Sensitive per-repo trust settings — only valid in global/user-local trust files, never in the versioned repo config."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

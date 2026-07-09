@@ -17,7 +17,8 @@
               "required": [
                 "kind"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to the project the run originally came from."
             },
             {
               "type": "object",
@@ -27,22 +28,26 @@
                   "const": "project"
                 },
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the target project root."
                 }
               },
               "required": [
                 "kind",
                 "root"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to an explicitly named project root."
             }
           ],
+          "description": "Where a work product is delivered: the original project or an explicit project root.",
           "default": {
             "kind": "original_project"
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body for a dry-run apply check."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

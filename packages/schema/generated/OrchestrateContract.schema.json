@@ -6,10 +6,12 @@
       "properties": {
         "thread_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Thread the orchestration belongs to."
         },
         "goal": {
-          "type": "string"
+          "type": "string",
+          "description": "The user goal the planner is orchestrating toward."
         },
         "tool_belt": {
           "type": "array",
@@ -22,7 +24,8 @@
               "answer_question",
               "apply",
               "review"
-            ]
+            ],
+            "description": "Tool in the orchestrate planner's belt, mapping 1:1 onto engine entry points: start_run, race (best-of-N), status, answer_question, apply, and review."
           },
           "default": [
             "start_run",
@@ -30,7 +33,8 @@
             "status",
             "apply",
             "review"
-          ]
+          ],
+          "description": "Tools the planner may use this run."
         },
         "budget": {
           "type": "object",
@@ -45,7 +49,8 @@
                   "type": "null"
                 }
               ],
-              "default": null
+              "default": null,
+              "description": "USD cap for the whole orchestration; null = no cap."
             },
             "max_tool_calls": {
               "anyOf": [
@@ -57,11 +62,13 @@
                   "type": "null"
                 }
               ],
-              "default": null
+              "default": null,
+              "description": "Maximum tool calls the executor will run; null = no cap."
             }
           },
           "additionalProperties": false,
-          "default": {}
+          "default": {},
+          "description": "Budget limits for the orchestration."
         },
         "autonomy": {
           "type": "string",
@@ -70,6 +77,7 @@
             "auto_safe",
             "auto_full"
           ],
+          "description": "How much the orchestrate planner may act without confirmation: suggest (user executes the plan), auto_safe (auto-runs only provably safe steps), auto_full (auto-runs everything).",
           "default": "suggest"
         }
       },
@@ -77,7 +85,8 @@
         "thread_id",
         "goal"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Contract for one orchestrate run: goal, allowed tool belt, budget, and autonomy level."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

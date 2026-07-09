@@ -6,42 +6,50 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Turn id."
         },
         "thread_id": {
-          "$ref": "#/definitions/ThreadTurn/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Thread the turn belongs to."
         },
         "run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadTurn/properties/id"
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
             },
             {
               "type": "null"
             }
           ],
+          "description": "Run backing this turn; null while unbound.",
           "default": null
         },
         "parent_run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadTurn/properties/id"
+              "$ref": "#/definitions/ThreadTurn/properties/run_id/anyOf/0"
             },
             {
               "type": "null"
             }
           ],
+          "description": "Run this turn follows up on, when any.",
           "default": null
         },
         "plan_run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadTurn/properties/id"
+              "$ref": "#/definitions/ThreadTurn/properties/run_id/anyOf/0"
             },
             {
               "type": "null"
             }
           ],
+          "description": "Set when this turn implements an approved plan from an earlier plan run.",
           "default": null
         },
         "kind": {
@@ -51,11 +59,13 @@
             "followup",
             "decision"
           ],
+          "description": "Kind of thread turn: the initial message, a followup, or an operator decision turn.",
           "default": "followup"
         },
         "prompt": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "The user's message for this turn."
         },
         "attachments": {
           "type": "array",
@@ -63,7 +73,9 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/ThreadTurn/properties/id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Attachment id."
               },
               "kind": {
                 "type": "string",
@@ -71,27 +83,33 @@
                   "image",
                   "file"
                 ],
+                "description": "Kind of attachment: image (vision input) or file (generic bytes).",
                 "default": "file"
               },
               "mime": {
                 "type": "string",
-                "default": "application/octet-stream"
+                "default": "application/octet-stream",
+                "description": "MIME type of the attachment content."
               },
               "name": {
                 "type": "string",
-                "default": ""
+                "default": "",
+                "description": "Original file name as provided by the user or agent."
               },
               "path": {
-                "type": "string"
+                "type": "string",
+                "description": "Resolved local path in the scoped attachment store (kept outside any worktree)."
               }
             },
             "required": [
               "id",
               "path"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "A user- or agent-provided file/image attached to a turn, stored in the scoped attachment store and forwarded to harnesses in their native shape."
           },
-          "default": []
+          "default": [],
+          "description": "Files/images the user attached to this turn (resolved scoped paths)."
         },
         "enqueue_error": {
           "anyOf": [
@@ -99,38 +117,46 @@
               "type": "object",
               "properties": {
                 "message": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Human-readable refusal message."
                 },
                 "code": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."
                 },
                 "retryable": {
                   "type": "boolean",
-                  "default": true
+                  "default": true,
+                  "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay."
                 },
                 "failed_at": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "When the enqueue failed."
                 }
               },
               "required": [
                 "message",
                 "failed_at"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Typed record of a turn whose run could not be enqueued/started, persisted on the turn so every surface renders the refusal inline; cleared when a retry binds a run."
             },
             {
               "type": "null"
             }
           ],
+          "description": "Why this turn has no run (enqueue/preflight refusal); null once a run binds.",
           "default": null
         },
         "created_at": {
-          "$ref": "#/definitions/ThreadTurn/properties/enqueue_error/anyOf/0/properties/failed_at"
+          "type": "string",
+          "minLength": 1,
+          "description": "When the turn was created."
         }
       },
       "required": [
@@ -138,7 +164,8 @@
         "thread_id",
         "created_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "One follow-up unit within a thread; a run is its backing execution."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

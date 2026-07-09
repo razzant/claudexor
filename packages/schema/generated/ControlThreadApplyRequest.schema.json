@@ -12,16 +12,20 @@
             "commit",
             "pr"
           ],
-          "default": "apply"
+          "default": "apply",
+          "description": "Delivery mode: apply to the tree, or as a branch, commit, or PR."
         },
         "branch": {
-          "type": "string"
+          "type": "string",
+          "description": "Branch name for branch/pr modes."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Commit message for commit/pr modes."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body applying an isolated thread's accumulated worktree diff to the project."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

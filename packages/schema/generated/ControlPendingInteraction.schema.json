@@ -6,31 +6,37 @@
       "properties": {
         "interactionId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Interaction id used to answer."
         },
         "runId": {
-          "$ref": "#/definitions/ControlPendingInteraction/properties/interactionId"
+          "type": "string",
+          "minLength": 1,
+          "description": "Run the interaction belongs to."
         },
         "attemptId": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Attempt the interaction was raised in, when known."
         },
         "harnessId": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Harness that raised the interaction."
         },
         "sourceTool": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Native tool that raised the request."
         },
         "questions": {
           "type": "array",
@@ -38,17 +44,21 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/ControlPendingInteraction/properties/interactionId"
+                "type": "string",
+                "minLength": 1,
+                "description": "Question id."
               },
               "question": {
-                "type": "string"
+                "type": "string",
+                "description": "The question text."
               },
               "header": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Short chip/header text some harnesses attach to a question."
               },
               "options": {
                 "type": "array",
@@ -56,45 +66,54 @@
                   "type": "object",
                   "properties": {
                     "label": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Option label shown to the user."
                     },
                     "description": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Optional longer explanation of the option."
                     }
                   },
                   "required": [
                     "label"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "One multiple-choice option of an interactive question."
                 },
-                "default": []
+                "default": [],
+                "description": "Selectable options; empty for free-text-only questions."
               },
               "multi_select": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "Whether multiple options may be selected."
               }
             },
             "required": [
               "id",
               "question"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One question of an interactive user-input request."
           },
-          "default": []
+          "default": [],
+          "description": "Questions awaiting answers."
         },
         "requestedAt": {
-          "type": "string"
+          "type": "string",
+          "description": "When the interaction was requested."
         },
         "timeoutAt": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "When the interaction times out into a benign decline; null = no timeout."
         }
       },
       "required": [
@@ -102,7 +121,8 @@
         "runId",
         "requestedAt"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A live interactive question awaiting the user's answer (snapshot projection)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

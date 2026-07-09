@@ -6,17 +6,20 @@
       "properties": {
         "repoRoot": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Absolute repo root the trust change applies to."
         },
         "allowFullAccess": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Grant (true) or revoke (false) unsandboxed full access for the repo."
         }
       },
       "required": [
         "repoRoot",
         "allowFullAccess"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Narrow trust update — the only trust field the control API exposes: grant or revoke unsandboxed full access for one repo in the user-level trust file."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

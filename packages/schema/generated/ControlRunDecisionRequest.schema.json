@@ -12,25 +12,30 @@
             "accept_risk",
             "override_needs_human",
             "revert_run"
-          ]
+          ],
+          "description": "Operator decision on a blocked run: accept_clean_patch (apply it), rerun_with_feedback, accept_risk, override_needs_human, or revert_run (restore the pre-turn snapshot)."
         },
         "findingIds": {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Non-empty identifier string."
           },
-          "default": []
+          "default": [],
+          "description": "Findings the decision targets (override/accept_risk)."
         },
         "feedback": {
-          "type": "string"
+          "type": "string",
+          "description": "Reviewer feedback to seed a rerun turn."
         },
         "acceptedRisks": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Risk reasons being explicitly accepted (recorded, never silent)."
         },
         "applyMode": {
           "type": "string",
@@ -40,7 +45,8 @@
             "branch",
             "commit",
             "pr"
-          ]
+          ],
+          "description": "Delivery mode for accept_clean_patch."
         },
         "target": {
           "anyOf": [
@@ -55,7 +61,8 @@
               "required": [
                 "kind"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to the project the run originally came from."
             },
             {
               "type": "object",
@@ -65,22 +72,26 @@
                   "const": "project"
                 },
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the target project root."
                 }
               },
               "required": [
                 "kind",
                 "root"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to an explicitly named project root."
             }
-          ]
+          ],
+          "description": "Delivery target for accept_clean_patch."
         }
       },
       "required": [
         "action"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Typed, auditable operator decision on a NEEDS_HUMAN-blocked run."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -5,19 +5,22 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Enable/disable the harness for routing."
         },
         "defaultModel": {
           "anyOf": [
             {
               "type": "string",
               "minLength": 1,
-              "pattern": "\\S"
+              "pattern": "\\S",
+              "description": "User-supplied string that must contain visible content, not just whitespace."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New per-harness default model; null clears it."
         },
         "effort": {
           "anyOf": [
@@ -29,12 +32,14 @@
                 "high",
                 "xhigh",
                 "max"
-              ]
+              ],
+              "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New default reasoning effort; null clears it."
         },
         "maxTurns": {
           "anyOf": [
@@ -45,7 +50,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New max agent turns; null clears the limit."
         },
         "maxRounds": {
           "anyOf": [
@@ -56,7 +62,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New max convergence rounds; null clears it."
         },
         "maxUsd": {
           "anyOf": [
@@ -67,19 +74,22 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New per-harness USD cap; null clears it."
         },
         "toolsAllow": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
-          }
+          },
+          "description": "New tool allowlist."
         },
         "toolsDeny": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
-          }
+          },
+          "description": "New tool denylist."
         },
         "fallbackModel": {
           "anyOf": [
@@ -89,7 +99,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "New fallback model; null clears it."
         },
         "web": {
           "type": "string",
@@ -98,7 +109,8 @@
             "auto",
             "cached",
             "live"
-          ]
+          ],
+          "description": "New default web policy."
         },
         "authPreference": {
           "type": "string",
@@ -106,10 +118,12 @@
             "subscription",
             "api_key",
             "auto"
-          ]
+          ],
+          "description": "New auth route preference."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Partial per-harness settings patch; absent fields keep their stored value, and a typoed key 400s (strict)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

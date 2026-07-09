@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "description": "Harness id."
         },
         "status": {
           "type": "string",
@@ -13,7 +14,8 @@
             "ok",
             "degraded",
             "unavailable"
-          ]
+          ],
+          "description": "Doctor verdict for a harness: ok (usable), degraded (usable with limitations), or unavailable."
         },
         "manifest": {
           "anyOf": [
@@ -22,10 +24,12 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "Harness id (codex, claude, cursor, opencode, raw-api, ...)."
                 },
                 "display_name": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Human display name of the harness."
                 },
                 "kind": {
                   "type": "string",
@@ -33,13 +37,16 @@
                     "local_cli",
                     "remote_api",
                     "fake"
-                  ]
+                  ],
+                  "description": "Kind of harness adapter: a local vendor CLI, a remote API, or a fake used for tests."
                 },
                 "version": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Vendor CLI/API version, when discovered."
                 },
                 "adapter_version": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Version of the Claudexor adapter itself."
                 },
                 "provider_family": {
                   "type": "string",
@@ -53,6 +60,7 @@
                     "local",
                     "unknown"
                   ],
+                  "description": "Vendor/provider family a harness routes to, used for route-diversity reasoning; open-ended via \"unknown\".",
                   "default": "unknown"
                 },
                 "capability_profile": {
@@ -71,9 +79,11 @@
                               "api_key_flag",
                               "provider_auth_file",
                               "none"
-                            ]
+                            ],
+                            "description": "Where a harness's credentials can come from: a native login session, an API key via env var or CLI flag, a provider auth file, or none."
                           },
-                          "default": []
+                          "default": [],
+                          "description": "Auth sources this harness supports."
                         },
                         "preferred_source": {
                           "anyOf": [
@@ -84,6 +94,7 @@
                               "type": "null"
                             }
                           ],
+                          "description": "Auth source the adapter prefers; null when it has no preference.",
                           "default": null
                         },
                         "credential_transports": {
@@ -103,7 +114,8 @@
                                   "os_keychain",
                                   "http_header",
                                   "none"
-                                ]
+                                ],
+                                "description": "Mechanism that carries a credential to the harness process (config file, env var, OAuth token env, OS keychain, HTTP header, or none)."
                               },
                               "relocatable_by": {
                                 "type": "array",
@@ -114,22 +126,27 @@
                                     "CONFIG_DIR",
                                     "ENV",
                                     "none"
-                                  ]
+                                  ],
+                                  "description": "Which relocation lever moves the credential into a scoped environment (HOME, a config dir override, env injection, or none)."
                                 },
-                                "default": []
+                                "default": [],
+                                "description": "Relocation levers that can move this transport into a scoped environment."
                               }
                             },
                             "required": [
                               "source",
                               "kind"
                             ],
-                            "additionalProperties": false
+                            "additionalProperties": false,
+                            "description": "How a credential from one auth source physically reaches the harness process."
                           },
-                          "default": []
+                          "default": [],
+                          "description": "Declared credential transports per auth source."
                         }
                       },
                       "additionalProperties": false,
-                      "default": {}
+                      "default": {},
+                      "description": "Declared auth routing facts for a harness."
                     },
                     "access_control": {
                       "type": "object",
@@ -142,11 +159,13 @@
                             "tool_allowlist",
                             "none"
                           ],
+                          "description": "How read-only access is enforced for a harness: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
                           "default": "none"
                         }
                       },
                       "additionalProperties": false,
-                      "default": {}
+                      "default": {},
+                      "description": "Declared access-control facts for a harness."
                     },
                     "isolation": {
                       "type": "object",
@@ -161,15 +180,18 @@
                               "host_user_context",
                               "process_sandbox",
                               "container"
-                            ]
+                            ],
+                            "description": "Isolation containment level an adapter supports for run environments, from env/file injection through scoped-HOME keychain bridging to process sandboxes and containers."
                           },
                           "default": [
                             "env_or_file_injection"
-                          ]
+                          ],
+                          "description": "Containment mechanisms the adapter can run under."
                         }
                       },
                       "additionalProperties": false,
-                      "default": {}
+                      "default": {},
+                      "description": "Declared isolation containment facts for a harness."
                     },
                     "image_input": {
                       "type": "string",
@@ -179,46 +201,56 @@
                         "base64_inline",
                         "none"
                       ],
+                      "description": "How a harness accepts image input: file_path (CLI file argument), base64_stream (base64 image block on the stream), base64_inline (data-URL in the request), or none (no vision input on this route).",
                       "default": "none"
                     }
                   },
                   "additionalProperties": false,
-                  "default": {}
+                  "default": {},
+                  "description": "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and vision input."
                 },
                 "capabilities": {
                   "type": "object",
                   "properties": {
                     "plan": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can produce plans (plan intent)."
                     },
                     "implement": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can implement code changes (implement intent)."
                     },
                     "create_from_scratch": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can scaffold new projects (create_from_scratch intent)."
                     },
                     "review": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can act as a reviewer (review intent)."
                     },
                     "verify": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can act as the FinalVerifier (verify intent)."
                     },
                     "synthesize": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can synthesize across candidate outputs (synthesize intent)."
                     },
                     "read_files": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can read project files."
                     },
                     "browser_tool": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The adapter can inject a browser-automation MCP server (Playwright MCP) the harness drives as browser_* tools; never injected when web policy is off."
                     },
                     "web_policy": {
                       "type": "string",
@@ -228,23 +260,28 @@
                         "uncontrolled",
                         "none"
                       ],
+                      "description": "How a harness can honor the external web policy: native (a native config surface), tools (permissioned tools the adapter can allow/deny), uncontrolled (can reach the web but exposes no enforceable switch), or none (no web access at all).",
                       "default": "none"
                     },
                     "max_turns": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "Honors HarnessRunSpec.max_turns (e.g. a native --max-turns flag)."
                     },
                     "tool_lists": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "Honors tool_permission_policy allow/deny lists (e.g. a native --allowedTools flag)."
                     },
                     "interactive": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The adapter can surface interactive user questions (interaction_requested events) and deliver typed answers back into the live session."
                     },
                     "orchestrate": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can play the autonomous orchestrate planner intent, planning multi-harness work over the typed tool belt; not a privileged role."
                     },
                     "quota_signal": {
                       "type": "string",
@@ -255,15 +292,18 @@
                         "manual",
                         "unknown"
                       ],
+                      "description": "Quality of the quota signal this harness emits.",
                       "default": "unknown"
                     },
                     "usage_signal": {
                       "$ref": "#/definitions/HarnessStatusDto/properties/manifest/anyOf/0/properties/capabilities/properties/quota_signal",
-                      "default": "unknown"
+                      "default": "unknown",
+                      "description": "Quality of the usage/cost signal this harness emits."
                     },
                     "json_schema_output": {
                       "type": "boolean",
-                      "default": false
+                      "default": false,
+                      "description": "The harness can constrain its final message to a caller-supplied JSON Schema (native structured-output flag)."
                     },
                     "effort_levels": {
                       "type": "array",
@@ -275,26 +315,31 @@
                           "high",
                           "xhigh",
                           "max"
-                        ]
+                        ],
+                        "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Ordered (weakest to strongest) reasoning-effort levels this harness actually accepts; empty means effort is not a tunable surface."
                     },
                     "known_models": {
                       "type": "array",
                       "items": {
                         "type": "string"
                       },
-                      "default": []
+                      "default": [],
+                      "description": "Manifest-declared model ids/aliases this harness accepts, used as the model truth source when the adapter has no live inventory; explicit models outside the truth source are refused."
                     },
                     "known_models_verified_against": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "default": null
+                      "default": null,
+                      "description": "Vendor CLI version the known_models hints were last verified against; null = never verified / not applicable."
                     }
                   },
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "description": "Declared harness capabilities the engine actually consumes for intent gating, routing, knob support, and disclosure."
                 },
                 "auth_modes": {
                   "type": "array",
@@ -306,7 +351,8 @@
                       "none"
                     ]
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Auth modes the harness supports (availability only, not readiness)."
                 },
                 "access_profiles_supported": {
                   "type": "array",
@@ -318,9 +364,11 @@
                       "full",
                       "external_sandbox_full",
                       "inherit_native"
-                    ]
+                    ],
+                    "description": "Filesystem/command access profile for a run: readonly (no writes), workspace_write (writes inside the workspace only), full (unrestricted; requires the per-repo trust allow), external_sandbox_full (full access inside an external sandbox), inherit_native (defer to the harness's own native sandbox settings)."
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Access profiles the adapter can enforce."
                 }
               },
               "required": [
@@ -329,26 +377,30 @@
                 "kind",
                 "capabilities"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Static manifest an adapter declares for its harness: identity, kind, capabilities, auth modes, and access profiles."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The harness's declared manifest, when available."
         },
         "enabledIntents": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Intents the gateway will route to this harness."
         },
         "disabledIntents": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Intents the doctor disabled."
         },
         "checks": {
           "type": "array",
@@ -356,7 +408,8 @@
             "type": "object",
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "description": "Check id."
               },
               "status": {
                 "type": "string",
@@ -364,37 +417,44 @@
                   "pass",
                   "fail",
                   "skip"
-                ]
+                ],
+                "description": "Outcome of the check: pass, fail, or skip."
               },
               "detail": {
-                "type": "string"
+                "type": "string",
+                "description": "Human-readable detail for the outcome."
               },
               "duration_ms": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "How long the check took, in milliseconds."
               }
             },
             "required": [
               "id",
               "status"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Result of a conformance probe for one capability check."
           },
-          "default": []
+          "default": [],
+          "description": "Doctor probe results."
         },
         "reasons": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Human-readable reasons for degraded/unavailable status."
         },
         "configuredModel": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "The user's configured per-harness default model, if any."
         },
         "configuredModelCheck": {
           "anyOf": [
@@ -406,14 +466,16 @@
                   "enum": [
                     "ok",
                     "rejected"
-                  ]
+                  ],
+                  "description": "Whether the configured model passes the strict truth-source check."
                 },
                 "message": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "default": null
+                  "default": null,
+                  "description": "Actionable rejection message, when rejected."
                 }
               },
               "required": [
@@ -425,14 +487,16 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Strict truth-source check of configuredModel; null when no model is configured."
         }
       },
       "required": [
         "id",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Doctor-backed status row for one harness: status, intents, checks, and configured-model validity."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,7 +6,8 @@
       "properties": {
         "phase": {
           "type": "string",
-          "default": "unknown"
+          "default": "unknown",
+          "description": "Pipeline phase where the failure happened."
         },
         "category": {
           "type": "string",
@@ -22,65 +23,75 @@
             "internal",
             "unknown"
           ],
-          "default": "unknown"
+          "default": "unknown",
+          "description": "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown)."
         },
         "harnessId": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Harness involved in the failure, when known."
         },
         "attemptId": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Attempt involved in the failure, when known."
         },
         "safeMessage": {
-          "type": "string"
+          "type": "string",
+          "description": "Redacted human-readable failure message."
         },
         "rawDetailRef": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Artifact path holding the raw (redacted) failure detail."
         },
         "logRefs": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Log artifact paths relevant to the failure."
         },
         "eventRefs": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Event references relevant to the failure."
         },
         "runDir": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Run artifact directory."
         },
         "nextActions": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Suggested operator next actions."
         }
       },
       "required": [
         "safeMessage"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Typed failure record for a run: phase, category, evidence references, and suggested next actions."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

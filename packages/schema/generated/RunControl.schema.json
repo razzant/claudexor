@@ -9,35 +9,43 @@
           "enum": [
             "cancel",
             "interrupt"
-          ]
+          ],
+          "description": "Control verb: cancel the run or interrupt it."
         },
         "target": {
           "type": "object",
           "properties": {
             "attemptId": {
-              "type": "string"
+              "type": "string",
+              "description": "Attempt to target; omitted = the whole run."
             },
             "harnessId": {
-              "type": "string"
+              "type": "string",
+              "description": "Harness to target."
             },
             "sessionId": {
-              "type": "string"
+              "type": "string",
+              "description": "Session to target."
             },
             "requestId": {
-              "type": "string"
+              "type": "string",
+              "description": "Specific request to target."
             }
           },
           "additionalProperties": false,
+          "description": "Optional narrowing of what a run control verb targets.",
           "default": {}
         },
         "reason": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable reason for the control."
         }
       },
       "required": [
         "kind"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A control verb (cancel/interrupt) aimed at a run or a narrower target inside it."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

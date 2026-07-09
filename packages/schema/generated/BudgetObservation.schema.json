@@ -6,10 +6,12 @@
       "properties": {
         "harness_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Harness the observation is about."
         },
         "ts": {
-          "type": "string"
+          "type": "string",
+          "description": "When the signal was observed."
         },
         "quality": {
           "type": "string",
@@ -19,7 +21,8 @@
             "observed",
             "manual",
             "unknown"
-          ]
+          ],
+          "description": "Quality of a usage/quota signal a harness can emit, from exact vendor accounting through native CLI reporting, engine observation, manual entry, to unknown."
         },
         "kind": {
           "type": "string",
@@ -29,28 +32,34 @@
             "used_percent",
             "cooldown",
             "manual"
-          ]
+          ],
+          "description": "What was observed: spend, a rate-limit hit, a used-percent reading, a cooldown, or a manual entry."
         },
         "usd": {
-          "type": "number"
+          "type": "number",
+          "description": "Observed spend in USD, for spend observations."
         },
         "used_percent": {
-          "type": "number"
+          "type": "number",
+          "description": "Consumed share of the rate window (0-100), for used_percent observations."
         },
         "resets_at": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "When the rate window resets, when reported."
         },
         "cooldown_until": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Until when the harness is in cooldown, when set."
         },
         "detail": {
-          "type": "string"
+          "type": "string",
+          "description": "Redacted human-readable detail."
         }
       },
       "required": [
@@ -59,7 +68,8 @@
         "quality",
         "kind"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "An observed quota/usage signal (rate-limit error, used-percent, reset hint) recorded in the budget ledger."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -11,7 +11,8 @@
             "properties": {
               "index": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "Position of the step in the plan."
               },
               "tool": {
                 "type": "string",
@@ -22,14 +23,16 @@
                   "answer_question",
                   "apply",
                   "review"
-                ]
+                ],
+                "description": "Tool in the orchestrate planner's belt, mapping 1:1 onto engine entry points: start_run, race (best-of-N), status, answer_question, apply, and review."
               },
               "risk": {
                 "type": "string",
                 "enum": [
                   "safe",
                   "risky"
-                ]
+                ],
+                "description": "Risk class of the step: safe (no live-tree mutation) or risky."
               },
               "status": {
                 "type": "string",
@@ -40,21 +43,24 @@
                   "skipped",
                   "blocked",
                   "failed"
-                ]
+                ],
+                "description": "Executor status of one plan step: pending, running, done, skipped, blocked (risky step awaiting a human), or failed."
               },
               "run_id": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Sub-run id this step started/targeted, when known."
               },
               "detail": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Human-readable step detail."
               }
             },
             "required": [
@@ -65,7 +71,8 @@
             ],
             "additionalProperties": false
           },
-          "default": []
+          "default": [],
+          "description": "Per-step outcomes, in plan order."
         },
         "autonomy": {
           "type": "string",
@@ -73,20 +80,23 @@
             "suggest",
             "auto_safe",
             "auto_full"
-          ]
+          ],
+          "description": "How much the orchestrate planner may act without confirmation: suggest (user executes the plan), auto_safe (auto-runs only provably safe steps), auto_full (auto-runs everything)."
         },
         "stopped_reason": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Set when the executor stopped early (first risky step under auto_safe, budget, abort)."
         }
       },
       "required": [
         "autonomy"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Typed executor progress over a plan's tool calls, persisted as final/orchestration_progress.yaml and projected into run detail."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,7 +6,8 @@
       "properties": {
         "prompt": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "The user's prompt for the run."
         },
         "attachments": {
           "type": "array",
@@ -19,33 +20,40 @@
                   "image",
                   "file"
                 ],
+                "description": "Kind of attachment: image (vision input) or file (generic bytes).",
                 "default": "file"
               },
               "mime": {
                 "type": "string",
-                "default": "application/octet-stream"
+                "default": "application/octet-stream",
+                "description": "MIME type of the attachment content."
               },
               "name": {
                 "type": "string",
-                "default": ""
+                "default": "",
+                "description": "Original file name for the attachment."
               },
               "data": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Base64-inline attachment bytes for a fresh upload; null when path is used instead."
               },
               "path": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Absolute existing file path to read bytes from; null when data is used instead."
               }
             },
-            "additionalProperties": false
-          }
+            "additionalProperties": false,
+            "description": "Inbound attachment on a control request; exactly one of data (base64-inline) or path (absolute existing file) is expected, resolved by the daemon into a durable Attachment."
+          },
+          "description": "Inbound files/images for this turn; the daemon resolves each to a scoped on-disk attachment before the run spec is built."
         },
         "mode": {
           "type": "string",
@@ -56,6 +64,7 @@
             "agent",
             "orchestrate"
           ],
+          "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes.",
           "default": "agent"
         },
         "scope": {
@@ -68,13 +77,15 @@
                   "const": "project"
                 },
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the project root."
                 },
                 "context": {
                   "type": "string",
                   "enum": [
                     "auto"
                   ],
+                  "description": "Project context depth; auto is the only mode.",
                   "default": "auto"
                 }
               },
@@ -82,7 +93,8 @@
                 "kind",
                 "root"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Run anchored to a project."
             },
             {
               "type": "object",
@@ -95,9 +107,11 @@
               "required": [
                 "kind"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Run with no project (pure ask)."
             }
           ],
+          "description": "What the run operates on: a project (with root) or nothing.",
           "default": {
             "kind": "none"
           }
@@ -111,10 +125,12 @@
                 "envelope",
                 "live"
               ],
-              "default": "envelope"
+              "default": "envelope",
+              "description": "Run isolation: envelope (isolated worktree under .claudexor/workspaces, the default) or live (the project tree itself)."
             }
           },
           "additionalProperties": false,
+          "description": "Execution isolation settings for a run.",
           "default": {
             "isolation": "envelope"
           }
@@ -124,11 +140,14 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "pattern": "\\S"
-          }
+            "pattern": "\\S",
+            "description": "User-supplied string that must contain visible content, not just whitespace."
+          },
+          "description": "Eligible harness pool for the run; omitted = engine auto-pools."
         },
         "primaryHarness": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+          "description": "Primary harness the run should prefer."
         },
         "portfolio": {
           "type": "string",
@@ -142,10 +161,12 @@
             "api-overflow",
             "conserve-claude",
             "conserve-codex"
-          ]
+          ],
+          "description": "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor)."
         },
         "model": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+          "description": "Scalar model convenience: expands to the resolved primary harness only (never the pool); rejected with a multi-harness pool and no primary — use models instead."
         },
         "models": {
           "type": "object",
@@ -155,7 +176,8 @@
           "propertyNames": {
             "minLength": 1,
             "pattern": "\\S"
-          }
+          },
+          "description": "Harness-scoped model map (harness id to model id); an entry here wins over the scalar model and over the per-harness settings default."
         },
         "effort": {
           "type": "string",
@@ -165,7 +187,8 @@
             "high",
             "xhigh",
             "max"
-          ]
+          ],
+          "description": "Requested reasoning effort."
         },
         "reviewerModels": {
           "type": "object",
@@ -183,7 +206,8 @@
               "local",
               "unknown"
             ]
-          }
+          },
+          "description": "Per-provider-family reviewer model overrides (legacy; reviewerPanel wins when present)."
         },
         "reviewerEfforts": {
           "type": "object",
@@ -201,11 +225,13 @@
               "local",
               "unknown"
             ]
-          }
+          },
+          "description": "Per-provider-family reviewer effort overrides (legacy; reviewerPanel wins when present)."
         },
         "n": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "description": "Race width: number of best-of-N candidates."
         },
         "attempts": {
           "anyOf": [
@@ -216,16 +242,20 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Cap on convergence attempts; null = engine default."
         },
         "untilClean": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Agent flag: iterate until the convergence predicate is clean (no fixed cap)."
         },
         "swarm": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Audit flag: bounded read-only research swarm."
         },
         "create": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Agent flag: create-from-scratch intent."
         },
         "synthesis": {
           "type": "string",
@@ -233,7 +263,8 @@
             "auto",
             "always",
             "never"
-          ]
+          ],
+          "description": "Best-of-N synthesis policy: auto only synthesizes an extra candidate when n>=3 and candidates genuinely complement; always/never force it."
         },
         "maxUsd": {
           "anyOf": [
@@ -244,7 +275,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "USD cap for the run; null = no cap."
         },
         "access": {
           "type": "string",
@@ -254,7 +286,8 @@
             "full",
             "external_sandbox_full",
             "inherit_native"
-          ]
+          ],
+          "description": "Requested access profile; effective access is derived by the engine and never client-supplied."
         },
         "web": {
           "type": "string",
@@ -263,19 +296,23 @@
             "auto",
             "cached",
             "live"
-          ]
+          ],
+          "description": "Web policy for the run (alias of externalContextPolicy; must match when both set)."
         },
         "externalContextPolicy": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/web"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/web",
+          "description": "External web/context policy for the run."
         },
         "browser": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Opt this run into the agent-driven browser; honored only for browser-capable harnesses when web policy is not off."
         },
         "tests": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
-          }
+          },
+          "description": "Test commands to run as deterministic gates."
         },
         "protectedPathApprovals": {
           "type": "array",
@@ -283,40 +320,53 @@
             "type": "object",
             "properties": {
               "path": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "Glob approved by the operator/user for this run; consumed only by the auto-protected gate/test path policy, not by built-in critical-path gates."
               },
               "reason": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+                "description": "Optional human-readable reason for the approval."
               }
             },
             "required": [
               "path"
             ],
-            "additionalProperties": false
-          }
+            "additionalProperties": false,
+            "description": "Per-run typed operator approval allowing changes under an auto-protected gate/test path."
+          },
+          "description": "Typed per-run approvals for changing auto-protected gate/test paths; does not bypass built-in critical/security path human gates."
         },
         "specPath": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+          "description": "Path to a frozen SpecPack the run is held to."
         },
         "specId": {
-          "type": "string"
+          "type": "string",
+          "description": "Id of the SpecPack the run is held to."
         },
         "specHash": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Content hash of the SpecPack the run is held to."
         },
         "threadId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Thread this run is a turn of."
         },
         "turnId": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
+          "description": "Internal daemon handoff only; rejected (400) when supplied by a client on POST /runs — use POST /threads/:id/turns instead."
         },
         "parentRunId": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
+          "description": "Run this turn follows up on."
         },
         "planRunId": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId"
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
+          "description": "Internal daemon handoff only; rejected (400) on POST /runs. When set, the turn implements an approved plan from that run."
         },
         "reviewerPanel": {
           "type": "array",
@@ -324,21 +374,28 @@
             "type": "object",
             "properties": {
               "harness": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
               },
               "model": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+                "description": "Per-reviewer model hint, passed to that harness only."
               },
               "effort": {
-                "$ref": "#/definitions/ControlRunStartRequest/properties/effort"
+                "$ref": "#/definitions/ControlRunStartRequest/properties/effort",
+                "description": "Per-reviewer effort hint, passed to that harness only."
               }
             },
             "required": [
               "harness"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "One reviewer of an explicit reviewer panel."
           },
-          "minItems": 1
+          "minItems": 1,
+          "description": "Explicit reviewer panel; overrides the legacy reviewerModels/reviewerEfforts maps and preserves duplicate harness entries for multi-model same-provider reviews."
         },
         "authPreference": {
           "type": "string",
@@ -346,7 +403,8 @@
             "subscription",
             "api_key",
             "auto"
-          ]
+          ],
+          "description": "Per-run auth route override."
         },
         "autonomy": {
           "type": "string",
@@ -354,14 +412,17 @@
             "suggest",
             "auto_safe",
             "auto_full"
-          ]
+          ],
+          "description": "Autonomy level for the orchestrate planner; only meaningful for mode=orchestrate."
         },
         "maxToolCalls": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "description": "Cap on orchestrate plan tool calls; only meaningful for mode=orchestrate."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and spec/thread linkage."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

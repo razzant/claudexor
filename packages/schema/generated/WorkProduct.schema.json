@@ -6,7 +6,8 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Work product id."
         },
         "kind": {
           "type": "string",
@@ -14,28 +15,36 @@
             "patch",
             "new_repo",
             "report"
-          ]
+          ],
+          "description": "Kind of work product a run produces: a patch against the base tree, a newly created repository, or a report document."
         },
         "source_task_id": {
-          "$ref": "#/definitions/WorkProduct/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Task the work product came from."
         },
         "producer_attempt_id": {
-          "$ref": "#/definitions/WorkProduct/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Attempt that produced it, when known."
         },
         "evidence_dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Directory holding run evidence artifacts."
         },
         "files": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
-          "default": {}
+          "default": {},
+          "description": "Kind-specific file payload, e.g. artifact name to path (validated loosely here; specialized per kind by callers)."
         },
         "meta": {
           "type": "object",
           "additionalProperties": {},
-          "default": {}
+          "default": {},
+          "description": "Kind-specific metadata."
         }
       },
       "required": [
@@ -43,7 +52,8 @@
         "kind",
         "source_task_id"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The deliverable a run produced (patch, new repo, or report), referenced by apply/delivery verbs."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,27 +6,33 @@
       "properties": {
         "schema_version": {
           "type": "number",
-          "const": 2
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
         },
         "task_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Task id this contract belongs to."
         },
         "created_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When the contract was built."
         },
         "repo": {
           "type": "object",
           "properties": {
             "root": {
-              "type": "string"
+              "type": "string",
+              "description": "Absolute path to the project repository root."
             },
             "base_ref": {
-              "type": "string"
+              "type": "string",
+              "description": "Git ref the run is based on."
             },
             "base_sha": {
-              "type": "string"
+              "type": "string",
+              "description": "Resolved base commit SHA, when known."
             },
             "dirty_policy": {
               "type": "string",
@@ -34,6 +40,7 @@
                 "refuse",
                 "snapshot"
               ],
+              "description": "How a dirty working tree is handled when creating an envelope: snapshot captures the dirty state as the base SHA without touching the live tree; refuse fails loudly.",
               "default": "refuse"
             }
           },
@@ -41,7 +48,8 @@
             "root",
             "base_ref"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Repository the run operates on and how a dirty tree is handled."
         },
         "mode": {
           "type": "object",
@@ -54,43 +62,53 @@
                 "audit",
                 "agent",
                 "orchestrate"
-              ]
+              ],
+              "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes."
             }
           },
           "required": [
             "kind"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Canonical run mode for this task."
         },
         "user_intent": {
           "type": "object",
           "properties": {
             "raw": {
-              "type": "string"
+              "type": "string",
+              "description": "The user's original prompt, verbatim."
             },
             "normalized": {
-              "type": "string"
+              "type": "string",
+              "description": "Optional normalized restatement of the prompt."
             }
           },
           "required": [
             "raw"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "The user's request this run is held to."
         },
         "spec": {
           "type": "object",
           "properties": {
             "id": {
-              "$ref": "#/definitions/TaskContract/properties/task_id"
+              "type": "string",
+              "minLength": 1,
+              "description": "SpecPack id."
             },
             "hash": {
-              "type": "string"
+              "type": "string",
+              "description": "Content hash of the frozen SpecPack."
             },
             "path": {
-              "type": "string"
+              "type": "string",
+              "description": "On-disk path of the SpecPack artifact."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Reference to the frozen SpecPack this contract was derived from, if any."
         },
         "success_criteria": {
           "type": "array",
@@ -98,44 +116,53 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/TaskContract/properties/task_id"
+                "type": "string",
+                "minLength": 1,
+                "description": "Criterion id."
               },
               "text": {
-                "type": "string"
+                "type": "string",
+                "description": "Human-readable statement of what must hold for the run to succeed."
               },
               "required": {
                 "type": "boolean",
-                "default": true
+                "default": true,
+                "description": "Whether this criterion is required (vs advisory)."
               }
             },
             "required": [
               "id",
               "text"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "A single success criterion the run is held to."
           },
-          "default": []
+          "default": [],
+          "description": "Criteria the run must satisfy to succeed."
         },
         "non_goals": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Explicitly out-of-scope outcomes."
         },
         "forbidden_approaches": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Approaches the run must not take."
         },
         "decided_tradeoffs": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Tradeoffs already decided; reviewers must not re-litigate them."
         },
         "task_graph": {
           "anyOf": [
@@ -148,41 +175,50 @@
                     "type": "object",
                     "properties": {
                       "id": {
-                        "$ref": "#/definitions/TaskContract/properties/task_id"
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Task node id."
                       },
                       "title": {
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "description": "Human-readable task title."
                       },
                       "depends_on": {
                         "type": "array",
                         "items": {
-                          "$ref": "#/definitions/TaskContract/properties/task_id"
+                          "$ref": "#/definitions/TaskContract/properties/spec/properties/id"
                         },
-                        "default": []
+                        "default": [],
+                        "description": "Ids of tasks this node depends on (graph edges)."
                       }
                     },
                     "required": [
                       "id"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "description": "One node of the spec-derived task graph; edges are depends_on."
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Task nodes of the graph."
                 },
                 "order": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/TaskContract/properties/task_id"
+                    "$ref": "#/definitions/TaskContract/properties/spec/properties/id"
                   },
-                  "default": []
+                  "default": [],
+                  "description": "Topological execution order (node ids); empty when there are no tasks."
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "A topologically-ordered task graph built from a frozen SpecPack's tasks."
             },
             {
               "type": "null"
             }
           ],
+          "description": "Spec-derived task graph; null until a frozen SpecPack with tasks is resolved.",
           "default": null
         },
         "constraints": {
@@ -193,14 +229,16 @@
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Spec/config-owned globs whose changes escalate risk to a human-approval gate; cannot be suppressed by per-run protected-path approvals."
             },
             "auto_protected_paths": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Engine-derived gate/test path protections; per-run approvals can narrow only this set."
             },
             "protected_path_approvals": {
               "type": "array",
@@ -210,21 +248,28 @@
                   "path": {
                     "type": "string",
                     "minLength": 1,
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Glob approved by the operator/user for this run; consumed only by the auto-protected gate/test path policy, not by built-in critical-path gates."
                   },
                   "reason": {
-                    "$ref": "#/definitions/TaskContract/properties/constraints/properties/protected_path_approvals/items/properties/path"
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "Optional human-readable reason for the approval."
                   }
                 },
                 "required": [
                   "path"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Per-run typed operator approval allowing changes under an auto-protected gate/test path."
               },
-              "default": []
+              "default": [],
+              "description": "Per-run typed approvals for protected gate/test path changes, produced by explicit surfaces and consumed by policy."
             }
           },
           "additionalProperties": false,
+          "description": "Path-protection constraints applied to a run.",
           "default": {}
         },
         "tests": {
@@ -236,29 +281,36 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "$ref": "#/definitions/TaskContract/properties/task_id"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Test command id."
                   },
                   "command": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Shell command executed as a deterministic gate."
                   },
                   "required": {
                     "type": "boolean",
-                    "default": true
+                    "default": true,
+                    "description": "Whether this test must pass (vs advisory)."
                   }
                 },
                 "required": [
                   "id",
                   "command"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "A deterministic test command used as a verification gate."
               },
-              "default": []
+              "default": [],
+              "description": "Deterministic test commands configured as gates."
             }
           },
           "additionalProperties": false,
           "default": {
             "commands": []
-          }
+          },
+          "description": "Deterministic test gates for the run."
         },
         "access": {
           "type": "object",
@@ -272,18 +324,21 @@
                 "external_sandbox_full",
                 "inherit_native"
               ],
+              "description": "Access profile the caller requested.",
               "default": "workspace_write"
             },
             "effective_profile": {
               "$ref": "#/definitions/TaskContract/properties/access/properties/requested_profile",
-              "default": "workspace_write"
+              "default": "workspace_write",
+              "description": "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied)."
             }
           },
           "additionalProperties": false,
           "default": {
             "requested_profile": "workspace_write",
             "effective_profile": "workspace_write"
-          }
+          },
+          "description": "Requested vs engine-enforced access profile."
         },
         "external_context": {
           "type": "object",
@@ -296,15 +351,18 @@
                 "cached",
                 "live"
               ],
+              "description": "Requested external web/context policy.",
               "default": "auto"
             },
             "web_required": {
               "type": "boolean",
-              "default": false
+              "default": false,
+              "description": "Whether the task requires live web evidence."
             },
             "effective_mode": {
               "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
-              "default": "auto"
+              "default": "auto",
+              "description": "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live)."
             }
           },
           "additionalProperties": false,
@@ -312,28 +370,32 @@
             "policy": "auto",
             "web_required": false,
             "effective_mode": "auto"
-          }
+          },
+          "description": "External web/context policy for the run."
         },
         "tool_permission_policy": {
           "type": "object",
           "properties": {
             "web": {
               "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
-              "default": "auto"
+              "default": "auto",
+              "description": "Web policy forwarded to tool permissioning."
             },
             "allow": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Tool names explicitly allowed."
             },
             "deny": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": [],
+              "description": "Tool names explicitly denied."
             }
           },
           "additionalProperties": false,
@@ -341,7 +403,8 @@
             "web": "auto",
             "allow": [],
             "deny": []
-          }
+          },
+          "description": "Tool permission policy passed to harnesses that support allow/deny lists."
         },
         "budget": {
           "type": "object",
@@ -359,6 +422,7 @@
                 "conserve-claude",
                 "conserve-codex"
               ],
+              "description": "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor).",
               "default": "subscription-first"
             },
             "max_usd": {
@@ -366,48 +430,58 @@
                 "number",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Hard USD cap for the run; null = no cap."
             }
           },
           "additionalProperties": false,
-          "default": {}
+          "default": {},
+          "description": "Budget portfolio and spend cap for the run."
         },
         "routing_models": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
-          "default": {}
+          "default": {},
+          "description": "Resolved harness-scoped model map for this run (harness id to model id); empty means every route uses its per-harness settings default."
         },
         "convergence": {
           "type": "object",
           "properties": {
             "require_tests_pass": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Require all configured test commands to pass before convergence."
             },
             "require_no_accepted_block_open": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Block convergence while an accepted BLOCK review finding is still open."
             },
             "require_no_accepted_fix_first_open": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Block convergence while an accepted FIX_FIRST review finding is still open."
             },
             "require_final_cross_family_clean_review": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Require a final clean review from a different provider family before convergence."
             },
             "require_final_diff_stable_after_review": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Require the diff to be unchanged after the final review (a mutated diff makes the review stale)."
             },
             "require_no_accepted_needs_human_open": {
               "type": "boolean",
-              "default": true
+              "default": true,
+              "description": "Block convergence while an accepted NEEDS_HUMAN escalation is still open."
             }
           },
           "additionalProperties": false,
+          "description": "Predicate deciding when an until-clean/convergence run may stop as successful.",
           "default": {}
         }
       },
@@ -419,7 +493,8 @@
         "mode",
         "user_intent"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Immutable contract describing a single run; built once, hashed, never mutated."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

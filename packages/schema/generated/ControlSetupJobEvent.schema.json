@@ -6,20 +6,24 @@
       "properties": {
         "jobId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Setup job the event belongs to."
         },
         "seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Monotonic event sequence within the job."
         },
         "time": {
-          "type": "string"
+          "type": "string",
+          "description": "Event timestamp."
         },
         "kind": {
           "type": "string",
           "enum": [
             "status"
-          ]
+          ],
+          "description": "Event kind; only status is ever produced."
         },
         "state": {
           "type": "string",
@@ -31,10 +35,12 @@
             "failed",
             "cancelled",
             "not_supported"
-          ]
+          ],
+          "description": "Lifecycle state of a setup job, including waiting_for_input (needs user confirmation/input) and not_supported."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable status message."
         }
       },
       "required": [
@@ -44,7 +50,8 @@
         "kind",
         "message"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Status event on a setup job's event stream."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

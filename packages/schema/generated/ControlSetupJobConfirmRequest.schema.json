@@ -6,10 +6,12 @@
       "properties": {
         "confirmed": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "Whether the user confirmed the pending action."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body confirming a setup job that waits for user confirmation."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -61,7 +61,9 @@ export const RunEventType = z.enum([
   "run.blocked",
   "run.completed",
   "run.failed",
-]);
+]).describe(
+  "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, orchestrate steps, and control verbs.",
+);
 export type RunEventType = z.infer<typeof RunEventType>;
 
 /**
@@ -70,32 +72,45 @@ export type RunEventType = z.infer<typeof RunEventType>;
  * fallback/auth-switch is always evidence-backed and surfaced as a warning,
  * never an invisible info line.
  */
-export const RouteFallbackPayload = z.object({
-  from_harness: z.string().nullable().default(null),
-  to_harness: z.string().nullable().default(null),
-  from_auth_mode: AuthMode.default("unknown"),
-  to_auth_mode: AuthMode.default("unknown"),
-  reason: FallbackReason.default("manual"),
-  attempt_id: z.string().nullable().default(null),
-  error_summary: z.string().nullable().default(null),
-});
+export const RouteFallbackPayload = z
+  .object({
+    from_harness: z.string().nullable().default(null).describe("Harness the route fell back from."),
+    to_harness: z.string().nullable().default(null).describe("Harness the route fell back to."),
+    from_auth_mode: AuthMode.default("unknown").describe("Auth mode before the switch."),
+    to_auth_mode: AuthMode.default("unknown").describe("Auth mode after the switch."),
+    reason: FallbackReason.default("manual"),
+    attempt_id: z.string().nullable().default(null).describe("Attempt the fallback happened in, when known."),
+    error_summary: z.string().nullable().default(null).describe("Redacted error detail that triggered the fallback."),
+  })
+  .describe(
+    "Typed payload for route.fallback.* events, validated before being stamped onto the RunEvent payload so a fallback/auth-switch is always evidence-backed.",
+  );
 export type RouteFallbackPayload = z.infer<typeof RouteFallbackPayload>;
 
 /** Append-only event record (one JSONL line). */
-export const RunEvent = z.object({
-  /**
-   * Monotonic per-run sequence stamped by the EventLog at emit time. It is the
-   * durable SSE cursor (Last-Event-ID) and the snapshot fence (detail.lastSeq).
-   * Optional only for pre-v0.8.0 artifacts; every new emit carries it.
-   */
-  seq: z.number().int().positive().optional(),
-  ts: z.string(),
-  run_id: Id,
-  task_id: Id,
-  /** Thread this run is a turn of, when any. Lets the global event multiplex
-   * route live progress to a chat surface without a reverse job lookup. */
-  thread_id: Id.optional(),
-  type: RunEventType,
-  payload: z.record(z.string(), z.unknown()).default({}),
-});
+export const RunEvent = z
+  .object({
+    /**
+     * Monotonic per-run sequence stamped by the EventLog at emit time. It is the
+     * durable SSE cursor (Last-Event-ID) and the snapshot fence (detail.lastSeq).
+     * Optional only for pre-v0.8.0 artifacts; every new emit carries it.
+     */
+    seq: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Monotonic per-run sequence stamped at emit time; the durable SSE cursor and snapshot fence. Optional only for pre-v0.8.0 artifacts.",
+      ),
+    ts: z.string().describe("Event timestamp."),
+    run_id: Id.describe("Run the event belongs to."),
+    task_id: Id.describe("Task the run belongs to."),
+    /** Thread this run is a turn of, when any. Lets the global event multiplex
+     * route live progress to a chat surface without a reverse job lookup. */
+    thread_id: Id.optional().describe("Thread this run is a turn of, when any."),
+    type: RunEventType,
+    payload: z.record(z.string(), z.unknown()).default({}).describe("Event-type-specific payload."),
+  })
+  .describe("Append-only run event record (one JSONL line in the run's event log).");
 export type RunEvent = z.infer<typeof RunEvent>;

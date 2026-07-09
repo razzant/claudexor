@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "accepted": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether the decision was accepted."
         },
         "status": {
           "type": "string",
@@ -14,21 +15,25 @@
             "requeued",
             "rejected",
             "unsupported"
-          ]
+          ],
+          "description": "Outcome: applied, requeued (a new turn was enqueued), rejected, or unsupported."
         },
         "newRunId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "New run id when the decision re-enqueues a turn (rerun_with_feedback)."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable detail."
         }
       },
       "required": [
         "accepted",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response to an operator run decision."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

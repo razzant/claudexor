@@ -11,21 +11,24 @@
             "properties": {
               "id": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Thread id."
               },
               "title": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Thread title; null until set."
               },
               "repoRoot": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Project root the thread is anchored to; null for a no-project thread."
               },
               "mode": {
                 "type": "string",
@@ -35,7 +38,8 @@
                   "audit",
                   "agent",
                   "orchestrate"
-                ]
+                ],
+                "description": "Default mode for new turns."
               },
               "workspaceMode": {
                 "type": "string",
@@ -43,6 +47,7 @@
                   "in_place",
                   "isolated"
                 ],
+                "description": "Per-thread workspace mode: in_place mutates the live project tree directly (the default); isolated keeps a persistent git worktree per thread that apply merges into the project.",
                 "default": "in_place"
               },
               "authPreference": {
@@ -52,6 +57,7 @@
                   "api_key",
                   "auto"
                 ],
+                "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
                 "default": "auto"
               },
               "primaryHarness": {
@@ -59,14 +65,16 @@
                   "string",
                   "null"
                 ],
-                "default": null
+                "default": null,
+                "description": "Sticky primary harness for the thread; null = engine routing."
               },
               "eligibleHarnesses": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "default": []
+                "default": [],
+                "description": "Sticky eligible harness pool; empty = the engine auto-pools."
               },
               "state": {
                 "type": "string",
@@ -74,35 +82,43 @@
                   "active",
                   "closed"
                 ],
+                "description": "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
                 "default": "active"
               },
               "runIds": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/ControlThreadListResponse/properties/threads/items/properties/id"
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
                 },
-                "default": []
+                "default": [],
+                "description": "Ordered run lineage of the thread."
               },
               "headRunId": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/ControlThreadListResponse/properties/threads/items/properties/id"
+                    "$ref": "#/definitions/ControlThreadListResponse/properties/threads/items/properties/runIds/items"
                   },
                   {
                     "type": "null"
                   }
                 ],
+                "description": "Most recent run of the thread; null before the first turn runs.",
                 "default": null
               },
               "needsHuman": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "True when the head turn is blocked on a human decision (needs-me inbox)."
               },
               "createdAt": {
-                "type": "string"
+                "type": "string",
+                "description": "When the thread was created."
               },
               "updatedAt": {
-                "type": "string"
+                "type": "string",
+                "description": "When the thread was last updated."
               }
             },
             "required": [
@@ -110,12 +126,15 @@
               "createdAt",
               "updatedAt"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Control-plane projection of a thread (camelCase view of the Thread artifact)."
           },
-          "default": []
+          "default": [],
+          "description": "All threads."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response for GET /threads."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -7,17 +7,23 @@ import { Id } from "./primitives.js";
  * worktree so `git add -A` cannot capture it); an adapter reads bytes from
  * there to forward to its harness in that harness's native shape.
  */
-export const AttachmentKind = z.enum(["image", "file"]);
+export const AttachmentKind = z
+  .enum(["image", "file"])
+  .describe("Kind of attachment: image (vision input) or file (generic bytes).");
 export type AttachmentKind = z.infer<typeof AttachmentKind>;
 
-export const Attachment = z.object({
-  id: Id,
-  kind: AttachmentKind.default("file"),
-  mime: z.string().default("application/octet-stream"),
-  name: z.string().default(""),
-  /** Resolved local path in the scoped attachment store. */
-  path: z.string(),
-});
+export const Attachment = z
+  .object({
+    id: Id.describe("Attachment id."),
+    kind: AttachmentKind.default("file"),
+    mime: z.string().default("application/octet-stream").describe("MIME type of the attachment content."),
+    name: z.string().default("").describe("Original file name as provided by the user or agent."),
+    /** Resolved local path in the scoped attachment store. */
+    path: z.string().describe("Resolved local path in the scoped attachment store (kept outside any worktree)."),
+  })
+  .describe(
+    "A user- or agent-provided file/image attached to a turn, stored in the scoped attachment store and forwarded to harnesses in their native shape.",
+  );
 export type Attachment = z.infer<typeof Attachment>;
 
 /**
@@ -28,13 +34,21 @@ export type Attachment = z.infer<typeof Attachment>;
  * durable {@link Attachment}. Exactly one of `data` / `path` is expected; both
  * null is rejected by the resolver (fail loud, never a silent empty attachment).
  */
-export const AttachmentInput = z.object({
-  kind: AttachmentKind.default("file"),
-  mime: z.string().default("application/octet-stream"),
-  name: z.string().default(""),
-  data: z.string().nullable().default(null),
-  path: z.string().nullable().default(null),
-});
+export const AttachmentInput = z
+  .object({
+    kind: AttachmentKind.default("file"),
+    mime: z.string().default("application/octet-stream").describe("MIME type of the attachment content."),
+    name: z.string().default("").describe("Original file name for the attachment."),
+    data: z.string().nullable().default(null).describe("Base64-inline attachment bytes for a fresh upload; null when path is used instead."),
+    path: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Absolute existing file path to read bytes from; null when data is used instead."),
+  })
+  .describe(
+    "Inbound attachment on a control request; exactly one of data (base64-inline) or path (absolute existing file) is expected, resolved by the daemon into a durable Attachment.",
+  );
 export type AttachmentInput = z.infer<typeof AttachmentInput>;
 
 /**
@@ -45,5 +59,9 @@ export type AttachmentInput = z.infer<typeof AttachmentInput>;
  * opencode — image attachments are disabled/routed to a vision-capable harness
  * rather than silently dropped; generic file attachments still use Attachment).
  */
-export const ImageInputMode = z.enum(["file_path", "base64_stream", "base64_inline", "none"]);
+export const ImageInputMode = z
+  .enum(["file_path", "base64_stream", "base64_inline", "none"])
+  .describe(
+    "How a harness accepts image input: file_path (CLI file argument), base64_stream (base64 image block on the stream), base64_inline (data-URL in the request), or none (no vision input on this route).",
+  );
 export type ImageInputMode = z.infer<typeof ImageInputMode>;

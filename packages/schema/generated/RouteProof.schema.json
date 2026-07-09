@@ -9,7 +9,8 @@
           "properties": {
             "harness_id": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Harness the route was requested on."
             },
             "provider_family": {
               "type": "string",
@@ -22,21 +23,24 @@
                 "xai",
                 "local",
                 "unknown"
-              ]
+              ],
+              "description": "Vendor/provider family a harness routes to, used for route-diversity reasoning; open-ended via \"unknown\"."
             },
             "model_hint": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Model requested for the route; null = harness default."
             }
           },
           "required": [
             "harness_id",
             "provider_family"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "What was requested."
         },
         "observed": {
           "type": "object",
@@ -46,14 +50,16 @@
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Provider actually observed; null when no evidence."
             },
             "model_id": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Model actually observed; null when no evidence."
             },
             "evidence_source": {
               "type": "string",
@@ -64,17 +70,22 @@
                 "transcript",
                 "unavailable"
               ],
+              "description": "Where the observed model/provider evidence came from: a stream event, response metadata, the model catalog, the transcript, or nowhere.",
               "default": "unavailable"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "What was actually observed."
         },
         "diversity_against": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/RouteProof/properties/requested/properties/harness_id"
+            "type": "string",
+            "minLength": 1,
+            "description": "Non-empty identifier string."
           },
-          "default": []
+          "default": [],
+          "description": "Harness ids this route was required to be diverse against."
         },
         "status": {
           "type": "string",
@@ -83,7 +94,8 @@
             "accepted_model_arg",
             "unverified",
             "same_model_fallback"
-          ]
+          ],
+          "description": "How strongly the executed route is proven: verified (observed evidence matches the request), accepted_model_arg (the requested model arg was accepted without stream evidence), unverified, or same_model_fallback (a fallback landed on the same model)."
         }
       },
       "required": [
@@ -91,7 +103,8 @@
         "observed",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Records requested vs observed harness/model routing, so multi-model claims cannot silently collapse onto one model."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

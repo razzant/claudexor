@@ -6,32 +6,40 @@
       "properties": {
         "thread_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Thread whose session was re-hosted."
         },
         "harness_id": {
-          "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Harness the new session runs on."
         },
         "from_native_session_id": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "The vendor native session id being left behind (not a Claudexor id); null when none existed."
         },
         "to_session_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SessionReboundLineage/properties/thread_id"
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
             },
             {
               "type": "null"
             }
           ],
+          "description": "New Claudexor session id; null when no new session was created.",
           "default": null
         },
         "summary": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "Carried-over conversation summary injected into the new session."
         },
         "reason": {
           "type": "string",
@@ -49,6 +57,7 @@
             "readiness_preferred",
             "manual"
           ],
+          "description": "Typed reason an auto-fallback (route/auth switch) or session re-host happened, driven by typed budget/quota signals and events, never by regex over prose.",
           "default": "not_portable"
         }
       },
@@ -56,7 +65,8 @@
         "thread_id",
         "harness_id"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The lossy payload serialized when a turn cannot resume the native session in place (isolated candidates or re-hosting onto a different harness); carried by the session.rebound event."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

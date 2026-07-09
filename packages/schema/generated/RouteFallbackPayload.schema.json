@@ -9,14 +9,16 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Harness the route fell back from."
         },
         "to_harness": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Harness the route fell back to."
         },
         "from_auth_mode": {
           "type": "string",
@@ -25,11 +27,13 @@
             "api_key",
             "unknown"
           ],
+          "description": "Auth mode before the switch.",
           "default": "unknown"
         },
         "to_auth_mode": {
           "$ref": "#/definitions/RouteFallbackPayload/properties/from_auth_mode",
-          "default": "unknown"
+          "default": "unknown",
+          "description": "Auth mode after the switch."
         },
         "reason": {
           "type": "string",
@@ -47,6 +51,7 @@
             "readiness_preferred",
             "manual"
           ],
+          "description": "Typed reason an auto-fallback (route/auth switch) or session re-host happened, driven by typed budget/quota signals and events, never by regex over prose.",
           "default": "manual"
         },
         "attempt_id": {
@@ -54,17 +59,20 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Attempt the fallback happened in, when known."
         },
         "error_summary": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Redacted error detail that triggered the fallback."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Typed payload for route.fallback.* events, validated before being stamped onto the RunEvent payload so a fallback/auth-switch is always evidence-backed."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -17,7 +17,8 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Prompt for the sub-run."
                   },
                   "mode": {
                     "type": "string",
@@ -28,21 +29,25 @@
                       "agent",
                       "orchestrate"
                     ],
+                    "description": "Mode for the sub-run.",
                     "default": "agent"
                   },
                   "harness": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Harness to run on; omitted = engine routing."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "prompt"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Start one isolated sub-run."
               },
               {
                 "type": "object",
@@ -53,23 +58,27 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Prompt raced across harnesses."
                   },
                   "n": {
                     "type": "integer",
                     "minimum": 2,
-                    "default": 2
+                    "default": 2,
+                    "description": "Number of race candidates (one per harness)."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "prompt"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Race the prompt as a best-of-N run."
               },
               {
                 "type": "object",
@@ -80,18 +89,21 @@
                   },
                   "run_id": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Run to review."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "run_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Review an existing run."
               },
               {
                 "type": "object",
@@ -102,18 +114,21 @@
                   },
                   "run_id": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Run to inspect."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "run_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Read the status of an existing run."
               },
               {
                 "type": "object",
@@ -124,7 +139,8 @@
                   },
                   "interaction_id": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Pending interaction to answer."
                   },
                   "answers": {
                     "type": "array",
@@ -133,21 +149,24 @@
                       "properties": {
                         "question_id": {
                           "type": "string",
-                          "minLength": 1
+                          "minLength": 1,
+                          "description": "Id of the question being answered."
                         },
                         "selected_labels": {
                           "type": "array",
                           "items": {
                             "type": "string"
                           },
-                          "default": []
+                          "default": [],
+                          "description": "Labels of the selected options."
                         },
                         "free_text": {
                           "type": [
                             "string",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Free-text answer; null when only options were selected."
                         }
                       },
                       "required": [
@@ -155,18 +174,21 @@
                       ],
                       "additionalProperties": false
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Answers, one per question."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "interaction_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Answer a pending interactive question of a sub-run."
               },
               {
                 "type": "object",
@@ -177,7 +199,8 @@
                   },
                   "run_id": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Run whose work product to deliver."
                   },
                   "mode": {
                     "type": "string",
@@ -187,28 +210,34 @@
                       "commit",
                       "pr"
                     ],
-                    "default": "apply"
+                    "default": "apply",
+                    "description": "Delivery mode: apply to the tree, or as a branch, commit, or PR."
                   },
                   "why": {
                     "type": "string",
-                    "default": ""
+                    "default": "",
+                    "description": "Planner's reason for this step."
                   }
                 },
                 "required": [
                   "tool",
                   "run_id"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Deliver a run's work product to the project (the only live-tree-mutating tool)."
               }
-            ]
+            ],
+            "description": "One concrete tool invocation in a planner plan, with per-tool typed args discriminated on `tool`."
           },
-          "minItems": 1
+          "minItems": 1,
+          "description": "Ordered tool invocations of the plan."
         }
       },
       "required": [
         "tool_calls"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The typed orchestration plan extracted from the planner's report; persisted as final/orchestration.yaml."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

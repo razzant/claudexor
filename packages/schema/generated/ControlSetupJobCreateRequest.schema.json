@@ -12,7 +12,8 @@
             "cursor",
             "opencode",
             "raw"
-          ]
+          ],
+          "description": "Harness ids that have a managed setup flow."
         },
         "action": {
           "type": "string",
@@ -21,14 +22,16 @@
             "login",
             "doctor",
             "store_key"
-          ]
+          ],
+          "description": "Setup action to perform: install the vendor CLI, log in, run the doctor, or store an API key."
         }
       },
       "required": [
         "harness",
         "action"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body to create a harness setup job."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

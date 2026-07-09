@@ -5,7 +5,8 @@
       "type": "object",
       "properties": {
         "jobId": {
-          "type": "string"
+          "type": "string",
+          "description": "Daemon job id."
         },
         "state": {
           "type": "string",
@@ -23,17 +24,20 @@
             "exhausted",
             "not_converged",
             "stuck_no_progress"
-          ]
+          ],
+          "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted, exhausted, not_converged, stuck_no_progress)."
         },
         "error": {
-          "type": "string"
+          "type": "string",
+          "description": "Error message, when the job failed."
         }
       },
       "required": [
         "jobId",
         "state"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Compact state of a queued/running daemon job."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

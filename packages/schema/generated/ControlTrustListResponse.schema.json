@@ -13,13 +13,16 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "description": "Repo root recorded in the trust file; null for legacy files written before provenance stamping."
               },
               "path": {
-                "type": "string"
+                "type": "string",
+                "description": "The user-level trust file backing this state (path disclosure, no content)."
               },
               "allowFullAccess": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "Whether unsandboxed full access is allowed for the repo."
               },
               "accessDefault": {
                 "type": "string",
@@ -29,7 +32,8 @@
                   "full",
                   "external_sandbox_full",
                   "inherit_native"
-                ]
+                ],
+                "description": "Default access profile for runs in the repo."
               }
             },
             "required": [
@@ -38,14 +42,17 @@
               "allowFullAccess",
               "accessDefault"
             ],
-            "additionalProperties": false
-          }
+            "additionalProperties": false,
+            "description": "Trust state of one repo from its user-level trust file."
+          },
+          "description": "Trust states for all known repos."
         }
       },
       "required": [
         "entries"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Response for listing per-repo trust states."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

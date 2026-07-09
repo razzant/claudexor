@@ -17,7 +17,8 @@
               "required": [
                 "kind"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to the project the run originally came from."
             },
             {
               "type": "object",
@@ -27,16 +28,19 @@
                   "const": "project"
                 },
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the target project root."
                 }
               },
               "required": [
                 "kind",
                 "root"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Apply to an explicitly named project root."
             }
           ],
+          "description": "Where a work product is delivered: the original project or an explicit project root.",
           "default": {
             "kind": "original_project"
           }
@@ -50,16 +54,20 @@
             "commit",
             "pr"
           ],
-          "default": "apply"
+          "default": "apply",
+          "description": "Delivery mode: artifact_only (export only), apply to the tree, or as a branch, commit, or PR."
         },
         "branch": {
-          "type": "string"
+          "type": "string",
+          "description": "Branch name for branch/pr modes."
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "description": "Commit message for commit/pr modes."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Request body applying a run's work product to a project."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

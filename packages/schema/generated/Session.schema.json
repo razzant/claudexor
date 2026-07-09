@@ -6,20 +6,26 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Session id."
         },
         "thread_id": {
-          "$ref": "#/definitions/Session/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Thread the session belongs to."
         },
         "harness_id": {
-          "$ref": "#/definitions/Session/properties/id"
+          "type": "string",
+          "minLength": 1,
+          "description": "Harness the session is bound to."
         },
         "native_session_id": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "The vendor CLI session id (codex thread id / claude session uuid / ...); null when none exists."
         },
         "resume_kind": {
           "type": "string",
@@ -27,6 +33,7 @@
             "resume_by_id",
             "none"
           ],
+          "description": "How the session can be continued on its native CLI: resume_by_id when a native session id exists, none otherwise.",
           "default": "none"
         },
         "last_observed_model": {
@@ -34,7 +41,8 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Model last observed on the session's stream."
         },
         "state": {
           "type": "string",
@@ -43,14 +51,18 @@
             "stale",
             "rebound"
           ],
+          "description": "Vendor session cache state: live (resumable), stale, or rebound (re-hosted elsewhere).",
           "default": "live"
         },
         "created_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When the session was created."
         },
         "updated_at": {
-          "$ref": "#/definitions/Session/properties/created_at"
+          "type": "string",
+          "minLength": 1,
+          "description": "When the session was last updated."
         }
       },
       "required": [
@@ -60,7 +72,8 @@
         "created_at",
         "updated_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A re-hostable pointer to one harness's native CLI session for a thread — a cache, not the source of truth."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

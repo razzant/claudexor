@@ -6,18 +6,23 @@
       "properties": {
         "schema_version": {
           "type": "number",
-          "const": 2
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
         },
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Thread id."
         },
         "created_at": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "When the thread was created."
         },
         "updated_at": {
-          "$ref": "#/definitions/Thread/properties/created_at"
+          "type": "string",
+          "minLength": 1,
+          "description": "When the thread was last updated."
         },
         "repo": {
           "anyOf": [
@@ -25,10 +30,12 @@
               "type": "object",
               "properties": {
                 "root": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absolute path of the project root."
                 },
                 "base_ref": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Git ref the thread works against."
                 }
               },
               "required": [
@@ -41,14 +48,16 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Project the thread is anchored to; null for a no-project Ask thread."
         },
         "title": {
           "type": [
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Thread title; null until set."
         },
         "mode": {
           "type": "string",
@@ -59,6 +68,7 @@
             "agent",
             "orchestrate"
           ],
+          "description": "Default mode for new turns; individual turns may override.",
           "default": "agent"
         },
         "auth_preference": {
@@ -68,6 +78,7 @@
             "api_key",
             "auto"
           ],
+          "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
           "default": "auto"
         },
         "primary_harness": {
@@ -75,14 +86,16 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": null,
+          "description": "Sticky primary harness for the thread (re-routable); an ordering bias, not a privileged role."
         },
         "eligible_harnesses": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": []
+          "default": [],
+          "description": "Sticky eligible harness pool for the thread (races run one candidate per pool member); empty = the engine auto-pools doctor-ok harnesses."
         },
         "workspace": {
           "type": "object",
@@ -93,6 +106,7 @@
                 "in_place",
                 "isolated"
               ],
+              "description": "Per-thread workspace mode: in_place mutates the live project tree directly (the default); isolated keeps a persistent git worktree per thread that apply merges into the project.",
               "default": "in_place"
             },
             "worktree_path": {
@@ -100,35 +114,42 @@
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Persistent worktree path; set lazily on the first write turn of an isolated thread."
             },
             "base_sha": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Snapshot SHA the isolated worktree (or last apply) is based on."
             }
           },
           "additionalProperties": false,
+          "description": "How the thread's turns touch files (in-place live tree vs isolated worktree).",
           "default": {}
         },
         "run_ids": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/Thread/properties/id"
+            "type": "string",
+            "minLength": 1,
+            "description": "Non-empty identifier string."
           },
-          "default": []
+          "default": [],
+          "description": "Ordered run lineage (each run is a turn move)."
         },
         "head_run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Thread/properties/id"
+              "$ref": "#/definitions/Thread/properties/run_ids/items"
             },
             {
               "type": "null"
             }
           ],
+          "description": "Most recent run of the thread; null before the first turn runs.",
           "default": null
         },
         "state": {
@@ -137,6 +158,7 @@
             "active",
             "closed"
           ],
+          "description": "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
           "default": "active"
         }
       },
@@ -146,7 +168,8 @@
         "created_at",
         "updated_at"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The Claudexor-owned conversation about a project; runs are turns inside it. SSOT for lineage; vendor sessions are caches."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

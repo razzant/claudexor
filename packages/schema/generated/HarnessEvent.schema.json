@@ -17,23 +17,28 @@
             "usage",
             "error",
             "completed"
-          ]
+          ],
+          "description": "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, and errors."
         },
         "session_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Session the event belongs to."
         },
         "ts": {
-          "type": "string"
+          "type": "string",
+          "description": "Event timestamp."
         },
         "text": {
-          "type": "string"
+          "type": "string",
+          "description": "Text content for thinking/message/error events."
         },
         "tool": {
           "type": "object",
           "properties": {
             "name": {
-              "type": "string"
+              "type": "string",
+              "description": "Native tool name as the harness reports it."
             },
             "kind": {
               "type": "string",
@@ -45,13 +50,16 @@
                 "search",
                 "other"
               ],
+              "description": "Coarse tool classification used for typed governance; adapters map native tool names to a kind.",
               "default": "other"
             },
             "use_id": {
-              "type": "string"
+              "type": "string",
+              "description": "Correlates a tool_result with its tool_call."
             },
             "target": {
-              "type": "string"
+              "type": "string",
+              "description": "Redacted, bounded human-readable target (query/url/path/command)."
             },
             "status": {
               "type": "string",
@@ -60,28 +68,35 @@
                 "error",
                 "cancelled",
                 "denied"
-              ]
+              ],
+              "description": "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok)."
             },
             "error_summary": {
-              "type": "string"
+              "type": "string",
+              "description": "Redacted, bounded error detail for status=error results."
             },
             "content_summary": {
-              "type": "string"
+              "type": "string",
+              "description": "Redacted, bounded content detail for results (success or failure)."
             },
             "exit_code": {
-              "type": "integer"
+              "type": "integer",
+              "description": "Process exit code for command tools, when known."
             }
           },
           "required": [
             "name"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Typed tool info; set on tool_call and tool_result events."
         },
         "interaction": {
           "type": "object",
           "properties": {
             "interaction_id": {
-              "$ref": "#/definitions/HarnessEvent/properties/session_id"
+              "type": "string",
+              "minLength": 1,
+              "description": "Interaction id used to correlate the answer set."
             },
             "questions": {
               "type": "array",
@@ -89,17 +104,21 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "$ref": "#/definitions/HarnessEvent/properties/session_id"
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Question id."
                   },
                   "question": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The question text."
                   },
                   "header": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "default": null
+                    "default": null,
+                    "description": "Short chip/header text some harnesses attach to a question."
                   },
                   "options": {
                     "type": "array",
@@ -107,76 +126,92 @@
                       "type": "object",
                       "properties": {
                         "label": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Option label shown to the user."
                         },
                         "description": {
                           "type": [
                             "string",
                             "null"
                           ],
-                          "default": null
+                          "default": null,
+                          "description": "Optional longer explanation of the option."
                         }
                       },
                       "required": [
                         "label"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "description": "One multiple-choice option of an interactive question."
                     },
-                    "default": []
+                    "default": [],
+                    "description": "Selectable options; empty for free-text-only questions."
                   },
                   "multi_select": {
                     "type": "boolean",
-                    "default": false
+                    "default": false,
+                    "description": "Whether multiple options may be selected."
                   }
                 },
                 "required": [
                   "id",
                   "question"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "One question of an interactive user-input request."
               },
-              "default": []
+              "default": [],
+              "description": "Questions the harness wants answered."
             },
             "source_tool": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Native tool that raised the request (e.g. \"AskUserQuestion\")."
             }
           },
           "required": [
             "interaction_id"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Set on interaction_requested events."
         },
         "usage": {
           "type": "object",
           "properties": {
             "input_tokens": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Input tokens consumed."
             },
             "output_tokens": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Output tokens produced."
             },
             "cached_input_tokens": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Input tokens served from cache."
             },
             "cost_usd": {
               "type": "number",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Cost in USD."
             },
             "estimated": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "True when cost_usd is derived from token pricing (not natively reported)."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Token/cost usage reported by the harness."
         },
         "observed_model": {
-          "type": "string"
+          "type": "string",
+          "description": "Model the harness actually reported using."
         },
         "quota": {
           "type": "object",
@@ -184,20 +219,23 @@
             "used_percent": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 100,
+              "description": "Consumed share of the binding rate window, 0-100."
             },
             "resets_at": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "Native reset moment for the window, when the CLI reports one."
             }
           },
           "required": [
             "used_percent"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Typed quota/usage-window signal from the harness CLI's own native machine-readable surface, never scraped from prose."
         },
         "plan_progress": {
           "type": "object",
@@ -208,10 +246,12 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Plan item id."
                   },
                   "title": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Plan item title."
                   },
                   "status": {
                     "type": "string",
@@ -219,7 +259,8 @@
                       "pending",
                       "in_progress",
                       "completed"
-                    ]
+                    ],
+                    "description": "Progress state of the item."
                   }
                 },
                 "required": [
@@ -229,10 +270,12 @@
                 ],
                 "additionalProperties": false
               },
-              "default": []
+              "default": [],
+              "description": "Last-wins list of plan/todo items."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Typed live plan/todo progress mapped from the harness's native plan tools, never parsed from prose."
         },
         "rate_limit": {
           "type": "object",
@@ -242,7 +285,8 @@
                 "string",
                 "null"
               ],
-              "default": null
+              "default": null,
+              "description": "When the rate window resets, when reported."
             },
             "retry_delay_ms": {
               "anyOf": [
@@ -254,10 +298,12 @@
                   "type": "null"
                 }
               ],
-              "default": null
+              "default": null,
+              "description": "Suggested retry delay in milliseconds, when reported."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Typed rate-limit/quota signal set by the adapter when the native CLI reports a 429/quota/overload."
         },
         "transient": {
           "type": "object",
@@ -271,7 +317,8 @@
                 "timeout",
                 "unknown"
               ],
-              "default": "unknown"
+              "default": "unknown",
+              "description": "Kind of transient failure."
             },
             "retry_delay_ms": {
               "anyOf": [
@@ -283,17 +330,21 @@
                   "type": "null"
                 }
               ],
-              "default": null
+              "default": null,
+              "description": "Suggested retry delay in milliseconds, when reported."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Typed transient-failure signal set by the adapter from native CLI/API error shapes, consumed for bounded retry policy."
         },
         "error": {
-          "type": "string"
+          "type": "string",
+          "description": "Error text for error events."
         },
         "payload": {
           "type": "object",
-          "additionalProperties": {}
+          "additionalProperties": {},
+          "description": "Raw adapter-specific payload for diagnostics."
         }
       },
       "required": [
@@ -301,7 +352,8 @@
         "session_id",
         "ts"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Normalized event emitted by every adapter (the SSOT of adapter output)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"
