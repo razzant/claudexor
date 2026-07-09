@@ -15,7 +15,7 @@ live surface disagree, trust the live surface.
 3. **Learn what works RIGHT NOW.** `claudexor capabilities --json` — the
    derived AgentCapabilityCatalog: per-harness doctor status and intents,
    model truth, the mutability matrix, run-control keys, MCP tool names, and
-   the apply-eligibility vocabulary. The same catalog is served at
+   the run-apply-state vocabulary (runApplyStates). The same catalog is served at
    `GET /agent-capabilities` on the daemon and by the MCP
    `claudexor_capabilities` tool.
 4. **Check harness health.** `claudexor doctor` (human) or

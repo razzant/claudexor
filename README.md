@@ -446,7 +446,7 @@ points, in the order an agent should discover them:
    stability, recovery verbs).
 2. `claudexor capabilities --json` — the live AgentCapabilityCatalog:
    doctor-backed harness status, model truth, the mutability matrix,
-   run-control keys, and the apply-eligibility vocabulary. Also served at
+   run-control keys, and the run-apply-state vocabulary. Also served at
    `GET /agent-capabilities` and by the MCP `claudexor_capabilities` tool.
 3. `docs/reference/endpoints.json` — the control-API endpoint map with
    request/response schema names; field semantics live in the generated

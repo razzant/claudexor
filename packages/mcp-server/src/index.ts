@@ -512,7 +512,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     {
       name: "claudexor_capabilities",
       description:
-        "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and apply-eligibility vocabulary.",
+        "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and the run-apply-state vocabulary.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
       outputSchema: agentCapabilityCatalogSchema,
       annotations: { readOnlyHint: true },
