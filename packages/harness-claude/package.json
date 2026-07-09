@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-claude",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Claude Code adapter (claude -p --output-format stream-json).",
   "type": "module",
@@ -24,5 +24,17 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/harness-claude"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

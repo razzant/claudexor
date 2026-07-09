@@ -1,0 +1,39 @@
+{
+  "name": "claudexor",
+  "version": "1.0.0",
+  "description": "Harness-agnostic AI coding control plane \u2014 one CLI over Codex, Claude Code, Cursor, and OpenCode with cross-family review, best-of-N runs, and typed apply gates.",
+  "type": "module",
+  "bin": {
+    "claudexor": "./bin/claudexor.js",
+    "claudexord": "./bin/claudexord.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "dependencies": {
+    "@claudexor/cli": "workspace:*"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "cli",
+    "codex",
+    "claude",
+    "cursor",
+    "mcp",
+    "orchestration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/claudexor"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  }
+}

@@ -266,7 +266,7 @@ struct SettingsScreen: View {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
                     // Single source: the bundle version stamped at packaging time
                     // (a hardcoded string here shipped stale in the past).
-                    KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev") beta")
+                    KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
                     KeyValueRow(key: "Review protocol", value: "Inline per-turn review; server-owned decision/apply endpoints")
                     if let runtime = model.settingsSnapshot?.runtime {

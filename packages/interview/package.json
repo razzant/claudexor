@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/interview",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Spec interview: a hierarchical clarify-quiz that turns a vague task into a frozen, versioned, diffable SpecPack which maps deterministically into a TaskContract.",
   "type": "module",
@@ -22,5 +22,17 @@
   "dependencies": {
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/interview"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

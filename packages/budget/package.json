@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/budget",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Budget governor: pre-call lease reservation, loop detection, 3-tier circuit breaker, portfolio routing, observed quota.",
   "type": "module",
@@ -22,5 +22,17 @@
   "dependencies": {
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/budget"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

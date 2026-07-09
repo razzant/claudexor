@@ -9,8 +9,9 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
 that declares the capability can be assigned the intent.
 
-Current status: **v0.15.0 beta**. This is a breaking preview: old mode ids are
-intentionally not supported.
+Current status: **v1.0.0**. See "Stability at 1.0" below for what is a
+stable contract and what remains experimental; retired verbs and mode ids
+hard-error with the new spelling instead of silently aliasing.
 
 ## Prerequisites
 
@@ -309,9 +310,9 @@ future verified host-side-effect mode is explicitly selected.
 ## Integrations
 
 Claudexor can be driven by other tools through CLI JSON on supported commands, the
-local daemon/control API, MCP, and ACP. These
-surfaces are beta and capability-gated; integrations should not assume every
-subcommand has JSON output or every harness supports live steering.
+local daemon/control API, MCP, and ACP. These surfaces are capability-gated;
+integrations should not assume every subcommand has JSON output or every
+harness supports live steering (see "Stability at 1.0").
 
 The CLI accepts the same attachment contract as the control API for run modes:
 use repeatable/comma-separated `--attach <path>` for files or `--image <path>` for
@@ -437,6 +438,26 @@ cd apps/macos/ClaudexorKit && swift test
 cd ../ClaudexorApp && swift build
 ```
 
+## Stability at 1.0
+
+What 1.0 means here, per surface:
+
+- **Stable contracts** (semver-guarded from now on): the CLI verb/flag
+  surface as declared by `claudexor help --json`; the CLI `--json` output
+  keys on run paths (add-only); the control API endpoints and DTOs in
+  `docs/reference/endpoints.json` + `packages/schema/generated/`
+  (loopback + bearer token, add-only fields); the MCP tool set with their
+  input/output schemas; run artifact layout under `.claudexor/runs/`
+  (`final/`, `arbitration/`, `events.jsonl`).
+- **Experimental** (may change in minors, disclosed in the CHANGELOG):
+  the ACP surface, the `release check-name` verb, host-plugin file layout
+  (regenerate with `claudexor plugin repair all`), the REPL slash-command
+  set, and the macOS app's UI arrangement.
+- **Never contracts**: engine internals (packages other than
+  `@claudexor/cli` / `@claudexor/schema` are published for toolchain
+  transparency, follow the lockstep version, and carry no separate semver
+  promise), review prompts, and reviewer panel defaults.
+
 ## For External Agents
 
 Claudexor is built to be DRIVEN by other agents. Machine-readable entry
@@ -504,7 +525,7 @@ starts the new build).
 
 ## Version History
 
-The current version is **v0.15.0** (the root `package.json` is the version
+The current version is **v1.0.0** (the root `package.json` is the version
 SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License

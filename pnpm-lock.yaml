@@ -89,6 +89,12 @@ importers:
 
   packages/canary: {}
 
+  packages/claudexor:
+    dependencies:
+      '@claudexor/cli':
+        specifier: workspace:*
+        version: link:../cli
+
   packages/cli:
     dependencies:
       '@claudexor/acp-server':

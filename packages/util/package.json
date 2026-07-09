@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/util",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Low-level utilities (ids, hashing, fs, redaction) with no Claudexor deps.",
   "type": "module",
@@ -18,5 +18,17 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/util"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

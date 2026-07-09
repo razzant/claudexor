@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   package-macos:
-    name: Package unsigned macOS beta
+    name: Package unsigned macOS app
     runs-on: macos-26
     steps:
       - name: Checkout release tag
@@ -212,22 +212,27 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           version="${{ steps.release.outputs.version }}"
           notes="$(mktemp)"
-          cat > "$notes" <<EOF
-          Claudexor ${version} unsigned beta build.
-
-          Highlights: see CHANGELOG.md for this version's entry — the
-          changelog is the single source of shipped-behavior truth; these
-          draft notes are finalized from it by the operator before publishing.
-
-          This release is built by GitHub Actions from tag ${tag} at commit ${GITHUB_SHA}.
-          The macOS app, DMG, and ZIP are unsigned and not notarized for ${tag}.
-          macOS 26 or newer is required.
-          Verify downloads with the attached SHA256 files.
-          EOF
+          # Notes come FROM the CHANGELOG entry (single source of shipped-
+          # behavior truth); the operator finalizes before publishing.
+          node - "$version" > "$notes" <<'NODE'
+          const { readFileSync } = require("node:fs");
+          const version = process.argv[2];
+          const log = readFileSync("CHANGELOG.md", "utf8");
+          // CHANGELOG entries are BULLETS: `- **vX.Y.Z** (date) — text...`
+          // (continuation lines indented); an entry ends at the next version
+          // bullet or EOF.
+          const re = new RegExp(String.raw`^- \*\*v${version.replace(/\./g, "\\.")}\*\*([\s\S]*?)(?=^- \*\*v|$(?![\s\S]))`, "m");
+          const m = re.exec(log);
+          if (!m) {
+            console.error(`CHANGELOG.md has no entry for ${version}`);
+            process.exit(1);
+          }
+          process.stdout.write(`Claudexor ${version}\n\n${m[1].trim()}\n\nBuilt by GitHub Actions from tag v${version} at commit ${process.env.GITHUB_SHA}.\nThe macOS app, DMG, and ZIP are unsigned and not notarized; macOS 26 or newer is required.\nVerify downloads with the attached SHA256 files.\n`);
+          NODE
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --prerelease
+            gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft
           else
-            gh release create "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --prerelease --verify-tag
+            gh release create "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --verify-tag
           fi
           gh release upload "$tag" \
             "apps/macos/dist/Claudexor-${version}-unsigned.dmg" \
@@ -235,3 +240,53 @@ jobs:
             "apps/macos/dist/Claudexor-${version}-unsigned.zip" \
             "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256" \
             --clobber
+
+  publish-npm:
+    name: Publish npm packages (provenance)
+    runs-on: ubuntu-latest
+    # npm publish happens only for the real tag push (not workflow_dispatch
+    # repackaging) and only after the macOS gate battery passed.
+    needs: package-macos
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write # npm provenance attestation
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify tag version matches manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg_version"
+            exit 1
+          fi
+
+      - name: Publish (public, provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: pnpm -r publish --access public --no-git-checks

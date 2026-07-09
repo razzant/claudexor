@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
@@ -39,5 +39,22 @@
     "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*",
     "@claudexor/workspace": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./cli": "./dist/cli.js",
+    "./claudexord": "./dist/claudexord.js"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/policy",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Typed risk classifier + thin policy (path guard, require-human, deny lists). No keyword-regex governance.",
   "type": "module",
@@ -22,5 +22,17 @@
   "dependencies": {
     "@claudexor/context": "workspace:*",
     "@claudexor/schema": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/policy"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

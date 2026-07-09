@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-fake",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Deterministic fake harnesses for tests and pipeline bring-up.",
   "type": "module",
@@ -23,5 +23,17 @@
     "@claudexor/core": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/harness-fake"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

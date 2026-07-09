@@ -3,6 +3,38 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v1.0.0** (2026-07-09) — the first public release. Three programs land
+  on top of v0.15: PUBLICATION HYGIENE — provenance sweep of the whole tree
+  (private paths, internal codenames, decision-register markers), sanitized
+  recorded fixtures with enforced provenance, a community trust pack
+  (SECURITY.md, issue/PR templates, Dependabot, no-telemetry Privacy and
+  uninstall/data maps), and supply-chain pinning (pnpm `allowBuilds`, no
+  dependency install scripts). AGENT CONTRACT — the CLI surface has ONE
+  typed owner (`command-registry.ts`) that renders `claudexor help`, the
+  machine-readable `help --json`, plugin instruction texts, and the
+  docs/parity gates; a derived AgentCapabilityCatalog answers "what can
+  this install do right now" identically over `claudexor capabilities
+  --json`, `GET /agent-capabilities`, and the MCP `claudexor_capabilities`
+  tool; MCP tools declare outputSchema + structuredContent + behavior
+  annotations and gained read-only recovery tools (`claudexor_runs`,
+  `claudexor_inspect`, `claudexor_apply_check`); every run result carries a
+  derived `applyEligibility` verdict (one producer: the delivery gate);
+  every Zod schema ships field-level `.describe()` docs and
+  `docs/reference/endpoints.json` maps the control API with schema refs;
+  `docs/AGENT_ONBOARDING.md` orients external agents. NAMING AND SAFETY —
+  BREAKING: the `run` verb is now `agent` and `race` is `best-of`
+  (old spellings hard-error with the new name; the MCP race tool is
+  `claudexor_best_of`); secret-like values inside prompts are HARD-BLOCKED
+  at every ingress (CLI, control API, thread turns, MCP, ACP, daemon
+  socket, and the engine boundary itself) with a typed
+  `inline_secret_rejected` error and no bypass; the feature-status ledger
+  was emptied (26 fixes landed; deliberate boundaries moved to Design
+  constraints in ARCHITECTURE/INTEGRATIONS); strictness upgrades:
+  out-of-scope flags now hard-error per verb (e.g. `explore --swarm`,
+  `spec --model`), `--access-default` requires a value, and unknown verbs
+  return the `{ok:false}` JSON envelope under `--json`. npm packages are
+  published from the tag with provenance (`claudexor` is the bin wrapper
+  over `@claudexor/cli`).
 - **v0.15.0** (2026-07-05) — the stabilization release: concept freeze
   (numbered-invariant Bible + concept gate), model governance
   (harness-scoped models, strict truth-source validation at settings-write

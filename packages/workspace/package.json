@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/workspace",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "WorkspaceEnvelope manager: git worktree + scoped HOME/harness-config isolation + dirty policy.",
   "type": "module",
@@ -23,5 +23,17 @@
     "@claudexor/core": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/workspace"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

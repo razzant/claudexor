@@ -107,6 +107,20 @@ jobs:
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary
 
+      - name: Linux CLI smoke (bins, machine surfaces, doctor honesty)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The bare-package wrapper bins must run on Linux.
+          node packages/claudexor/bin/claudexor.js --version
+          node packages/claudexor/bin/claudexor.js help --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok||!Array.isArray(j.commands))process.exit(1);});'
+          node packages/cli/dist/cli.js capabilities --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(j.ok!==true)process.exit(1);});'
+          # No vendor CLIs on the runner: doctor must report them honestly
+          # (unavailable/degraded) as VALID JSON — a crash or empty output
+          # fails this step loudly (no || true escape hatch).
+          node packages/cli/dist/cli.js doctor --json > /tmp/doctor.json
+          node -e 'const j=JSON.parse(require("node:fs").readFileSync("/tmp/doctor.json","utf8")); if(!Array.isArray(j.harnesses)) { console.error("doctor --json did not produce a harnesses array"); process.exit(1); }'
+
   swift:
     runs-on: macos-26
     steps:

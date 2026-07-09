@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/synthesis",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Synthesis decision + plan: when to merge candidates into a new (re-checked) candidate.",
   "type": "module",
@@ -21,5 +21,17 @@
   },
   "dependencies": {
     "@claudexor/arbitration": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/synthesis"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

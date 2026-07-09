@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/delivery",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Apply a WorkProduct patch: dry-run / apply / branch / commit / pr.",
   "type": "module",
@@ -25,5 +25,17 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/policy": "workspace:*",
     "@claudexor/workspace": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/delivery"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

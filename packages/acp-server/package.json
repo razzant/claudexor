@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/acp-server",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Minimal ACP server (stdio JSON-RPC) exposing Claudexor as a meta-agent to editors. Runner injected.",
   "type": "module",
@@ -22,5 +22,17 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/acp-server"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

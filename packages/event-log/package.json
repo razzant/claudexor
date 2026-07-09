@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/event-log",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
   "type": "module",
@@ -22,5 +22,17 @@
   "dependencies": {
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/event-log"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

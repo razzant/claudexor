@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/config",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Layered config loader (precedence + trust). Sensitive settings never from versioned repo config.",
   "type": "module",
@@ -24,5 +24,17 @@
     "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1",
     "zod": "^3.24.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/config"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

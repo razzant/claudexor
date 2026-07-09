@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/artifact-store",
-  "version": "0.15.0",
+  "version": "1.0.0",
   "license": "MIT",
   "description": "Files-first canonical artifact store (repo-local .claudexor/runs layout).",
   "type": "module",
@@ -22,5 +22,17 @@
   "dependencies": {
     "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "directory": "packages/artifact-store"
+  },
+  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/joi-lab/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }
