@@ -215,6 +215,8 @@ one-off release scratch.
 Use this split:
 
 - `README.md`: product entrypoint and detailed quickstart.
+- `docs/AGENT_ONBOARDING.md`: external-agent orientation (machine-readable
+  surfaces, decision tree, recovery).
 - `CLAUDEXOR_BIBLE.md`: compact product constitution.
 - `docs/ARCHITECTURE.md`: current runtime and package map.
 - `docs/INTEGRATIONS.md`: current external integration surfaces and limitations.

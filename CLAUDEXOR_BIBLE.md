@@ -455,6 +455,8 @@ process below. Never paper over the conflict.
   behavior and visuals), `docs/WHITEPAPER.md` (public rationale),
   `docs/DEVELOPMENT.md` (contributor workflow), `docs/CHECKLISTS.md` (human
   gates), `docs/FEATURES.md` (status ledger of non-solid features),
+  `docs/AGENT_ONBOARDING.md` (external-agent orientation over the
+  machine-readable surfaces),
   `CONTRIBUTING.md` (the agent session contract), app READMEs (build
   notes). verify: docs-truth; doc-taxonomy review question.
 - **INV-131** Update the relevant docs in the same change that alters

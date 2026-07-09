@@ -26,7 +26,10 @@ live surface disagree, trust the live surface.
 ## CLI vs MCP vs control API
 
 - **CLI** is the primary surface. `--json` gives machine output on the main
-  paths; runtime errors come back as `{ok:false, exitCode, error}` on stdout.
+  paths. USAGE and transport errors come back as `{ok:false, exitCode,
+  error}` on stdout; a run that STARTED always reports its terminal as
+  `{runId, runDir, status, ...}` even when the status is a failure — a
+  non-success terminal is a result, not an error envelope.
 - **MCP** (`claudexor mcp serve`, stdio) is one-shot: every tool returns
   the final output plus a `runId:` trailer. Run tools declare `outputSchema`
   and return `structuredContent` `{summary, runId, runDir, status,
