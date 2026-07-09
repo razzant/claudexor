@@ -201,7 +201,7 @@ routes scrub provider API-key env vars unless an API-key source is selected.
 
 ```bash
 claudexor auth status
-claudexor auth login codex   # prints the native setup command/hint; no SaaS broker
+claudexor auth login codex   # runs the harness's native login in YOUR terminal (hint-only with --json/non-TTY); no SaaS broker
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
 claudexor secrets list --backend file   # force the 0600 file store (also: CLAUDEXOR_SECRETS_BACKEND=file)
