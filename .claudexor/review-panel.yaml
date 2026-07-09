@@ -1,4 +1,4 @@
-# Per-commit review panel for THIS repository (D18). Versioned config chooses
+# Per-commit review panel for THIS repository. Versioned config chooses
 # REVIEWERS only — it cannot grant powers (no env, no bypass, no exec knobs;
 # CLAUDEXOR_BIBLE: versioned repo config never self-grants sensitive powers).
 # Panel changes are reviewed like code.
