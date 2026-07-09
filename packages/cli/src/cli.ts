@@ -863,6 +863,8 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
         reviewerModels: reviewerModels(args),
         reviewerEfforts: reviewerEfforts(args),
       });
+      // The grounding step is a real (multi-)harness plan run, so the same
+      // cost controls as the plan verb apply here.
       const plan = await orch.run({
         repoRoot: process.cwd(),
         prompt,
@@ -871,6 +873,8 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
         n: intFlag(args, "n"),
         access: "readonly",
         web: webPolicy(args),
+        effort: effortHint(args),
+        maxUsd: floatFlag(args, "max-usd") ?? null,
       });
       planRunId = plan.runId;
       planDir = plan.runDir;
