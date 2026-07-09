@@ -365,7 +365,7 @@ views in the shared design-system files; screens compose them.
   (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
   Two stacked zones, all with SOLID contents (no glass-on-glass):
   - a controls row — the intent `Menu` (Ask, Agent, Plan, Spec, Audit, plus
-    Race as the best-of-N agent strategy),
+    Best-of as the best-of-N agent strategy),
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
     thread's project, an open thread's repo is bound; the ONLY place project
     selection lives in the app), the `PrimaryHarnessChip` (which
@@ -384,7 +384,7 @@ views in the shared design-system files; screens compose them.
   The "⋯" popover holds the per-turn engine knobs as clean SOLID
   `OptionSection`/`OptionRow` rows — every one a projection of a typed run/DTO
   field, never UI-invented state:
-  - the **harness pool** multiselect chips (the eligible pool Race runs — one
+  - the **harness pool** multiselect chips (the eligible pool Best-of runs — one
     candidate per harness; the primary answers in chat);
   - the **per-harness model rows** (`Models — per harness for THIS turn`): one
     row per pooled harness, `[harness label][model dropdown]`, each dropdown
@@ -412,12 +412,12 @@ views in the shared design-system files; screens compose them.
   `Ask`-only** — the `ProjectChip` remains visible as the choose-project CTA, the
   primary harness chip and project-scoped controls are hidden or disabled, the
   "⋯" options popover remains available for no-project Ask, and an inline
-  "Pick a project to use Agent · Plan · Race" hint prevents sending into the void.
+  "Pick a project to use Agent · Plan · Best-of" hint prevents sending into the void.
   Project-only controls inside the options popover are hidden or disabled rather
   than faking project scope. The draft-state first message materializes the
   thread. The composer's intent menu surfaces four everyday canonical modes —
   `ask` / `agent` / `plan` / `audit` — plus **Spec** as the grounding flow and
-  **Race** as `agent` + the best-of-N strategy flag, not a mode. The fifth
+  **Best-of** as `agent` + the best-of-N strategy flag, not a mode. The fifth
   canonical mode `orchestrate` (and `explore` / `create`) are intentionally
   **CLI-only**: they are power-user / scripted flows, so the composer keeps the everyday
   surface small. race width / until-clean / attempts are engine strategy flags, not modes.
@@ -474,7 +474,7 @@ views in the shared design-system files; screens compose them.
   Sheets POLL the job to its terminal state (or consume the job SSE stream) and
   then re-run the harness doctor; a job stuck on "running" forever in the UI is
   a defect, not a state.
-- **Race / candidates.** Per-family candidate lanes; the best-of-N
+- **Best-of / candidates.** Per-family candidate lanes; the best-of-N
   "attempts/re-roll" primitive. (See the Candidate cards contract above — the
   Candidates tab renders live server-projected evidence.)
 - **Cross-family review (inline, per turn).** Review/findings are NOT a separate

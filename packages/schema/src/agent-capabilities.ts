@@ -133,9 +133,9 @@ export const AgentCapabilityCatalog = z
     mutability: CatalogMutabilityMatrix,
     cliCommands: z.array(CatalogCliCommand).describe("CLI verbs with mutability/stability (full flag detail via `claudexor help --json`)."),
     mcpTools: z.array(z.string()).describe("MCP tool names `claudexor mcp serve` exposes."),
-    applyEligibilityVocabulary: z
+    runApplyStates: z
       .array(z.string())
-      .describe("RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted)."),
+      .describe("RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted) — distinct from the ApplyEligibility verdict object on run details."),
   })
   .describe("Machine-readable capability catalog for external agents — derived, never hand-maintained.");
 export type AgentCapabilityCatalog = z.infer<typeof AgentCapabilityCatalog>;

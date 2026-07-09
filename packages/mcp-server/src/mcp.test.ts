@@ -118,7 +118,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       },
       cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
       mcpTools: ["claudexor_ask"],
-      applyEligibilityVocabulary: ["not_applied", "applied", "applied_review_blocked", "reverted"],
+      runApplyStates: ["not_applied", "applied", "applied_review_blocked", "reverted"],
     };
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "__status") return { harnesses: [], available: [] };

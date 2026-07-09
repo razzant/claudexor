@@ -640,7 +640,7 @@ apply`); `accept_clean_patch` delivers through the gate and
 override. UI must not fake local accept/unblock state. The CLI resolves a run from
 any cwd (project store, user Ask store, or — only when a daemon is already running —
 the daemon registry); read-only lookups (`inspect`/`apply`) never auto-start a
-daemon, while acting paths (`run`/`race`/`create`, `decision`) do.
+daemon, while acting paths (`agent`/`best-of`/`create`, `decision`) do.
 
 A run is applyable only at `succeeded`/decision `success` (or a `blocked` run
 unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is
@@ -781,7 +781,7 @@ attempt cost/duration persisted under the config dir
 cheapest/strongest/balanced genuinely differentiate.
 
 Structured output: routes whose manifest declares `json_schema_output`
-receive `HarnessRunSpec.output_schema` — today the orchestrate BRAIN passes
+receive `HarnessRunSpec.output_schema` — today the orchestrate PLANNER passes
 the OrchestratePlan JSON Schema computed from the live Zod shape, strictified
 for vendor strict modes (every object: `required` = all keys,
 `additionalProperties: false`; inline root — both live-verified: codex

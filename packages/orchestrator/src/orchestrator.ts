@@ -148,6 +148,7 @@ import {
 } from "@claudexor/policy";
 import {
   appendLine,
+  assertNoInlineSecretValues,
   containsSecretLikeToken,
   hashJson,
   newId,
@@ -471,6 +472,11 @@ export class Orchestrator {
 
   async run(input: RunInput): Promise<OrchestratorResult> {
     const resolved = this.resolveRunInput(input);
+    // INV-062 at the ENGINE boundary: every surface fences prompts already,
+    // but a direct embedder (or the daemon-less local REPL fallback) reaches
+    // this entry without one. Prompts are durable artifacts — the hard block
+    // applies here too, so no in-process path can ever bypass it.
+    assertNoInlineSecretValues({ prompt: resolved.prompt }, "$", "run input");
     const parsedMode = ModeKindSchema.safeParse(resolved.mode ?? "agent");
     if (!parsedMode.success) {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);

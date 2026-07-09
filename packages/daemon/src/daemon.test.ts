@@ -323,6 +323,31 @@ describe("daemon", () => {
     }
   }, 20000);
 
+  it("defense-in-depth: a secret-like prompt already ON DISK is redacted in public records and re-persistence", async () => {
+    // The enqueue fence makes this state unreachable through the front door;
+    // this pins the second layer for records that predate the fence (or are
+    // hand-edited): redactParams covers status output AND the next persist.
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-legacy";
+    const secret = "sk-" + "e".repeat(24);
+    writeFileSync(
+      persistPath,
+      JSON.stringify([{ id: "job-legacy", state: "failed", params: { prompt: `use ${secret}` }, createdAt: new Date().toISOString() }]),
+    );
+    const server = new DaemonServer({ socketPath, token, persistPath, runner: async () => ({ status: "success", summary: "x" }) });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, token);
+      const st = await client.status("job-legacy");
+      expect(JSON.stringify(st)).not.toContain(secret);
+      expect(JSON.stringify((st as { params?: unknown }).params ?? {})).toContain("[redacted]");
+    } finally {
+      await server.stop();
+    }
+  }, 20000);
+
   it("REJECTS a secret-like prompt at enqueue (the prompt hard block; no bypass)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");

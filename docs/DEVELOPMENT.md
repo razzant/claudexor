@@ -162,7 +162,7 @@ Tests and local smokes must never touch real user state:
   create / write→apply / orchestrate chains are exercisable with no real harness.
 - Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
   but never auto-start one (a typo'd run id reports `no such run`); only acting
-  paths (`run`/`race`/`create`, `decision`) auto-start it. `daemon start` blocks
+  paths (`agent`/`best-of`/`create`, `decision`) auto-start it. `daemon start` blocks
   until the daemon is actually ready, so a follow-up `status`/run can't race it.
 - Real-harness dogfood lives in `scripts/real-harness-battery.mjs` and runs only
   against disposable repos under `~/.claudexor/dogfood`. It asserts engine-owned

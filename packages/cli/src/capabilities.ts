@@ -109,6 +109,6 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
       recovery: c.recovery === true,
     })),
     mcpTools: [...mcpToolNames()],
-    applyEligibilityVocabulary: [...RunApplyState.options],
+    runApplyStates: [...RunApplyState.options],
   });
 }

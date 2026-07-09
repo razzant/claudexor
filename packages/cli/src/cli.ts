@@ -1611,7 +1611,12 @@ async function main(): Promise<number> {
 
     default:
       // Unknown command is an ERROR (exit 2), not a silent help print with
-      // exit 0 — scripts must not mistake a typo'd verb for success.
+      // exit 0 — scripts must not mistake a typo'd verb for success. --json
+      // callers get the machine envelope on stdout (stdout purity contract).
+      if (json) {
+        printJson({ ok: false, exitCode: 2, error: `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)` });
+        return 2;
+      }
       process.stderr.write(`claudexor: unknown command '${cmd}'\n\n${HELP}\n`);
       return 2;
   }

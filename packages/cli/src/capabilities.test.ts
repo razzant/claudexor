@@ -23,7 +23,7 @@ describe("AgentCapabilityCatalog surfaces", () => {
       },
       cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
       mcpTools: ["claudexor_ask"],
-      applyEligibilityVocabulary: ["not_applied", "applied", "applied_review_blocked", "reverted"],
+      runApplyStates: ["not_applied", "applied", "applied_review_blocked", "reverted"],
     };
     expect(AgentCapabilityCatalog.parse(minimal).ok).toBe(true);
     // An invented isolation kind must be refused, not passed through.

@@ -8,7 +8,8 @@ import {
   diffSpecPacks,
 } from "@claudexor/interview";
 import { type InterviewAnswer, type InterviewQuestion, type SpecPack, SpecPack as SpecPackSchema } from "@claudexor/schema";
-import { ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudexor/util";
+import {
+  assertNoInlineSecretValues, ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudexor/util";
 
 export interface SpecAnswersFile {
   answers: InterviewAnswer[];
@@ -307,6 +308,9 @@ function parseQuestionBullets(blockLines: string[]): InterviewQuestion[] {
 export function readAnswers(path: string): SpecAnswersFile {
   const parsed = readJsonSafe<SpecAnswersFile | InterviewAnswer[]>(path);
   if (!parsed) throw new Error(`could not parse answers JSON: ${path}`);
+  // Same fence as the daemon spec endpoints: answers become part of the
+  // durable SpecPack, so secret-like values are refused at ingestion.
+  assertNoInlineSecretValues(parsed, "$", "spec answers file");
   if (Array.isArray(parsed)) return { answers: parsed };
   return { ...parsed, answers: parsed.answers ?? [] };
 }

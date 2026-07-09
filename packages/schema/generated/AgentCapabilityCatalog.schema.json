@@ -360,12 +360,12 @@
           },
           "description": "MCP tool names `claudexor mcp serve` exposes."
         },
-        "applyEligibilityVocabulary": {
+        "runApplyStates": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted)."
+          "description": "RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted) — distinct from the ApplyEligibility verdict object on run details."
         }
       },
       "required": [
@@ -379,7 +379,7 @@
         "mutability",
         "cliCommands",
         "mcpTools",
-        "applyEligibilityVocabulary"
+        "runApplyStates"
       ],
       "additionalProperties": false,
       "description": "Machine-readable capability catalog for external agents — derived, never hand-maintained."

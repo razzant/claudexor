@@ -1,10 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, join, relative, sep } from "node:path";
 import { type ApplyGateInput, checkPatch, deliver, deriveApplyEligibility, revertInPlace, validateApplyGate } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
+import { TERMINAL_STATES, redactedSseLine } from "./sse-shared.js";
+import { streamRunEvents } from "./run-events-stream.js";
 import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
 import { handleThreadTurnCreate, handleThreadTurnRetry, recordTurnEnqueueFailure, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
@@ -155,7 +157,8 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const TERMINAL_STATES = new Set(["succeeded", "no_op", "ungated", "review_not_run", "blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged", "stuck_no_progress"]);
+// TERMINAL_STATES/readNewLines/redactedSseLine live in sse-shared.ts (used by
+// both the per-run stream module and this server).
 /** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 /** Larger cap for binary artifacts (images, etc.): they are naturally bounded and
@@ -1262,121 +1265,13 @@ export class DaemonControlApiServer {
   }
 
   private async streamEvents(id: string, lastEventId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const rec = await this.findRun(id);
-    if (!rec) return this.json(res, 404, { error: "no such run" });
-    // A QUEUED job has no runDir yet — that is a wait, not a 404:
-    // the stream opens with heartbeats and binds the events file once the
-    // run starts, so `follow <jobId>` works from enqueue time. 404 stays for
-    // truly unknown ids only.
-    let eventsPath = rec.runDir ? join(rec.runDir, "events.jsonl") : null;
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    });
-    res.write(": connected\n\n");
-    this.sseClients.add(res);
-
-    let lineNo = 0;
-    let offset = 0;
-    let carry = "";
-    let closed = false;
-    let unsubscribe: (() => void) | undefined;
-    const cleanup = () => {
-      closed = true;
-      clearInterval(timer);
-      clearInterval(heartbeat);
-      unsubscribe?.();
-      this.sseClients.delete(res);
-    };
-    // Heartbeat: a quiet harness phase (long tool call, slow model) must not be
-    // indistinguishable from a dead connection — clients and proxies need bytes.
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
-    }, this.opts.heartbeatMs ?? 15_000);
-    heartbeat.unref?.();
-    let draining = false;
-    const writeAvailable = async () => {
-      if (closed || draining) return;
-      if (!eventsPath) {
-        // Still queued: poll the job until the run binds its dir (then tail
-        // it) or the job goes terminal without one (validation failure — a
-        // run that never materialized ends the stream honestly).
-        const latest = await this.opts.daemon.status(rec.id).catch(() => rec);
-        if (latest.runDir) {
-          eventsPath = join(latest.runDir, "events.jsonl");
-        } else if (TERMINAL_STATES.has(latest.state)) {
-          res.write("event: end\ndata: {}\n\n");
-          res.end();
-          cleanup();
-          return;
-        } else {
-          return;
-        }
-      }
-      if (!existsSync(eventsPath)) return;
-      draining = true;
-      try {
-        const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);
-        offset = nextOffset;
-        carry = rest;
-        for (const raw of lines) {
-          lineNo += 1;
-          // Durable cursor: the event's own persisted seq. Legacy lines without
-          // one fall back to their line number (matching EventLog's counter
-          // init), so resume ids stay consistent either way.
-          let seq = lineNo;
-          let type = "run";
-          try {
-            const parsed = JSON.parse(raw) as { type?: string; seq?: number };
-            type = String(parsed.type ?? "run");
-            if (typeof parsed.seq === "number" && Number.isFinite(parsed.seq)) seq = parsed.seq;
-          } catch {
-            type = "malformed";
-          }
-          if (seq <= lastEventId) continue;
-          // Backpressure: a large replay into a slow client must not balloon
-          // the socket buffer — pause the tail until the kernel drains it
-          // (or the client goes away, which resolves via `close`).
-          if (!res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`)) {
-            await new Promise<void>((resolve) => {
-              const done = (): void => {
-                res.off("drain", done);
-                res.off("close", done);
-                resolve();
-              };
-              res.once("drain", done);
-              res.once("close", done);
-            });
-            if (closed) return;
-          }
-          if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
-            res.write("event: end\ndata: {}\n\n");
-            res.end();
-            cleanup();
-            return;
-          }
-        }
-        const latest = await this.opts.daemon.status(rec.id).catch(() => rec);
-        if (TERMINAL_STATES.has(latest.state)) {
-          res.write("event: end\ndata: {}\n\n");
-          res.end();
-          cleanup();
-        }
-      } finally {
-        draining = false;
-      }
-    };
-    // Push: a bus event for this run pokes the tailer immediately; the file
-    // remains the single ordered source so push and poll can never disagree.
-    unsubscribe = this.opts.bus?.subscribe((event) => {
-      if (!closed && event.run_id === (rec.runId ?? rec.id)) void writeAvailable();
-    });
-    const timer = setInterval(() => void writeAvailable(), this.opts.pollMs ?? 250);
-    timer.unref?.();
-    req.on("close", cleanup);
-    res.on("close", cleanup);
-    await writeAvailable();
+    return streamRunEvents(
+      { findRun: (runId) => this.findRun(runId), json: (r, code, v) => this.json(r, code, v), opts: this.opts as never, sseClients: this.sseClients },
+      id,
+      lastEventId,
+      req,
+      res,
+    );
   }
 
   /**
@@ -1429,33 +1324,6 @@ export class DaemonControlApiServer {
     } catch {
       return [];
     }
-  }
-}
-
-function redactedSseLine(raw: string): string {
-  const redacted = redactSecrets(raw);
-  try {
-    return JSON.stringify(JSON.parse(redacted));
-  } catch {
-    return redacted;
-  }
-}
-
-function readNewLines(path: string, offset: number, carry: string): { lines: string[]; nextOffset: number; rest: string } {
-  const size = statSync(path).size;
-  const start = size < offset ? 0 : offset; // file rotated/truncated; start over
-  const len = size - start;
-  if (len <= 0) return { lines: [], nextOffset: start, rest: carry };
-  const fd = openSync(path, "r");
-  try {
-    const buf = Buffer.allocUnsafe(len);
-    readSync(fd, buf, 0, len, start);
-    const text = carry + buf.toString("utf8");
-    const parts = text.split("\n");
-    const rest = parts.pop() ?? "";
-    return { lines: parts.filter(Boolean), nextOffset: size, rest };
-  } finally {
-    closeSync(fd);
   }
 }
 
