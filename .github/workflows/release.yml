@@ -221,7 +221,7 @@ jobs:
           // CHANGELOG entries are BULLETS: `- **vX.Y.Z** (date) — text...`
           // (continuation lines indented); an entry ends at the next version
           // bullet or EOF.
-          const re = new RegExp(String.raw`^- \*\*v${version.replace(/\./g, "\\.")}\*\*([\s\S]*?)(?=^- \*\*v|$(?![\s\S]))`, "m");
+          const re = new RegExp(String.raw`^- \*\*v${version.replace(/\./g, "\\.")}\*\*([\s\S]*?)(?=^- \*\*v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\*\*|$(?![\s\S]))`, "m");
           const m = re.exec(log);
           if (!m) {
             console.error(`CHANGELOG.md has no entry for ${version}`);
@@ -279,9 +279,27 @@ jobs:
         run: |
           set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
-          pkg_version="$(node -p 'require("./package.json").version')"
+          # Lockstep bar: every PUBLIC workspace manifest must carry the same
+          # version, and that version must equal the tag. A drifted manifest
+          # fails the job before anything is published.
+          pkg_version="$(node -e '
+            const { readFileSync, readdirSync, existsSync } = require("node:fs");
+            const read = (p) => JSON.parse(readFileSync(p, "utf8"));
+            const versions = new Set([read("./package.json").version]);
+            for (const dir of readdirSync("packages")) {
+              const mp = "packages/" + dir + "/package.json";
+              if (!existsSync(mp)) continue;
+              const m = read(mp);
+              if (!m.private) versions.add(m.version);
+            }
+            if (versions.size !== 1) {
+              console.error("version drift across public manifests: " + [...versions].join(", "));
+              process.exit(1);
+            }
+            process.stdout.write([...versions][0]);
+          ')"
           if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg_version"
+            echo "::error::Tag $GITHUB_REF_NAME does not match workspace manifest version $pkg_version"
             exit 1
           fi
 

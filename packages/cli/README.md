@@ -12,8 +12,11 @@ npm install -g claudexor
 claudexor doctor
 ```
 
-This package ships the `claudexor` and `claudexord` bins plus the explicit
-`./cli` and `./claudexord` entry exports the wrapper uses. It follows the
+This package ships the CLI implementation and the explicit `./cli` and
+`./claudexord` entry exports; the GLOBAL bin names are owned by the bare
+`claudexor` wrapper package (one bin owner, no collisions), so
+`npm install -g @claudexor/cli` intentionally installs NO bins — install
+`claudexor` instead. It follows the
 monorepo's lockstep version; the STABLE contract is the CLI surface itself
 (`claudexor help --json`) and the documented `--json` outputs — not this
 package's internal module shape.

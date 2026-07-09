@@ -6,16 +6,13 @@
   "type": "module",
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
-  "bin": {
-    "claudexor": "./dist/cli.js",
-    "claudexord": "./dist/claudexord.js"
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node -e \"const {existsSync}=require('node:fs'); for (const f of ['dist/cli.js','dist/claudexord.js']) if (!existsSync(f)) { console.error('prepublishOnly: missing '+f+' \u2014 run pnpm build before publishing'); process.exit(1); }\""
   },
   "dependencies": {
     "@claudexor/acp-server": "workspace:*",
@@ -56,5 +53,8 @@
     ".": "./dist/cli.js",
     "./cli": "./dist/cli.js",
     "./claudexord": "./dist/claudexord.js"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

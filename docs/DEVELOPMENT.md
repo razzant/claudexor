@@ -44,6 +44,8 @@ Read these together before changing shared behavior:
 - `packages/artifact-store` and `packages/event-log` own run artifact trees and
   the append-only event log.
 - `packages/interview` owns the spec interview engine.
+- `packages/claudexor` is the bare-name bin wrapper over `@claudexor/cli`
+  (the only package that installs the global `claudexor`/`claudexord` bins).
 - `packages/cli`, `packages/daemon`, `packages/control-api`,
   `packages/mcp-server`, `packages/acp-server`, and `apps/macos` are surfaces.
   Keep them thin.
@@ -96,6 +98,19 @@ pnpm release:verify
 ```
 
 It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
+
+Publishing happens FROM THE TAG: pushing `v<semver>` runs
+`.github/workflows/release.yml`, which re-runs the full gate battery on a
+macOS runner, packages the unsigned DMG/ZIP, creates the DRAFT GitHub
+Release with notes generated from that version's `CHANGELOG.md` entry (the
+changelog is the notes SSOT — write it before tagging), and then a separate
+`publish-npm` job publishes every public workspace package to npm with
+provenance (`NPM_TOKEN` secret; tag/manifest version parity is enforced).
+The local `pnpm release:npm` script is the manual fallback of the same
+publish (verify + `pnpm -r publish --access public`; note npm provenance
+attestation is only produced by the CI job). Version BUMPS still go through
+changesets (`pnpm changeset` + `pnpm version-packages`, fixed lockstep
+group); only the publish step is tag-driven.
 The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` (reviewer
 models come from `TRIAD_MODELS`/`SCOPE_MODEL` or a pinned local
 `.adversarial-review/PANEL.lock`); when the release diff is too large for a

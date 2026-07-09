@@ -1,7 +1,16 @@
 # @claudexor/schema
 
-Internal package of [Claudexor](https://github.com/joi-lab/claudexor) — Single source of truth for all Claudexor data shapes (Zod + generated JSON Schema).
+The data-shape single source of truth of
+[Claudexor](https://github.com/joi-lab/claudexor): Zod schemas, TypeScript
+types, and the generated draft-07 JSON Schemas under `generated/`.
 
-Published as part of the Claudexor toolchain; it follows the monorepo's
-lockstep version and has no separate semver contract. Use the `claudexor`
-CLI (or `@claudexor/cli`) as the supported entry point.
+Unlike the engine-internal packages, the SHAPES here are part of Claudexor's
+stable 1.0 contract: the control API DTOs and the generated
+`generated/<Name>.schema.json` files evolve add-only within a major version
+(see "Stability at 1.0" in the repository README). The generated files carry
+field-level `description`s and are referenced by name from
+`docs/reference/endpoints.json`.
+
+The package follows the monorepo's lockstep version. Use the `claudexor` CLI
+as the supported entry point for driving runs; consume this package when you
+need the typed shapes or the JSON Schemas themselves.

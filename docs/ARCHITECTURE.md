@@ -125,6 +125,10 @@ are NOT aliases: they hard-error at every wire boundary.
   skill/MCP artifacts and command artifacts where hosts support them. Plugin
   lifecycle state is user-level local setup state, not a schema/control-api
   contract.
+- `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
+  `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
+  the recommended global install (`npm install -g claudexor`) and the ONE
+  owner of the global bin names.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
