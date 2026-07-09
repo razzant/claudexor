@@ -26,7 +26,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { GEN_BEGIN, GEN_END, implementedEndpoints, renderEndpointBlock } from "./endpoints-lib.mjs";
+import { GEN_BEGIN, GEN_END, endpointDetails, implementedEndpoints, renderEndpointBlock, renderEndpointsJson } from "./endpoints-lib.mjs";
 
 const failures = [];
 
@@ -71,6 +71,29 @@ const implemented = implementedEndpoints();
       if (!documented.has(ep)) failures.push(`docs/ARCHITECTURE.md is missing implemented endpoint '${ep}'`);
     }
   }
+
+  // 1a-ii. The machine-readable endpoint map (docs/reference/endpoints.json)
+  // is fresh, and every schema name it references has a generated JSON Schema.
+  {
+    const details = endpointDetails();
+    const expectedJson = renderEndpointsJson(details);
+    let currentJson = null;
+    try {
+      currentJson = readFileSync("docs/reference/endpoints.json", "utf8");
+    } catch {
+      failures.push("docs/reference/endpoints.json is missing; run node scripts/gen-endpoints-doc.mjs and commit");
+    }
+    if (currentJson !== null && currentJson !== expectedJson) {
+      failures.push("docs/reference/endpoints.json is stale; run node scripts/gen-endpoints-doc.mjs and commit");
+    }
+    for (const d of details) {
+      for (const ref of [d.requestSchema, d.responseSchema]) {
+        if (ref && !existsSync(`packages/schema/generated/${ref}.schema.json`)) {
+          failures.push(`endpoints.json references schema '${ref}' but packages/schema/generated/${ref}.schema.json does not exist`);
+        }
+      }
+    }
+  }
 }
 
 // 1b. Other public docs: every endpoint they mention must exist (they are no
@@ -100,7 +123,9 @@ if (!existsSync(registryDist)) {
 const cliRegistry = await import(join(process.cwd(), registryDist));
 
 const schemaSrc = readFileSync("packages/schema/src/primitives.ts", "utf8");
-const modeMatch = /ModeKind = z\.enum\(\[([^\]]+)\]\)/.exec(schemaSrc);
+// Whitespace-tolerant: prettier may break `z.enum([...])` across lines when a
+// .describe() chain lengthens the statement.
+const modeMatch = /ModeKind = z\s*\.enum\(\[([^\]]+)\]\)/.exec(schemaSrc);
 if (!modeMatch) {
   failures.push("could not locate ModeKind enum in packages/schema/src/primitives.ts");
 } else {
@@ -462,6 +487,78 @@ function collectSourceHaystack() {
           `docs/FEATURES.md header claims ${claimed[status] ?? 0} '${status}' rows but the table has ${actual[status] ?? 0}`,
         );
       }
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 11. Environment reference completeness: every CLAUDEXOR_* env var a
+//     PRODUCT source reads (packages/, excluding tests) must appear in the
+//     INTEGRATIONS environment reference. A knob agents cannot discover is a
+//     dead knob.
+// --------------------------------------------------------------------------
+
+{
+  const integrations = readFileSync("docs/INTEGRATIONS.md", "utf8");
+  if (!/^## Environment reference$/m.test(integrations)) {
+    failures.push("docs/INTEGRATIONS.md is missing the '## Environment reference' section");
+  } else {
+    // Over-approximate on purpose: ANY CLAUDEXOR_* string literal in product
+    // sources (helper-based env reads like positiveIntEnv("CLAUDEXOR_...")
+    // included), minus the explicit non-env literals below. A knob agents
+    // cannot discover is a dead knob.
+    const NOT_ENV_VARS = new Set([
+      "CLAUDEXOR_BIBLE", // the constitution filename (CLAUDEXOR_BIBLE.md)
+      "CLAUDEXOR_VERSION", // the generated version CONSTANT in @claudexor/util
+      "CLAUDEXOR_ARTIFACT_DIRS", // exported const of artifact dir names, not env
+    ]);
+    const envVars = new Set();
+    const allLiterals = new Set();
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "generated") continue;
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") && !entry.name.endsWith(".story.ts")) {
+          const src = readFileSync(p, "utf8");
+          for (const m of src.matchAll(/\bCLAUDEXOR_[A-Z_]+\b/g)) {
+            allLiterals.add(m[0]);
+            if (!NOT_ENV_VARS.has(m[0])) envVars.add(m[0]);
+          }
+        }
+      }
+    };
+    walk("packages");
+    for (const v of envVars) {
+      if (!integrations.includes(v)) {
+        failures.push(`docs/INTEGRATIONS.md Environment reference is missing '${v}' (read by product source)`);
+      }
+    }
+    // Allowlist self-check: a renamed/removed literal must not linger as a
+    // silent stale exclusion.
+    for (const excluded of NOT_ENV_VARS) {
+      if (!allLiterals.has(excluded)) {
+        failures.push(`docs-truth NOT_ENV_VARS lists '${excluded}' which no longer appears in product sources — stale exclusion`);
+      }
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 12. Agent onboarding contour: the doc exists and anchors the live
+//     machine-readable surfaces it points agents at.
+// --------------------------------------------------------------------------
+
+{
+  let onboarding = null;
+  try {
+    onboarding = readFileSync("docs/AGENT_ONBOARDING.md", "utf8");
+  } catch {
+    failures.push("docs/AGENT_ONBOARDING.md is missing");
+  }
+  if (onboarding) {
+    for (const anchor of ["help --json", "capabilities --json", "docs/reference/endpoints.json", "claudexor decision", "inline_secret_rejected"]) {
+      if (!onboarding.includes(anchor)) failures.push(`docs/AGENT_ONBOARDING.md no longer mentions '${anchor}'`);
     }
   }
 }

@@ -417,7 +417,14 @@ Runs one selected compatible harness read-only with `intent: audit` and writes
 The daemon is the durable scheduler. The HTTP control API is a live viewport and
 artifact/delivery facade. The canonical endpoint inventory below is generated
 from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
-README and INTEGRATIONS link here instead of maintaining duplicates.
+README and INTEGRATIONS link here instead of maintaining duplicates. The same
+generator emits the machine-readable endpoint map for external agents at
+`docs/reference/endpoints.json` — method, path, mutating flag, and
+request/response schema names referencing the generated JSON Schemas in
+`packages/schema/generated/` (null when a handler hand-builds its JSON).
+Field-level semantics live in the schemas themselves: every control DTO
+carries `.describe()` documentation that lands in the generated JSON Schema
+files.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /agent-capabilities`

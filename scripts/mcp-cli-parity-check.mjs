@@ -172,6 +172,33 @@ for (const arg of mcpArgs) {
   }
 }
 
+// v2: tool-surface contract parity.
+// 1. Every tool declares MCP behavior annotations; a tool's read-only hint
+//    must match its actual nature (agent-mode run tools are the ONLY
+//    mutating tools; MCP orchestrate is suggest-only = read-only).
+// 2. Every prompt-taking run tool declares the structured outputSchema.
+// 3. The recovery tool set exists (hosts recover lost run handles).
+const MUTATING_TOOLS = new Set(["claudexor_run", "claudexor_best_of", "claudexor_create"]);
+for (const tool of tools) {
+  if (!tool.annotations || typeof tool.annotations.readOnlyHint !== "boolean") {
+    failures.push(`MCP tool '${tool.name}' declares no readOnlyHint annotation`);
+    continue;
+  }
+  const expectReadOnly = !MUTATING_TOOLS.has(tool.name);
+  if (tool.annotations.readOnlyHint !== expectReadOnly) {
+    failures.push(`MCP tool '${tool.name}' readOnlyHint=${tool.annotations.readOnlyHint} contradicts its nature (expected ${expectReadOnly})`);
+  }
+  const required = Array.isArray(tool.inputSchema?.required) ? tool.inputSchema.required : [];
+  if (required.includes("prompt") && !tool.outputSchema) {
+    failures.push(`MCP run tool '${tool.name}' declares no outputSchema (structured results contract)`);
+  }
+}
+for (const recovery of ["claudexor_runs", "claudexor_inspect", "claudexor_apply_check"]) {
+  if (!tools.some((t) => t.name === recovery)) {
+    failures.push(`recovery tool '${recovery}' is missing from defaultClaudexorTools`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("mcp-cli-parity check FAILED:\n");
   for (const f of failures) console.error(`  - ${f}`);
