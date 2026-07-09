@@ -55,6 +55,17 @@ describe("canary golden stories", () => {
       "--json",
     ]);
     expect(withHarness.code).toBe(2);
+    const withReviewer = cli(sb, [
+      "spec",
+      "add a multiply feature",
+      "--answers",
+      "does-not-matter.json",
+      "--reviewer-effort",
+      "openai=low",
+      "--json",
+    ]);
+    expect(withReviewer.code).toBe(2);
+    expect(withReviewer.stdout + withReviewer.stderr).toMatch(/reviewer-effort.*grounding plan run/);
     // And malformed values fail loudly on the grounding path too.
     const bad = cli(sb, ["spec", "add a multiply feature", "--max-usd", "not-a-number", "--json"]);
     expect(bad.code).toBe(2);

@@ -846,21 +846,27 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
   }
   const answersPath = flagStr(args, "answers");
   // The grounding step is a real (multi-)harness plan run, so the same
-  // routing/cost controls as the plan verb apply — but ONLY that step spawns
-  // a run. Parse them up-front so malformed values fail loudly on every
-  // path, and refuse ALL grounding-only flags on the --answers path, where
-  // no grounding run exists for them to control.
+  // routing/cost/review controls as the plan verb apply — but ONLY that step
+  // spawns a run. Parse them up-front so malformed values fail loudly on
+  // every path, and refuse ALL grounding-only flags on the --answers path,
+  // where no grounding run exists for them to control.
   let groundingEffort: EffortHint | undefined;
   let groundingMaxUsd: number | undefined;
   let groundingHarnesses: string[] | undefined;
   let groundingN: number | undefined;
   let groundingWeb: ReturnType<typeof webPolicy>;
+  let groundingReviewerPanel: ReturnType<typeof reviewerPanel>;
+  let groundingReviewerModels: ReturnType<typeof reviewerModels>;
+  let groundingReviewerEfforts: ReturnType<typeof reviewerEfforts>;
   try {
     groundingEffort = effortHint(args);
     groundingMaxUsd = floatFlag(args, "max-usd");
     groundingHarnesses = harnessList(args);
     groundingN = intFlag(args, "n");
     groundingWeb = webPolicy(args);
+    groundingReviewerPanel = reviewerPanel(args);
+    groundingReviewerModels = reviewerModels(args);
+    groundingReviewerEfforts = reviewerEfforts(args);
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -870,11 +876,14 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       groundingMaxUsd !== undefined ||
       groundingHarnesses !== undefined ||
       groundingN !== undefined ||
-      groundingWeb !== undefined)
+      groundingWeb !== undefined ||
+      groundingReviewerPanel !== undefined ||
+      groundingReviewerModels !== undefined ||
+      groundingReviewerEfforts !== undefined)
   ) {
     return printUsageError(
       json,
-      "claudexor spec: --harness/--n/--web/--effort/--max-usd control the grounding plan run and only apply when generating questions; drop them when re-running with --answers",
+      "claudexor spec: --harness/--n/--web/--effort/--max-usd/--reviewer-panel/--reviewer-model/--reviewer-effort control the grounding plan run and only apply when generating questions; drop them when re-running with --answers",
     );
   }
   try {
@@ -891,9 +900,9 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       }
       const orch = new Orchestrator({
         registry: buildRegistry(),
-        reviewerPanel: reviewerPanel(args),
-        reviewerModels: reviewerModels(args),
-        reviewerEfforts: reviewerEfforts(args),
+        reviewerPanel: groundingReviewerPanel,
+        reviewerModels: groundingReviewerModels,
+        reviewerEfforts: groundingReviewerEfforts,
       });
       const plan = await orch.run({
         repoRoot: process.cwd(),

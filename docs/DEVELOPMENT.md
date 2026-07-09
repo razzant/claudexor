@@ -101,16 +101,20 @@ It runs Node/schema checks, Swift build/test checks, and unsigned app packaging.
 
 Publishing happens FROM THE TAG: pushing `v<semver>` runs
 `.github/workflows/release.yml`, which re-runs the full gate battery on a
-macOS runner, packages the unsigned DMG/ZIP, creates the DRAFT GitHub
-Release with notes generated from that version's `CHANGELOG.md` entry (the
-changelog is the notes SSOT — write it before tagging), and then a separate
-`publish-npm` job publishes every public workspace package to npm with
-provenance (`NPM_TOKEN` secret; tag/manifest version parity is enforced).
-The local `pnpm release:npm` script is the manual fallback of the same
-publish (verify + `pnpm -r publish --access public`; note npm provenance
-attestation is only produced by the CI job). Version BUMPS still go through
-changesets (`pnpm changeset` + `pnpm version-packages`, fixed lockstep
-group); only the publish step is tag-driven.
+macOS runner, enforces tag/manifest version parity UNCONDITIONALLY (every
+public workspace manifest must equal the tag), packages the unsigned
+DMG/ZIP, and creates the DRAFT GitHub Release with notes generated from
+that version's `CHANGELOG.md` entry (the changelog is the notes SSOT —
+write it before tagging). A separate `publish-npm` job publishes every
+public workspace package to npm with provenance (`--provenance` flag,
+`NPM_TOKEN` secret), but ONLY once the operator arms it by setting the
+`NPM_PUBLISH` repository variable to `true`; until then the job skips and
+the release is GitHub-only. The local `pnpm release:npm` script is the
+manual fallback of the same publish (verify + `pnpm -r publish --access
+public`; note npm provenance attestation is only produced by the CI job).
+Version BUMPS still go through changesets (`pnpm changeset` +
+`pnpm version-packages`, fixed lockstep group); only the publish step is
+tag-driven.
 The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` (reviewer
 models come from `TRIAD_MODELS`/`SCOPE_MODEL` or a pinned local
 `.adversarial-review/PANEL.lock`); when the release diff is too large for a

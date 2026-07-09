@@ -70,6 +70,13 @@ jobs:
           echo "CLAUDEXOR_VERSION=$version" >> "$GITHUB_ENV"
           echo "CLAUDEXOR_BUILD=$build" >> "$GITHUB_ENV"
 
+      # Version parity is enforced UNCONDITIONALLY before any release asset
+      # exists — not inside the (skippable) npm publish job. A drifted
+      # manifest fails the whole release run here. One shared checker script
+      # covers the root SSOT manifest + every public workspace manifest.
+      - name: Verify tag version matches manifests
+        run: node scripts/verify-version-parity.mjs "${{ steps.release.outputs.version }}"
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
@@ -277,34 +284,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Publish-time defense: the same parity bar package-macos already
+      # enforced, re-checked in this job because publishing is the
+      # irreversible step (npm versions cannot be reused).
       - name: Verify tag version matches manifests
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag_version="${GITHUB_REF_NAME#v}"
-          # Lockstep bar: every PUBLIC workspace manifest must carry the same
-          # version, and that version must equal the tag. A drifted manifest
-          # fails the job before anything is published.
-          pkg_version="$(node -e '
-            const { readFileSync, readdirSync, existsSync } = require("node:fs");
-            const read = (p) => JSON.parse(readFileSync(p, "utf8"));
-            const versions = new Set([read("./package.json").version]);
-            for (const dir of readdirSync("packages")) {
-              const mp = "packages/" + dir + "/package.json";
-              if (!existsSync(mp)) continue;
-              const m = read(mp);
-              if (!m.private) versions.add(m.version);
-            }
-            if (versions.size !== 1) {
-              console.error("version drift across public manifests: " + [...versions].join(", "));
-              process.exit(1);
-            }
-            process.stdout.write([...versions][0]);
-          ')"
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match workspace manifest version $pkg_version"
-            exit 1
-          fi
+        run: node scripts/verify-version-parity.mjs "${GITHUB_REF_NAME#v}"
 
       - name: Publish (public, provenance)
         env:

@@ -26,13 +26,13 @@ hard-error with the new spelling instead of silently aliasing.
 ## Install
 
 The CLI and daemon build from source today (see Quickstart below); the npm
-packages (`npm install -g claudexor`) are prepared and will follow in a 1.0.x
-patch once the registry namespace is provisioned.
+packages (`npm install -g claudexor`) are prepared and publish once the
+registry namespace is provisioned and publishing is armed.
 
 The macOS app ships as an unsigned DMG on the
 [Releases](https://github.com/razzant/claudexor/releases) page. Because it is
-unsigned (code signing is a non-goal for 1.0), Gatekeeper refuses the first
-launch. On current macOS the right-click-Open trick no longer bypasses this;
+unsigned (code signing is not currently provided), Gatekeeper refuses the
+first launch. On current macOS the right-click-Open trick no longer bypasses this;
 instead: double-click the app once (Gatekeeper shows the refusal), then open
 **System Settings → Privacy & Security**, scroll to the security prompt, and
 click **Open Anyway**. Or clear the quarantine attribute from a terminal:
