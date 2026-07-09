@@ -242,13 +242,13 @@ jobs:
           done
           shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256"
           shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256"
-          test -f "apps/macos/dist/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
+          test -f "apps/macos/dist/Claudexor.app/Contents/Resources/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
             echo "::error::Packaged app is missing the SwiftPM resource bundle."
             exit 1
           }
           zipstage="$(mktemp -d)"
           /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" "$zipstage"
-          test -f "$zipstage/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
+          test -f "$zipstage/Claudexor.app/Contents/Resources/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
             echo "::error::Release ZIP app is missing the SwiftPM resource bundle."
             exit 1
           }
