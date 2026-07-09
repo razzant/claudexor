@@ -217,6 +217,8 @@ Use this split:
 - `README.md`: product entrypoint and detailed quickstart.
 - `docs/AGENT_ONBOARDING.md`: external-agent orientation (machine-readable
   surfaces, decision tree, recovery).
+- `docs/FEATURES.md`: status ledger of non-solid features (empty = healthy;
+  update or delete a row in the same commit that changes the feature).
 - `CLAUDEXOR_BIBLE.md`: compact product constitution.
 - `docs/ARCHITECTURE.md`: current runtime and package map.
 - `docs/INTEGRATIONS.md`: current external integration surfaces and limitations.
