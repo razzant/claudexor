@@ -80,11 +80,12 @@ attached to the draft release with `GITHUB_TOKEN`. Do not upload local
 call out the macOS 26 minimum.
 
 `build-app.sh` also copies SwiftPM's generated
-`ClaudexorApp_ClaudexorApp.bundle` next to the `.app` root because the generated
-`Bundle.module` accessor looks there before falling back to an absolute `.build`
-path from the build machine. The release workflow unzips the release ZIP and
-fails if that resource bundle is missing, so an artifact cannot pass merely
-because it launches inside the original repo checkout.
+`ClaudexorApp_ClaudexorApp.bundle` into `Contents/Resources` because the
+generated `Bundle.module` accessor checks `Bundle.main.resourceURL` first
+(a copy at the `.app` root would also work unsigned, but codesign refuses
+"unsealed contents present in the bundle root"). The release workflow unzips
+the release ZIP and fails if that resource bundle is missing, so an artifact
+cannot pass merely because it launches inside the original repo checkout.
 
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not
