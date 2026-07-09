@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Complexity ratchet — readability only goes up (owner decision D20, v0.15).
+ * Complexity ratchet — readability only goes up (owner-locked policy).
  *
  * Records a committed baseline of per-file line counts for TS + Swift sources
  * and fails CI when any tracked file GROWS beyond its baseline (plus a small

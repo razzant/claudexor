@@ -14,7 +14,7 @@ Use this before committing documentation changes.
 - `README.md` links only to maintained current docs.
 - `docs/ARCHITECTURE.md` is the current runtime map and does not depend on
   deleted or historical plans/specs.
-- `docs/INTEGRATIONS.md` states current support and beta limitations instead of
+- `docs/INTEGRATIONS.md` states current support, stability tiers, and disclosed limitations instead of
   promising every future integration surface.
 - `docs/WHITEPAPER.md` is current when runtime, harness, auth/setup,
   observability, budget, orchestration, or permission behavior changes.

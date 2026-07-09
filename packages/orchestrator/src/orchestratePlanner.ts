@@ -1,5 +1,5 @@
 /**
- * Prompt framing for the orchestrate BRAIN (plan-only). The tool belt comes
+ * Prompt framing for the orchestrate PLANNER (plan-only). The tool belt comes
  * from the typed OrchestrateContract — the prompt never invents actions the
  * executor will not honor.
  */

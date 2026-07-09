@@ -1033,7 +1033,7 @@ export type ControlHarnessListResponse = z.infer<typeof ControlHarnessListRespon
  * "api" when the adapter implemented a real enumeration (raw-api / OpenAI
  * `GET /v1/models`), "manifest" when the list is the manifest's known-good
  * hint set, "none" when the harness has no model truth source at all (the
- * list is then empty and explicit models are refused under strict D3).
+ * list is then empty and explicit models are refused under strict model-truth validation).
  */
 export const ControlHarnessModelsResponse = z
   .object({

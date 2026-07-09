@@ -1,7 +1,7 @@
 /**
  * Test hermeticity (DEVELOPMENT.md: tests must never touch real user state).
  *
- * The D7 metrics recorder persists per-harness routing metrics under the
+ * The routing-metrics recorder persists per-harness routing metrics under the
  * Claudexor config dir at attempt settlement; without isolation every
  * `pnpm test` run would write fake-harness EMA samples into the operator's
  * REAL ~/.claudexor (live-caught by the Phase-4 exit-gate critics: 23 junk

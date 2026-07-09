@@ -1846,7 +1846,7 @@ export class Orchestrator {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
     store.writeText(join(attemptDir, "patch.diff"), diff);
-    // D7 routing metrics (one owner in runSupport; clean attempts only).
+    // Routing metrics (one owner in runSupport; clean attempts only).
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
@@ -3994,7 +3994,7 @@ export class Orchestrator {
         if (roundCap !== null && attempt >= roundCap) break;
         if (readiness.isStalled(sig, stallThreshold)) {
           if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
-            // D7 headroom consumer (mid-run, where quota observations EXIST);
+            // Quota-headroom consumer (mid-run, where quota observations EXIST);
             // pick + honest route event owned by runSupport.rotateOnStall.
             adapterIdx = rotateOnStall(adapterPool.map((a) => a.adapter.id), adapterIdx, ledger, triedSinceProgress, log, lastRun?.harnessId ?? null);
             routed = adapterPool[adapterIdx] as RoutedAdapter;

@@ -356,7 +356,7 @@ export function observeBudgetSignals(
   }
 }
 
-/** D7 stall rotation with an HONEST route event: picks via
+/** Stall rotation with an HONEST route event: picks via
  * pickStallRotationIdx and emits route.fallback.started only when the idx
  * actually moved — STAY (every alternative cooling) is a retry, not a
  * fallback. Returns the (possibly unchanged) idx. */
@@ -380,7 +380,7 @@ export function rotateOnStall(
   return pickedIdx;
 }
 
-/** D7 stall-rotation pick: UNTRIED candidates first (the caller's exhaustion
+/** Stall-rotation pick: UNTRIED candidates first (the caller's exhaustion
  * check counts distinct harnesses, so headroom alone could ping-pong between
  * two strong harnesses and starve a third), then by remaining rate-window
  * headroom, cooldowns excluded, round-robin order among equals. Pure. */
@@ -407,7 +407,7 @@ export function pickStallRotationIdx(
   return next ? next.idx : currentIdx;
 }
 
-/** D7 routing metrics: one settled sample per CLEAN attempt (advisory input;
+/** Routing metrics: one settled sample per CLEAN attempt (advisory input;
  * failures never fail the run). Errored/cancelled attempts are NOT samples —
  * a fast-failing harness must not earn a flattering latency average (the
  * router divides by latency). Duration = stream time only (gates excluded). */

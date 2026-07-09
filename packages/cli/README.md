@@ -1,7 +1,7 @@
 # @claudexor/cli
 
 The Claudexor command-line interface — the primary supported entry point of
-[Claudexor](https://github.com/joi-lab/claudexor): a harness-agnostic AI
+[Claudexor](https://github.com/razzant/claudexor): a harness-agnostic AI
 coding control plane over Codex CLI, Claude Code, Cursor CLI, and OpenCode.
 
 Install the friendly bin wrapper instead of depending on this package

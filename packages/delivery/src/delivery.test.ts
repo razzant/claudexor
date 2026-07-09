@@ -97,7 +97,7 @@ describe("delivery", () => {
 
   // CLI/daemon parity: the artifact-only CLI apply feeds work_product.meta.status
   // into this gate, so a recorded non-succeeded terminal state is refused even
-  // when decision.status=success — the v0.12 convergence stale-diff + D2 case
+  // when decision.status=success — the convergence stale-diff + required-review case
   // where decision is success but the run terminal stayed not_converged.
   it("refuses apply for a non-succeeded recorded terminal state despite a success decision", () => {
     const decision = DecisionRecord.parse({ winner: "a01", status: "success", outcome: "ready" });

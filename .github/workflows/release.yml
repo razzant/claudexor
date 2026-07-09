@@ -245,9 +245,12 @@ jobs:
     name: Publish npm packages (provenance)
     runs-on: ubuntu-latest
     # npm publish happens only for the real tag push (not workflow_dispatch
-    # repackaging) and only after the macOS gate battery passed.
+    # repackaging), only after the macOS gate battery passed, and only once
+    # the operator has armed it by setting the NPM_PUBLISH repository
+    # variable to "true" (npm org + NPM_TOKEN are provisioned separately;
+    # until then the job skips instead of failing the release run).
     needs: package-macos
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && vars.NPM_PUBLISH == 'true'
     permissions:
       contents: read
       id-token: write # npm provenance attestation
@@ -306,5 +309,8 @@ jobs:
       - name: Publish (public, provenance)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
-        run: pnpm -r publish --access public --no-git-checks
+        # --provenance must be the CLI flag: pnpm's native publish does not
+        # honor the NPM_CONFIG_PROVENANCE env var. The flag also fails loudly
+        # (instead of silently skipping attestation) if the repo is not yet
+        # public or the workflow lacks id-token permissions.
+        run: pnpm -r publish --access public --no-git-checks --provenance

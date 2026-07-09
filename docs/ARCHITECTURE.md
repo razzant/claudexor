@@ -127,8 +127,8 @@ are NOT aliases: they hard-error at every wire boundary.
   contract.
 - `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
   `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
-  the recommended global install (`npm install -g claudexor`) and the ONE
-  owner of the global bin names.
+  the intended global install (`npm install -g claudexor`, once the npm
+  namespace is live) and the ONE owner of the global bin names.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
@@ -171,7 +171,7 @@ harnesses when a stall signature persists.
 
 A thread carries sticky routing so the chat surface stays a thin gateway: a
 `Thread` persists `primary_harness` (which harness answers in chat) and
-`eligible_harnesses` (the pool Race runs — one candidate per harness, so its N is
+`eligible_harnesses` (the pool Best-of runs — one candidate per harness, so its N is
 the pool size). A turn inherits both unless its request overrides them
 (`POST /threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
@@ -708,7 +708,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    is never attributed to the turn), and the server-owned `revert_run` decision
    can restore the pre-turn state while the tree still matches the recorded
    post-turn snapshot (divergence-fenced, below).
-4. **Race winner adoption** — a best-of-N thread race runs candidates in
+4. **Best-of winner adoption** — a best-of-N thread race runs candidates in
    isolated envelopes and applies the winner's patch to the execution tree ONLY
    on a clean terminal (success or ungated); blockers stop adoption. Adoption
    runs the PROTECTED apply path (`git apply --check` first, restore on a

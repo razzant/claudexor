@@ -587,7 +587,7 @@ interface DaemonRunParams {
 }
 
 /**
- * DAEMON-TRACKED mutating run (the unified `run`/`race`/`create` path, and an
+ * DAEMON-TRACKED mutating run (the unified `agent`/`best-of`/`create` path, and an
  * `orchestrate` run with auto_safe/auto_full autonomy). Auto-starts
  * the daemon if needed, enqueues via the control API (so the run is registered
  * and the control-api can see/unblock it), streams its events to the TTY (text
@@ -845,6 +845,38 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
     );
   }
   const answersPath = flagStr(args, "answers");
+  // The grounding step is a real (multi-)harness plan run, so the same
+  // routing/cost controls as the plan verb apply — but ONLY that step spawns
+  // a run. Parse them up-front so malformed values fail loudly on every
+  // path, and refuse ALL grounding-only flags on the --answers path, where
+  // no grounding run exists for them to control.
+  let groundingEffort: EffortHint | undefined;
+  let groundingMaxUsd: number | undefined;
+  let groundingHarnesses: string[] | undefined;
+  let groundingN: number | undefined;
+  let groundingWeb: ReturnType<typeof webPolicy>;
+  try {
+    groundingEffort = effortHint(args);
+    groundingMaxUsd = floatFlag(args, "max-usd");
+    groundingHarnesses = harnessList(args);
+    groundingN = intFlag(args, "n");
+    groundingWeb = webPolicy(args);
+  } catch (err) {
+    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (
+    answersPath &&
+    (groundingEffort !== undefined ||
+      groundingMaxUsd !== undefined ||
+      groundingHarnesses !== undefined ||
+      groundingN !== undefined ||
+      groundingWeb !== undefined)
+  ) {
+    return printUsageError(
+      json,
+      "claudexor spec: --harness/--n/--web/--effort/--max-usd control the grounding plan run and only apply when generating questions; drop them when re-running with --answers",
+    );
+  }
   try {
     const answers = answersPath ? readAnswers(answersPath) : null;
     let planRunId = answers?.planRunId ?? "";
@@ -863,18 +895,16 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
         reviewerModels: reviewerModels(args),
         reviewerEfforts: reviewerEfforts(args),
       });
-      // The grounding step is a real (multi-)harness plan run, so the same
-      // cost controls as the plan verb apply here.
       const plan = await orch.run({
         repoRoot: process.cwd(),
         prompt,
         mode: "plan",
-        harnesses: harnessList(args),
-        n: intFlag(args, "n"),
+        harnesses: groundingHarnesses,
+        n: groundingN,
         access: "readonly",
-        web: webPolicy(args),
-        effort: effortHint(args),
-        maxUsd: floatFlag(args, "max-usd") ?? null,
+        web: groundingWeb,
+        effort: groundingEffort,
+        maxUsd: groundingMaxUsd ?? null,
       });
       planRunId = plan.runId;
       planDir = plan.runDir;
@@ -899,9 +929,7 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       else {
         print(`plan grounding run: ${planRunId}`);
         print(`questions: ${questionsPath}`);
-        print(
-          `answer with: claudexor spec ${JSON.stringify(prompt)} --answers ${questionsPath}${harnessList(args) ? ` --harness ${(harnessList(args) ?? []).join(",")}` : ""}`,
-        );
+        print(`answer with: claudexor spec ${JSON.stringify(prompt)} --answers ${questionsPath}`);
       }
       return 0;
     }
@@ -1056,7 +1084,7 @@ async function main(): Promise<number> {
       // not be silently masked by a smoke that ran a DIFFERENT model. Validate
       // each harness's configured default against its model truth source (live
       // inventory or manifest hints via the shared harnessModels SSOT) and
-      // surface a violation honestly as INVALID (strict D3 — no "unverified").
+      // surface a violation honestly as INVALID (strict model truth — no "unverified").
       const configuredChecks = new Map<
         string,
         { configured: string; check: ReturnType<typeof validateModel> }
@@ -1435,7 +1463,7 @@ async function main(): Promise<number> {
       // Feed it (mapped to daemon-state vocab) into the shared gate so the CLI
       // enforces the SAME terminal-state bar the Control API does — e.g. a
       // convergence run that persists decision.status=success but terminal
-      // not_converged (stale diff after a D2 review) is refused identically.
+      // not_converged (stale diff after a required review) is refused identically.
       const recordedStatus = workProduct.success
         ? (workProduct.data.meta?.["status"] as string | undefined)
         : undefined;

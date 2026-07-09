@@ -1,7 +1,7 @@
 # @claudexor/schema
 
 The data-shape single source of truth of
-[Claudexor](https://github.com/joi-lab/claudexor): Zod schemas, TypeScript
+[Claudexor](https://github.com/razzant/claudexor): Zod schemas, TypeScript
 types, and the generated draft-07 JSON Schemas under `generated/`.
 
 Unlike the engine-internal packages, the SHAPES here are part of Claudexor's

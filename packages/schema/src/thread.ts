@@ -103,7 +103,7 @@ export const Thread = z
       .nullable()
       .default(null)
       .describe("Sticky primary harness for the thread (re-routable); an ordering bias, not a privileged role."),
-    /** Sticky eligible harness pool for the thread (Race runs this pool, one
+    /** Sticky eligible harness pool for the thread (Best-of runs this pool, one
      * candidate per harness). Empty => the engine auto-pools doctor-ok harnesses.
      * primary_harness, when set, must be a member of this pool when non-empty. */
     eligible_harnesses: z

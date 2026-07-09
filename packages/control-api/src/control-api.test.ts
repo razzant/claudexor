@@ -1093,7 +1093,7 @@ describe("DaemonControlApiServer", () => {
           n: 3,
         });
 
-        // 2b) A turn that explicitly narrows the pool (Race over the available subset)
+        // 2b) A turn that explicitly narrows the pool (Best-of over the available subset)
         // must NOT drag the sticky primary along when it is outside that pool — else
         // the engine would fail "primary not in eligible pool". Drop the bias instead.
         enqueued = undefined;

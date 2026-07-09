@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateModel } from "./model.js";
 
-describe("validateModel (strict D3)", () => {
+describe("validateModel (strict model-truth validation)", () => {
   const known = ["sonnet", "opus", "claude-opus-4-8"];
 
   it("is ok when no model is requested (the harness default is used)", () => {

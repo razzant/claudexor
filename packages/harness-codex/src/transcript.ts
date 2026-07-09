@@ -46,7 +46,7 @@ export function codexTranscriptModel(codexHome: string | null | undefined, threa
 }
 
 /**
- * D7 quota: recover codex's OWN rate-window record from the rollout
+ * Quota headroom: recover codex's OWN rate-window record from the rollout
  * (`event_msg.payload.token_count.rate_limits.{primary,secondary}`), the same
  * native machine-readable source route proof uses. Returns the LAST record's
  * binding window (max used_percent across primary/secondary — the tighter

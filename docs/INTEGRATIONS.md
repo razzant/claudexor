@@ -1,18 +1,20 @@
 # Claudexor Integrations
 
 This document is for tools, editors, and agents that want to drive Claudexor as a
-local control plane. It describes current beta integration surfaces. It is not a
-future target spec, and it is not contributor workflow for changing Claudexor.
+local control plane. It describes the current integration surfaces and their
+stability tier (the tiers are defined by "Stability at 1.0" in the repository
+README). It is not a future target spec, and it is not contributor workflow for
+changing Claudexor.
 
 ## Surface Matrix
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
-| Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
-| MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
-| ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
-| Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Beta. Installs owned local files/config only; host enablement can still require reload/manual action. |
+| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
+| MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
+| ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
+| Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
 
 ## CLI
 
@@ -236,8 +238,8 @@ For Zed, register Claudexor as an agent server in `settings.json`:
 existing directory; missing, relative, blank, non-string, or non-directory values
 are rejected before a session is created. `session/prompt` must use the returned
 session id, which anchors the run scope to that cwd rather than the ACP server
-process cwd. Treat ACP as beta and verify the exact behavior against the current
-package before building a hard dependency.
+process cwd. Treat ACP as experimental and verify the exact behavior against the
+current package before building a hard dependency.
 
 ## External Harness Adapters
 
@@ -287,8 +289,8 @@ Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
   protected gate/test files, it should pass `protectedPathApprovals` on the run
   request instead of inferring approval from prompt prose or from frozen
   SpecPack/config state.
-- Integrations should display beta limitations instead of silently falling back
-  to another harness or another mode.
+- Integrations should display disclosed limitations instead of silently falling
+  back to another harness or another mode.
 
 ## Design constraints
 

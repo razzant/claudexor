@@ -130,7 +130,7 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
   `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via Apple's
-  ConcentricRectangle are a tracked beta refinement.)
+  ConcentricRectangle are a tracked deferred refinement.)
 - Elevation — the ONE card recipe (centralized in `cardSurface`):
   - **Fill:** system `.regularMaterial` + a tuned `surface/raised` tint veil
     (dark ≈ 40%, light ≈ 55%) so the ambient glow shows through without

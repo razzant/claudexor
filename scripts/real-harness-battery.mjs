@@ -709,7 +709,10 @@ function runSpecPhase() {
   if (q.code !== 0 || !q.json?.questionsPath) { fail(phase, "spec questions", { exit: q.code, json: q.json, log: rel(q.log) }); return; }
   pass(phase, "spec questions", { questions: q.json.questions?.length ?? 0, path: q.json.questionsPath });
   const answers = answerQuestionsFile(q.json.questionsPath);
-  const frozen = runCliJson(["spec", prompt, "--answers", answers, "--harness", multi.join(","), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-freeze` });
+  // Grounding-only flags (--harness/--n/--web/--effort/--max-usd) are a
+  // usage error on the --answers path by design: no grounding run exists
+  // there for them to control.
+  const frozen = runCliJson(["spec", prompt, "--answers", answers], { cwd: repo, name: `${phase}-freeze` });
   if (frozen.code === 0 && frozen.json?.specDir) pass(phase, "spec freeze", { specId: frozen.json.specId, specDir: frozen.json.specDir });
   else { fail(phase, "spec freeze", { exit: frozen.code, json: frozen.json, log: rel(frozen.log) }); return; }
   const specPath = join(frozen.json.specDir, "spec.json");

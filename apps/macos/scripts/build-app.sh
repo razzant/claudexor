@@ -190,7 +190,7 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
   if [ -n "${SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
   else
-    echo "    (unsigned DMG; for beta/local distribution only)"
+    echo "    (unsigned DMG; Gatekeeper bypass instructions are in the README)"
   fi
   shasum -a 256 "$DMG" > "$DMG.sha256"
   echo "    DMG: $DMG"

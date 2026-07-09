@@ -369,7 +369,7 @@ export function createCodexAdapter(): HarnessAdapter {
           // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
           // to xhigh). Single source for the manifest AND the run-time normalizer.
           effort_levels: [...CODEX_EFFORT_LEVELS],
-          // Manifest model truth source (STRICT D3: an explicit model outside
+          // Manifest model truth source (strict model-truth validation: an explicit model outside
           // this list is refused, never forwarded to die as a native error).
           // Current + still-API-available ids per the vendor Codex models page,
           // verified against the installed CLI recorded below.
@@ -627,7 +627,7 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
               ev.usage.estimated = true;
             }
           }
-          // D7 quota: attach codex's own rate-window record to the usage event
+          // Quota headroom: attach codex's own rate-window record to the usage event
           // (fresh read per usage — the rollout accretes as the turn ends).
           if (ev.type === "usage" && !ev.quota) {
             const rl = codexTranscriptRateLimits(env["CODEX_HOME"], codexThreadId);

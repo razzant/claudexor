@@ -135,8 +135,8 @@ Adapters translate native I/O into normalized events. They do not pick winners,
 manage budgets, decide policy, or claim success. Orchestration, evidence,
 review, budget, and delivery remain in the control plane.
 
-A thread carries **sticky routing**: an eligible harness pool (what Race runs —
-one candidate per harness) and an optional primary harness bias (which harness
+A thread carries **sticky routing**: an eligible harness pool (what Best-of
+runs — one candidate per harness) and an optional primary harness bias (which harness
 answers in chat), both persisted on the thread and switched via
 `PATCH /threads/:id`. Precedence is per-turn body > thread sticky > engine default;
 the engine owns resolution (`orderPool` pins the primary first). An INHERITED sticky

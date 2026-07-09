@@ -121,7 +121,7 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
   return out;
 }
 
-/** The LAST plan.progress event's typed items (live plan checklist, D14), or
+/** The LAST plan.progress event's typed items (the live plan checklist), or
  * null when the run never emitted one. Last-wins by construction: plan tools
  * re-emit the whole list on every revision. On RACES the candidates' lists
  * interleave — prefer the WINNER's attempt (decision.yaml) so the Plan tab

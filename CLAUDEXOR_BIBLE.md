@@ -240,7 +240,7 @@ process below. Never paper over the conflict.
   never silently fall back to a process cwd in the app; the CLI's contract
   is that the invoking directory IS the project scope. verify: canary
   `[INV-071:project-context-explicit]`; app no-project tests.
-- **INV-072** Ordinary project runs (and Race candidates) execute in
+- **INV-072** Ordinary project runs (and Best-of candidates) execute in
   isolated envelopes under `.claudexor/workspaces/.../tree`, with the
   harness cwd at the envelope worktree. verify: workspace manager tests.
 - **INV-073** Chat thread WRITE turns run IN-PLACE in the thread's
@@ -450,7 +450,7 @@ process below. Never paper over the conflict.
 - **INV-130** Public docs have separate jobs and are not mixed: `README.md`
   (entrypoint/quickstart), this Bible (constitution),
   `docs/ARCHITECTURE.md` (runtime/package/artifact/control-api map),
-  `docs/INTEGRATIONS.md` (integration surfaces + beta limits),
+  `docs/INTEGRATIONS.md` (integration surfaces + stability tiers/disclosed limitations),
   `docs/DESIGN_SYSTEM.md` (macOS UI/UX contract — the single SSOT for app
   behavior and visuals), `docs/WHITEPAPER.md` (public rationale),
   `docs/DEVELOPMENT.md` (contributor workflow), `docs/CHECKLISTS.md` (human

@@ -33,6 +33,33 @@ describe("canary golden stories", () => {
     expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
   });
 
+  it("[INV-021:spec-grounding-flags] spec --answers refuses grounding-only flags instead of silently ignoring them", () => {
+    const r = cli(sb, [
+      "spec",
+      "add a multiply feature",
+      "--answers",
+      "does-not-matter.json",
+      "--effort",
+      "low",
+      "--json",
+    ]);
+    expect(r.code).toBe(2);
+    expect(r.stdout + r.stderr).toMatch(/grounding plan run/);
+    const withHarness = cli(sb, [
+      "spec",
+      "add a multiply feature",
+      "--answers",
+      "does-not-matter.json",
+      "--harness",
+      "fake-success",
+      "--json",
+    ]);
+    expect(withHarness.code).toBe(2);
+    // And malformed values fail loudly on the grounding path too.
+    const bad = cli(sb, ["spec", "add a multiply feature", "--max-usd", "not-a-number", "--json"]);
+    expect(bad.code).toBe(2);
+  });
+
   it("[INV-033:verbs-renamed] the retired verbs run/race hard-error with the new spelling, never silently alias", () => {
     const oldRun = cli(sb, ["run", "do things", "--harness", "fake-success", "--json"]);
     expect(oldRun.code).toBe(2);

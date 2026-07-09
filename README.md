@@ -23,6 +23,27 @@ hard-error with the new spelling instead of silently aliasing.
   `ANTHROPIC_API_KEY`, ... as fallbacks; the raw-API route needs only a key)
 - macOS for the desktop app; the CLI/daemon also run on Linux
 
+## Install
+
+The CLI and daemon build from source today (see Quickstart below); the npm
+packages (`npm install -g claudexor`) are prepared and will follow in a 1.0.x
+patch once the registry namespace is provisioned.
+
+The macOS app ships as an unsigned DMG on the
+[Releases](https://github.com/razzant/claudexor/releases) page. Because it is
+unsigned (code signing is a non-goal for 1.0), Gatekeeper refuses the first
+launch. On current macOS the right-click-Open trick no longer bypasses this;
+instead: double-click the app once (Gatekeeper shows the refusal), then open
+**System Settings → Privacy & Security**, scroll to the security prompt, and
+click **Open Anyway**. Or clear the quarantine attribute from a terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Claudexor.app
+```
+
+The app is self-contained: it bundles its own daemon runtime and starts it on
+launch. Installing the CLI is only needed for terminal use.
+
 ## Quickstart
 
 ```bash

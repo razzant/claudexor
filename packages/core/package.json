@@ -24,12 +24,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/joi-lab/claudexor.git",
+    "url": "git+https://github.com/razzant/claudexor.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/joi-lab/claudexor#readme",
+  "homepage": "https://github.com/razzant/claudexor#readme",
   "bugs": {
-    "url": "https://github.com/joi-lab/claudexor/issues"
+    "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
     "node": ">=20.19"

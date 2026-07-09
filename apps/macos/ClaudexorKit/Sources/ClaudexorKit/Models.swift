@@ -739,7 +739,7 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
         verifiedAgainst = try c.decodeIfPresent(String.self, forKey: .verifiedAgainst)
     }
 
-    /// True when a truth source exists (STRICT D3: no truth source = the
+    /// True when a truth source exists (strict model-truth validation: no truth source = the
     /// harness runs its default only; there is no free-text model entry).
     public var canEnumerate: Bool { source != "none" && !models.isEmpty }
 }

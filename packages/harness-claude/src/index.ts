@@ -206,7 +206,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           // claude --effort accepts low|medium|high|xhigh|max (verified against
           // the installed CLI's --help). Single source for the run-time normalizer.
           effort_levels: [...CLAUDE_EFFORT_LEVELS],
-          // Manifest model truth source (STRICT D3: an explicit model outside
+          // Manifest model truth source (strict model-truth validation: an explicit model outside
           // this list is refused, never forwarded to die as a native error).
           // Stable aliases plus current full ids; verified against the vendor
           // model-config docs and the installed CLI recorded below.

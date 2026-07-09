@@ -15,4 +15,4 @@ claudexor best-of "fix add()" --harness codex,claude --n 2
 This package is the bin wrapper over
 [`@claudexor/cli`](https://www.npmjs.com/package/@claudexor/cli). Full
 documentation lives in the
-[Claudexor repository](https://github.com/joi-lab/claudexor#readme).
+[Claudexor repository](https://github.com/razzant/claudexor#readme).

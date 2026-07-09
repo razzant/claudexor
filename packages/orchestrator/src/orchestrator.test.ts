@@ -85,7 +85,7 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         capabilities: {
           implement: true,
           review: true,
-          // Manifest truth source for strict-D3 tests: explicit "model-x"
+          // Manifest truth source for strict model-truth tests: explicit "model-x"
           // requests validate; anything else gets a typed refusal. The
           // *-cheap-model / *-review ids serve the reviewer-override tests.
           known_models: [
