@@ -1,5 +1,9 @@
-import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
+// Static JSON imports (NOT createRequire): esbuild inlines these into the
+// single-file app bundle, while createRequire(import.meta.url) resolved at
+// RUNTIME relative to the bundle location and crashed the shipped daemon.
+import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
+import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
 import {
   McpServer as SdkMcpServer,
@@ -61,12 +65,11 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
   return resolve(schema, []) as Record<string, unknown>;
 }
 
-const require = createRequire(import.meta.url);
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
-  require("@claudexor/schema/generated/McpRunToolResult.schema.json") as Record<string, unknown>,
+  mcpRunToolResultSchemaRaw as Record<string, unknown>,
 );
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
-  require("@claudexor/schema/generated/AgentCapabilityCatalog.schema.json") as Record<string, unknown>,
+  agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
 );
 
 

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the BUNDLED Node runtime (Contents/Resources/node) under
+  hardened runtime. V8 needs JIT/writable-executable memory; without these the
+  re-signed node is killed at startup. Mirrors the entitlements Apple's own
+  notarized Node.js distribution ships with. Applies ONLY to the nested node
+  binary — the app itself keeps the minimal Claudexor.entitlements.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

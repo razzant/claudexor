@@ -109,7 +109,15 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   echo "==> Building engine workspace (pnpm -w build)"
   ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
   echo "==> Bundling claudexord (esbuild single-file)"
-  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexord.js --bundle --platform=node --format=cjs --target=node22 --outfile="$ENGINE_JS" >/dev/null ); then
+  # ESM->CJS shim: esbuild rewrites `import.meta.url` to undefined in CJS
+  # output, which crashes createRequire(import.meta.url) at load (the v1.0.0
+  # DMG shipped that crash). Define it to a banner-computed file URL so the
+  # bundle behaves like the real ESM module.
+  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexord.js \
+        --bundle --platform=node --format=cjs --target=node22 \
+        --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
+        --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
+        --outfile="$ENGINE_JS" >/dev/null ); then
     echo "    claudexord.bundle.cjs $(wc -c < "$ENGINE_JS" | tr -d ' ') bytes"
   else
     echo "ERROR: esbuild bundle failed; cannot build self-contained app" >&2
@@ -132,11 +140,41 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     echo "ERROR: no node found (looked at CLAUDEXOR_NODE_BIN, ~/.claudexor/node/bin/node, and PATH); set CLAUDEXOR_NODE_BIN or CLAUDEXOR_NO_ENGINE_BUNDLE=1" >&2
     exit 1
   fi
+
+  # Boot smoke: the bundled daemon must actually START (a load-time crash in
+  # the bundle shipped in v1.0.0 and survived every gate because nothing
+  # executed the bundle). Scratch HOME so the smoke never touches real state.
+  echo "==> Bundle boot smoke"
+  SMOKE_HOME="$(mktemp -d)"
+  ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
+  SMOKE_OK=0
+  for _ in $(seq 1 20); do
+    if [ -f "$SMOKE_HOME/.claudexor/daemon/control-api.json" ]; then SMOKE_OK=1; break; fi
+    if ! kill -0 "$(cat "$SMOKE_HOME/pid")" 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+  kill "$(cat "$SMOKE_HOME/pid")" 2>/dev/null || true
+  if [ "$SMOKE_OK" != "1" ]; then
+    echo "ERROR: bundled claudexord failed to boot; stderr:" >&2
+    cat "$SMOKE_HOME/smoke.err" >&2
+    rm -rf "$SMOKE_HOME"
+    exit 1
+  fi
+  rm -rf "$SMOKE_HOME"
+  echo "    bundled daemon boots (control-api discovery written)"
 fi
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "==> Codesigning with hardened runtime: $SIGN_IDENTITY"
-  codesign --force --deep --options runtime --timestamp \
+  # Inside-out signing (NOT --deep: --deep re-signs nested code with the
+  # APP's entitlements, which strips the JIT entitlements the bundled Node
+  # needs under hardened runtime — V8 would be killed at startup).
+  if [ -x "$APP/Contents/Resources/node" ]; then
+    codesign --force --options runtime --timestamp \
+      --entitlements "$PACKAGING/NodeRuntime.entitlements" \
+      --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/node"
+  fi
+  codesign --force --options runtime --timestamp \
     --entitlements "$PACKAGING/Claudexor.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP"
   codesign --verify --strict --verbose=2 "$APP"
@@ -145,7 +183,10 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
     echo "==> Notarizing via profile: $NOTARY_PROFILE"
     ZIP="$DIST/Claudexor.zip"
     /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
-    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+    # NOTARY_KEYCHAIN: CI stores the profile in its ephemeral build keychain
+    # (notarytool store-credentials --keychain); point lookups at it there.
+    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" \
+      ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
     xcrun stapler staple "$APP"
     rm -f "$ZIP"
   else

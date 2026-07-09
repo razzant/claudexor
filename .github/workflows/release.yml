@@ -93,6 +93,53 @@ jobs:
           set -euo pipefail
           echo "CLAUDEXOR_NODE_BIN=$(node -p 'process.execPath')" >> "$GITHUB_ENV"
 
+      # Signing is DATA-DRIVEN: when the four Apple secrets exist the app is
+      # signed (Developer ID + hardened runtime), notarized, and stapled; a
+      # fork/no-secrets run builds the honest -unsigned artifacts instead of
+      # failing. SIGN_IDENTITY/NOTARY_PROFILE are the build-app.sh hooks.
+      - name: Import Developer ID certificate + notary credentials
+        shell: bash
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BUILD_CERTIFICATE_BASE64}" ]; then
+            echo "No signing certificate secret; building unsigned artifacts."
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$identity" ]; then
+            echo "::error::Certificate imported but no Developer ID Application identity found."
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          if [ -n "${APPLE_ID}" ] && [ -n "${APPLE_TEAM_ID}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD}" ]; then
+            xcrun notarytool store-credentials "claudexor-notary" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --keychain "$KEYCHAIN_PATH" >/dev/null
+            echo "NOTARY_PROFILE=claudexor-notary" >> "$GITHUB_ENV"
+            echo "NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+            echo "Signing + notarization armed."
+          else
+            echo "Certificate present but notary credentials incomplete; will sign without notarizing."
+          fi
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -158,7 +205,7 @@ jobs:
       - name: Swift tests and debug build
         run: pnpm release:verify:swift
 
-      - name: Build unsigned DMG and ZIP
+      - name: Build DMG and ZIP
         shell: bash
         env:
           MAKE_DMG: "1"
@@ -167,6 +214,18 @@ jobs:
           set -euo pipefail
           apps/macos/scripts/build-app.sh
           ls -lah apps/macos/dist
+          # Asset suffix mirrors build-app.sh naming: "" (signed+notarized),
+          # -signed-unnotarized, or -unsigned. Exported for the later steps.
+          if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+            echo "ASSET_SUFFIX=" >> "$GITHUB_ENV"
+            echo "SIGNING_LINE=The macOS app is Developer ID-signed, notarized, and stapled; macOS 26 or newer is required." >> "$GITHUB_ENV"
+          elif [ -n "${SIGN_IDENTITY:-}" ]; then
+            echo "ASSET_SUFFIX=-signed-unnotarized" >> "$GITHUB_ENV"
+            echo "SIGNING_LINE=The macOS app is Developer ID-signed but NOT notarized; macOS 26 or newer is required." >> "$GITHUB_ENV"
+          else
+            echo "ASSET_SUFFIX=-unsigned" >> "$GITHUB_ENV"
+            echo "SIGNING_LINE=The macOS app, DMG, and ZIP are unsigned and not notarized; macOS 26 or newer is required." >> "$GITHUB_ENV"
+          fi
 
       - name: Verify expected assets
         shell: bash
@@ -174,25 +233,29 @@ jobs:
           set -euo pipefail
           version="${{ steps.release.outputs.version }}"
           for file in \
-            "apps/macos/dist/Claudexor-${version}-unsigned.dmg" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.zip" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256"
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256"
           do
             test -s "$file" || { echo "::error::Missing expected asset: $file"; exit 1; }
           done
-          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256"
-          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256"
+          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256"
+          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256"
           test -f "apps/macos/dist/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
             echo "::error::Packaged app is missing the SwiftPM resource bundle."
             exit 1
           }
           zipstage="$(mktemp -d)"
-          /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}-unsigned.zip" "$zipstage"
+          /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" "$zipstage"
           test -f "$zipstage/Claudexor.app/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
             echo "::error::Release ZIP app is missing the SwiftPM resource bundle."
             exit 1
           }
+          # Signed builds: Gatekeeper must actually accept the stapled app.
+          if [ -z "${ASSET_SUFFIX}" ]; then
+            spctl --assess --type execute --verbose=2 "$zipstage/Claudexor.app"
+          fi
 
       - name: Upload workflow artifact
         # Redundant CI-scratch copy: the canonical deliverable is the GitHub
@@ -202,12 +265,12 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: Claudexor-${{ steps.release.outputs.version }}-unsigned-macos
+          name: Claudexor-${{ steps.release.outputs.version }}-macos
           path: |
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.dmg
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.dmg.sha256
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.zip
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}-unsigned.zip.sha256
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.dmg
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.dmg.sha256
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.zip
+            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.zip.sha256
           if-no-files-found: error
 
       - name: Create or update draft GitHub Release
@@ -234,18 +297,25 @@ jobs:
             console.error(`CHANGELOG.md has no entry for ${version}`);
             process.exit(1);
           }
-          process.stdout.write(`Claudexor ${version}\n\n${m[1].trim()}\n\nBuilt by GitHub Actions from tag v${version} at commit ${process.env.GITHUB_SHA}.\nThe macOS app, DMG, and ZIP are unsigned and not notarized; macOS 26 or newer is required.\nVerify downloads with the attached SHA256 files.\n`);
+          process.stdout.write(`Claudexor ${version}\n\n${m[1].trim()}\n\nBuilt by GitHub Actions from tag v${version} at commit ${process.env.GITHUB_SHA}.\n${process.env.SIGNING_LINE}\nVerify downloads with the attached SHA256 files.\n`);
           NODE
+          # A re-package of an ALREADY-PUBLISHED release must not demote it
+          # back to draft (the v1.0.0 near-miss): only pass --draft while the
+          # release is still a draft (or on first creation).
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "true" ]; then
+              gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft
+            else
+              gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes"
+            fi
           else
             gh release create "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --verify-tag
           fi
           gh release upload "$tag" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.dmg" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.dmg.sha256" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.zip" \
-            "apps/macos/dist/Claudexor-${version}-unsigned.zip.sha256" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" \
+            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256" \
             --clobber
 
   publish-npm:
