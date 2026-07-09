@@ -19,6 +19,7 @@ import {
   worktreePrune,
   worktreeRemove,
 } from "./git.js";
+import { ensureSelfIgnore } from "./self-ignore.js";
 
 export interface CreateEnvelopeOptions {
   taskId: string;
@@ -90,17 +91,9 @@ export class WorkspaceManager {
     // Self-ignoring runtime dir: a `.gitignore` with `*` INSIDE .claudexor makes
     // the whole dir invisible to git in PRE-EXISTING repos too (v0.9 widened the
     // seeded credentials from API keys to subscription OAuth copies; a user's
-    // `git add -A` in their own repo must never capture them). This is the
-    // git-native trick that avoids mutating the user's .gitignore.
-    const claudexorDir = join(this.repoRoot, ".claudexor");
-    const selfIgnore = join(claudexorDir, ".gitignore");
-    if (!existsSync(selfIgnore)) {
-      try {
-        writeFileSync(selfIgnore, "*\n", { flag: "wx" });
-      } catch {
-        /* concurrent envelope creation already wrote it */
-      }
-    }
+    // `git add -A` in their own repo must never capture them). Content-checked
+    // repair lives in the shared ensureSelfIgnore owner.
+    ensureSelfIgnore(join(this.repoRoot, ".claudexor"));
     const homeDir = join(base, "home");
     const codexHome = join(homeDir, ".codex");
     const claudeConfig = join(homeDir, ".claude");
@@ -147,7 +140,9 @@ export class WorkspaceManager {
         home_dir: homeDir,
         harness_config_dirs: harnessConfigDirs,
         policy_profile: opts.accessProfile ?? "workspace_write",
-        dirty_policy: opts.dirtyPolicy ?? "refuse",
+        // Record the EFFECTIVE policy, not the ignored request: in-place runs
+        // always fold dirty state into the per-turn base snapshot above.
+        dirty_policy: "snapshot",
         created_at: nowIso(),
       });
     }

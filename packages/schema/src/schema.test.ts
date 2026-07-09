@@ -154,7 +154,7 @@ describe("RouteProof + HarnessManifest", () => {
       capabilities: { implement: true, review: true },
     });
     expect(m.capabilities.implement).toBe(true);
-    expect(m.capabilities.quota_signal).toBe("unknown");
+    expect(m.capabilities.web_policy).toBe("none");
   });
 });
 

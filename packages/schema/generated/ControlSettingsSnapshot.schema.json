@@ -41,8 +41,7 @@
               "type": "string",
               "enum": [
                 "auto",
-                "primary",
-                "portfolio"
+                "primary"
               ],
               "default": "auto",
               "description": "Default routing policy."

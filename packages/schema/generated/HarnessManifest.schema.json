@@ -265,23 +265,6 @@
               "default": false,
               "description": "The harness can play the autonomous orchestrate planner intent, planning multi-harness work over the typed tool belt; not a privileged role."
             },
-            "quota_signal": {
-              "type": "string",
-              "enum": [
-                "exact",
-                "native",
-                "observed",
-                "manual",
-                "unknown"
-              ],
-              "description": "Quality of the quota signal this harness emits.",
-              "default": "unknown"
-            },
-            "usage_signal": {
-              "$ref": "#/definitions/HarnessManifest/properties/capabilities/properties/quota_signal",
-              "default": "unknown",
-              "description": "Quality of the usage/cost signal this harness emits."
-            },
             "json_schema_output": {
               "type": "boolean",
               "default": false,

@@ -101,9 +101,11 @@ only place project selection lives — there is no Current Project setting).
 
 Run detail uses the server-projected `primaryOutput` first, then artifact
 fallbacks. Active runs default to Timeline, completed runs to Outcome, and
-failures without output to Diagnostics. Cancel/interrupt uses the server control
-endpoint; live input forwarding is not part of the control surface (the former
-input stub was removed as dead code), so the app shows no input UI for active runs.
+failures without output to Diagnostics. Cancel uses the server control endpoint
+(`cancel` is the only control verb; the former `interrupt` alias was deleted as
+a duplicate of cancel); live input forwarding is not part of the control surface
+(the former input stub was removed as dead code), so the app shows no input UI
+for active runs.
 
 The trailing Workbench bridges two artifact planes: Run Detail reads the run's
 internal tree via the artifacts endpoints, while the Canvas gallery and

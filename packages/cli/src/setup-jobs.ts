@@ -61,6 +61,12 @@ const SETUP_PROFILES: Record<string, SetupProfile> = {
   },
 };
 
+/** Native login command for a harness (null = API-key refs only). Single
+ * source for both the setup-job Terminal handoff and `claudexor auth login`. */
+export function nativeLoginCommand(harness: string): string | null {
+  return SETUP_PROFILES[harness]?.loginCommand ?? null;
+}
+
 /** Honest display label for the in-process doctor phase of a setup job. */
 function inProcessDoctorLabel(harness: string): string {
   return harness === "raw" ? "(in-process doctor: all harnesses)" : `(in-process doctor: ${harness})`;
@@ -455,6 +461,13 @@ IFS= read -r _
       const jobId = typeof p["jobId"] === "string" ? p["jobId"] : "";
       const job = jobs.get(jobId);
       if (!job) throw Object.assign(new Error("setup job not found"), { status: 404 });
+      // A terminal job has nothing to cancel; overwriting `succeeded`/`failed`
+      // with `cancelled` would falsify history (the Terminal-handoff child
+      // handlers already refuse this overwrite — the endpoint must too).
+      // Idempotent: return the terminal record unchanged.
+      if (job.state === "succeeded" || job.state === "failed" || job.state === "cancelled" || job.state === "not_supported") {
+        return job;
+      }
       const child = children.get(jobId);
       if (child) {
         child.kill("SIGTERM");

@@ -12,11 +12,22 @@ describe("BudgetLedger", () => {
     expect(r1.tier).toBe("ok");
     led.settle(r1.lease?.lease_id ?? "", 0.8);
     expect(led.tier()).toBe("soft");
-    led.settle("x", 0.15);
+    const r2 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
+    led.settle(r2.lease?.lease_id ?? "", 0.15);
     expect(led.tier()).toBe("downgrade");
-    led.settle("y", 0.1);
+    const r3 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
+    led.settle(r3.lease?.lease_id ?? "", 0.1);
     expect(led.tier()).toBe("hard");
     expect(led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" }).granted).toBe(false);
+  });
+
+  it("settle fails loudly on an unknown lease and never double-counts a re-settle", () => {
+    const led = new BudgetLedger({ maxUsd: 1.0 });
+    expect(() => led.settle("lease-never-granted", 0.5)).toThrow(/unknown lease/);
+    const r = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
+    led.settle(r.lease?.lease_id ?? "", 0.4);
+    led.settle(r.lease?.lease_id ?? "", 0.4); // duplicate settle: spend add is a no-op
+    expect(led.spend()).toBeCloseTo(0.4, 8);
   });
 
   it("rolls child spend up to the parent", () => {

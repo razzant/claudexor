@@ -76,8 +76,8 @@ pnpm test
 - Harness setup/login actions must be owned by the Control API. UI code may
   bridge returned allowlisted commands to Terminal/clipboard, but must not
   construct harness login/install commands locally.
-- Cancel/interrupt must stop the underlying harness process, not only mark the
-  job as cancelled in UI/daemon state.
+- Cancel must stop the underlying harness process, not only mark the job as
+  cancelled in UI/daemon state.
 - Run success/no-op semantics must be evidence-based: auth/API/harness failures
   are failed diagnostics, not empty-diff `no_op`.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:

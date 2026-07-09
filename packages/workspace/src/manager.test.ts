@@ -135,6 +135,9 @@ describe("WorkspaceManager", () => {
     expect(env.worktree_path).toBe(dir);
     expect(env.base_sha).toBeNull();
     expect(existsSync(env.harness_config_dirs["codex_home"] as string)).toBe(true);
+    // In-place records the EFFECTIVE dirty policy (dirty state folds into the
+    // per-turn base snapshot), never echoing an ignored request.
+    expect(env.dirty_policy).toBe("snapshot");
 
     // Simulate the harness mutating the live tree in place (incl. a file
     // under a path that repo-relative protected globs like `test/**` watch).

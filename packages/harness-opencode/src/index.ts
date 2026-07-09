@@ -3,7 +3,7 @@ import { ConformanceReport as ConformanceReportSchema, HarnessManifest as Harnes
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
@@ -89,10 +89,6 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",
-          // No real rate-limit detector for opencode yet (a detector waits on a
-          // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
-          quota_signal: "unknown",
-          usage_signal: "observed",
           // opencode exposes no reasoning-effort flag -> effort is not tunable.
           effort_levels: [],
         },
@@ -164,16 +160,13 @@ export function createOpenCodeAdapter(): HarnessAdapter {
 
 async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // The manifest declares readonly unsupported; running it with default
-  // (write-capable) permissions would be a silent access downgrade.
+  // (write-capable) permissions would be a silent access downgrade. Same
+  // typed throw as workspace_write below — an unsupported access profile is
+  // a routing error, not a stream that "completed".
   if (spec.access === "readonly") {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error: "opencode does not support a conformance-proven readonly profile; use another harness for read-only intents",
-    };
-    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-    return;
+    throw new HarnessUnavailableError(
+      "opencode does not support a conformance-proven readonly profile; use another harness for read-only intents",
+    );
   }
   // The only permission flag the adapter drives is --dangerously-skip-permissions
   // (full access). A workspace_write request has NO proven scoped confinement, so

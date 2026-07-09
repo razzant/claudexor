@@ -49,6 +49,11 @@ function sortKeys(value: unknown): unknown {
 }
 
 export function ensureDir(path: string): void {
+  // DECIDED TRADEOFF: `mode` applies only at creation (POSIX). These helpers
+  // also write into USER-CHOSEN locations (benchmark outputs, project dirs),
+  // so re-chmodding a PRE-EXISTING directory here would silently lock down
+  // directories Claudexor does not own. Claudexor-owned SENSITIVE stores
+  // (secrets, daemon token) assert their own permissions at their writers.
   mkdirSync(path, { recursive: true, mode: 0o700 });
 }
 
@@ -66,6 +71,9 @@ export function appendLine(path: string, line: string): void {
   writeFileSync(path, line.endsWith("\n") ? line : line + "\n", { flag: "a", mode: 0o600 });
 }
 
+/** Read a text file; null on ANY error. BY DESIGN missing and unreadable/
+ * corrupt are indistinguishable — callers that must tell them apart (e.g.
+ * daemon load salvage) check existence first. */
 export function readTextSafe(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
@@ -74,6 +82,7 @@ export function readTextSafe(path: string): string | null {
   }
 }
 
+/** Read+parse JSON; null on ANY error (same by-design contract as readTextSafe). */
 export function readJsonSafe<T = unknown>(path: string): T | null {
   const text = readTextSafe(path);
   if (text === null) return null;
@@ -145,9 +154,16 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bAIza[A-Za-z0-9_-]{30,}\b/g,
   /\bxai-[A-Za-z0-9_-]{20,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  // Slack tokens incl. xoxe (refresh) and xoxc (session) classes.
+  /\bxox[abceprs]-[A-Za-z0-9-]{10,}\b/g,
   // Cursor API keys (key_<hex>); OpenRouter keys (sk-or-v1-... handled above).
   /\bkey_[A-Za-z0-9]{20,}\b/g,
+  // Google OAuth access tokens.
+  /\bya29\.[A-Za-z0-9._-]{20,}\b/g,
+  // npm granular access tokens.
+  /\bnpm_[A-Za-z0-9]{20,}\b/g,
+  // PEM private key blocks (RSA/EC/OPENSSH/PKCS8 headers all match).
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   // Bearer tokens (length-gated to avoid redacting prose like "Bearer of news").
   /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi,
   // JWTs (header.payload.signature) — anthropic/cursor/openai OAuth tokens.

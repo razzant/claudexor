@@ -93,8 +93,6 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           read_files: false,
           browser_tool: false,
           web_policy: "none",
-          quota_signal: "unknown",
-          usage_signal: "exact",
           // The chat-completions request sends no `reasoning_effort` field
           // (body is {model, messages} only) -> effort is not a tunable surface.
           effort_levels: [],

@@ -28,8 +28,7 @@
           "type": "string",
           "enum": [
             "auto",
-            "primary",
-            "portfolio"
+            "primary"
           ],
           "description": "New default routing policy."
         },

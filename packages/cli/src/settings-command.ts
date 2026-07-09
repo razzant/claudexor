@@ -192,8 +192,8 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
           return { ...cfg, routing: { ...cfg.routing, env_inheritance: value as never } };
         }
         if (key === "routing_policy") {
-          if (!["auto", "primary", "portfolio"].includes(value))
-            throw new Error("routing_policy must be auto|primary|portfolio");
+          if (!["auto", "primary"].includes(value))
+            throw new Error("routing_policy must be auto|primary");
           return { ...cfg, routing: { ...cfg.routing, default_policy: value as never } };
         }
         if (key === "budget_max_usd_per_run") {

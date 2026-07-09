@@ -98,6 +98,10 @@ describe("daemon", () => {
       expect(s.state).toBe("cancelled");
 
       await client.cancel(j2.id);
+
+      // Honesty: cancelling an UNKNOWN id fails loudly (like status), never
+      // returns `{cancelled:true}` for a job that does not exist.
+      await expect(client.cancel("job-does-not-exist")).rejects.toThrow(/no such job/);
     } finally {
       await server.stop();
     }

@@ -403,22 +403,7 @@ export class DaemonControlApiServer {
 
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
-      return this.json(res, 200, {
-        // One unprojectable record degrades to a diagnostic row; it must not
-        // 500 the whole list (the app's main screen and the blocked inbox).
-        runs: runs.map((r) => {
-          try {
-            return this.summarizeRunLive(r);
-          } catch (err) {
-            return ControlRunSummary.parse({
-              jobId: r.id,
-              runId: r.runId ?? r.id,
-              state: "failed",
-              error: `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
-            });
-          }
-        }),
-      });
+      return this.json(res, 200, { runs: runs.map((r) => this.summarizeRunOrDiagnostic(r)) });
     }
 
     const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
@@ -533,7 +518,7 @@ export class DaemonControlApiServer {
           const runId = turn.run_id ?? null;
           if (runId && !cards.has(runId)) {
             const rec = byRun.get(runId);
-            if (rec) cards.set(runId, turnRunCard(this.summarizeRunLive(rec)));
+            if (rec) cards.set(runId, turnRunCard(this.summarizeRunOrDiagnostic(rec)));
           }
         }
         const headRec = byRun.get(thread.head_run_id ?? "");
@@ -866,11 +851,15 @@ export class DaemonControlApiServer {
       }
       const p = paramsRecord(rec);
       const originalPrompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
+      // Turn/plan ids are SERVER-owned: strip the originals so the rebuild
+      // can't re-bind the rerun to the old turn (a fresh decision turn is
+      // created below when the run is thread-anchored).
+      const { turnId: _turnId, planRunId: _planRunId, ...pRest } = p;
       let params: ControlRunStartRequest;
       try {
         params = normalizeRunStart(
           ControlRunStartRequest.parse({
-            ...p,
+            ...pRest,
             prompt: `${originalPrompt}\n\n## Reviewer feedback to address (operator decision)\n${body.feedback}`,
             parentRunId: rec.runId ?? rec.id,
           }),
@@ -1246,6 +1235,24 @@ export class DaemonControlApiServer {
     return summary.waitingOnUser === waiting ? summary : { ...summary, waitingOnUser: waiting };
   }
 
+  /**
+   * Degrade contract shared by GET /runs and the thread-detail turn cards:
+   * one unprojectable job record becomes a diagnostic row, never a 500 for
+   * the whole list/thread.
+   */
+  private summarizeRunOrDiagnostic(rec: DaemonRunRecord): ControlRunSummary {
+    try {
+      return this.summarizeRunLive(rec);
+    } catch (err) {
+      return ControlRunSummary.parse({
+        jobId: rec.id,
+        runId: rec.runId ?? rec.id,
+        state: "failed",
+        error: `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   private lastEventId(req: IncomingMessage, url: URL): number {
     const rawHeader = req.headers["last-event-id"];
     const headerId = rawHeader !== undefined ? Number(rawHeader) : Number.NaN;
@@ -1328,7 +1335,21 @@ export class DaemonControlApiServer {
             type = "malformed";
           }
           if (seq <= lastEventId) continue;
-          res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
+          // Backpressure: a large replay into a slow client must not balloon
+          // the socket buffer — pause the tail until the kernel drains it
+          // (or the client goes away, which resolves via `close`).
+          if (!res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`)) {
+            await new Promise<void>((resolve) => {
+              const done = (): void => {
+                res.off("drain", done);
+                res.off("close", done);
+                resolve();
+              };
+              res.once("drain", done);
+              res.once("close", done);
+            });
+            if (closed) return;
+          }
           if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
             res.write("event: end\ndata: {}\n\n");
             res.end();

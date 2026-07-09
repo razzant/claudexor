@@ -39,10 +39,9 @@
               "type": "string",
               "enum": [
                 "auto",
-                "primary",
-                "portfolio"
+                "primary"
               ],
-              "description": "Default routing policy: auto (engine picks), primary (prefer the configured primary harness), or portfolio (budget-portfolio-driven).",
+              "description": "Default routing policy: auto (engine picks) or primary (prefer the configured primary harness).",
               "default": "auto"
             },
             "primary_harness": {

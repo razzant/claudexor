@@ -211,6 +211,29 @@ describe("ThreadStore", () => {
     expect(rehosted?.state).toBe("rebound");
   });
 
+  it("assertKnownIds fails loudly on bogus, foreign, and thread-less turn ids (socket-caller fence)", () => {
+    const { s } = (() => {
+      const { path } = store();
+      return { s: new ThreadStore(path) };
+    })();
+    const a = s.createThread({ repoRoot: "/tmp/a" });
+    const b = s.createThread({ repoRoot: "/tmp/b" });
+    const turnA = s.createTurn(a.id, "move in thread A");
+    // Valid binding passes through normalized.
+    expect(s.assertKnownIds(a.id, turnA.id)).toEqual({ threadId: a.id, turnId: turnA.id });
+    // No binding at all is fine (plain non-thread runs).
+    expect(s.assertKnownIds(undefined, undefined)).toEqual({ threadId: undefined, turnId: undefined });
+    expect(s.assertKnownIds("", "")).toEqual({ threadId: undefined, turnId: undefined });
+    // Bogus ids fail loudly.
+    expect(() => s.assertKnownIds("th-nope", undefined)).toThrow(/no such thread/);
+    expect(() => s.assertKnownIds(a.id, "tn-nope")).toThrow(/no such turn/);
+    // A turn without its thread id could rebind lineage — refused.
+    expect(() => s.assertKnownIds(undefined, turnA.id)).toThrow(/requires its threadId/);
+    // A FOREIGN turn (belongs to thread A, claimed for thread B) — refused:
+    // context would come from B while A's conversation head advances.
+    expect(() => s.assertKnownIds(b.id, turnA.id)).toThrow(/belongs to thread/);
+  });
+
   it("backs up the store and logs when a record is truly unparseable", () => {
     const { path } = store();
     writeFileSync(path, JSON.stringify({ threads: [{ id: "broken" /* missing required fields */ }], sessions: [], turns: [] }));

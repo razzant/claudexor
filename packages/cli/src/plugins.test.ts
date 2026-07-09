@@ -444,7 +444,7 @@ describe("plugin lifecycle", () => {
     });
   });
 
-  it("continues all-host install on partial failure and reports unhealthy status without failing status exit", async () => {
+  it("continues all-host install on partial failure; status exits 1 on the blocked host (scriptable)", async () => {
     await withTempHome(async ({ home }) => {
       const conflict = join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json");
       mkdirSync(dirname(conflict), { recursive: true });
@@ -456,8 +456,10 @@ describe("plugin lifecycle", () => {
       expect(install.results.find((r) => r.host === "codex")?.state).toBe("blocked");
       expect(install.results.find((r) => r.host === "opencode")?.state).toBe("installed");
 
+      // status exits 1 when any host is drifted/blocked (actionable problems
+      // must be scriptable); absence states alone stay 0.
       const status = await runPluginCommand("status", "all");
-      expect(status.exitCode).toBe(0);
+      expect(status.exitCode).toBe(1);
       expect(status.ok).toBe(false);
       const codex = status.results.find((r) => r.host === "codex");
       expect(codex?.ok).toBe(false);
@@ -875,7 +877,7 @@ describe("plugin lifecycle", () => {
       mkdirSync(dirname(opencodePath), { recursive: true });
       writeFileSync(opencodePath, JSON.stringify({ mcp: { claudexor: false } }, null, 2) + "\n");
       const status = await runPluginCommand("status", "opencode");
-      expect(status.exitCode).toBe(0);
+      expect(status.exitCode).toBe(1); // blocked host => status exits 1
       expect(status.ok).toBe(false);
       expect(status.results[0]?.state).toBe("blocked");
       expect(status.results[0]?.errors.join("\n")).toContain("has an unowned mcp.claudexor entry");
@@ -892,7 +894,7 @@ describe("plugin lifecycle", () => {
       writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
 
       const status = await runPluginCommand("status", "codex");
-      expect(status.exitCode).toBe(0);
+      expect(status.exitCode).toBe(1); // blocked host => status exits 1
       expect(status.results[0]?.state).toBe("blocked");
       expect(status.results[0]?.errors.join("\n")).toContain("out-of-scope codex config state");
 
@@ -931,7 +933,7 @@ describe("plugin lifecycle", () => {
       mkdirSync(dirname(opencodePath), { recursive: true });
       writeFileSync(opencodePath, JSON.stringify({ mcp: [] }, null, 2));
       const status = await runPluginCommand("status", "opencode");
-      expect(status.exitCode).toBe(0);
+      expect(status.exitCode).toBe(1); // blocked host => status exits 1
       expect(status.results[0]?.state).toBe("blocked");
       expect(status.results[0]?.errors.join("\n")).toContain("non-object mcp field");
 

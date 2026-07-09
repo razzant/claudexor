@@ -80,7 +80,7 @@ Terminal state may include diagnostic non-success states such as
 Telemetry attempts can include adapter-declared transient failures; integrations
 should render those as infrastructure/retry evidence, not as model findings.
 
-`POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
+`POST /runs/:id/control` supports cancel for active daemon jobs.
 Interactive runs use the typed interaction surface instead of raw input
 forwarding: `interaction.requested` events carry the questions, the macOS app
 and `claudexor follow` answer via `POST /runs/:id/interactions/:id/answer`,
@@ -166,6 +166,10 @@ claudexor plugin repair cursor
 claudexor plugin uninstall opencode
 ```
 
+`plugin status` exits 1 when any host is drifted or blocked (scriptable);
+missing/partial/installed/registered hosts exit 0, and the JSON carries the
+per-host state either way.
+
 Lifecycle state lives under the user Claudexor config directory
 (`~/.claudexor/plugins/state.json` by default). Generated files carry Claudexor
 ownership markers, and uninstall removes only owned files or owned scoped config
@@ -218,6 +222,16 @@ claudexor acp serve
 ```
 
 ACP support is intended for editor and agent hosts that can speak the protocol.
+For Zed, register Claudexor as an agent server in `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Claudexor": { "command": "claudexor", "args": ["acp", "serve"] }
+  }
+}
+```
+
 `session/new` must provide `params.cwd` as a non-empty absolute path to an
 existing directory; missing, relative, blank, non-string, or non-directory values
 are rejected before a session is created. `session/prompt` must use the returned
@@ -275,6 +289,35 @@ Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
   SpecPack/config state.
 - Integrations should display beta limitations instead of silently falling back
   to another harness or another mode.
+
+## Design constraints
+
+Deliberate limits of the external/host surfaces. Each is a designed boundary
+(not a defect); integrations should surface them instead of working around them.
+
+- MCP host clients enforce their own tool-call timeouts; a multi-minute
+  `claudexor_best_of` call can be cut client-side — the result trailer's runId
+  keeps the run recoverable via `claudexor_inspect` / `GET /runs`.
+- The cursor and opencode adapters emit no typed rate-limit/transient signals
+  yet: a detector is added only from a recorded native rate-limit transcript
+  (fail-honest, never guessed from prose), and their stream fixtures are
+  synthetic until real transcripts are captured.
+- opencode sources any configured provider key — opencode/openai/anthropic
+  order — because the vendor CLI consumes provider keys directly.
+- Raw-api routes report token usage but no dollar cost — chat-completions
+  responses carry no price and Claudexor maintains no vendor price tables — so
+  the budget ledger records $0 spend for raw-api attempts.
+- Cursor native auth lives in the macOS Keychain, so scoped envelopes bridge
+  the host keychain (declared `scoped_home_keychain_bridge` containment)
+  rather than fully isolating HOME; the cursor doctor's paid smoke result is
+  cached per adapter instance.
+- Benchmark suites (swe-bench, terminal_bench) are operator-run with real keys
+  and Docker; they are never wired into CI. The real-harness battery is
+  likewise a manual pre-release operator step (see `docs/CHECKLISTS.md`), not
+  a CI job.
+- `plugin uninstall` removes only Claudexor-owned files and config entries;
+  now-empty host directories and `.claudexor-backups/` are deliberately left
+  behind (Claudexor never deletes directories or backups it does not own).
 
 ## Environment reference
 

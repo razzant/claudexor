@@ -203,8 +203,6 @@ export function createClaudeAdapter(): HarnessAdapter {
           tool_lists: true,
           interactive: true,
           orchestrate: true,
-          quota_signal: "observed",
-          usage_signal: "exact",
           // claude --effort accepts low|medium|high|xhigh|max (verified against
           // the installed CLI's --help). Single source for the run-time normalizer.
           effort_levels: [...CLAUDE_EFFORT_LEVELS],

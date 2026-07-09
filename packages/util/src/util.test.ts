@@ -41,6 +41,20 @@ describe("util", () => {
     expect(containsSecretLikeToken("the key_ to success")).toBe(false);
   });
 
+  it("redacts PEM blocks, Google ya29 tokens, npm tokens, and xoxe/xoxc Slack classes", () => {
+    // Assembled at runtime so the raw source never contains a contiguous
+    // PEM header (the CI secret scan greps tracked files for that literal).
+    const dashes = "-----";
+    const pem = `${dashes}BEGIN OPENSSH PRIVATE KEY${dashes}\nabc\ndef\n${dashes}END OPENSSH PRIVATE KEY${dashes}`;
+    expect(redactSecrets(`before ${pem} after`)).toBe("before [redacted] after");
+    expect(redactSecrets("ya29." + "e".repeat(30))).toBe("[redacted]");
+    expect(redactSecrets("npm_" + "f".repeat(30))).toBe("[redacted]");
+    expect(redactSecrets("xoxe-" + "g1-".repeat(8))).toContain("[redacted]");
+    expect(redactSecrets("xoxc-" + "h".repeat(20))).toBe("[redacted]");
+    // Prose stays untouched.
+    expect(containsSecretLikeToken("the npm_ prefix and ya29 are token families")).toBe(false);
+  });
+
   it("rejects unsafe CLAUDEXOR_CONFIG_DIR overrides", () => {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     try {

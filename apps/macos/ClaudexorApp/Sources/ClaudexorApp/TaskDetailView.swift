@@ -162,7 +162,7 @@ struct TaskDetailView: View {
                         Label("Cancel", systemImage: "stop.circle")
                     }
                     .buttonStyle(.bordered)
-                    .help("Request cancel/interrupt for the active harness process.")
+                    .help("Request cancel for the active harness process.")
                 }
             }
 

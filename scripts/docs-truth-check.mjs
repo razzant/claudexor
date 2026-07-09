@@ -461,18 +461,23 @@ function collectSourceHaystack() {
 
 {
   const ledger = readFileSync("docs/FEATURES.md", "utf8");
-  const header = /Rows: \*\*(\d+)\*\* \(([^)]*)\)/.exec(ledger);
+  // The per-status parenthetical is present only while rows exist; an EMPTY
+  // ledger legitimately claims just "Rows: **0**".
+  const header = /Rows: \*\*(\d+)\*\*(?: \(([^)]*)\))?/.exec(ledger);
   const rows = ledger
     .split("\n")
     .filter((l) => /^\|/.test(l) && !/^\|\s*Area\s*\|/.test(l) && !/^\|[-\s|]*$/.test(l));
   if (!header) {
-    failures.push("docs/FEATURES.md is missing the 'Rows: **N** (…)' count header");
+    failures.push("docs/FEATURES.md is missing the 'Rows: **N**' count header");
   } else {
     if (Number(header[1]) !== rows.length) {
       failures.push(`docs/FEATURES.md claims ${header[1]} rows but the table has ${rows.length}`);
     }
+    if (rows.length > 0 && header[2] === undefined) {
+      failures.push("docs/FEATURES.md has rows but no per-status '(status: n, …)' breakdown in the count header");
+    }
     const claimed = {};
-    for (const part of header[2].split(",")) {
+    for (const part of (header[2] ?? "").split(",")) {
       const m = /([a-z-]+):\s*(\d+)/.exec(part.trim());
       if (m) claimed[m[1]] = Number(m[2]);
     }

@@ -4,7 +4,8 @@
  * client, gateway, or SecretStore; --json purity via cli-io.
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, defaultSocketPath, logPath, readToken, rotateToken } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
@@ -12,21 +13,54 @@ import { MANAGED_SECRET_NAMES, SecretStore, type SecretBackend, isManagedSecretN
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
 import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { nativeLoginCommand } from "./setup-jobs.js";
 import { waitForDaemonReady } from "./daemon-run.js";
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
   if (sub === "start") {
+    // Probe FIRST: with a live daemon the spawned child dies on the singleton
+    // guard while readiness connects to the OLD daemon — reporting the DEAD
+    // child's pid (the duplicate-start pid lie). "Already running" holds the
+    // SAME readiness bar as a fresh start (socket health AND control API),
+    // so a socket-alive daemon with a dead control API is not reported ready.
+    const existingToken = readToken();
+    if (existingToken) {
+      try {
+        await new DaemonClient(defaultSocketPath(), existingToken).health();
+        // Same bar as a fresh start; shorter window is fine — an ALREADY
+        // healthy daemon answers immediately (a fresh start waits out boot).
+        const existingReady = await waitForDaemonReady(5_000);
+        if (existingReady) {
+          if (json) printJson({ pid: null, socket: defaultSocketPath(), ready: true, alreadyRunning: true });
+          else print(`claudexord already running; socket ${defaultSocketPath()}`);
+          return 0;
+        }
+        // Socket answers but the control API never came up — fall through and
+        // report the honest failure the same way a fresh start would.
+        if (json) printJson({ pid: null, socket: defaultSocketPath(), ready: false, alreadyRunning: true });
+        else print("claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`");
+        return 1;
+      } catch {
+        /* not reachable — start a fresh daemon below */
+      }
+    }
     const daemonScript = fileURLToPath(new URL("./claudexord.js", import.meta.url));
+    // Startup stderr goes to the daemon log (append), not the void — a crash
+    // before the daemon's own logging starts must leave evidence for
+    // `claudexor daemon logs`.
+    mkdirSync(dirname(logPath()), { recursive: true });
+    const stderrFd = openSync(logPath(), "a");
     const child = spawn(process.execPath, [daemonScript], {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", stderrFd],
       env: harnessRuntimeEnv(),
     });
     child.unref();
+    closeSync(stderrFd);
     // Block until the daemon (socket + control API) is actually ready, so a
     // follow-up `status`/run can't race the spawn. Fail loudly (exit 1) if it
-    // never comes up. (If a daemon was already running, this connects to it.)
+    // never comes up.
     const ready = await waitForDaemonReady(15_000);
     if (json) {
       printJson({ pid: child.pid ?? null, socket: defaultSocketPath(), ready: ready !== null });
@@ -193,6 +227,22 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
   if (sub === "login") {
     if (!harness) {
       return printUsageError(json, "usage: claudexor auth login <codex|claude|cursor|opencode>");
+    }
+    // On a real terminal, RUN the native login flow instead of only hinting at
+    // it: inherited stdio hands the TTY to the vendor CLI (device-code /
+    // browser prompts work), and its exit code is the verb's exit code.
+    // Non-TTY and --json callers keep the hint (no interactive flow to run).
+    const native = nativeLoginCommand(harness);
+    if (!json && process.stdin.isTTY && native) {
+      print(`launching native login: ${native}`);
+      return await new Promise<number>((resolve) => {
+        const child = spawn("sh", ["-c", native], { stdio: "inherit", env: harnessRuntimeEnv() });
+        child.on("error", (err) => {
+          print(`could not launch native login (${err.message}); run it yourself: ${native}`);
+          resolve(1);
+        });
+        child.on("exit", (code) => resolve(code ?? 1));
+      });
     }
     const hints: Record<string, string> = {
       codex:

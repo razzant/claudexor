@@ -532,10 +532,6 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",
-          // No real rate-limit detector for cursor yet (a detector waits on a
-          // recorded rate-limited transcript) -> honest `unknown`, not `observed`.
-          quota_signal: "unknown",
-          usage_signal: "observed",
           // cursor-agent exposes no reasoning-effort flag -> effort is not tunable.
           effort_levels: [],
         },

@@ -31,8 +31,6 @@ function manifest(): HarnessManifest {
       mcp: true,
       plugins: true,
       worktree_native: false,
-      quota_signal: "observed",
-      usage_signal: "exact",
     },
     auth_modes: ["local_session"],
     access_profiles_supported: ["readonly", "workspace_write", "full"],

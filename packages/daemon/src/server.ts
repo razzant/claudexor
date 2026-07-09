@@ -255,9 +255,12 @@ export class DaemonServer {
         return [...this.records.values()].map(publicJobRecord);
       case "claudexor.cancel": {
         const jid = String(params?.id);
-        this.cancelled.add(jid);
+        // Honesty: cancelling an unknown id must fail loudly (like status),
+        // never claim `{cancelled:true}` for a job that does not exist.
         const rec = this.records.get(jid);
-        if (rec && rec.state === "queued") rec.state = "cancelled";
+        if (!rec) throw new Error(`no such job: ${jid}`);
+        this.cancelled.add(jid);
+        if (rec.state === "queued") rec.state = "cancelled";
         // Abort the in-flight run; the runner (Orchestrator) honors the signal,
         // cancels the harness, then settles this job as cancelled.
         this.controllers.get(jid)?.abort();

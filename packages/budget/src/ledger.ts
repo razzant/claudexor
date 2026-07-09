@@ -177,7 +177,17 @@ export class BudgetLedger {
 
   settle(leaseId: string, actualUsd: number): void {
     const lease = this.leases.get(leaseId);
-    if (lease) lease.state = "settled";
+    // Fail loudly: settling a lease this ledger never granted would attribute
+    // spend to nothing (a bookkeeping bug, not a runtime race).
+    if (!lease) throw new Error(`cannot settle unknown lease: ${leaseId}`);
+    // Idempotent for the spend add: a duplicate settle (success path followed
+    // by a late error handler) must never double-count real spend. DECIDED
+    // TRADEOFF: this no-op can also mask a genuine double-settle bug — spend
+    // correctness wins because the duplicate-settle race is a real runtime
+    // path (terminal handler + error handler), while a masked bug still
+    // surfaces in the rollup totals a test would assert on.
+    if (lease.state !== "reserved") return;
+    lease.state = "settled";
     this.clearHold(leaseId);
     this.spendUsd += actualUsd;
     this.parent?.addRollupSpend(actualUsd);

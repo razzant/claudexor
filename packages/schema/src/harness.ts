@@ -107,8 +107,6 @@ export const HarnessCapabilities = z
       .describe(
         "The harness can play the autonomous orchestrate planner intent, planning multi-harness work over the typed tool belt; not a privileged role.",
       ),
-    quota_signal: SignalQuality.default("unknown").describe("Quality of the quota signal this harness emits."),
-    usage_signal: SignalQuality.default("unknown").describe("Quality of the usage/cost signal this harness emits."),
     /**
      * The harness can constrain its FINAL message to a caller-supplied JSON
      * Schema (codex `--output-schema <file>`, claude `--json-schema <json>`).

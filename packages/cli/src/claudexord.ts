@@ -95,7 +95,8 @@ async function main(): Promise<void> {
             ? p.reviewerEfforts
             : undefined,
       });
-      const threadId = typeof p.threadId === "string" && p.threadId ? p.threadId : undefined;
+      // Fail loud on bogus socket-caller thread/turn ids (job settles failed).
+      const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
       // Resolve the execution tree: an ISOLATED thread runs in its persistent
       // worktree (lazily created); in-place threads and ordinary runs use the
       // project root. Config/artifacts stay anchored to repoRoot either way.
@@ -117,7 +118,6 @@ async function main(): Promise<void> {
       // its id, which we bind when the run starts. A thread run WITHOUT a
       // pre-created turn (a direct POST /runs with threadId) gets its turn
       // created and bound here, so "a run is always recorded on its thread".
-      const turnId = typeof p.turnId === "string" && p.turnId ? p.turnId : undefined;
       const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
         ctx.onRunStart?.(info);
         if (!threadId) return;

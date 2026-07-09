@@ -713,11 +713,13 @@ export type RunControlTarget = z.infer<typeof RunControlTarget>;
 
 export const RunControl = z
   .object({
-    kind: z.enum(["cancel", "interrupt"]).describe("Control verb: cancel the run or interrupt it."),
+    // `interrupt` was deleted as a fake knob: it mapped to the same daemon
+    // cancel (staged-field doctrine — no vocabulary without distinct behavior).
+    kind: z.enum(["cancel"]).describe("Control verb: cancel the run."),
     target: RunControlTarget.default({}),
     reason: z.string().optional().describe("Human-readable reason for the control."),
   })
-  .describe("A control verb (cancel/interrupt) aimed at a run or a narrower target inside it.");
+  .describe("A control verb (cancel) aimed at a run or a narrower target inside it.");
 export type RunControl = z.infer<typeof RunControl>;
 
 export const ControlRunControlRequest = z
@@ -1066,7 +1068,7 @@ export const ControlSettingsSnapshot = z
       .describe("How long a run waits for an interactive answer before a benign decline, in milliseconds."),
     routing: z
       .object({
-        defaultPolicy: z.enum(["auto", "primary", "portfolio"]).default("auto").describe("Default routing policy."),
+        defaultPolicy: z.enum(["auto", "primary"]).default("auto").describe("Default routing policy."),
         primaryHarness: z.string().nullable().default(null).describe("Global default primary harness; null = engine decides."),
         eligibleHarnesses: z.array(z.string()).default([]).describe("Harness pool eligible for routing/races; empty = all available."),
         envInheritance: z
@@ -1154,7 +1156,7 @@ export const ControlSettingsUpdateRequest = z
   .object({
     defaultPortfolio: Portfolio.optional(),
     interactionTimeoutMs: z.number().int().positive().optional().describe("New interactive-answer timeout, in milliseconds."),
-    routingPolicy: z.enum(["auto", "primary", "portfolio"]).optional().describe("New default routing policy."),
+    routingPolicy: z.enum(["auto", "primary"]).optional().describe("New default routing policy."),
     primaryHarness: NonBlankString.nullable().optional().describe("New global primary harness; null clears back to engine routing."),
     eligibleHarnesses: z.array(NonBlankString).optional().describe("New global eligible harness pool."),
     envInheritance: z.enum(["mirror_native", "clean"]).optional().describe("New child harness env composition mode."),

@@ -34,6 +34,10 @@ describe("codexBrowserArgs", () => {
     expect(codexBrowserArgs(null)).toEqual([]);
   });
 
+  it("injects nothing under external_context_policy off (defense-in-depth, mirrors claude)", () => {
+    expect(codexBrowserArgs({ output_dir: null, headless: true }, "off")).toEqual([]);
+  });
+
   it("injects the Playwright MCP as `-c mcp_servers.browser.*` overrides (stateless)", () => {
     const args = codexBrowserArgs({ output_dir: "/runs/r1/browser", headless: false });
     // The override is paired `-c key=value` flags — no scoped config.toml write.

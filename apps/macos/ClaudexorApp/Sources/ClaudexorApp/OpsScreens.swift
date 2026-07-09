@@ -14,6 +14,15 @@ struct SettingsScreen: View {
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
     @State private var maxUsdPerRun = ""
     @State private var interactionTimeoutMinutes = ""
+    /// Anti-clobber (HarnessDefaultsRow.dirty pattern): set on user edits,
+    /// cleared when OUR save settles. While dirty, `syncFromModel()` refuses to
+    /// re-derive drafts, so a concurrent `refreshSettings()` re-sync (e.g.
+    /// after a per-harness row auto-save) cannot overwrite in-progress edits.
+    @State private var engineDraftsDirty = false
+    /// Draft values as last written by `syncFromModel()`: edit detection is by
+    /// VALUE against this, because `.onChange` also fires for the programmatic
+    /// sync writes (mirrors HarnessDefaultsRow.syncedSnapshot).
+    @State private var syncedSnapshot: [String] = []
     private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var interactionTimeoutValid: Bool {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,6 +49,27 @@ struct SettingsScreen: View {
         .task { await refreshAll() }
         .onAppear { syncFromModel() }
         .onChange(of: model.settingsSnapshot) { _, _ in syncFromModel() }
+        .onChange(of: defaultPortfolio) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: routingPolicy) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: primaryHarness) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: authPreference) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: envInheritance) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: eligibleHarnesses) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: maxUsdPerRun) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: interactionTimeoutMinutes) { _, _ in markEngineDraftsEdited() }
+    }
+
+    /// Current draft values in a stable comparable shape.
+    private var draftSnapshot: [String] {
+        [defaultPortfolio, routingPolicy, primaryHarness, authPreference, envInheritance,
+         eligibleHarnesses.map(\.rawValue).sorted().joined(separator: ","),
+         maxUsdPerRun, interactionTimeoutMinutes]
+    }
+
+    /// Only a VALUE change relative to the last sync is a user edit (a sync
+    /// echo re-fires .onChange with the just-synced values).
+    private func markEngineDraftsEdited() {
+        if draftSnapshot != syncedSnapshot { engineDraftsDirty = true }
     }
 
     /// Standard scrolling container for one settings tab (matte glass backdrop,
@@ -102,7 +132,6 @@ struct SettingsScreen: View {
                     Picker("Routing policy", selection: $routingPolicy) {
                         Text("Auto").tag("auto")
                         Text("Primary").tag("primary")
-                        Text("Portfolio").tag("portfolio")
                     }
                     .help("Auto lets the route selector choose from the eligible pool. Primary biases a single harness.")
                     Picker("Primary harness", selection: $primaryHarness) {
@@ -308,7 +337,9 @@ struct SettingsScreen: View {
     }
 
     private func syncFromModel() {
-        guard let s = model.settingsSnapshot else { return }
+        // Mid-edit drafts win over a concurrent snapshot republish; the drafts
+        // re-derive after the user's own Save settles (which clears the flag).
+        guard let s = model.settingsSnapshot, !engineDraftsDirty else { return }
         defaultPortfolio = s.defaultPortfolio
         routingPolicy = s.routing.defaultPolicy
         primaryHarness = s.routing.primaryHarness ?? "__none"
@@ -317,12 +348,30 @@ struct SettingsScreen: View {
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
         maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
         interactionTimeoutMinutes = s.interactionTimeoutMs.map { String(max(1, $0 / 60_000)) } ?? ""
+        syncedSnapshot = draftSnapshot
     }
 
     private func saveInteractionTimeout() async {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard interactionTimeoutValid, !trimmed.isEmpty, let minutes = Int(trimmed) else { return }
-        _ = await model.saveSettings(SettingsUpdateRequest(interactionTimeoutMs: minutes * 60_000))
+        if await model.saveSettings(SettingsUpdateRequest(interactionTimeoutMs: minutes * 60_000)) {
+            // PARTIAL save: only the timeout reached the server. Mark just that
+            // field as synced and re-derive dirtiness — unsaved routing/budget
+            // drafts must survive (a full release here would resync every
+            // field from the snapshot and silently discard them).
+            if syncedSnapshot.count == draftSnapshot.count, !syncedSnapshot.isEmpty {
+                syncedSnapshot[syncedSnapshot.count - 1] = interactionTimeoutMinutes
+            }
+            engineDraftsDirty = draftSnapshot != syncedSnapshot
+            if !engineDraftsDirty { syncFromModel() }
+        }
+    }
+
+    /// Our settled save releases the drafts back to server sync; a failed save
+    /// keeps them dirty so edits survive the next snapshot republish.
+    private func releaseDraftsToSync() {
+        engineDraftsDirty = false
+        syncFromModel()
     }
 
     private func saveEngineDefaults() async {
@@ -344,7 +393,7 @@ struct SettingsScreen: View {
             maxUsdPerRun: runCap,
             clearMaxUsdPerRun: clearRunCap
         )
-        _ = await model.saveSettings(patch)
+        if await model.saveSettings(patch) { releaseDraftsToSync() }
     }
 
     private func parseOptionalDouble(_ text: String) -> Double? {

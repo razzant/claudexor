@@ -239,7 +239,7 @@ responses include `primaryOutput`, `timeline`, `budget`, `pendingInteractions`,
 and `summary.route` projections. Web/tool evidence is projected from the
 engine-owned `final/telemetry.yaml`. Clients should use those fields first
 instead of guessing artifact paths or displaying fake zero spend/quota values.
-`POST /runs/:id/control` supports cancel/interrupt for active daemon jobs.
+`POST /runs/:id/control` supports cancel for active daemon jobs.
 Interactive harnesses (Claude Code) can ask typed questions mid-run: the run
 parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
 interactions endpoint, and unanswered questions decline benignly after the

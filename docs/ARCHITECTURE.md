@@ -620,10 +620,11 @@ Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead
 of local fake apply state.
 
-`POST /runs/:id/control` is capability-based. The implemented minimum is
-cancel/interrupt: daemon abort closes the active harness stream and the process
-helper sends a cooperative interrupt with hard-kill fallback. Live input
-forwarding into a running harness is not a supported control surface; the
+`POST /runs/:id/control` is capability-based. The implemented verb is `cancel`:
+daemon abort closes the active harness stream and the process helper sends a
+cooperative interrupt with hard-kill fallback. (The former `interrupt` control
+kind was deleted as a fake knob — it mapped to the same daemon cancel.) Live
+input forwarding into a running harness is not a supported control surface; the
 former `/runs/:id/input` endpoint and `RunInput` DTO were removed as dead code
 rather than left as an always-`unsupported` stub.
 
@@ -962,3 +963,57 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   app docs aligned when behavior changes.
 - Keep contributor process in `docs/DEVELOPMENT.md` and `docs/CHECKLISTS.md`,
   not in runtime architecture sections.
+
+## Design constraints
+
+Deliberate engine-level boundaries. Each is a designed limit (not a defect):
+code touching one of these areas must honor it or change it explicitly here.
+
+- orchestrate's `answer_question` tool stays out of the default tool belt
+  (safe sub-runs are non-interactive); it executes only where a live
+  interaction registry is injected (daemon-tracked runs) and otherwise SKIPs
+  honestly.
+- Spec-interview grounding runs execute in-process in the daemon (synchronous
+  request/response); they persist a normal run dir but are not daemon jobs —
+  they do not appear in `GET /runs` and cannot be cancelled via the run
+  control endpoint.
+- `--json` mode guarantees exactly one JSON object on stdout for run/ops
+  verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text
+  affordances by design.
+- Quota observations (used-percent, rate-limit cooldowns) live in the per-run
+  budget ledger only; nothing persists them across runs, so each run
+  rediscovers vendor quota pressure (cost/latency metrics, by contrast,
+  persist via harness metrics).
+- The `verify` intent is reserved: the shipped FinalVerifier is
+  deterministic-only (fresh-tree apply + gates, no model), so no engine path
+  requests verify-intent routing; the value stays for a future model-backed
+  verifier.
+- The staged-field gate is a token-level reference check, not data-flow
+  analysis: any identifier occurrence in non-schema TS — including an
+  adapter's own capability declaration — counts as a consumer.
+- Arbitration's acceptance-coverage axis is a gate-derived proxy — all
+  acceptance criteria count as covered only when required gates pass; there is
+  no per-criterion acceptance evidence.
+- Run-artifact writes are non-atomic by design: the engine is the single
+  writer of a run directory; external writers into `.claudexor/runs` are
+  unsupported.
+- SpecPack revision diffs (the `changes` list) are produced only when the
+  caller supplies a previous SpecPack (CLI `--previous`); the daemon freeze
+  endpoint has no spec-revision lineage and always reports an empty change
+  list.
+- Spec interviews parse the harness's instructed `## Open Questions` block by
+  delimiters (never as governance); output deviating from the instructed
+  format degrades to free-text questions instead of failing the interview.
+- Startup crash GC sweeps orphaned envelopes only under project roots recorded
+  in the daemon's jobs.json; envelopes created by in-process CLI/MCP/ACP runs
+  in roots the daemon never saw are reclaimed only by their own process.
+- Non-git projects get a best-effort copied baseline for diffing; if the
+  baseline copy or the `diff` tool fails, the run's diff is empty and
+  reviewers read the live tree (diff output capped at 200 kB with an in-band
+  truncation marker).
+- Isolated-thread worktrees assume turns leave work uncommitted; the persisted
+  thread base, not worktree HEAD, is the apply base.
+- Explicit reviewer panels accept only doctor-OK routes: a degraded route (key
+  present but unproven by isolated smoke) is refused even when the user names
+  it — reviewer verdicts must ride proven routes, unlike candidates where
+  explicit selection admits degraded.

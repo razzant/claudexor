@@ -94,8 +94,6 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       interactive: false,
       json_schema_output: false,
       orchestrate: true,
-      quota_signal: id === "fake-rate-limit" ? "observed" : "unknown",
-      usage_signal: "exact",
       // Partial ladder: a deliberate clamp fixture for the effort normalizer
       // (requests for xhigh/max clamp down to high).
       effort_levels: ["low", "medium", "high"],

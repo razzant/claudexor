@@ -10,10 +10,9 @@
             "kind": {
               "type": "string",
               "enum": [
-                "cancel",
-                "interrupt"
+                "cancel"
               ],
-              "description": "Control verb: cancel the run or interrupt it."
+              "description": "Control verb: cancel the run."
             },
             "target": {
               "type": "object",
@@ -48,7 +47,7 @@
             "kind"
           ],
           "additionalProperties": false,
-          "description": "A control verb (cancel/interrupt) aimed at a run or a narrower target inside it."
+          "description": "A control verb (cancel) aimed at a run or a narrower target inside it."
         }
       },
       "required": [

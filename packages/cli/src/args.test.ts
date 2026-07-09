@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandAllowedFlagError, commandScopedFlagError, flagBool, flagStr, flagStringList, flagValues, parseArgs, requiredStringFlagError } from "./args.js";
+import { flagBool, flagStr, flagStringList, flagValues, parseArgs, requiredStringFlagError } from "./args.js";
 
 describe("cli args", () => {
   it("parses --in-place as a boolean flag (present => true, absent => false)", () => {
@@ -84,18 +84,6 @@ describe("cli args", () => {
     expect(Object.prototype.hasOwnProperty.call(args.flags, "__proto__")).toBe(true);
   });
 
-  it("rejects plugin-only --force outside plugin commands", () => {
-    expect(commandScopedFlagError(parseArgs(["run", "fix it", "--force"]))).toBe("claudexor: --force is only valid for plugin commands");
-    expect(commandScopedFlagError(parseArgs(["run", "fix it", "--force=false"]))).toBe("claudexor: --force is only valid for plugin commands");
-    expect(commandScopedFlagError(parseArgs(["plugin", "repair", "all", "--force"]))).toBeNull();
-  });
-
-  it("rejects --dry-run outside commands that implement dry-run semantics", () => {
-    expect(commandScopedFlagError(parseArgs(["run", "fix it", "--dry-run"]))).toBe("claudexor: --dry-run is only valid for plugin and apply commands");
-    expect(commandScopedFlagError(parseArgs(["plugin", "install", "all", "--dry-run"]))).toBeNull();
-    expect(commandScopedFlagError(parseArgs(["apply", "run_123", "--dry-run"]))).toBeNull();
-  });
-
   it("rejects value-taking flags when no value is provided", () => {
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "--json"]), ["spec"])).toBe("claudexor: --spec requires a value");
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec="]), ["spec"])).toBe("claudexor: --spec requires a value");
@@ -103,14 +91,6 @@ describe("cli args", () => {
     expect(requiredStringFlagError(parseArgs(["run", "fix it", "--test", "pnpm build", "--test", "--json"]), ["test"])).toBe(
       "claudexor: --test requires a value",
     );
-  });
-
-  it("rejects unrelated known flags on command-specific allowlists", () => {
-    expect(commandAllowedFlagError(parseArgs(["plugin", "install", "all", "--harness", "codex"]), "plugin", ["json", "dry-run", "force"])).toBe(
-      "claudexor: flag(s) not valid for plugin commands: --harness",
-    );
-    expect(commandAllowedFlagError(parseArgs(["plugin", "install", "all", "--dry-run", "--force"]), "plugin", ["json", "dry-run", "force"])).toBeNull();
-    expect(commandAllowedFlagError(parseArgs(["run", "fix it", "--harness", "codex"]), "plugin", ["json", "dry-run", "force"])).toBeNull();
   });
 });
 

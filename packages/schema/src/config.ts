@@ -3,9 +3,11 @@ import { AccessProfile, AuthPreference, ExternalContextPolicy, ProviderFamily } 
 import { EffortHint } from "./harness.js";
 import { Portfolio } from "./budget.js";
 
+// The former "portfolio" value was deleted as a fake knob (it behaved
+// identically to "auto"); the config loader migrates it to "auto".
 export const RoutingPolicy = z
-  .enum(["auto", "primary", "portfolio"])
-  .describe("Default routing policy: auto (engine picks), primary (prefer the configured primary harness), or portfolio (budget-portfolio-driven).");
+  .enum(["auto", "primary"])
+  .describe("Default routing policy: auto (engine picks) or primary (prefer the configured primary harness).");
 export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
 
 /**

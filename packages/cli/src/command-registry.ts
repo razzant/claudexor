@@ -33,10 +33,9 @@ export interface CliCommandSpec {
   readonly summary: string;
   /** Indented follow-up usage lines (e.g. the trust sub-flags). */
   readonly extraUsageLines?: readonly { readonly text: string; readonly help: string }[];
-  /** Flag names (from CLI_FLAGS) this command meaningfully consumes. */
+  /** Flag names (from CLI_FLAGS) this command meaningfully consumes; every
+   * command rejects flags outside this set (commandFlagScopeError). */
   readonly flags: readonly string[];
-  /** When true the command REJECTS any flag outside `flags` (plugin). */
-  readonly restrictFlags?: boolean;
   readonly mutability: CliMutability;
   readonly stability: "stable" | "experimental";
   /** Post-run recovery verb (inspect/follow/apply/decision). */
@@ -379,7 +378,6 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     usageArgs: "install|status|doctor|repair|uninstall <host|all>",
     summary: "Manage host integrations (cursor|claude|codex|opencode|all)",
     flags: ["json", "dry-run", "force", "help", "version"],
-    restrictFlags: true,
     mutability: "ops",
     stability: "stable",
   },
@@ -441,10 +439,20 @@ export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter((f) => f.kind ===
 /** Flags that never consume a following token as a value. */
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.filter((f) => f.kind === "boolean").map((f) => f.name));
 
-/** The flag allowlist for commands with restrictFlags (currently plugin). */
-export function restrictedFlagAllowlist(commandId: string): readonly string[] | null {
-  const cmd = CLI_COMMANDS.find((c) => c.id === commandId);
-  return cmd?.restrictFlags ? cmd.flags : null;
+/**
+ * Registry-enforced per-command flag scope: every command accepts exactly its
+ * declared `flags` plus the global preflight affordances. A known-but-out-of-
+ * scope flag (e.g. `spec --model`) must FAIL LOUDLY, never be silently
+ * ignored — the same bug class as unknown flags, one data-driven owner.
+ * Unknown verbs return null (dispatch owns unknown/renamed-verb errors).
+ */
+export function commandFlagScopeError(commandId: string, flagNames: readonly string[]): string | null {
+  const cmd = CLI_COMMANDS.find((c) => c.id === commandId || (c.aliases ?? []).includes(commandId));
+  if (!cmd) return null;
+  const allowed = new Set([...cmd.flags, "json", "help", "version"]);
+  const unexpected = flagNames.filter((flag) => !allowed.has(flag));
+  if (unexpected.length === 0) return null;
+  return `claudexor: flag(s) not valid for the ${cmd.id} command: ${unexpected.map((flag) => `--${flag}`).join(", ")} (see \`claudexor help\`)`;
 }
 
 /**

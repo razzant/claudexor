@@ -142,7 +142,7 @@ container — the CLI (`/opt/claudexor/claudexor-cli.js`) and its daemon
 `run()` invokes `claudexor agent --in-place ...` and exports `/app/.claudexor/runs` to
 `/logs/agent/`.
 
-Why two files: `claudexor run` (agent mode) routes through `ensureDaemon()`, which
+Why two files: `claudexor agent` routes through `ensureDaemon()`, which
 auto-starts the daemon by spawning the **sibling** `new URL("./claudexord.js",
 import.meta.url)` next to the running CLI bundle (there is no in-process `--local`
 fallback — CLI runs are always daemon-tracked). So `claudexord.js` must sit right beside

@@ -213,6 +213,39 @@ export class ThreadStore {
     return this.state.turns.find((t) => t.id === turnId);
   }
 
+  /**
+   * Fail-loud prologue for the daemon runner: control-api validates thread/turn
+   * ids at the HTTP boundary, but a direct socket caller can pass bogus ids —
+   * a silent unbind would orphan the run from its conversation. A typed throw
+   * settles the job `failed` instead. Returns the normalized ids.
+   */
+  assertKnownIds(rawThreadId: unknown, rawTurnId: unknown): { threadId?: string; turnId?: string } {
+    const threadId = typeof rawThreadId === "string" && rawThreadId ? rawThreadId : undefined;
+    const turnId = typeof rawTurnId === "string" && rawTurnId ? rawTurnId : undefined;
+    if (threadId && !this.getThread(threadId)) {
+      throw Object.assign(new Error(`no such thread: ${threadId}`), { code: "unknown_thread" });
+    }
+    if (turnId) {
+      const turn = this.getTurn(turnId);
+      if (!turn) {
+        throw Object.assign(new Error(`no such turn: ${turnId}`), { code: "unknown_turn" });
+      }
+      // A turn is bound to ONE conversation: a foreign turnId would resolve
+      // workspace/session context from one thread while advancing another
+      // thread's lineage. A turn also never rides without its thread id.
+      if (!threadId) {
+        throw Object.assign(new Error(`turnId ${turnId} requires its threadId`), { code: "unbound_turn" });
+      }
+      if (turn.thread_id !== threadId) {
+        throw Object.assign(
+          new Error(`turn ${turnId} belongs to thread ${turn.thread_id}, not ${threadId}`),
+          { code: "foreign_turn" },
+        );
+      }
+    }
+    return { threadId, turnId };
+  }
+
   sessionsForThread(threadId: string): Session[] {
     return this.state.sessions.filter((s) => s.thread_id === threadId);
   }

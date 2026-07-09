@@ -13,5 +13,5 @@
   "packages/harness-cursor/src/index.ts": 766,
   "packages/orchestrator/src/orchestrator.ts": 6239,
   "packages/review/src/reviewEngine.ts": 1424,
-  "packages/schema/src/control.ts": 916
+  "packages/schema/src/control.ts": 1203
 }

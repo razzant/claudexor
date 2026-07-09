@@ -322,6 +322,14 @@ export async function worktreeAdd(repo: string, path: string, branch: string, ba
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
 }
 
+/** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived). */
+export async function worktreeAddExisting(repo: string, path: string, branch: string): Promise<void> {
+  // A stale registration for the lost directory would fail the add; prune first.
+  await git(repo, ["worktree", "prune"]);
+  const r = await git(repo, ["worktree", "add", path, branch]);
+  if (r.code !== 0) throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
+}
+
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
 }

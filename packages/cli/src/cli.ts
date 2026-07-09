@@ -43,8 +43,6 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import {
-  commandAllowedFlagError,
-  commandScopedFlagError,
   flagBool,
   flagStr,
   flagStringList,
@@ -54,7 +52,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
-import { KNOWN_FLAGS, VALUE_FLAGS, helpJson, renderHelp, restrictedFlagAllowlist } from "./command-registry.js";
+import { KNOWN_FLAGS, VALUE_FLAGS, commandFlagScopeError, helpJson, renderHelp } from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
@@ -977,10 +975,9 @@ function listCliArtifacts(root: string): string[] {
 
 
 
-// KNOWN_FLAGS / VALUE_FLAGS (imported above) and the plugin allowlist are
-// projections of the command registry. Unknown flags FAIL LOUDLY: `--harnes
+// KNOWN_FLAGS / VALUE_FLAGS (imported above) and the per-command scope check
+// are projections of the command registry. Unknown flags FAIL LOUDLY: `--harnes
 // codex` must never silently run all harnesses.
-const PLUGIN_FLAGS = restrictedFlagAllowlist("plugin") ?? [];
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
@@ -1002,10 +999,12 @@ async function main(): Promise<number> {
   }
   const valueFlagError = requiredStringFlagError(args, VALUE_FLAGS);
   if (valueFlagError) return printPreflightError(args, json, valueFlagError);
-  const scopedFlagError = commandScopedFlagError(args);
-  if (scopedFlagError) return printPreflightError(args, json, scopedFlagError);
-  const pluginFlagError = commandAllowedFlagError(args, "plugin", PLUGIN_FLAGS);
-  if (pluginFlagError) return printPreflightError(args, json, pluginFlagError);
+  // Registry-enforced per-command flag scope: a KNOWN flag outside the
+  // command's declared set (e.g. `spec --model`, `ask --force`) fails loudly
+  // instead of being silently ignored. Data-driven from CLI_COMMANDS for
+  // every verb (this replaced the old hand-listed plugin/--force special cases).
+  const scopeError = commandFlagScopeError(cmd, Object.keys(args.flags));
+  if (scopeError) return printPreflightError(args, json, scopeError);
   // No arguments at all = the interactive REPL: a thread of turns over the
   // current project with native session continuity (chat is the normal loop).
   if (args._.length === 0 && process.stdin.isTTY) {

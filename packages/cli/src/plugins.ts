@@ -1442,7 +1442,12 @@ function targets(target: PluginTarget): PluginHost[] {
 }
 
 function exitCodeFor(verb: PluginVerb, result: PluginCommandResult): number {
-  if (verb === "status") return 0;
+  // `status` reports, but drift/blocked are actionable problems that must be
+  // scriptable: exit 1 so CI/agents can gate on them. Absence states
+  // (missing/partial/installed/registered) stay 0 — not-installed is not an error.
+  if (verb === "status") {
+    return result.results.some((r) => r.state === "drifted" || r.state === "blocked") ? 1 : 0;
+  }
   return result.results.every((r) => r.ok) ? 0 : 1;
 }
 

@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
@@ -467,10 +467,23 @@ export function persistSpec(repoRoot: string, spec: SpecPack, plan: string, prev
   ensureDir(specDir);
   const specHash = hashJson(canonical);
   const changes = previous ? diffSpecPacks(previous, canonical) : [];
-  writeJson(join(specDir, "spec.json"), canonical);
+  // Secondary artifacts first; canonical spec.json LAST and atomically
+  // (tmp + rename) as the commit point — downstream hash verification reads
+  // spec.json, so a crash mid-persist leaves either no spec or a complete
+  // one, never a torn multi-file state fronted by a valid-looking spec.json.
   new ArtifactStore(repoRoot).writeYaml(join(specDir, "spec.yaml"), canonical);
   writeText(join(specDir, "PLANS.md"), renderNativePlanProjection(canonical, plan, specHash));
   writeJson(join(specDir, "changes.json"), changes);
+  // Atomic commit point: rename MOVES the tmp file (no leftover on success);
+  // a failure between write and rename must not litter the spec dir either.
+  const tmp = join(specDir, `spec.json.tmp-${process.pid}`);
+  try {
+    writeJson(tmp, canonical);
+    renameSync(tmp, join(specDir, "spec.json"));
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
   return { specDir, specHash, changes };
 }
 

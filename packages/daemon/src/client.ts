@@ -17,10 +17,15 @@ export class DaemonClient {
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         rl?.close();
         sock.destroy();
         fn();
       };
+      // A socket that accepts but never replies must not hang the caller
+      // (`daemon status`) forever — fail loudly after a bounded wait.
+      const timer = setTimeout(() => finish(() => reject(new Error(`daemon RPC timeout (${method})`))), 10_000);
+      timer.unref?.();
       // Attach the error handler first so connect failures (ENOENT/ECONNREFUSED)
       // never become an unhandled 'error' event.
       sock.on("error", (err) => finish(() => reject(err)));

@@ -204,10 +204,15 @@ function codexImageArgs(attachments: HarnessRunSpec["attachments"] | undefined):
  * config overrides (live-verified: codex accepts array-valued `-c` overrides and
  * surfaces the tools as `mcp_tool_call` events the parser already maps). Stateless
  * means NO scoped config.toml write — the user's `~/.codex/config.toml` is never
- * touched. Empty when no browser this run.
+ * touched. Empty when no browser this run, and ALWAYS empty under
+ * `external_context_policy: off` (adapter-level defense-in-depth mirroring the
+ * claude adapter; the orchestrator already nulls the browser under off).
  */
-export function codexBrowserArgs(browser: HarnessRunSpec["browser"]): string[] {
-  if (!browser) return [];
+export function codexBrowserArgs(
+  browser: HarnessRunSpec["browser"],
+  externalContextPolicy?: HarnessRunSpec["external_context_policy"],
+): string[] {
+  if (!browser || externalContextPolicy === "off") return [];
   return [
     "-c",
     `mcp_servers.browser.command=${JSON.stringify(resolveNpxBin())}`,
@@ -267,7 +272,7 @@ export function codexExecArgs(
     // ALL `-c` config overrides go BEFORE `-i` so the variadic `-i/--image
     // <FILE>...` can't swallow them as image paths; then images, then `--` so the
     // positional prompt survives, then the prompt.
-    args.push(...codexBrowserArgs(spec.browser));
+    args.push(...codexBrowserArgs(spec.browser, spec.external_context_policy));
     args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
     args.push(...imageArgs);
@@ -287,7 +292,7 @@ export function codexExecArgs(
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   // ALL `-c` config overrides BEFORE `-i` (variadic) so they can't be eaten as
   // image paths; then images, then `--`, then the prompt. See resume branch.
-  args.push(...codexBrowserArgs(spec.browser));
+  args.push(...codexBrowserArgs(spec.browser, spec.external_context_policy));
   args.push(...nodeReplArgs);
   const imageArgs = codexImageArgs(spec.attachments);
   args.push(...imageArgs);
@@ -361,8 +366,6 @@ export function createCodexAdapter(): HarnessAdapter {
           // LIVE-VERIFIED (codex 0.137): `codex exec --output-schema <FILE>`.
           json_schema_output: true,
           web_policy: "native",
-          quota_signal: "observed",
-          usage_signal: "native",
           // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
           // to xhigh). Single source for the manifest AND the run-time normalizer.
           effort_levels: [...CODEX_EFFORT_LEVELS],

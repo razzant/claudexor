@@ -6,12 +6,12 @@ import {
   KNOWN_FLAGS,
   REPL_COMMANDS,
   VALUE_FLAGS,
+  commandFlagScopeError,
   helpJson,
   hostFallbackExamples,
   recoveryVerbs,
   renderHelp,
   renderReplHelp,
-  restrictedFlagAllowlist,
 } from "./command-registry.js";
 
 describe("command registry — the one owner of the CLI surface", () => {
@@ -58,10 +58,17 @@ describe("command registry — the one owner of the CLI surface", () => {
     for (const c of j.commands) expect(["read", "write", "delivery", "ops"]).toContain(c.mutability);
   });
 
-  it("the plugin command restricts flags to its declared allowlist", () => {
-    const allow = restrictedFlagAllowlist("plugin");
-    expect(allow).toEqual(["json", "dry-run", "force", "help", "version"]);
-    expect(restrictedFlagAllowlist("run")).toBeNull();
+  it("every command restricts flags to its declared set (registry-enforced scope)", () => {
+    // A known flag outside the command's declared set fails loudly.
+    expect(commandFlagScopeError("plugin", ["harness"])).toContain("--harness");
+    expect(commandFlagScopeError("spec", ["model", "attach"])).toContain("--model");
+    expect(commandFlagScopeError("ask", ["force"])).toContain("--force");
+    // Declared flags plus the global affordances pass; aliases resolve.
+    expect(commandFlagScopeError("plugin", ["dry-run", "force", "json"])).toBeNull();
+    expect(commandFlagScopeError("spec", ["answers", "previous", "help"])).toBeNull();
+    expect(commandFlagScopeError("map", ["swarm"])).toBeNull(); // audit alias
+    // Unknown/renamed verbs are dispatch's problem, not the scope check's.
+    expect(commandFlagScopeError("run", ["harness"])).toBeNull();
   });
 
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {
