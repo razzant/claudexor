@@ -14,7 +14,7 @@ time of the audit; lines drift with edits — verify before relying on them.
 
 Rows: **0**
 
-The ledger is EMPTY — no known half-baked or caveated features. New rows are
+The ledger is EMPTY — no open defect rows. New rows are
 added the moment a non-solid feature ships (see the rule above). Deliberate
 design boundaries that used to live here as "caveats" are documented in the
 "Design constraints" sections of `docs/ARCHITECTURE.md` (engine) and

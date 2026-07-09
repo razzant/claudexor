@@ -3,7 +3,7 @@ import { AccessProfile, EffortHint, ExternalContextPolicy } from "@claudexor/sch
 import { loadConfig } from "@claudexor/config";
 import { buildGateway, buildRegistry } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import { daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, fetchApplyEligibility } from "./daemon-run.js";
+import { connectDaemonIfRunning, daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, fetchApplyEligibility } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import type { ControlApiAddress } from "./live.js";
 
@@ -175,7 +175,13 @@ export function mcpSurfaceRunner() {
  * handle finds it again without shelling out to the CLI.
  */
 async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
-  const { addr } = await ensureDaemon();
+  // Read-only recovery must not BOOT a daemon: with no daemon there are no
+  // daemon-tracked runs to recover — say so instead of spawning one.
+  const conn = await connectDaemonIfRunning();
+  if (!conn) {
+    return { summary: "the Claudexor daemon is not running — there are no live daemon-tracked runs to recover (start one with `claudexor daemon start` or run a mutating tool first)" };
+  }
+  const { addr } = conn;
   const get = async (path: string): Promise<Record<string, unknown>> => {
     const res = await fetch(`${addr.baseUrl}${path}`, { headers: { authorization: `Bearer ${addr.token}` } });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;

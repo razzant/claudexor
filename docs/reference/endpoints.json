@@ -55,7 +55,7 @@
       "path": "/runs/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlRunDetail"
     },
     {
       "method": "POST",

@@ -54,6 +54,7 @@ export type CatalogModelSummary = z.infer<typeof CatalogModelSummary>;
 export const CatalogHarness = z
   .object({
     id: z.string().describe("Harness id (codex, claude, cursor, opencode, raw-api, openrouter, ...)."),
+    enabled: z.boolean().describe("False when settings disable this harness (harnesses.<id>.enabled=false) — routing excludes it regardless of doctor status."),
     displayName: z.string().describe("Human display name from the manifest."),
     status: AdapterStatus.describe("Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s)."),
     providerFamily: ProviderFamily.describe("Vendor family the harness routes to."),

@@ -54,8 +54,12 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
           )
         : null;
       const profile = s.manifest?.capability_profile;
+      // Settings can disable a harness outright (harnesses.<id>.enabled=false);
+      // routing drops it, so the catalog must not advertise it as available.
+      const enabled = cfg.global.harnesses[s.id]?.enabled !== false;
       return {
         id: s.id,
+        enabled,
         displayName: s.manifest?.display_name ?? s.id,
         status: s.status,
         providerFamily: s.manifest?.provider_family ?? "unknown",
@@ -87,7 +91,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     version: CLAUDEXOR_VERSION,
     generatedAt: new Date().toISOString(),
     harnesses,
-    availableHarnesses: statuses.filter((s) => s.status === "ok").map((s) => s.id),
+    availableHarnesses: harnesses.filter((h) => h.status === "ok" && h.enabled).map((h) => h.id),
     modes: [...ModeKind.options],
     runControlKeys,
     mutability: {

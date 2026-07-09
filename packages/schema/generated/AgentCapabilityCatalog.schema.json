@@ -26,6 +26,10 @@
                 "type": "string",
                 "description": "Harness id (codex, claude, cursor, opencode, raw-api, openrouter, ...)."
               },
+              "enabled": {
+                "type": "boolean",
+                "description": "False when settings disable this harness (harnesses.<id>.enabled=false) — routing excludes it regardless of doctor status."
+              },
               "displayName": {
                 "type": "string",
                 "description": "Human display name from the manifest."
@@ -184,6 +188,7 @@
             },
             "required": [
               "id",
+              "enabled",
               "displayName",
               "status",
               "providerFamily",

@@ -63,6 +63,14 @@ export function implementedEndpoints(srcPath = "packages/control-api/src/daemon-
 // a false mutating flag.
 const READ_ONLY_NON_GET = new Set(["POST /runs/:id/apply/check"]);
 
+// Responses produced through HELPERS the slice-scan cannot see into (e.g.
+// `this.json(res, 200, detailFor(...))` where detailFor zod-parses the DTO).
+// docs-truth self-checks every named schema exists in generated/, so a rename
+// fails loudly instead of shipping a dangling ref.
+const ROUTE_RESPONSE_OVERRIDES = new Map([
+  ["GET /runs/:id", "ControlRunDetail"],
+]);
+
 export function endpointDetails(srcPath = "packages/control-api/src/daemon-server.ts") {
   const src = readFileSync(srcPath, "utf8");
   const sites = routeSites(src).sort((a, b) => a.index - b.index);
@@ -89,7 +97,7 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
       path: site.path,
       mutating: site.method !== "GET" && !READ_ONLY_NON_GET.has(key),
       requestSchema: requestMatch ? requestMatch[1] : null,
-      responseSchema: serviceMatch ? serviceMatch[1] : null,
+      responseSchema: ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
     };
   });
   details.push({ method: "GET", path: "/healthz", mutating: false, requestSchema: null, responseSchema: null });

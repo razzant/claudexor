@@ -1007,7 +1007,12 @@ code touching one of these areas must honor it or change it explicitly here.
 - Startup crash GC sweeps orphaned envelopes only under project roots recorded
   in the daemon's jobs.json; envelopes created by in-process CLI/MCP/ACP runs
   in roots the daemon never saw are reclaimed only by their own process.
-- Non-git projects get a best-effort copied baseline for diffing; if the
+- Under `--web auto`, "the harness attempted web" is the intent signal; a
+  separate did-this-task-NEED-web resolver does not exist yet, so web-required
+  enforcement applies only to explicit `cached`/`live` policies (the WHITEPAPER
+  documents the rationale).
+- READ-ONLY flows on non-git folders get a best-effort copied baseline for
+  diffing (write modes auto-initialize git per INV-075); if the
   baseline copy or the `diff` tool fails, the run's diff is empty and
   reviewers read the live tree (diff output capped at 200 kB with an in-band
   truncation marker).
