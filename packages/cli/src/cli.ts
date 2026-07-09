@@ -408,7 +408,7 @@ async function orchestrate(
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // `--autonomy` only governs the orchestrate brain's executor; on any other
+  // `--autonomy` only governs the orchestrate executor; on any other
   // mode it would silently do nothing, so reject it loudly (a misplaced flag is
   // an error, not a no-op).
   if (autonomy !== undefined && mode !== "orchestrate") {
@@ -562,7 +562,7 @@ async function orchestrate(
 }
 
 interface DaemonRunParams {
-  /** The daemon-tracked mode: "agent" (write turn) or "orchestrate" (executing brain). */
+  /** The daemon-tracked mode: "agent" (write turn) or "orchestrate" (executing plan). */
   mode: ModeKind;
   /** Orchestrate executor autonomy; only meaningful (and only sent) for mode=orchestrate. */
   autonomy: OrchestrateAutonomy | undefined;
@@ -590,7 +590,7 @@ interface DaemonRunParams {
 
 /**
  * DAEMON-TRACKED mutating run (the unified `run`/`race`/`create` path, and an
- * `orchestrate` brain running with auto_safe/auto_full autonomy). Auto-starts
+ * `orchestrate` run with auto_safe/auto_full autonomy). Auto-starts
  * the daemon if needed, enqueues via the control API (so the run is registered
  * and the control-api can see/unblock it), streams its events to the TTY (text
  * mode) and resolves the runDir from the daemon (the run lives under the daemon
@@ -916,7 +916,7 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       loadPreviousSpec(flagStr(args, "previous")),
     );
     const specJsonPath = join(persisted.specDir, "spec.json");
-    const runHint = `claudexor race --spec ${JSON.stringify(specJsonPath)}`;
+    const runHint = `claudexor best-of --spec ${JSON.stringify(specJsonPath)}`;
     const result: SpecCommandResult = {
       status: "frozen",
       planRunId,
@@ -1102,10 +1102,10 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    case "run": {
+    case "agent": {
       const specStrategyError =
-        "claudexor: --spec requires a gated strategy; use 'claudexor race --spec <file>' or 'claudexor run --attempts N --spec <file>'";
-      // ONE gate for both spellings: `run --spec` and `run --mode agent --spec`
+        "claudexor: --spec requires a gated strategy; use 'claudexor best-of --spec <file>' or 'claudexor agent --attempts N --spec <file>'";
+      // ONE gate for both spellings: `agent --spec` and `agent --mode agent --spec`
       // must enforce the same gated-strategy requirement (a flag spelling must
       // never bypass a policy the bare verb enforces).
       const agentSpecGateError = (): string | null => {
@@ -1147,8 +1147,15 @@ async function main(): Promise<number> {
     case "explore":
       return orchestrate(args, "audit", json, { swarm: true });
 
-    case "race":
+    case "best-of":
       return orchestrate(args, "agent", json, { race: true });
+
+    // RENAMED verbs hard-error with the new name — no silent aliases (the
+    // same doctrine as retired mode ids: a stale script must fail loudly).
+    case "run":
+      return printPreflightError(args, json, "claudexor: the 'run' verb was renamed; use 'claudexor agent' (same flags)");
+    case "race":
+      return printPreflightError(args, json, "claudexor: the 'race' verb was renamed; use 'claudexor best-of' (same flags)");
 
     case "orchestrate":
       return orchestrate(args, "orchestrate", json);

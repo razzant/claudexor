@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe("canary golden stories", () => {
   it("[INV-032:modes-canonical] an unknown mode id hard-errors and never silently runs another mode", () => {
-    const r = cli(sb, ["run", "do things", "--mode", "daily", "--harness", "fake-success", "--json"]);
+    const r = cli(sb, ["agent", "do things", "--mode", "daily", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/mode/i);
   });
@@ -33,9 +33,18 @@ describe("canary golden stories", () => {
     expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
   });
 
+  it("[INV-033:verbs-renamed] the retired verbs run/race hard-error with the new spelling, never silently alias", () => {
+    const oldRun = cli(sb, ["run", "do things", "--harness", "fake-success", "--json"]);
+    expect(oldRun.code).toBe(2);
+    expect(oldRun.stdout + oldRun.stderr).toContain("claudexor agent");
+    const oldRace = cli(sb, ["race", "do things", "--n", "2", "--harness", "fake-success", "--json"]);
+    expect(oldRace.code).toBe(2);
+    expect(oldRace.stdout + oldRace.stderr).toContain("claudexor best-of");
+  });
+
   it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
     const secret = "sk-" + "z".repeat(24);
-    const r = cli(sb, ["run", `deploy the service using ${secret}`, "--harness", "fake-success", "--json"]);
+    const r = cli(sb, ["agent", `deploy the service using ${secret}`, "--harness", "fake-success", "--json"]);
     expect(r.code).not.toBe(0);
     expect(r.stdout + r.stderr).toMatch(/durable run artifacts/);
     expect(r.stdout + r.stderr).toContain("claudexor secrets set");
@@ -84,7 +93,7 @@ describe("canary golden stories", () => {
 
   it("[INV-112:apply-needs-verified-review] a race with no available reviewers is honest (review_not_run) and apply refuses, naming the remedy", () => {
     const r = cli(sb, [
-      "race",
+      "best-of",
       "fix add() so it adds",
       "--harness",
       "fake-implement",
@@ -136,7 +145,7 @@ describe("canary golden stories", () => {
     // end the run within seconds (SIGINT -> typed daemon cancel -> abort
     // kills the in-flight gate and skips the rest), not wait out the suite.
     // The terminal is a typed cancelled run.failed and telemetry still lands.
-    const child = spawn(process.execPath, [CLI, "run", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"], {
+    const child = spawn(process.execPath, [CLI, "agent", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"], {
       cwd: sb.repo,
       env: sb.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -196,7 +205,7 @@ describe("canary golden stories", () => {
     };
     const specPath = join(sb.repo, "spec.json");
     writeFileSync(specPath, JSON.stringify(spec));
-    const r = cli(sb, ["race", "tamper the protected file", "--spec", specPath, "--harness", "fake-implement", "--n", "2", "--json"]);
+    const r = cli(sb, ["best-of", "tamper the protected file", "--spec", specPath, "--harness", "fake-implement", "--n", "2", "--json"]);
     const out = r.json() as { runId: string; runDir: string; status: string };
     expect(out.status).toBe("blocked");
     expect(readRunFile(out.runDir, "final/failure.yaml")).toMatch(/NEEDS_HUMAN|human/i);
@@ -224,7 +233,7 @@ describe("canary golden stories", () => {
     execFileSync("git", ["-C", sb.repo, "add", "-A"]);
     execFileSync("git", ["-C", sb.repo, "commit", "-qm", "crlf fixture"]);
     const r = cli(sb, [
-      "run",
+      "agent",
       "rewrite the file",
       "--harness",
       "fake-implement",
@@ -265,7 +274,7 @@ describe("canary golden stories", () => {
 
   it("[INV-103:scalar-model-primary-only] a scalar model with a multi-harness pool and no primary is rejected, never poisons the pool", () => {
     const r = cli(sb, [
-      "race",
+      "best-of",
       "fix add()",
       "--harness",
       "fake-success,fake-implement",

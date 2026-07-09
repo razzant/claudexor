@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Three-arm Terminal-Bench comparison, ALL through the Claudexor CLI agent, to isolate
 # the dual-harness lift (the only variable is harness count / strategy):
-#   1) codex-only      : claudexor run --in-place --harness codex      --n 1
-#   2) claude-only     : claudexor run --in-place --harness claude     --n 1
-#   3) dual best-of-N  : claudexor run --in-place --harness codex,claude --n 2  (race)
+#   1) codex-only      : claudexor agent --in-place --harness codex      --n 1
+#   2) claude-only     : claudexor agent --in-place --harness claude     --n 1
+#   3) dual best-of-N  : claudexor agent --in-place --harness codex,claude --n 2  (race)
 #
 # All arms use mode=race so they share the SAME strategy; singles just have n=1
 # (one candidate, runs directly in /app, runtime state preserved). The dual race runs

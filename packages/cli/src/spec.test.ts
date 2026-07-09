@@ -18,7 +18,7 @@ const PLAN = `# SpecPack (plan run-1)
 ## Intent
 fix auth
 
-## Open questions / ambiguities (resolve interactively before \`claudexor run\`)
+## Open questions / ambiguities (resolve interactively before \`claudexor agent\`)
 - Should magic links be single-use?
 - Which database table owns sessions?
 

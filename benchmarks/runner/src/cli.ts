@@ -2,7 +2,7 @@
 /**
  * SWE-bench prediction runner — the concrete `CLAUDEXOR_BENCHMARK_RUNNER` that
  * `benchmarks/swe-bench/make-predictions.sh` shells out to. It loads the exported
- * tasks, runs the locally built Claudexor CLI (`claudexor run --n N`) inside each
+ * tasks, runs the locally built Claudexor CLI (`claudexor agent --n N`) inside each
  * prepared per-instance repo, captures the envelope git diff as the SWE-bench
  * `model_patch`, and writes predictions in the official harness shape.
  *
@@ -40,7 +40,7 @@ const workdir = flag("workdir") ?? die("--workdir <repos-dir> is required");
 const n = Math.max(1, Number.parseInt(flag("n") ?? "2", 10) || 2);
 const maxUsd = flag("max-usd");
 const reviewerModel = flag("reviewer-model");
-// Per-task wall-clock timeout so one stuck `claudexor run` can't hang the whole
+// Per-task wall-clock timeout so one stuck `claudexor agent` can't hang the whole
 // sweep. Flag wins over env; default 1800s (30 min). A timed-out task is logged and
 // recorded as an EMPTY prediction, then the loop continues.
 const taskTimeoutSec = Math.max(
@@ -71,7 +71,7 @@ for (const task of tasks) {
     writePredictions(predictions, predsPath);
     continue;
   }
-  const cliArgs = [cliEntry, "run", task.problem_statement, "--n", String(n), "--harness", harness, "--json"];
+  const cliArgs = [cliEntry, "agent", task.problem_statement, "--n", String(n), "--harness", harness, "--json"];
   if (maxUsd) cliArgs.push("--max-usd", maxUsd);
   if (reviewerModel) cliArgs.push("--reviewer-model", reviewerModel);
 

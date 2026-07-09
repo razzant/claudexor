@@ -36,7 +36,7 @@ export const FAKE_KINDS: FakeKind[] = [
 
 /**
  * A minimal, schema-valid orchestration plan the `fake-implement` kind emits for
- * the `orchestrate` intent, so the orchestrate brain -> plan-extraction ->
+ * the `orchestrate` intent, so the orchestrate planner -> plan-extraction ->
  * (with autonomy) executor path is exercisable offline/deterministically. The
  * fenced ```json block is what `extractOrchestratePlan` parses.
  */
@@ -125,7 +125,7 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
       // Unlike fake-success (which only emits a file_change EVENT and stays a
       // no_op fixture), fake-implement makes the engine's write/apply/orchestrate
       // chains testable offline:
-      //  - orchestrate intent -> a schema-valid fenced plan (brain coverage);
+      //  - orchestrate intent -> a schema-valid fenced plan (orchestrate coverage);
       //  - producing intents   -> a REAL file written into the worktree so
       //    `git add -A && git diff` yields a patch (apply/commit/branch chain).
       if (spec.intent === "orchestrate") {

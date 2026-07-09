@@ -31,7 +31,7 @@ struct ComposerModelsSection: View {
                         Text("primary")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .help("This harness answers in chat; the others race when you pick Race.")
+                            .help("This harness answers in chat; the others race when you pick Best-of.")
                     }
                 }
             }

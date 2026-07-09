@@ -270,7 +270,7 @@ function testCmd() {
 
 function baseRunArgs(prompt, harnesses, extra = []) {
   return [
-    "run", prompt,
+    "agent", prompt,
     "--harness", Array.isArray(harnesses) ? harnesses.join(",") : harnesses,
     "--effort", "low",
     "--max-usd", maxUsd,
@@ -479,7 +479,7 @@ function runMultiWritePhase() {
   if (multi.length < 2) { skip(phase, "multi write features", { reason: "need >=2 doctor-ok harnesses" }); return; }
   {
     const repo = makeMathRepo(`${phase}-race`, { addBug: true });
-    const out = runCliJson(["race", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-race` });
+    const out = runCliJson(["best-of", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-race` });
     const ev = recordRunEvidence(phase, "multi race evidence", out, repo);
     if (out.envFailure) return;
     if (ev?.decision?.status === "success" && ev.decision.verification_basis === "both" && patchLooksReal(ev) && gatePassed(ev.detail)) pass(phase, "multi race decision", { runId: out.json.runId, status: out.json.status, winner: ev.decision.winner, basis: ev.decision.verification_basis, outcome: ev.decision.outcome });
@@ -488,7 +488,7 @@ function runMultiWritePhase() {
   }
   {
     const repo = makeMathRepo(`${phase}-synthesis`, { addBug: true });
-    const out = runCliJson(["race", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", "3", "--synthesis", "always", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-synthesis` });
+    const out = runCliJson(["best-of", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", "3", "--synthesis", "always", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-synthesis` });
     const ev = recordRunEvidence(phase, "synthesis evidence", out, repo);
     if (out.envFailure) return;
     const synth = ev?.detail?.runDir ? artifactExists(ev.detail.runDir, "arbitration/synthesis.yaml") : false;
@@ -497,7 +497,7 @@ function runMultiWritePhase() {
   }
   {
     const repo = makeMathRepo(`${phase}-convergence`, { addBug: true });
-    const out = runCliJson(["run", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--until-clean", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-convergence`, timeoutMs: 30 * 60_000 });
+    const out = runCliJson(["agent", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--until-clean", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-convergence`, timeoutMs: 30 * 60_000 });
     const ev = recordRunEvidence(phase, "convergence evidence", out, repo);
     if (out.envFailure) return;
     if (ev?.wp?.meta?.status === "success" && ev.wp.meta.review_verified === true && ["success", "succeeded"].includes(out.json?.status)) pass(phase, "convergence work_product", { runId: out.json?.runId, status: ev.wp.meta.status, attempts: ev.wp.meta.attempts, reviewVerified: ev.wp.meta.review_verified });
@@ -516,7 +516,7 @@ function runDegradationControl(phase, onlyHarness) {
   ].join("\n"));
   try {
     const repo = makeMathRepo(`${phase}-single-family-control`, { addBug: true });
-    const out = runCliJson(["race", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", onlyHarness, "--n", "1", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-single-family-control` });
+    const out = runCliJson(["best-of", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", onlyHarness, "--n", "1", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-single-family-control` });
     const ev = recordRunEvidence(phase, "single-family control", out, repo);
     if (ev?.decision) {
       const basis = ev.decision.verification_basis ?? "unknown";
@@ -529,7 +529,7 @@ function runDegradationControl(phase, onlyHarness) {
       fail(phase, "single-family control decision", { status: out.json?.status, error: out.json?.error, log: rel(out.log) });
     }
     const convRepo = makeMathRepo(`${phase}-single-family-convergence`, { addBug: true });
-    const conv = runCliJson(["run", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", onlyHarness, "--until-clean", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: convRepo, name: `${phase}-single-family-convergence` });
+    const conv = runCliJson(["agent", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", onlyHarness, "--until-clean", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: convRepo, name: `${phase}-single-family-convergence` });
     if (conv.code !== 0 && /cross-family|review/.test(JSON.stringify(conv.json ?? {}) + conv.stdout + conv.stderr)) pass(phase, "single-family convergence refused", { status: conv.json?.status, error: conv.json?.error ?? conv.json?.summary });
     else fail(phase, "single-family convergence refused", { exit: conv.code, json: conv.json, log: rel(conv.log) });
   } finally {
@@ -555,7 +555,7 @@ function runLifecyclePhase() {
 
   for (const mode of ["branch", "commit"]) {
     const repo = makeMathRepo(`${phase}-apply-${mode}`, { addBug: true });
-    const out = runCliJson(["race", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-${mode}-source` });
+    const out = runCliJson(["best-of", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-${mode}-source` });
     const ev = recordRunEvidence(phase, `apply ${mode} source`, out, repo);
     if (out.json?.status === "succeeded" && ev?.decision?.status === "success") {
       const applied = runCliJson(["apply", out.json.runId, "--mode", mode], { cwd: repo, name: `${phase}-apply-${mode}` });
@@ -571,7 +571,7 @@ function runLifecyclePhase() {
 function runBlockedDecisionScenario(phase, multi) {
   const repo = makeProtectedRepo(`${phase}-blocked-risk`);
   const prompt = "Make a harmless wording-only change to .github/workflows/release.yml by changing the echo text to 'battery ok'. Do not touch other files.";
-  const out = runCliJson(["run", prompt, "--harness", multi.join(","), "--test", "true", "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-blocked-risk` });
+  const out = runCliJson(["agent", prompt, "--harness", multi.join(","), "--test", "true", "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-blocked-risk` });
   const ev = recordRunEvidence(phase, "blocked risk evidence", out, repo);
   if (out.json?.status === "blocked" && ev?.patchNonEmpty) {
     pass(phase, "blocked high-risk run", { runId: out.json.runId, outcome: ev.decision?.outcome, status: ev.decision?.status });
@@ -586,7 +586,7 @@ function runBlockedDecisionScenario(phase, multi) {
   }
 
   const rerunRepo = makeProtectedRepo(`${phase}-blocked-rerun`);
-  const rerunSrc = runCliJson(["run", prompt, "--harness", multi.join(","), "--test", "true", "--effort", "low", "--max-usd", maxUsd], { cwd: rerunRepo, name: `${phase}-blocked-rerun-source` });
+  const rerunSrc = runCliJson(["agent", prompt, "--harness", multi.join(","), "--test", "true", "--effort", "low", "--max-usd", maxUsd], { cwd: rerunRepo, name: `${phase}-blocked-rerun-source` });
   if (rerunSrc.json?.status === "blocked") {
     const rerun = runCliJson(["decision", rerunSrc.json.runId, "--rerun", "--feedback", "Use a smaller harmless wording change only."], { cwd: rerunRepo, name: `${phase}-rerun-feedback` });
     if (rerun.code === 0 && rerun.json?.newRunId) pass(phase, "decision --rerun", { newRunId: rerun.json.newRunId });
@@ -596,7 +596,7 @@ function runBlockedDecisionScenario(phase, multi) {
 
 function runRevertScenario(phase, multi) {
   const repo = makeMathRepo(`${phase}-revert`, { addBug: true });
-  const out = runCliJson(["run", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--in-place", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-in-place-revert` });
+  const out = runCliJson(["agent", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--in-place", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-in-place-revert` });
   if (out.json?.runId && ["succeeded", "success"].includes(out.json.status)) {
     const rev = runCliJson(["decision", out.json.runId, "--revert"], { cwd: repo, name: `${phase}-revert` });
     if (rev.code === 0 && rev.json?.accepted) pass(phase, "decision --revert", rev.json);
@@ -604,7 +604,7 @@ function runRevertScenario(phase, multi) {
   } else skip(phase, "decision --revert", { reason: "in-place source not succeeded", status: out.json?.status, error: out.json?.error, log: rel(out.log) });
 
   const repo2 = makeMathRepo(`${phase}-revert-diverged`, { addBug: true });
-  const out2 = runCliJson(["run", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--in-place", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo2, name: `${phase}-in-place-diverge-source` });
+  const out2 = runCliJson(["agent", "Fix add(a,b) in src/math.js so tests pass. Do not change tests.", "--harness", multi.join(","), "--in-place", "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo2, name: `${phase}-in-place-diverge-source` });
   if (out2.json?.runId && ["succeeded", "success"].includes(out2.json.status)) {
     writeFileSync(join(repo2, "src", "extra.js"), "export const diverged = true;\n");
     const rev = runCliJson(["decision", out2.json.runId, "--revert"], { cwd: repo2, name: `${phase}-revert-diverged` });
@@ -713,7 +713,7 @@ function runSpecPhase() {
   if (frozen.code === 0 && frozen.json?.specDir) pass(phase, "spec freeze", { specId: frozen.json.specId, specDir: frozen.json.specDir });
   else { fail(phase, "spec freeze", { exit: frozen.code, json: frozen.json, log: rel(frozen.log) }); return; }
   const specPath = join(frozen.json.specDir, "spec.json");
-  const runOut = runCliJson(["race", "--spec", specPath, "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-race-spec`, timeoutMs: 30 * 60_000 });
+  const runOut = runCliJson(["best-of", "--spec", specPath, "--harness", multi.join(","), "--n", String(Math.min(3, multi.length)), "--test", testCmd(), "--effort", "low", "--max-usd", maxUsd], { cwd: repo, name: `${phase}-race-spec`, timeoutMs: 30 * 60_000 });
   const ev = recordRunEvidence(phase, "race --spec evidence", runOut, repo);
   if (runOut.envFailure) return;
   if (ev?.patchNonEmpty) pass(phase, "race --spec patch", { runId: runOut.json?.runId, status: runOut.json?.status, basis: ev.decision?.verification_basis });
@@ -784,7 +784,7 @@ async function runMcpServePhase() {
     srv.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const tools = await srv.waitFor((m) => m.id === 1, 15_000);
     const names = (tools?.result?.tools ?? []).map((t) => t.name);
-    if (names.length === 8 && names.includes("claudexor_ask")) pass(phase, "mcp tools/list", { count: names.length });
+    if (names.length === 12 && names.includes("claudexor_ask") && names.includes("claudexor_best_of")) pass(phase, "mcp tools/list", { count: names.length });
     else { fail(phase, "mcp tools/list", { names }); return; }
     srv.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "claudexor_ask", arguments: { prompt: "Answer exactly: 4. What is 2+2?", repoPath: repo, harness: h, effort: "low", maxUsd: Number(maxUsd) } } });
     // Host-timeout canary: ping must answer while the ask runs.

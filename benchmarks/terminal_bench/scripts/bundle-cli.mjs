@@ -8,7 +8,7 @@
  * AgentSetupTimeout. Prebuilt files the agent just copies in remove the whole
  * in-container build, so install() is a chmod instead of a multi-minute compile.
  *
- * Why TWO files (not one): agent mode (`claudexor run`, what the TB agent invokes)
+ * Why TWO files (not one): agent mode (`claudexor agent`, what the TB agent invokes)
  * routes through packages/cli/src/daemon-run.ts `ensureDaemon()`, which — when no
  * daemon is already up — AUTO-STARTS one by spawning a SIBLING file resolved as
  * `new URL("./claudexord.js", import.meta.url)` relative to the running CLI bundle

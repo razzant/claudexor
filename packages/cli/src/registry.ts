@@ -17,7 +17,7 @@ export interface RegistryOptions {
  * Build the adapter registry. All five real adapters are always registered;
  * the gateway only selects doctor-OK non-fake harnesses by default. Fakes are
  * registered for explicit `--harness`. An `openrouter` raw-API instance is the
- * direct-API path for arbitrary models (brain/review) when its key exists.
+ * direct-API path for arbitrary models (orchestrate/review) when its key exists.
  */
 export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
   const registry: AdapterRegistry = new Map();

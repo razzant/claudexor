@@ -125,8 +125,8 @@ async function phaseC() {
     srv.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const tools = await srv.waitFor((m) => m.id === 1, 15_000);
     const list = tools?.result?.tools ?? [];
-    const race = list.find((t) => t.name === "claudexor_race");
-    check("C", "8 tools; race n.minimum=2", list.length === 8 && race?.inputSchema?.properties?.n?.minimum === 2, { count: list.length });
+    const race = list.find((t) => t.name === "claudexor_best_of");
+    check("C", "12 tools; best_of n.minimum=2", list.length === 12 && race?.inputSchema?.properties?.n?.minimum === 2, { count: list.length });
     const runSchema = list.find((t) => t.name === "claudexor_run")?.inputSchema?.properties ?? {};
     const requiredControls = ["prompt", "repoPath", "model", "effort", "web", "reviewerPanel"];
     check("C", "run schema exposes 0.14+ controls", requiredControls.every((k) => k in runSchema), { present: Object.keys(runSchema).length });

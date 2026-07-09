@@ -107,12 +107,15 @@ process below. Never paper over the conflict.
 - **INV-032** Old mode ids are not compatibility aliases; they hard-error at
   every wire boundary unless explicitly reintroduced in schema and docs.
   verify: canary `[INV-032:modes-canonical]`; CLI mode validation tests.
-- **INV-033** `Agent` is the default composer/`claudexor run` route on a
+- **INV-033** `Agent` is the default composer/`claudexor agent` route on a
   project thread — in Agent the harness itself decides whether to answer or
   edit the tree (Codex/Cursor/Claude Code semantics); a no-project thread
-  falls back to read-only `Ask`. `Orchestrate` is the brain — an intent
-  routed like reviewers, never a privileged harness. verify: orchestrator
-  default-mode tests; UI intent menu review.
+  falls back to read-only `Ask`. `Orchestrate` is the orchestrator — an intent
+  routed like reviewers, never a privileged harness. The retired verb
+  spellings (`run`, `race`) hard-error with the new name (`agent`,
+  `best-of`) — no compatibility aliases, same doctrine as retired mode ids.
+  verify: orchestrator default-mode tests; UI intent menu review; canary
+  `[INV-033:verbs-renamed]`.
 - **INV-034** A thread is the Claudexor-owned conversation (runs are its
   turns); the vendor CLI session is a re-hostable cache that later turns
   resume natively. verify: thread schema; session-resume orchestrator tests.

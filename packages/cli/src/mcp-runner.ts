@@ -101,7 +101,7 @@ export function orchestratorRunner() {
 }
 
 /**
- * The MCP surface runner: MUTATING verbs (mode=agent — run/race/create)
+ * The MCP surface runner: MUTATING verbs (mode=agent — agent/best-of/create)
  * are DAEMON-TRACKED exactly like the CLI (`GET /runs` sees them, `claudexor
  * decision` can unblock them, cancel works), read-only verbs stay in-process
  * — the same doctrine split as cli.ts. Interactive questions on daemon runs

@@ -69,7 +69,7 @@ struct ThreadsScreen: View {
     private var primaryFamily: HarnessFamily? {
         model.effectivePrimaryHarness.flatMap { HarnessFamily(rawValue: $0) }
     }
-    /// The eligible pool (Race runs this); resolved from thread sticky > global.
+    /// The eligible pool (Best-of runs this); resolved from thread sticky > global.
     private var resolvedPoolFamilies: [HarnessFamily] {
         model.effectiveEligiblePool.compactMap { HarnessFamily(rawValue: $0) }
     }
@@ -599,7 +599,7 @@ struct ThreadsScreen: View {
             Label("Budget cap must be a positive number (in ⋯)", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1)
         } else if !threadHasProject {
-            Text("Pick a project to use Agent · Plan · Race")
+            Text("Pick a project to use Agent · Plan · Best-of")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 .help("Without a project, only Ask (read-only) is available")
         } else if model.selectedThreadId == nil {
@@ -612,7 +612,7 @@ struct ThreadsScreen: View {
     /// own material — harness pool, per-turn budget/access/web, agent repair strategies.
     private var composerOptions: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            OptionSection(title: "Harness pool — Race runs these; the primary answers in chat") {
+            OptionSection(title: "Harness pool — Best-of runs these; the primary answers in chat") {
                 FlowLayout(spacing: Theme.Spacing.sm) {
                     ForEach(Self.poolFamilies) { family in
                         let avail = model.availability(for: family, mode: composerMode)
@@ -830,7 +830,7 @@ struct ThreadsScreen: View {
     // MARK: - Composer attachments (D)
 
     /// True when the current route is both available for this intent and declares
-    /// image input. Race is pool-wide: every available raced harness must accept
+    /// image input. Best-of is pool-wide: every available raced harness must accept
     /// images because each candidate receives the same attachment set.
     private var primaryAcceptsImages: Bool {
         let configuredPool = resolvedPoolFamilies.isEmpty ? Self.poolFamilies : resolvedPoolFamilies
@@ -1516,7 +1516,7 @@ struct PrimaryHarnessChip: View {
 }
 
 /// The intent picker, styled to the design system with a visible selection.
-/// "Spec" starts the grounding flow; "Race" runs the eligible pool (engine
+/// "Spec" starts the grounding flow; "Best-of" runs the eligible pool (engine
 /// `agent` + race strategy).
 /// Strategies (until-clean, max-attempts) live in the composer's "⋯" panel.
 struct IntentMenu: View {
@@ -1526,7 +1526,7 @@ struct IntentMenu: View {
     private var options: [RunMode] {
         projectScoped ? [.ask, .agent, .plan, .spec, .readOnlyAudit, .bestOfN] : [.ask]
     }
-    private func label(_ m: RunMode) -> String { m == .bestOfN ? "Race" : m.label }
+    private func label(_ m: RunMode) -> String { m == .bestOfN ? "Best-of" : m.label }
 
     var body: some View {
         Menu {
@@ -1553,7 +1553,7 @@ struct IntentMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(projectScoped
-              ? "Intent for the next turn — Race runs the eligible pool; until-clean / attempts are in ⋯"
+              ? "Intent for the next turn — Best-of runs the eligible pool; until-clean / attempts are in ⋯"
               : "No Current Project — only Ask (read-only) is available.")
     }
 }

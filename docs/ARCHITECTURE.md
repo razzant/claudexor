@@ -38,13 +38,13 @@ strategies became flags, not modes:
 - `audit` - read-only audit/map (`final/report.md`); with `--swarm` (the old
   `explore`) a bounded research swarm writing `final/explore.md`,
   `final/explore-findings.yaml`, and `final/omissions.md`.
-- `agent` - default `claudexor run`; one primary-biased envelope route. Flags
+- `agent` - default `claudexor agent`; one primary-biased envelope route. Flags
   select the strategy on the SAME mode: `--n N` (best-of-N race with isolated
   candidate envelopes, review, synthesis, arbitration), `--attempts N`
   (convergence loop with an explicit cap), `--until-clean` (convergence loop
   with no fixed cap; stops on clean review/gates, budget/quota exhaustion,
   cancellation, or no-progress stall), `--create` (create-from-scratch intent).
-- `orchestrate` - the autonomous brain: routed like reviewers (doctor-ok +
+- `orchestrate` - the autonomous orchestrator: routed like reviewers (doctor-ok +
   `orchestrate` capability + quota headroom), it produces a typed orchestration
   plan over the six-tool vocabulary (`start_run`, `race`, `status`,
   `answer_question`, `apply`, `review`) — the DEFAULT tool belt is five:
@@ -65,7 +65,7 @@ strategies became flags, not modes:
     delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
     project. Per-step progress is persisted to
     `final/orchestration_progress.yaml`.
-  The executor's budget is AGGREGATE and WHOLE-CAP: the brain's own settled
+  The executor's budget is AGGREGATE and WHOLE-CAP: the orchestrator's own settled
   spend seeds the aggregate, and sequential sub-runs AND review-step reviewer
   panels all charge the same cap (each step gets the remaining headroom;
   exhausted headroom ends the run with the failure-shaped `exhausted`
@@ -98,7 +98,7 @@ are NOT aliases: they hard-error at every wire boundary.
   translate native CLI/API streams into typed `HarnessEvent`s. The `fake-*` kinds
   are deterministic offline test fixtures (incl. `fake-implement`, which writes a
   real worktree file and emits an orchestrate plan); they are explicit-`--harness`
-  only and never enter auto/reviewer/brain pools.
+  only and never enter auto/reviewer/orchestrate pools.
 - `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs
   (for write envelopes AND read-only routes via `readOnlyHomeEnv`, so plan files,
   session rollouts, and transcripts never escape into the operator's real home),
@@ -128,7 +128,7 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
-  its MUTATING verbs (run/race/create) enqueue through the DAEMON — MCP runs
+  its MUTATING verbs (agent/best-of/create) enqueue through the DAEMON — MCP runs
   appear in `GET /runs`, are cancellable/unblockable, and every result
   carries a runId/artifacts trailer. Read-only verbs stay in-process (same
   doctrine as the CLI). Engine questions bridge to MCP elicitation when the
@@ -335,7 +335,7 @@ succeeds; if all explorers fail, the run emits `run.failed` with
 
 ### Agent
 
-`claudexor run` defaults to `agent`. It is a one-candidate orchestrator/envelope
+`claudexor agent` defaults to `agent`. It is a one-candidate orchestrator/envelope
 run: the harness works in an isolated workspace, Claudexor captures the git diff,
 emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
@@ -758,7 +758,7 @@ same native source route proof uses) as `HarnessEvent.quota{used_percent,
 resets_at}`; claude has no machine-readable subscription-quota surface, so it
 honestly emits nothing. The budget layer maps quota to a native-quality
 `used_percent` observation, observed in EVERY stream loop (agent, plan,
-read-only — the orchestrate brain included) and disclosed as
+read-only — the orchestrate planner included) and disclosed as
 `budget.quota_pressure` at >=50% window burn. Headroom consumers are the
 MID-RUN decisions where observations exist: convergence stall-rotation picks
 the harness with the most remaining window (initial pool ordering also
@@ -870,7 +870,7 @@ attempts/aNN/events.jsonl?    (read-only modes)
 ```
 
 `final/orchestration.yaml` is the TYPED `OrchestratePlan` artifact: it is
-extracted from the fenced JSON block in the brain's report and validated
+extracted from the fenced JSON block in the orchestrator's report and validated
 against the tool belt. A missing or invalid block writes
 `final/orchestration_parse_error.md` and is disclosed in the summary.
 

@@ -8,7 +8,7 @@ future target spec, and it is not contributor workflow for changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask, explore, run, race, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection (inspect, follow, apply, decision, review), ops (models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Beta. JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Beta local loopback contract. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Beta. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Early beta. |
@@ -23,8 +23,8 @@ artifact directory.
 claudexor ask "explain the auth flow" --json
 claudexor ask "google the latest release notes" --web auto --json
 claudexor explore "map this repo's run storage" --json
-claudexor run "fix the failing parser test" --json
-claudexor race "fix add() in src/math.js" --harness codex,claude --n 2 --json
+claudexor agent "fix the failing parser test" --json
+claudexor best-of "fix add() in src/math.js" --harness codex,claude --n 2 --json
 claudexor inspect <run_id> --json
 ```
 
@@ -115,7 +115,7 @@ and surface as `isError` tool results.
 
 MCP is one-shot: a host receives the final Claudexor output from the twelve
 implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
-`claudexor_race`, `claudexor_plan`, `claudexor_create`,
+`claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
@@ -131,7 +131,7 @@ reason, requiredAction}` the control API serves on `GET /runs/:id`.
 
 Current operational behavior:
 
-- MUTATING verbs (`claudexor_run`, `claudexor_race`, `claudexor_create`) are
+- MUTATING verbs (`claudexor_run`, `claudexor_best_of`, `claudexor_create`) are
   DAEMON-TRACKED: the server auto-starts the local daemon and enqueues
   through the control API, so `GET /runs` lists MCP-started runs and
   `claudexor decision` can unblock a blocked one. Read-only verbs
@@ -184,7 +184,7 @@ Current host layouts:
   plugin, and `mcp.claudexor` in `~/.config/opencode/opencode.json` or
   strict-parseable `opencode.jsonc`. The generated `timeout: 5000` is
   OpenCode's tool-DISCOVERY timeout; tool EXECUTION is capped by OpenCode's
-  global MCP execution timeout, which long verbs (run/race/create) can
+  global MCP execution timeout, which long verbs (agent/best-of/create) can
   exceed — raise `experimental.mcp_timeout` or prefer the CLI for
   multi-minute work. The runId trailer keeps abandoned calls recoverable.
 

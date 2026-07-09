@@ -9,7 +9,7 @@ Reproducible Terminal-Bench runs for Claudexor, on the **latest stable** dataset
 Terminal-Bench scores a container's **runtime state** (services, files, packages). Two
 ways to use this suite:
 
-1. **Single-harness baselines through the Claudexor CLI** — `claudexor run --in-place
+1. **Single-harness baselines through the Claudexor CLI** — `claudexor agent --in-place
    --harness <codex|claude> --n 1`. One candidate runs directly in `/app`, so all
    runtime state is graded.
 2. **Dual-harness, two strategies:**
@@ -139,7 +139,7 @@ repo root on `PYTHONPATH` (the scripts set this). `install()` provisions Node 22
 Claude Code + Codex, then **uploads two prebuilt sibling Claudexor bundles** into the
 container — the CLI (`/opt/claudexor/claudexor-cli.js`) and its daemon
 (`/opt/claudexor/claudexord.js`) — no in-container clone, `pnpm install`, or `tsc`.
-`run()` invokes `claudexor run --in-place ...` and exports `/app/.claudexor/runs` to
+`run()` invokes `claudexor agent --in-place ...` and exports `/app/.claudexor/runs` to
 `/logs/agent/`.
 
 Why two files: `claudexor run` (agent mode) routes through `ensureDaemon()`, which

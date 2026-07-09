@@ -65,7 +65,7 @@ describe("command registry — the one owner of the CLI surface", () => {
   });
 
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {
-    expect(hostFallbackExamples()).toEqual(['claudexor ask "..."', 'claudexor plan "..."', 'claudexor run "..."', 'claudexor race "..." --n 4']);
+    expect(hostFallbackExamples()).toEqual(['claudexor ask "..."', 'claudexor plan "..."', 'claudexor agent "..."', 'claudexor best-of "..." --n 4']);
     expect(recoveryVerbs()).toEqual(["inspect", "follow", "apply", "decision"]);
   });
 

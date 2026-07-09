@@ -157,7 +157,7 @@ Tests and local smokes must never touch real user state:
   Keychain is not path-scoped.
 - The `fake-*` harnesses are the offline, keyless, deterministic fixtures
   (`--harness fake-success`, etc.); they are only selectable by explicit id and
-  never enter auto/reviewer/brain pools. `fake-implement` additionally writes a
+  never enter auto/reviewer/orchestrate pools. `fake-implement` additionally writes a
   real worktree file and emits a schema-valid orchestration plan, so the
   create / write→apply / orchestrate chains are exercisable with no real harness.
 - Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon

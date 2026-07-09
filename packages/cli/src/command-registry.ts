@@ -78,9 +78,9 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     name: "mode",
     kind: "value",
     valueHint: "<mode>",
-    help: "run: ask | plan | audit | agent | orchestrate (strategies are flags, not modes);\n                           apply: delivery mode apply | commit | branch | pr",
+    help: "agent verb: ask | plan | audit | agent | orchestrate (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",
   },
-  { name: "n", kind: "value", valueHint: "<N>", help: "Race width (agent): N isolated candidates + cross-review" },
+  { name: "n", kind: "value", valueHint: "<N>", help: "Best-of-N width (agent): N isolated candidates + cross-review" },
   { name: "synthesis", kind: "value", valueHint: "<mode>", help: "Best-of-N synthesis: auto (default, only n>=3)|always|never" },
   { name: "attempts", kind: "value", valueHint: "<N>", help: "Convergence cap (agent): repair loop up to N attempts" },
   { name: "until-clean", kind: "boolean", help: "Convergence (agent): iterate until the review/gates are clean" },
@@ -90,7 +90,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     name: "autonomy",
     kind: "value",
     valueHint: "<level>",
-    help: "Orchestrate: how much the brain may act without confirmation:\n                           suggest (default, read-only plan) | auto_safe | auto_full",
+    help: "Orchestrate: how much the orchestrator may act without confirmation:\n                           suggest (default, read-only plan) | auto_safe | auto_full",
   },
   { name: "test", kind: "value", valueHint: '"<cmd>"', help: "Deterministic gate command(s); repeat flag or separate with ';;'" },
   {
@@ -131,12 +131,12 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   {
     name: "in-place",
     kind: "boolean",
-    help: "Run write turns against the live project tree (single-candidate\n                           in-place; race candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
+    help: "Run write turns against the live project tree (single-candidate\n                           in-place; best-of-N candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
   },
   { name: "answers", kind: "value", valueHint: "<file>", help: "Answers JSON for claudexor spec (batch mode)" },
   { name: "previous", kind: "value", valueHint: "<spec.json>", help: "Previous SpecPack JSON for section-level diff" },
-  { name: "spec", kind: "value", valueHint: "<spec.json>", help: "Frozen SpecPack context for run/race/create/convergence" },
-  { name: "attach", kind: "value", valueHint: "<path[,path...]>", help: "Attach file(s) to ask/run/race/plan/audit" },
+  { name: "spec", kind: "value", valueHint: "<spec.json>", help: "Frozen SpecPack context for agent/best-of/create/convergence" },
+  { name: "attach", kind: "value", valueHint: "<path[,path...]>", help: "Attach file(s) to ask/agent/best-of/plan/audit" },
   { name: "image", kind: "value", valueHint: "<path[,path...]>", help: "Attach image file(s) (alias for --attach with image kind)" },
   {
     name: "backend",
@@ -195,22 +195,22 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     hostFallbackExample: 'claudexor ask "..."',
   },
   {
-    id: "run",
+    id: "agent",
     usageArgs: '"<prompt>" [opts]',
     summary: "Run a task (default mode: agent)",
     flags: [...RUN_FLAGS, "mode", "swarm", "autonomy", "max-tool-calls"],
     mutability: "write",
     stability: "stable",
-    hostFallbackExample: 'claudexor run "..."',
+    hostFallbackExample: 'claudexor agent "..."',
   },
   {
-    id: "race",
+    id: "best-of",
     usageArgs: '"<prompt>" [--n N]',
-    summary: "Best-of-N race (agent --n) with cross-family review",
+    summary: "Best-of-N run (agent --n) with cross-family review",
     flags: [...RUN_FLAGS],
     mutability: "write",
     stability: "stable",
-    hostFallbackExample: 'claudexor race "..." --n 4',
+    hostFallbackExample: 'claudexor best-of "..." --n 4',
   },
   {
     id: "plan",
@@ -224,7 +224,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   {
     id: "orchestrate",
     usageArgs: '"<goal>"',
-    summary: "Brain: typed orchestration plan over the tool belt",
+    summary: "Typed orchestration plan over the tool belt",
     flags: [...RUN_FLAGS, "autonomy", "max-tool-calls"],
     mutability: "write",
     stability: "stable",
@@ -420,8 +420,8 @@ export const REPL_COMMANDS: readonly { readonly name: string; readonly args?: st
   { name: "/ask", args: "<q>", help: "read-only answer turn" },
   { name: "/plan", args: "<prompt>", help: "read-only planning turn" },
   { name: "/audit", args: "[prompt]", help: "read-only audit turn" },
-  { name: "/race", args: "<prompt>", help: "best-of-2 race turn (cross-family review)" },
-  { name: "/orchestrate", args: "<g>", help: "brain: typed orchestration plan over the tool belt" },
+  { name: "/best-of", args: "<prompt>", help: "best-of-2 turn (cross-family review)" },
+  { name: "/orchestrate", args: "<g>", help: "typed orchestration plan over the tool belt" },
   { name: "/thread", help: "show the current thread (turns + native sessions)" },
   { name: "/new", args: "[title]", help: "start a new thread" },
   { name: "/help", help: "this help" },
@@ -513,7 +513,7 @@ export function renderReplHelp(): string {
   }
   lines.push('Turns run "in-place" in the project (or the thread\'s worktree), so each harness');
   lines.push("RESUMES its own native CLI session and the next turn sees the previous turn's");
-  lines.push("work. A best-of-N race runs candidates in isolated envelopes and auto-applies");
+  lines.push("work. A best-of-N run races candidates in isolated envelopes and auto-applies");
   lines.push("the winner.");
   return lines.join("\n");
 }

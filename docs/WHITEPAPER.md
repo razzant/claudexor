@@ -81,7 +81,7 @@ an invalid value fails loudly. Read-only run lookups (`inspect`/`apply`) never
 auto-start the daemon (only acting paths do), and `claudexor doctor` emits a
 non-gating advisory when the running Node is an at-risk Homebrew build. A blocked
 NEEDS_HUMAN run is unblocked only through a typed, audited, patch-hash-bound
-operator decision held by the server; the `orchestrate` brain is an intent
+operator decision held by the server; the `orchestrate` mode is an intent
 routed like reviewers that produces a typed tool-belt plan, not a privileged
 harness. Its `--autonomy suggest|auto_safe|auto_full` level decides how much of
 that plan the executor runs: `suggest` plans only (the human executes);
@@ -283,7 +283,7 @@ the verifier FAILS CLOSED: when the verifier itself errors (a worktree or
 tmp-dir problem), "could not check" blocks exactly like a proven failure,
 with a typed operator risk decision as the only way past the infra failure.
 
-Orchestrate runs share ONE budget end to end: the planning brain, every
+Orchestrate runs share ONE budget end to end: the planner, every
 sub-run, and every review step draw from the same cap (each step gets only
 the remaining headroom), a plan of N steps can never spend N times the cap,
 and exhausting the cap is a disclosed failure — a cut-short plan never
@@ -298,7 +298,7 @@ harness with the most remaining window). Portfolio choices (cheapest/strongest/�
 REAL observed metrics — rolling per-harness cost and latency averages from
 settled attempts plus operator-declared quality priors — never invented
 benchmark numbers. Schema-capable harnesses are constrained to typed output
-where the deliverable IS the typed artifact (the orchestrate brain's plan),
+where the deliverable IS the typed artifact (the orchestrate plan),
 and live plan checklists + per-candidate evidence cards ride typed events
 into the UI. This repository also gates its OWN commits: a staged diff is reviewed
 before it lands — the primary route is a cross-family engine panel; the

@@ -144,7 +144,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       calls += 1;
       return "should not run";
     });
-    const raceSchema = tools.find((t) => t.name === "claudexor_race")?.inputSchema as any;
+    const raceSchema = tools.find((t) => t.name === "claudexor_best_of")?.inputSchema as any;
     const runSchema = tools.find((t) => t.name === "claudexor_run")?.inputSchema as any;
     const statusSchema = tools.find((t) => t.name === "claudexor_status")?.inputSchema as any;
     expect(runSchema?.additionalProperties).toBe(false);
@@ -163,7 +163,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       { id: 4, name: "claudexor_run", arguments: { prompt: "go", repoPath: "relative" } },
       { id: 5, name: "claudexor_run", arguments: { prompt: "go", n: 1.5 } },
       { id: 6, name: "claudexor_run", arguments: { prompt: "go", extra: true } },
-      { id: 7, name: "claudexor_race", arguments: { prompt: "go", n: 1 } },
+      { id: 7, name: "claudexor_best_of", arguments: { prompt: "go", n: 1 } },
       { id: 8, name: "claudexor_run", arguments: { prompt: "go", tests: "pnpm test" } },
       { id: 9, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "" }] } },
       { id: 10, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] } },

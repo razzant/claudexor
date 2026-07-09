@@ -3816,9 +3816,9 @@ describe("Orchestrator", () => {
   });
 });
 
-/** A brain adapter that doctor-OKs the orchestrate intent and emits a fenced
+/** A planner adapter that doctor-OKs the orchestrate intent and emits a fenced
  * JSON plan in its message (the typed plan the executor consumes). */
-function brainAdapter(
+function plannerAdapter(
   id: string,
   plan: unknown,
   family: ProviderFamily = "anthropic",
@@ -3868,14 +3868,14 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     // executor must STOP at it (blocked terminal), never deliver it.
     const plan = { tool_calls: [{ tool: "apply", run_id: "run-nonexistent", why: "ship it" }] };
     const orch = new Orchestrator({
-      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
       reviewers: [],
     });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "do the thing",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
       autonomy: "auto_safe",
     });
     expect(res.status).toBe("blocked");
@@ -3915,16 +3915,16 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       ],
     };
     const registry = new Map<string, HarnessAdapter>([
-      ["brain", brainAdapter("brain", plan)],
+      ["planner", plannerAdapter("planner", plan)],
       ["impl", diffImplementer("impl", "local")],
     ]);
     const orch = new Orchestrator({ registry, reviewers: reviewers() });
     const res = await orch.run({
-      // harnesses pins the brain; the sub-run auto-resolves the impl harness.
+      // harnesses pins the planner; the sub-run auto-resolves the impl harness.
       repoRoot: repo,
       prompt: "go",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
       autonomy: "auto_safe",
     });
     // The executor ran the safe step and the orchestrate run succeeded.
@@ -3975,14 +3975,14 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       tool_calls: [{ tool: "start_run", prompt: "do it", mode: "agent", why: "spawn" }],
     };
     const registry = new Map<string, HarnessAdapter>([
-      ["brain", brainAdapter("brain", plan)],
+      ["planner", plannerAdapter("planner", plan)],
       ["rec", recordingImpl],
     ]);
     const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
       repoRoot: repo,
       prompt: "go",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
       autonomy: "auto_safe",
     });
     expect(res.status).toBe("success");
@@ -4015,14 +4015,14 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       tool_calls: [{ tool: "apply", run_id: seedRunId, mode: "apply", why: "land it" }],
     };
     const orch = new Orchestrator({
-      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
       reviewers: [],
     });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "land the work",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
       autonomy: "auto_full",
     });
     expect(res.status).toBe("success");
@@ -4037,14 +4037,14 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const repo = await initRepo();
     const plan = { tool_calls: [{ tool: "apply", run_id: "run-x", why: "would mutate" }] };
     const orch = new Orchestrator({
-      registry: new Map([["brain", brainAdapter("brain", plan)]]),
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
       reviewers: [],
     });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "plan only",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
     });
     expect(res.status).toBe("success");
     // No executor ran under suggest: no progress artifact, no apply.
@@ -4053,13 +4053,13 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
   });
 
-  it("emits a failure-shaped terminal (run.failed{not_converged} + failure.yaml) when the brain yields no typed plan", async () => {
+  it("emits a failure-shaped terminal (run.failed{not_converged} + failure.yaml) when the planner yields no typed plan", async () => {
     const repo = await initRepo();
-    // A brain that talks prose without a fenced JSON plan: the typed-plan
+    // A planner that talks prose without a fenced JSON plan: the typed-plan
     // contract fails, so the terminal must be failure-shaped, never
     // run.completed (jobs.json and events.jsonl must agree).
     const proseBrain: HarnessAdapter = {
-      ...brainAdapter("brain", {}),
+      ...plannerAdapter("planner", {}),
       async *run(spec) {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
@@ -4067,8 +4067,8 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
-    const orch = new Orchestrator({ registry: new Map([["brain", proseBrain]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "goal", mode: "orchestrate", harnesses: ["brain"] });
+    const orch = new Orchestrator({ registry: new Map([["planner", proseBrain]]), reviewers: [] });
+    const res = await orch.run({ repoRoot: repo, prompt: "goal", mode: "orchestrate", harnesses: ["planner"] });
     expect(res.status).toBe("not_converged");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain('"run.failed"');
@@ -4081,7 +4081,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const repo = await initRepo();
     const orch = new Orchestrator({
       registry: new Map([
-        ["brain", brainAdapter("brain", { tool_calls: [{ tool: "status", run_id: "r" }] })],
+        ["planner", plannerAdapter("planner", { tool_calls: [{ tool: "status", run_id: "r" }] })],
       ]),
       reviewers: [],
     });
@@ -4090,7 +4090,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
         repoRoot: repo,
         prompt: "x",
         mode: "orchestrate",
-        harnesses: ["brain"],
+        harnesses: ["planner"],
         orchestrateDepth: 1,
       }),
     ).rejects.toThrow(/orchestrate-within-orchestrate is forbidden/);
@@ -4677,7 +4677,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       yield { type: "completed", session_id: sessionId, ts };
     });
     const registry = new Map<string, HarnessAdapter>([
-      ["brain", brainAdapter("brain", plan)],
+      ["planner", plannerAdapter("planner", plan)],
       ["spender", spender],
     ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
@@ -4685,7 +4685,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       repoRoot: repo,
       prompt: "answer three questions",
       mode: "orchestrate",
-      harnesses: ["brain"],
+      harnesses: ["planner"],
       autonomy: "auto_safe",
       maxUsd: 0.015,
     });
@@ -4787,7 +4787,7 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
 
 describe("structured-first plan parsing", () => {
   it("accepts a BARE JSON final message (schema-constrained route) and falls back to fenced JSON", async () => {
-    const { extractOrchestratePlan } = await import("./orchestrateBrain.js");
+    const { extractOrchestratePlan } = await import("./orchestratePlanner.js");
     const plan = { tool_calls: [{ tool: "status", run_id: "run-1", why: "check" }] };
     const bare = extractOrchestratePlan(JSON.stringify(plan));
     expect(bare.plan).not.toBeNull();
@@ -4811,7 +4811,7 @@ describe("strict structured-output schema (critic findings)", () => {
     expect(startRun.required).toContain("harness"); // strict mode: listed...
     const harnessType = startRun.properties!["harness"]!.type;
     expect(Array.isArray(harnessType) ? harnessType : [harnessType]).toContain("null"); // ...but nullable
-    const { extractOrchestratePlan } = await import("./orchestrateBrain.js");
+    const { extractOrchestratePlan } = await import("./orchestratePlanner.js");
     const withNulls = extractOrchestratePlan(
       JSON.stringify({ tool_calls: [{ tool: "start_run", prompt: "p", mode: "agent", harness: null, why: "w" }] }),
     );

@@ -238,7 +238,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "Multi-harness planning → adversarial plan review → SpecPack."
         case .create: return "Scaffold a brand-new repo or component."
         case .readOnlyAudit: return "Read-only audit / map of a codebase."
-        case .orchestrate: return "Brain: routed like reviewers; produces a typed orchestration plan over the tool belt."
+        case .orchestrate: return "Routed like reviewers; produces a typed orchestration plan over the tool belt."
         case .spec: return "Interview to freeze a SpecPack: grounding plan → questions → answers → frozen spec to implement."
         case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }

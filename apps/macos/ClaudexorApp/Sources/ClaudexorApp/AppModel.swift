@@ -1022,7 +1022,7 @@ final class AppModel {
         return resolved
     }
 
-    /// Eligible harness pool (Race runs this; one candidate per harness): thread
+    /// Eligible harness pool (Best-of runs this; one candidate per harness): thread
     /// sticky > global default. Empty => engine auto-pools doctor-ok harnesses.
     var effectiveEligiblePool: [String] {
         let sticky = selectedThreadId == nil ? draftEligiblePool : (currentThread?.eligibleHarnesses ?? [])
@@ -1200,7 +1200,7 @@ final class AppModel {
             return false
         }
         let flags = mode.strategyFlags
-        // Race runs the eligible pool: one candidate per AVAILABLE harness. Send the
+        // Best-of runs the eligible pool: one candidate per AVAILABLE harness. Send the
         // pool EXPLICITLY (what the user sees races) and size n to that same set, so
         // the engine never wraps a too-large n back over a smaller resolved pool
         // (which would race a harness against itself). Other modes send no harnesses
@@ -1213,7 +1213,7 @@ final class AppModel {
             }
             racePool = available.isEmpty ? effectiveEligiblePool : available
         }
-        // Race width = one candidate per harness in the pool (≥2). A SINGLE-harness
+        // Best-of width = one candidate per harness in the pool (≥2). A SINGLE-harness
         // pool can't race against itself: send n=1 so the engine single-routes that
         // one harness instead of duplicating it (a wasteful self-race). An EMPTY pool
         // (auto) keeps the default 2 so the engine auto-pools two doctor-ok harnesses.
@@ -1225,7 +1225,7 @@ final class AppModel {
         }
         // Until Clean / Max Attempts are SINGLE-candidate repair strategies — the
         // engine routes them to convergence (ignoring n), so they only make sense
-        // for a plain agent turn, never for Race. access/web/budget are per-turn.
+        // for a plain agent turn, never for Best-of. access/web/budget are per-turn.
         let writeMode = !mode.isReadOnly
         let repairMode = mode == .agent
         let result: RunStartResult

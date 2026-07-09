@@ -174,7 +174,7 @@ function opencodeMcpEntry(runtime: RuntimePaths): Record<string, unknown> {
     enabled: true,
     // Tool-DISCOVERY timeout only (OpenCode semantics). Tool EXECUTION time
     // is governed by OpenCode's global MCP execution timeout — long verbs
-    // (run/race) can exceed it; the generated README and INTEGRATIONS.md
+    // (agent/best-of) can exceed it; the generated README and INTEGRATIONS.md
     // carry the guidance (raise experimental.mcp_timeout, or prefer the CLI
     // for long runs). The runId trailer keeps abandoned calls recoverable.
     timeout: 5000,
@@ -209,7 +209,7 @@ function skillText(host: PluginHost): string {
     "- MCP tool `claudexor_explore` for bounded read-only research synthesis.",
     "- MCP tool `claudexor_plan` for read-only implementation plans.",
     "- MCP tool `claudexor_run` for a single agent run.",
-    "- MCP tool `claudexor_race` for best-of-N attempts.",
+    "- MCP tool `claudexor_best_of` for best-of-N attempts.",
     "- MCP tool `claudexor_create` for create-from-scratch runs.",
     "- MCP tool `claudexor_orchestrate` for a typed orchestration plan.",
     "",
@@ -219,7 +219,7 @@ function skillText(host: PluginHost): string {
     "",
     "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
     "",
-    `Mutating runs (run/race/create) are daemon-tracked and end with a \`runId:\` trailer — use ${recoveryVerbLine()} for evidence, live progress, delivery, or unblocking a blocked run.`,
+    `Mutating runs (agent/best-of/create) are daemon-tracked and end with a \`runId:\` trailer — use ${recoveryVerbLine()} for evidence, live progress, delivery, or unblocking a blocked run.`,
     "",
     `Host namespace: ${namespace}`,
     "",
@@ -255,7 +255,7 @@ function readmeText(host: PluginHost): string {
     "",
     "It packages Claudexor instructions and MCP configuration for the host. All orchestration remains in the local Claudexor CLI and engine.",
     "",
-    "Long-running MCP tools (claudexor_run, claudexor_race, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
+    "Long-running MCP tools (claudexor_run, claudexor_best_of, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
     "",
   ].join("\n");
 }
@@ -320,7 +320,7 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
 }
 
 function opencodePluginText(runtime: RuntimePaths): string {
-  const hint = "Use Claudexor MCP tools or run `claudexor plan/run/race` when cross-harness orchestration, review, or evidence-backed execution is useful.";
+  const hint = "Use Claudexor MCP tools or run `claudexor plan/agent/best-of` when cross-harness orchestration, review, or evidence-backed execution is useful.";
   return `${managedComment("js")}export const ClaudexorPlugin = async () => {\n  const hint = ${JSON.stringify(hint)};\n  return {\n    \"experimental.chat.system.transform\": async (_input, output) => {\n      if (!output || typeof output !== \"object\") return;\n      const current = typeof output.system === \"string\" ? output.system : typeof output.prompt === \"string\" ? output.prompt : \"\";\n      if (current.includes(\"Claudexor\")) return;\n      if (typeof output.system === \"string\") output.system = output.system + \"\\n\\n\" + hint;\n      else if (typeof output.prompt === \"string\") output.prompt = output.prompt + \"\\n\\n\" + hint;\n    },\n  };\n};\n\nexport default ClaudexorPlugin;\n\n// OpenCode hook note: uses experimental.chat.system.transform because OpenCode does not expose tui.prompt.append as a plugin hook.\n// MCP command: ${runtime.nodePath} ${runtime.cliPath} mcp serve\n`;
 }
 

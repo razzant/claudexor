@@ -86,7 +86,7 @@ import {
   relayPriorPlansSection,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
-import { buildOrchestrateBrainPrompt, extractOrchestratePlan } from "./orchestrateBrain.js";
+import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
 import { blockedDecisionOverride, finalVerifyBlocks, finalVerifyPatch } from "./finalVerifier.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
@@ -284,7 +284,7 @@ export interface RunInput {
    */
   inPlace?: boolean;
   /**
-   * How much the orchestrate brain may act without confirmation
+   * How much the orchestrate planner may act without confirmation
    * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
    * executor over the typed plan classifies each tool_call via toolRisk and
    * runs safe steps as isolated sub-runs / reads, blocking risky steps under
@@ -523,7 +523,7 @@ export class Orchestrator {
           return this.runPlan(resolved, announce);
         case "orchestrate":
           // Recursion guard: a sub-run spawned by the orchestrate executor carries
-          // orchestrateDepth>0 and must NOT itself orchestrate (no infinite brain
+          // orchestrateDepth>0 and must NOT itself orchestrate (no infinite planner
           // recursion). Fail loudly rather than silently degrade.
           if ((resolved.orchestrateDepth ?? 0) > 0) {
             throw new Error(
@@ -4464,7 +4464,7 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
-              // read-only routes burn quota too (the orchestrate BRAIN is
+              // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -4833,7 +4833,7 @@ export class Orchestrator {
   }
 
   /**
-   * orchestrate: the autonomous brain. NOT a privileged harness — the brain
+   * orchestrate: the autonomous planner. NOT a privileged harness — the planner
    * is routed like reviewers (doctor-ok + `orchestrate` capability + headroom)
    * and runs READ-ONLY. With default `suggest` autonomy its work product is a
    * typed orchestration plan over the 6-tool belt (start_run / race / status /
@@ -4848,12 +4848,12 @@ export class Orchestrator {
 
   private async runOrchestrate(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
     // "Doctor-verified" must mean status ok — degraded key-present routes are
-    // excluded from the pool the brain plans over (readiness honesty).
+    // excluded from the pool the planner plans over (readiness honesty).
     const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
     const crossFamily = pool.length >= 2;
     const goal = input.prompt || "Plan the next move for this repository.";
     // The typed orchestration contract is a REAL persisted artifact (producer
-    // here, consumers: the brain prompt below + the plan validator).
+    // here, consumers: the planner prompt below + the plan validator).
     // Autonomy is producer-supplied (control-api/CLI -> daemon -> RunInput);
     // the executor below is its consumer. Default `suggest` (plan-only) preserves
     // the read-only contract when no autonomy is requested.
@@ -4869,18 +4869,18 @@ export class Orchestrator {
       budget: { max_usd: aggregateMaxUsd, max_tool_calls: input.maxToolCalls ?? null },
       autonomy,
     });
-    const brainPrompt = buildOrchestrateBrainPrompt(goal, pool, crossFamily, orchestrateContract);
+    const plannerPrompt = buildOrchestratePlannerPrompt(goal, pool, crossFamily, orchestrateContract);
     return this.runReadOnlyReport(
       // The executed pool is pinned to the PLANNED pool (no double doctor
       // resolution drift between the prompt's claims and the actual route).
-      // The brain must NOT resume or overwrite the thread's conversational
+      // The planner must NOT resume or overwrite the thread's conversational
       // session — it speaks its own tool-belt framing, not the user's chat.
       {
         ...input,
         resumeSessions: undefined,
         onSessionObserved: undefined,
         harnesses: input.harnesses ?? (pool.length > 0 ? pool : undefined),
-        prompt: brainPrompt,
+        prompt: plannerPrompt,
       },
       {
         mode: "orchestrate",
@@ -4888,7 +4888,7 @@ export class Orchestrator {
         intent: "orchestrate",
         title: "Orchestration plan",
         artifactName: "orchestration.md",
-        defaultPrompt: brainPrompt,
+        defaultPrompt: plannerPrompt,
         contractIntent: goal,
         orchestrateContract,
       },
@@ -4915,7 +4915,7 @@ export class Orchestrator {
     const prompt = input.prompt || opts.defaultPrompt;
     // Contract validation BEFORE the run is announced (see runRace). The
     // recorded user intent is the CALLER's goal, not a synthesized wrapper
-    // prompt (orchestrate wraps the goal in a brain prompt).
+    // prompt (orchestrate wraps the goal in a planner prompt).
     const contract = this.buildContract(
       { ...input, prompt: opts.contractIntent ?? prompt },
       taskId,
@@ -5120,7 +5120,7 @@ export class Orchestrator {
         max_turns: knobs.maxTurns,
         env_inheritance: envInheritance(this.config(input.repoRoot)),
         env: roHome.env,
-        // Structured output: the orchestrate BRAIN's deliverable IS the
+        // Structured output: the orchestrate PLANNER's deliverable IS the
         // typed plan — constrain schema-capable routes to it. Capability-gated:
         // routes without json_schema_output keep fenced-JSON parsing. ALSO
         // gated off when this spec will ride the INTERACTIVE stream-json
@@ -5213,7 +5213,7 @@ export class Orchestrator {
               if (safeEv.plan_progress) {
                 log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
               }
-              // read-only routes burn quota too (the orchestrate BRAIN is
+              // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
@@ -5641,7 +5641,7 @@ export class Orchestrator {
         ].join("\n")
       : (succeeded[0]?.report ?? "(no output)");
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
-    // orchestrate: the brain's plan is a TYPED artifact, not just prose. Extract
+    // orchestrate: the planner's plan is a TYPED artifact, not just prose. Extract
     // the required fenced JSON block, validate it against the tool belt, and
     // persist final/orchestration.yaml; a missing/invalid block is disclosed in
     // the summary and events (suggest autonomy: the plan is the work product).
@@ -5715,7 +5715,7 @@ export class Orchestrator {
     const autonomy: OrchestrateAutonomy =
       opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
     let terminal: RunStatus = "success";
-    // orchestrate's contract output IS the typed plan. If the brain failed to
+    // orchestrate's contract output IS the typed plan. If the planner failed to
     // produce a valid one, the run is NOT a clean success — disclose it honestly
     // (the markdown plan stays as a diagnostic artifact) rather than reporting
     // success alongside an orchestration_parse_error.md.
@@ -5732,7 +5732,7 @@ export class Orchestrator {
         store,
         paths,
         log,
-        // The BRAIN's own settled spend counts against the same cap: the
+        // The PLANNER's own settled spend counts against the same cap: the
         // aggregate must start from it, not from zero (completeness).
         ledger.spend(),
       );
@@ -5797,19 +5797,19 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
     } else if (terminal === "not_converged") {
-      // Orchestrate's typed-plan contract failed (the brain produced no valid
+      // Orchestrate's typed-plan contract failed (the planner produced no valid
       // plan): a failure-shaped terminal with artifacts, never run.completed —
       // jobs.json and events.jsonl must agree the run did not converge.
       writeFailure(store, paths, {
         phase: "plan",
         category: "harness_error",
         safeMessage:
-          "orchestrate brain produced no valid typed plan (see final/orchestration_parse_error.md); the markdown report is diagnostic only",
+          "orchestrate planner produced no valid typed plan (see final/orchestration_parse_error.md); the markdown report is diagnostic only",
         runDir: paths.root,
         nextActions: [
           "Inspect final/orchestration_parse_error.md",
           "Re-run orchestrate",
-          "Check the brain harness doctor status",
+          "Check the planner harness doctor status",
         ],
       });
       log.emit("run.failed", {
@@ -5909,7 +5909,7 @@ export class Orchestrator {
     log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
 
     let executed = 0;
-    // Aggregate budget: the brain's own spend plus every sub-run share
+    // Aggregate budget: the planner's own spend plus every sub-run share
     // ONE cap. Each sequential sub-run gets the REMAINING headroom (cap minus
     // settled spend so far) — never the full cap again per step.
     let aggregateSpentUsd = brainSpentUsd;

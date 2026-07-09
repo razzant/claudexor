@@ -11,14 +11,14 @@ function safeErrorMessage(err: unknown): string {
   return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
-export function buildOrchestrateBrainPrompt(
+export function buildOrchestratePlannerPrompt(
   goal: string,
   pool: string[],
   crossFamily: boolean,
   contract: OrchestrateContractT,
 ): string {
   return [
-    `You are the Claudexor orchestration brain. Plan — do not implement.`,
+    `You are the Claudexor orchestration planner. Plan — do not implement.`,
     ``,
     `## Goal`,
     goal,
@@ -47,7 +47,7 @@ export function buildOrchestrateBrainPrompt(
 }
 
 /**
- * Extract + validate the brain's typed plan from its markdown report (the
+ * Extract + validate the planner's typed plan from its markdown report (the
  * fenced ```json block the orchestrate prompt requires). Structured-output
  * parsing, not governance: validity is decided by the OrchestratePlan schema.
  */
@@ -82,7 +82,7 @@ export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT
   const fence = /```json\s*\n([\s\S]*?)\n```/g;
   let lastBlock: string | null = null;
   for (const match of report.matchAll(fence)) lastBlock = match[1] ?? null;
-  if (!lastBlock) return { plan: null, error: "no fenced json block found in the brain report" };
+  if (!lastBlock) return { plan: null, error: "no fenced json block found in the planner report" };
   try {
     const parsed = OrchestratePlanSchema.safeParse(stripNulls(JSON.parse(lastBlock)));
     if (!parsed.success)

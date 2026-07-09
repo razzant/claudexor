@@ -6,7 +6,7 @@ CLI bundle** (no in-container clone/``pnpm install``/``tsc`` — that repeatedly
 Harbor's AgentSetupTimeout under Rosetta), then runs Claudexor in INTERNAL
 ORCHESTRATION mode against the live ``/app`` tree:
 
-    claudexor run --in-place --attempts N --harness <h> --access full <instruction>
+    claudexor agent --in-place --attempts N --harness <h> --access full <instruction>
 
 i.e. one harness implements in place, a DIFFERENT provider family reviews the live
 tree, and Claudexor repairs until the cross-family review is clean or the bounded
@@ -126,7 +126,7 @@ class ClaudexorAgent(BaseInstalledAgent):
     # `pnpm install` + `tsc` (~30 packages) that kept blowing Harbor's
     # AgentSetupTimeout under Rosetta. Build them with `pnpm bench:bundle`.
     #
-    # TWO sibling bundles, NOT one: agent mode (`claudexor run`) routes through
+    # TWO sibling bundles, NOT one: agent mode (`claudexor agent`) routes through
     # ensureDaemon(), which auto-starts the daemon by spawning the SIBLING file
     # `new URL("./claudexord.js", import.meta.url)` next to the running CLI bundle
     # (there is no in-process fallback — runs are always daemon-tracked). So
@@ -298,7 +298,7 @@ class ClaudexorAgent(BaseInstalledAgent):
         return env
 
     def _claudexor_command(self, instruction: str) -> str:
-        flags = ["run", "--in-place", "--harness", self._harness]
+        flags = ["agent", "--in-place", "--harness", self._harness]
         if self._mode == "race":
             # Literal best-of-N: N isolated candidates, cross-family review, winner's
             # git diff auto-adopted into /app. No --attempts (it selects convergence).

@@ -25,8 +25,8 @@ alias claudexor="node $(pwd)/packages/cli/dist/cli.js"
 claudexor ask "2+2?"
 claudexor ask "google the latest release notes" --web auto
 claudexor explore "map this repo's auth and run storage"
-claudexor run "fix the failing auth refresh test" --harness codex
-claudexor race "fix add() and keep the patch minimal" --harness codex,claude --n 2
+claudexor agent "fix the failing auth refresh test" --harness codex
+claudexor best-of "fix add() and keep the patch minimal" --harness codex,claude --n 2
 claudexor inspect <run_id>
 claudexor follow <run_id>     # live event tail of a daemon run; answers questions in the TTY
 claudexor apply <run_id> --dry-run
@@ -53,12 +53,12 @@ FLAGS, not modes):
 - `plan` - read-only multi-harness planning and draft SpecPack grounding.
 - `audit` - read-only audit/map report; `--swarm` runs the bounded research
   swarm (per-explorer findings, synthesis, omissions, follow-up questions).
-- `agent` - default `claudexor run` route. Strategy flags: `--n N` (best-of-N
+- `agent` - default `claudexor agent` route. Strategy flags: `--n N` (best-of-N
   race with isolated candidates, review, synthesis, arbitration),
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop
   until gates/review converge, budget/quota exhausts, cancellation happens, or
   the run stalls), `--create` (create-from-scratch intent).
-- `orchestrate` - the brain: routed like reviewers, produces a typed
+- `orchestrate` - the orchestrator: routed like reviewers, produces a typed
   orchestration plan over the six-tool vocabulary (start_run / race / status /
   answer_question / apply / review); the default tool belt is five —
   `answer_question` is deliberately not offered by default.
@@ -99,10 +99,10 @@ claudexor                       # REPL: a thread of turns (read-only turns resum
 claudexor ask "2+2?"
 claudexor ask "google the latest release notes" --web auto
 claudexor explore "map this repo's auth and run storage"   # = audit --swarm
-claudexor run "fix the failing auth refresh test" --harness codex
-claudexor race "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
-claudexor run "repair the parser test" --attempts 3
-claudexor run "fix the bug and keep repairing until clean" --until-clean
+claudexor agent "fix the failing auth refresh test" --harness codex
+claudexor best-of "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
+claudexor agent "repair the parser test" --attempts 3
+claudexor agent "fix the bug and keep repairing until clean" --until-clean
 claudexor plan "design a config-to-gates implementation"
 claudexor audit "map artifact writers and secret risk"
 claudexor orchestrate "ship the v2 parser refactor across this repo"
@@ -149,7 +149,7 @@ ordered list of harness entries and preserves repeated harness ids, so one pass
 can request multiple Cursor models without provider-family dedupe:
 
 ```bash
-claudexor run "fix the parser" --reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
+claudexor agent "fix the parser" --reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
 ```
 
 Each entry is `harness[:effort]` or `harness[=model[:effort]]`; a trailing
@@ -171,7 +171,7 @@ model to the native CLI. Use `claudexor models --harness <id>` to inspect the
 current model ids for adapters that expose inventory.
 
 In the chat surface this is sticky per thread: a thread remembers which harness
-answers in chat (its primary) and the eligible pool Race competes over. The macOS
+answers in chat (its primary) and the eligible pool Best-of competes over. The macOS
 app sets them via `POST /threads` / `PATCH /threads/:id` and may override per turn
 — the engine still owns all routing; the surface only sends the choice.
 
@@ -353,7 +353,7 @@ plan and the open questions before changing files.
 ```
 
 ```text
-Use Claudexor race with 3 candidates for this bug fix, compare the attempts,
+Use Claudexor best-of with 3 candidates for this bug fix, compare the attempts,
 and apply only the winning patch if the review is clean.
 ```
 
