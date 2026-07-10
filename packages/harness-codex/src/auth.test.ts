@@ -1,8 +1,16 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { codexExecArgs, ensureCodexApiAuth, ensureCodexNativeAuth } from "./index.js";
+import { codexExecArgs, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./index.js";
+
+/** Fake `codex` binary printing a canned login-status verdict. */
+function fakeCodexBin(dir: string, script: string): string {
+  const bin = join(dir, "codex-fake");
+  writeFileSync(bin, `#!/bin/sh\n${script}\n`);
+  chmodSync(bin, 0o755);
+  return bin;
+}
 
 const KEY_VARS = ["CLAUDEXOR_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY", "CLAUDEXOR_DISABLE_STORED_SECRETS"] as const;
 
@@ -116,5 +124,43 @@ describe("ensureCodexApiAuth", () => {
       'web_search="cached"',
       "review",
     ]);
+  });
+});
+
+describe("probeLogin (native-session probe vs probe failure)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "codex-probe-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("exit 0 means logged in", async () => {
+    const bin = fakeCodexBin(dir, 'echo "Logged in using ChatGPT"; exit 0');
+    expect(await probeLogin(bin)).toEqual({ authed: true, probeError: null });
+  });
+
+  it("'Not logged in' on a failing exit is a clean logged-out verdict, not a probe error", async () => {
+    const bin = fakeCodexBin(dir, 'echo "Not logged in" >&2; exit 1');
+    expect(await probeLogin(bin)).toEqual({ authed: false, probeError: null });
+  });
+
+  it("a config-load failure is a PROBE ERROR, never silently 'not logged in'", async () => {
+    // The live regression: a stale pinned codex 0.137 shim + a config.toml
+    // written for 0.142 ("unknown variant `ultra`") reported the logged-in
+    // subscription as logged out.
+    const bin = fakeCodexBin(dir, 'echo "Error loading configuration: config.toml:3:26: unknown variant \\`ultra\\`" >&2; exit 1');
+    const r = await probeLogin(bin);
+    expect(r.authed).toBe(false);
+    expect(r.probeError).toContain("unknown variant");
+  });
+
+  it("a missing binary is a probe error", async () => {
+    const r = await probeLogin(join(dir, "does-not-exist"));
+    expect(r.authed).toBe(false);
+    expect(r.probeError).toBeTruthy();
   });
 });

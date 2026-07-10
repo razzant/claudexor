@@ -1,12 +1,11 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, normalizeEffort, playwrightMcpArgs, providerScrubEnv, resolveNpxBin, runCapture, runCliHarness } from "@claudexor/core";
-import { resolveSecret } from "@claudexor/secrets";
+import { HarnessUnavailableError, normalizeEffort, playwrightMcpArgs, providerScrubEnv, resolveHarnessBinary, resolveNpxBin, runCapture, runCliHarness } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
@@ -21,87 +20,8 @@ const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
  */
 const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh"];
 
-/**
- * Resolve an OpenAI API key for codex from the environment. Claudexor-managed
- * `api_key` auth mirrors the harness's own variable (`OPENAI_API_KEY`); a
- * dedicated `CLAUDEXOR_CODEX_API_KEY` can override it for multi-key setups.
- */
-function codexApiKey(): string | undefined {
-  // The hermetic kill switch is honored inside resolveSecret (single owner).
-  const stored = resolveSecret("openai");
-  return process.env.CLAUDEXOR_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
-}
-
-/**
- * Seed `api_key` auth into an isolated CODEX_HOME. Codex does not read
- * `OPENAI_API_KEY` from the environment when run against an empty config dir
- * (it requires `auth.json`), so an envelope-scoped CODEX_HOME would otherwise
- * fail with 401 even though a key is available. We write the same file
- * `codex login --with-api-key` produces. No-op when not isolated (use codex's
- * native auth), when no key is available, or when auth already exists.
- */
-export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = true): void {
-  if (!allowApiKey) return;
-  const home = env?.["CODEX_HOME"];
-  if (!home) return;
-  const apiKey = codexApiKey();
-  if (!apiKey) return;
-  const authPath = join(home, "auth.json");
-  if (existsSync(authPath)) return;
-  try {
-    mkdirSync(home, { recursive: true });
-    writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", { mode: 0o600 });
-  } catch {
-    /* best-effort: codex will surface an auth error if this did not take */
-  }
-}
-
-/** The user's real codex home (native ChatGPT/subscription session lives here). */
-export function defaultNativeCodexHome(): string {
-  const override = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
-  if (override && override.trim()) return override;
-  return join(homedir(), ".codex");
-}
-
-/**
- * Seed the user's NATIVE codex session (`auth.json`, ChatGPT/subscription mode)
- * into an isolated CODEX_HOME so a Max/Pro subscriber with NO API key can run
- * inside a Claudexor envelope. This is the "subscription-first must actually
- * work" fix: previously the scoped empty CODEX_HOME hid the native session and
- * the run failed demanding an API key.
- *
- * Copies ONLY if the scoped auth is absent and a native `auth.json` exists; never
- * overwrites (codex refreshes the token in place). Returns true when scoped auth
- * is present afterwards. No-op when not isolated or no native session exists.
- */
-export function ensureCodexNativeAuth(
-  env?: Record<string, string>,
-  nativeHome: string = defaultNativeCodexHome(),
-): boolean {
-  const home = env?.["CODEX_HOME"];
-  if (!home) return false;
-  const dest = join(home, "auth.json");
-  if (existsSync(dest)) return true; // already seeded (api or native)
-  const src = join(nativeHome, "auth.json");
-  if (!existsSync(src)) return false;
-  try {
-    mkdirSync(home, { recursive: true });
-    copyFileSync(src, dest);
-    try {
-      chmodSync(dest, 0o600);
-    } catch {
-      /* best-effort: perms */
-    }
-    return existsSync(dest);
-  } catch {
-    return false;
-  }
-}
-
-/** True when a native codex session exists and can be seeded into an envelope. */
-function nativeCodexSeedable(): boolean {
-  return existsSync(join(defaultNativeCodexHome(), "auth.json"));
-}
+export { codexApiKey, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./auth.js";
+import { codexApiKey, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, hasApiKey, hasScopedCodexAuth, loggedIn, nativeCodexSeedable, probeLogin } from "./auth.js";
 
 function sandboxArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -124,24 +44,6 @@ async function detectVersion(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-async function loggedIn(): Promise<boolean> {
-  try {
-    const r = await runCapture(BIN, ["login", "status"], { timeoutMs: 10_000 });
-    return r.code === 0;
-  } catch {
-    return false;
-  }
-}
-
-function hasApiKey(): boolean {
-  return Boolean(codexApiKey());
-}
-
-function hasScopedCodexAuth(env?: Record<string, string>): boolean {
-  const home = env?.["CODEX_HOME"];
-  return Boolean(home && existsSync(join(home, "auth.json")));
 }
 
 async function smokeIsolatedApiKey(): Promise<{ ok: boolean; detail: string }> {
@@ -414,7 +316,8 @@ export function createCodexAdapter(): HarnessAdapter {
         });
       }
       const apiKey = hasApiKey();
-      const authed = await loggedIn();
+      const login = await probeLogin();
+      const authed = login.authed;
       // Native session readiness is FIRST-CLASS: a logged-in subscription whose
       // auth.json we can seed into the envelope is `ok` with no paid API smoke.
       // (Bible: a stored key STRING alone is still not proof -> api-key route
@@ -423,12 +326,23 @@ export function createCodexAdapter(): HarnessAdapter {
       const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
       const ok = nativeReady || smoke.ok;
       const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "synthesize", "explain", "audit", "orchestrate"];
+      const binPath = resolveHarnessBinary(BIN);
       return ConformanceReportSchema.parse({
         harness_id: "codex",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
-          { id: "installed", status: "pass", detail: version },
-          { id: "native_session", status: nativeReady ? "pass" : "fail", detail: nativeReady ? "native codex session seedable into envelope" : authed ? "logged in but ~/.codex/auth.json not found" : "not logged in (run `codex login`)" },
+          { id: "installed", status: "pass", detail: binPath ? `${version} at ${binPath}` : version },
+          {
+            id: "native_session",
+            status: nativeReady ? "pass" : "fail",
+            detail: nativeReady
+              ? "native codex session seedable into envelope"
+              : login.probeError
+                ? `login-status probe failed (NOT an auth verdict): ${redactCodexDoctorDetail(login.probeError)}`
+                : authed
+                  ? "logged in but ~/.codex/auth.json not found"
+                  : "not logged in (run `codex login`)",
+          },
           { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "openai secret/env available (api-key fallback)" : "no openai key fallback" },
           { id: "isolated_api_smoke", status: smoke.ok ? "pass" : nativeReady ? "skip" : apiKey ? "fail" : "skip", detail: smoke.detail },
         ],

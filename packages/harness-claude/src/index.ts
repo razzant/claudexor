@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AccessProfile, ConformanceReport, EffortHint, HarnessCapabilityProfile, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema, HarnessCapabilityProfile as HarnessCapabilityProfileSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, interactionChannelFromSpec, normalizeEffort, playwrightMcpArgs, providerScrubEnv, readonlyMechanism, resolveNpxBin, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
+import { HarnessUnavailableError, interactionChannelFromSpec, labelStreams, normalizeEffort, playwrightMcpArgs, providerScrubEnv, readonlyMechanism, resolveHarnessBinary, resolveNpxBin, runCapture, runCliHarness, PROVIDER_SECRET_ENV } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
@@ -58,7 +58,15 @@ async function detectVersion(): Promise<string | null> {
   }
 }
 
-async function authStatusOk(): Promise<boolean> {
+/**
+ * Native-session probe with a distinct PROBE-FAILURE state (same contract as
+ * the codex adapter's probeLogin). `claude auth status` prints a typed JSON
+ * verdict `{loggedIn, authMethod, ...}` on stdout; the exit code alone is NOT
+ * the auth verdict. When the JSON is present we trust its `loggedIn` field;
+ * a probe that produces no parseable verdict is a probe error, never a silent
+ * "not logged in".
+ */
+export async function probeAuthStatus(bin: string = BIN): Promise<{ authed: boolean; probeError: string | null }> {
   try {
     const env = Object.fromEntries(CLAUDE_PROVIDER_ENV_DENYLIST.map((name) => [name, null]));
     // Probe a REAL native/subscription session only: `claude auth status` reports
@@ -68,11 +76,24 @@ async function authStatusOk(): Promise<boolean> {
     // probe reflects native-session readiness alone; the api_key route is chosen
     // separately by runClaude when no native session exists.
     env.ANTHROPIC_API_KEY = null;
-    const r = await runCapture(BIN, ["auth", "status"], { env, timeoutMs: 10_000 });
-    return r.code === 0;
-  } catch {
-    return false;
+    const r = await runCapture(bin, ["auth", "status"], { env, timeoutMs: 10_000 });
+    try {
+      const verdict = JSON.parse(r.stdout.trim()) as { loggedIn?: unknown };
+      if (typeof verdict.loggedIn === "boolean") return { authed: verdict.loggedIn, probeError: null };
+    } catch {
+      /* no JSON verdict: fall through to exit-code + error disclosure */
+    }
+    if (r.code === 0) return { authed: true, probeError: null };
+    // Redact BEFORE labelStreams truncates: truncation could split a token
+    // into a prefix the redactor no longer recognizes.
+    return { authed: false, probeError: labelStreams(r.stderr, r.stdout, { transform: redactSecrets }) };
+  } catch (err) {
+    return { authed: false, probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))].slice(0, 300).join("") };
   }
+}
+
+async function authStatusOk(): Promise<boolean> {
+  return (await probeAuthStatus()).authed;
 }
 
 function anthropicApiKey(): string | null {
@@ -250,7 +271,8 @@ export function createClaudeAdapter(): HarnessAdapter {
         });
       }
       const apiKey = anthropicApiKey() !== null;
-      const authed = await authStatusOk();
+      const login = await probeAuthStatus();
+      const authed = login.authed;
       // Native subscription readiness is FIRST-CLASS: a logged-in session whose
       // .credentials.json we can seed into the envelope is `ok` with no paid API
       // smoke. A stored OAuth token (claude setup-token) is also native-ready.
@@ -258,12 +280,23 @@ export function createClaudeAdapter(): HarnessAdapter {
       const smoke = !nativeReady && apiKey ? await smokeIsolatedApiKey() : { ok: false, detail: nativeReady ? "skipped (native session ready)" : "no API key fallback available" };
       const ok = nativeReady || smoke.ok;
       const allIntents = ["plan", "spec", "implement", "repair", "create_from_scratch", "review", "verify", "synthesize", "explain", "audit", "orchestrate"];
+      const binPath = resolveHarnessBinary(BIN);
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok ? "ok" : authed || apiKey ? "degraded" : "unavailable",
         checks: [
-          { id: "installed", status: "pass", detail: version },
-          { id: "native_session", status: nativeReady ? "pass" : "fail", detail: nativeReady ? "native Claude session seedable into envelope" : authed ? "logged in but ~/.claude/.credentials.json not found" : "not logged in (run `claude /login` or store a setup-token)" },
+          { id: "installed", status: "pass", detail: binPath ? `${version} at ${binPath}` : version },
+          {
+            id: "native_session",
+            status: nativeReady ? "pass" : "fail",
+            detail: nativeReady
+              ? "native Claude session seedable into envelope"
+              : login.probeError
+                ? `auth-status probe failed (NOT an auth verdict): ${redactClaudeDoctorDetail(login.probeError)}`
+                : authed
+                  ? "logged in but ~/.claude/.credentials.json not found"
+                  : "not logged in (run `claude /login` or store a setup-token)",
+          },
           { id: "stored_key", status: apiKey ? "pass" : "fail", detail: apiKey ? "anthropic secret/env available (api-key fallback)" : "no anthropic key fallback" },
           { id: "isolated_api_smoke", status: smoke.ok ? "pass" : nativeReady ? "skip" : apiKey ? "fail" : "skip", detail: smoke.detail },
         ],
