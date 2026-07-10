@@ -507,6 +507,10 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   }
 
+  // Route evidence: disclose the ACTUAL auth route on the started event
+  // (typed `auth_route` payload); quota attribution consumes it.
+  const authRouteDisclosure = useSubscription ? "local_session" : "api_key";
+  const baseParser = createClaudeParser({ deniedTools: toolPermissionSets(spec).deny });
   yield* runCliHarness({
     bin: BIN,
     args,
@@ -514,7 +518,15 @@ async function* runClaude(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     env,
     label: "claude",
     redact: redactSecrets,
-    parseEvent: createClaudeParser({ deniedTools: toolPermissionSets(spec).deny }),
+    parseEvent: (obj, sessionId) => {
+      const out = baseParser(obj, sessionId);
+      if (out) {
+        for (const ev of out) {
+          if (ev.type === "started") ev.payload = { ...(ev.payload ?? {}), auth_route: authRouteDisclosure };
+        }
+      }
+      return out;
+    },
     ...(interactive
       ? {
           session: {

@@ -8,6 +8,7 @@ import {
   SchemaVersion,
 } from "./primitives.js";
 import { ToolKind } from "./harness.js";
+import { AuthMode } from "./budget.js";
 
 /**
  * Run telemetry artifact (`final/telemetry.yaml`).
@@ -103,6 +104,20 @@ export const AttemptTelemetryRecord = z
       .nullable()
       .default(null)
       .describe("Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed)."),
+    /**
+     * Auth route the attempt ACTUALLY ran under (route evidence, like
+     * observed_model): adapters disclose their chosen route as a typed
+     * `auth_route` payload on the started event, sourced from the credential
+     * material itself (codex: the seeded auth.json's own auth_mode; claude:
+     * the selected credentials/OAuth/api-key route). Null when never
+     * disclosed — subscription-vs-API quota attribution must treat that as
+     * unknown, never guess from manifests.
+     */
+    auth_mode: AuthMode.nullable()
+      .default(null)
+      .describe(
+        "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
+      ),
     web: WebEvidenceRecord,
     /** Bounded by the writer (most recent first when truncated; `tool_errors_total` keeps the true count). */
     tool_errors: z

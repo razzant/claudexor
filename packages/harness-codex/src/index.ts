@@ -20,8 +20,8 @@ const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
  */
 const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh"];
 
-export { codexApiKey, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./auth.js";
-import { codexApiKey, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, hasApiKey, hasScopedCodexAuth, loggedIn, nativeCodexSeedable, probeLogin } from "./auth.js";
+export { codexApiKey, codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./auth.js";
+import { codexApiKey, codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth, ensureCodexNativeAuth, hasApiKey, hasScopedCodexAuth, loggedIn, nativeCodexSeedable, probeLogin } from "./auth.js";
 
 function sandboxArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -485,6 +485,10 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     }
   }
   const args = codexExecArgs(spec, { suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]), outputSchemaPath });
+  // Route evidence: the auth mode this child ACTUALLY runs under, read from
+  // the same auth.json codex loads (typed `auth_mode` field — chatgpt vs
+  // apikey). Disclosed on the started event; quota attribution consumes it.
+  const authRouteDisclosure = codexAuthModeAt(env["CODEX_HOME"] ?? null);
   // Codex reports tokens but no $cost; estimate it from the (hint/configured)
   // model so the budget ledger does not see every codex run as free.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
@@ -513,6 +517,9 @@ async function* runCodex(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
           // unobserved. Record the requested model for diagnostics only.
           if (ev.type === "started" && spec.model_hint && !ev.observed_model) {
             ev.payload = { ...(ev.payload ?? {}), requested_model: spec.model_hint, observed_model_source: "unobserved" };
+          }
+          if (ev.type === "started" && authRouteDisclosure) {
+            ev.payload = { ...(ev.payload ?? {}), auth_route: authRouteDisclosure };
           }
           // codex's --json stream never carries the model, but the CLI
           // records it in its own session rollout. Try to recover it as soon as

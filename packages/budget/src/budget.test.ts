@@ -257,6 +257,33 @@ describe("portfolio metrics", () => {
     }
   });
 
+  it("last_auth_mode is route evidence: persists, updates without a perf sample, ignores unknown values", async () => {
+    const { recordHarnessMetric, loadHarnessMetrics } = await import("./metrics.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-metrics-auth-"));
+    try {
+      recordHarnessMetric(dir, "codex", { costUsd: 0.02, durationMs: 30_000, authMode: "local_session" });
+      let m = loadHarnessMetrics(dir);
+      expect(m["codex"]!.last_auth_mode).toBe("local_session");
+      expect(m["codex"]!.samples).toBe(1);
+      // Auth-only record (errored attempt disclosing its route): route updates,
+      // sample count does NOT — a fast-failing harness earns no latency average.
+      recordHarnessMetric(dir, "codex", { authMode: "api_key" });
+      m = loadHarnessMetrics(dir);
+      expect(m["codex"]!.last_auth_mode).toBe("api_key");
+      expect(m["codex"]!.samples).toBe(1);
+      // Absent/unknown auth keeps the last disclosed route.
+      recordHarnessMetric(dir, "codex", { costUsd: 0.01, durationMs: 10_000 });
+      m = loadHarnessMetrics(dir);
+      expect(m["codex"]!.last_auth_mode).toBe("api_key");
+      expect(m["codex"]!.samples).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("quota cooldown integration: an observed rate-limit removes the harness from selection until reset", async () => {
     const { BudgetLedger } = await import("./ledger.js");
     const { selectHarness } = await import("./router.js");

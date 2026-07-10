@@ -410,16 +410,22 @@ export function pickStallRotationIdx(
 /** Routing metrics: one settled sample per CLEAN attempt (advisory input;
  * failures never fail the run). Errored/cancelled attempts are NOT samples —
  * a fast-failing harness must not earn a flattering latency average (the
- * router divides by latency). Duration = stream time only (gates excluded). */
+ * router divides by latency) — but their DISCLOSED auth route is still route
+ * evidence (the quota they burned is real) and refreshes last_auth_mode
+ * without counting a sample. Duration = stream time only (gates excluded). */
 export function recordCleanAttemptMetrics(
   configDir: string,
   harnessId: string,
-  sample: { costUsd: number; streamMs: number; errored: boolean; aborted: boolean },
+  sample: { costUsd: number; streamMs: number; errored: boolean; aborted: boolean; authMode?: "local_session" | "api_key" | null },
 ): void {
-  if (sample.errored || sample.aborted) return;
+  if (sample.errored || sample.aborted) {
+    if (sample.authMode) recordHarnessMetric(configDir, harnessId, { authMode: sample.authMode });
+    return;
+  }
   recordHarnessMetric(configDir, harnessId, {
     costUsd: sample.costUsd > 0 ? sample.costUsd : null,
     durationMs: sample.streamMs,
+    authMode: sample.authMode ?? null,
   });
 }
 

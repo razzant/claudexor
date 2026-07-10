@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { codexExecArgs, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./index.js";
+import { codexAuthModeAt, codexExecArgs, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./index.js";
 
 /** Fake `codex` binary printing a canned login-status verdict. */
 function fakeCodexBin(dir: string, script: string): string {
@@ -124,6 +124,33 @@ describe("ensureCodexApiAuth", () => {
       'web_search="cached"',
       "review",
     ]);
+  });
+});
+
+describe("codexAuthModeAt (route evidence from codex's own auth.json)", () => {
+  it("maps the file's typed auth_mode to the engine AuthMode values", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-authmode-"));
+    try {
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: {} }));
+      expect(codexAuthModeAt(home)).toBe("local_session");
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-x" }));
+      expect(codexAuthModeAt(home)).toBe("api_key");
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "quantum" }));
+      expect(codexAuthModeAt(home)).toBeNull(); // unknown mode: undisclosed, never guessed
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when auth.json is absent or unreadable", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-authmode-empty-"));
+    try {
+      expect(codexAuthModeAt(home)).toBeNull();
+      writeFileSync(join(home, "auth.json"), "not-json{");
+      expect(codexAuthModeAt(home)).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

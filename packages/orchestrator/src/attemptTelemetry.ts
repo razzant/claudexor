@@ -50,6 +50,8 @@ export interface AttemptTelemetry {
   web: WebEvidenceState;
   /** Model identity the harness stream actually reported (route evidence). */
   observedModel: string | null;
+  /** Auth route the adapter disclosed for this attempt (route evidence; null = undisclosed). */
+  authMode: "local_session" | "api_key" | null;
   /** Adapter-declared transient failures seen during this attempt. */
   transientFailures: {
     kind: NonNullable<HarnessEvent["transient"]>["kind"];
@@ -80,6 +82,7 @@ export function createAttemptTelemetry(
       errorSummary: null,
     },
     observedModel: null,
+    authMode: null,
     transientFailures: [],
     outcome: null,
   };
@@ -98,6 +101,12 @@ export function createAttemptTelemetry(
 export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   // Route evidence: remember the model identity the stream itself disclosed.
   if (ev.observed_model && !t.observedModel) t.observedModel = ev.observed_model;
+  // Route evidence: the adapter's typed auth-route disclosure (first-wins;
+  // the route is decided once before spawn). Unknown values stay undisclosed.
+  if (!t.authMode) {
+    const route = ev.payload?.["auth_route"];
+    if (route === "local_session" || route === "api_key") t.authMode = route;
+  }
   if (ev.transient) {
     t.transientFailures.push({
       kind: ev.transient.kind,
@@ -303,6 +312,7 @@ export function attemptTelemetryRecord(
     attempt_id: attemptId,
     harness_id: harnessId,
     observed_model: t.observedModel,
+    auth_mode: t.authMode,
     web: {
       required: t.web.required,
       policy: t.web.mode,

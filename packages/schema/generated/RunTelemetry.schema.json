@@ -188,6 +188,24 @@
                 "default": null,
                 "description": "Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed)."
               },
+              "auth_mode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "local_session",
+                      "api_key",
+                      "unknown"
+                    ],
+                    "description": "Auth mode a route runs under: a native local session, an API key, or unknown."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
+                "default": null
+              },
               "web": {
                 "type": "object",
                 "properties": {

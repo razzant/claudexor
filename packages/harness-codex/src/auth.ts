@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { labelStreams, runCapture } from "@claudexor/core";
@@ -126,4 +126,24 @@ export function hasApiKey(): boolean {
 export function hasScopedCodexAuth(env?: Record<string, string>): boolean {
   const home = env?.["CODEX_HOME"];
   return Boolean(home && existsSync(join(home, "auth.json")));
+}
+
+/**
+ * Auth route the codex child will ACTUALLY run under, read from the same
+ * `auth.json` codex itself loads (the resolved CODEX_HOME, else the native
+ * ~/.codex). The file's own `auth_mode` field is the typed source of truth:
+ * "chatgpt" = subscription session, "apikey" = API key. Null when the file is
+ * absent/unreadable or carries an unknown mode — callers must treat that as
+ * undisclosed, never guess.
+ */
+export function codexAuthModeAt(home: string | null | undefined): "local_session" | "api_key" | null {
+  const dir = home && home.trim() ? home : defaultNativeCodexHome();
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")) as { auth_mode?: unknown };
+    if (parsed.auth_mode === "chatgpt") return "local_session";
+    if (parsed.auth_mode === "apikey") return "api_key";
+    return null;
+  } catch {
+    return null;
+  }
 }

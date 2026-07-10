@@ -4555,6 +4555,35 @@ describe("interaction channel registration order", () => {
   });
 });
 
+describe("auth-route attempt telemetry (route evidence)", () => {
+  it("captures the adapter's typed auth_route disclosure from the started payload (first-wins) into the record", async () => {
+    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const t = createAttemptTelemetry("auto", false);
+    const ts = new Date().toISOString();
+    observeAttemptTelemetry(t, {
+      type: "started", session_id: "s", ts, payload: { auth_route: "local_session" },
+    } as never);
+    // A later conflicting value must not overwrite the decided route.
+    observeAttemptTelemetry(t, {
+      type: "message", session_id: "s", ts, text: "x", payload: { auth_route: "api_key" },
+    } as never);
+    expect(t.authMode).toBe("local_session");
+    expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBe("local_session");
+  });
+
+  it("unknown or absent auth_route values stay undisclosed (never guessed)", async () => {
+    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const t = createAttemptTelemetry("auto", false);
+    const ts = new Date().toISOString();
+    observeAttemptTelemetry(t, { type: "started", session_id: "s", ts } as never);
+    observeAttemptTelemetry(t, {
+      type: "started", session_id: "s", ts, payload: { auth_route: "oauth_gadget" },
+    } as never);
+    expect(t.authMode).toBeNull();
+    expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBeNull();
+  });
+});
+
 describe("web evidence recovery keying (INV-043)", () => {
   it("keeps the failure DISCLOSED when an unrelated-target web success satisfies the evidence gate", async () => {
     const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");

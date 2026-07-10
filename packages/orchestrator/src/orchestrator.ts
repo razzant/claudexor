@@ -1102,15 +1102,20 @@ export class Orchestrator {
       const remaining: RouterCandidate[] = pool.map((r) => {
         const authModes = statusById.get(r.adapter.id)?.manifest?.auth_modes ?? [];
         const metric = metrics[r.adapter.id];
+        // Auth mode for portfolio weighting: prefer the ROUTE EVIDENCE from the
+        // last settled attempt (adapter-disclosed, persisted in metrics) over
+        // the manifest capability guess — auth_modes lists what a harness CAN
+        // use, not what it actually runs under.
+        const guessedAuthMode = authModes.includes("local_session")
+          ? ("local_session" as const)
+          : authModes.includes("api_key")
+            ? ("api_key" as const)
+            : ("unknown" as const);
         return {
           harnessId: r.adapter.id,
           providerFamily: r.providerFamily,
           available: true,
-          authMode: authModes.includes("local_session")
-            ? "local_session"
-            : authModes.includes("api_key")
-              ? "api_key"
-              : "unknown",
+          authMode: metric?.last_auth_mode ?? guessedAuthMode,
           qualityForIntent: priors[r.providerFamily],
           costPerCall: metric?.avg_cost_usd ?? undefined,
           latencyMs: metric?.avg_duration_ms ?? undefined,
@@ -1846,12 +1851,14 @@ export class Orchestrator {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
     store.writeText(join(attemptDir, "patch.diff"), diff);
-    // Routing metrics (one owner in runSupport; clean attempts only).
+    // Routing metrics (one owner in runSupport; clean attempts only —
+    // auth-route evidence recorded regardless).
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
       errored,
       aborted: signal?.aborted === true,
+      authMode: telemetry.authMode,
     });
     const attemptDiffstat = diffStats(diff);
     store.writeYaml(join(attemptDir, "attempt.yaml"), {
