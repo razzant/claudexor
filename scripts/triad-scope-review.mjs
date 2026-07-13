@@ -47,6 +47,7 @@ import { join, resolve } from "node:path";
 // Relative dist import: the root package has no workspace dep on util, so the
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
+import { exactObservedModelMatch } from "./lib/openrouter-panel.mjs";
 
 // The reviewer panel is PINNED, not hardcoded: models come from env
 // (TRIAD_MODELS / SCOPE_MODEL) or from a local gate config file
@@ -511,7 +512,24 @@ async function callOpenRouter(model, prompt) {
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
     const usage = body.usage ?? {};
-    const observedModel = body.model ?? model;
+    const observedModel = typeof body.model === "string" ? body.model : null;
+    if (!exactObservedModelMatch(model, observedModel)) {
+      return {
+        model,
+        ...route,
+        observedModel,
+        responseId: body.id ?? null,
+        status: "error",
+        raw: bodyText,
+        error: observedModel
+          ? `OpenRouter model mismatch: requested '${model}', observed '${observedModel}'`
+          : `OpenRouter response omitted the observed model for requested '${model}'`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: new Date().toISOString(),
+      };
+    }
     if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
     return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
   } catch (err) {
@@ -564,7 +582,24 @@ async function callOpenAI(model, prompt) {
     }
     const body = JSON.parse(bodyText);
     const raw = openAiText(body);
-    const observedModel = body.model ?? directModel;
+    const observedModel = typeof body.model === "string" ? body.model : null;
+    if (!exactObservedModelMatch(directModel, observedModel)) {
+      return {
+        model,
+        ...route,
+        observedModel,
+        responseId: body.id ?? null,
+        status: "error",
+        raw: bodyText,
+        error: observedModel
+          ? `OpenAI model mismatch: requested '${directModel}', observed '${observedModel}'`
+          : `OpenAI response omitted the observed model for requested '${directModel}'`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: new Date().toISOString(),
+      };
+    }
     if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
     return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
   } catch (err) {
@@ -614,7 +649,24 @@ async function callAnthropic(model, prompt) {
     }
     const body = JSON.parse(bodyText);
     const raw = (body.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
-    const observedModel = body.model ?? directModel;
+    const observedModel = typeof body.model === "string" ? body.model : null;
+    if (!exactObservedModelMatch(directModel, observedModel)) {
+      return {
+        model,
+        ...route,
+        observedModel,
+        responseId: body.id ?? null,
+        status: "error",
+        raw: bodyText,
+        error: observedModel
+          ? `Anthropic model mismatch: requested '${directModel}', observed '${observedModel}'`
+          : `Anthropic response omitted the observed model for requested '${directModel}'`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: new Date().toISOString(),
+      };
+    }
     if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
     return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
   } catch (err) {

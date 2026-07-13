@@ -1,7 +1,7 @@
 /** Type declarations for the shared OpenRouter review-panel client. */
 export interface PanelActor {
   model: string;
-  observedModel?: string;
+  observedModel?: string | null;
   status: "responded" | "error" | "timed_out";
   raw: string;
   error?: string;
@@ -14,6 +14,7 @@ export function callOpenRouterModel(
   prompt: string,
   opts?: { maxTokens?: number; timeoutMs?: number },
 ): Promise<PanelActor>;
+export function exactObservedModelMatch(requestedModel: unknown, observedModel: unknown): boolean;
 export function isFindingShaped(item: unknown): boolean;
 export function isBlockingSeverity(severity: unknown): boolean;
 export function parseFindingsArray(raw: string): { findings: unknown[] | null; error: string | null };

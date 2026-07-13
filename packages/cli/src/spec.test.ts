@@ -363,6 +363,15 @@ Review blocked on evidence.
 });
 
 describe("commit-review panel lib", () => {
+  it("requires exact OpenRouter route proof before a response can count", async () => {
+    const { exactObservedModelMatch } = await import("../../../scripts/lib/openrouter-panel.mjs");
+    expect(exactObservedModelMatch("openai/gpt-5.6-sol", "openai/gpt-5.6-sol")).toBe(true);
+    for (const observed of ["openai/gpt-5.6", "anthropic/gpt-5.6-sol", "", null, undefined, 56]) {
+      expect(exactObservedModelMatch("openai/gpt-5.6-sol", observed)).toBe(false);
+    }
+    expect(exactObservedModelMatch("", "")).toBe(false);
+  });
+
   it("isBlockingSeverity accepts both the gate vocabulary and Claudexor-native blocking severities", async () => {
     const { isBlockingSeverity } = await import("../../../scripts/lib/openrouter-panel.mjs");
     for (const s of ["FAIL", "fail", "BLOCK", "FIX_FIRST", "NEEDS_HUMAN"]) expect(isBlockingSeverity(s)).toBe(true);

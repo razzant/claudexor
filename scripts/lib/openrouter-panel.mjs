@@ -11,6 +11,18 @@ function isAbortError(err) {
   return typeof err === "object" && err !== null && (err.name === "AbortError" || String(err).includes("AbortError"));
 }
 
+/** OpenRouter must prove that it actually executed the exact pinned route.
+ * A missing or substituted response model is infrastructure failure, never a
+ * quorum vote. */
+export function exactObservedModelMatch(requestedModel, observedModel) {
+  return (
+    typeof requestedModel === "string" &&
+    requestedModel.length > 0 &&
+    typeof observedModel === "string" &&
+    observedModel === requestedModel
+  );
+}
+
 export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
@@ -37,8 +49,25 @@ export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, t
     if (!res.ok) return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
+    const observedModel = typeof body.model === "string" ? body.model : null;
+    if (!exactObservedModelMatch(model, observedModel)) {
+      return {
+        model,
+        observedModel,
+        observedModelSource: "openrouter_response_body",
+        status: "error",
+        raw: bodyText,
+        error: observedModel
+          ? `OpenRouter model mismatch: requested '${model}', observed '${observedModel}'`
+          : `OpenRouter response omitted the observed model for requested '${model}'`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: doneAt(),
+      };
+    }
     if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
-    return { model, observedModel: body.model ?? model, observedModelSource: "openrouter_response_body", status: "responded", raw, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
+    return { model, observedModel, observedModelSource: "openrouter_response_body", status: "responded", raw, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
   } catch (err) {
     return { model, status: isAbortError(err) ? "timed_out" : "error", raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
   } finally {
