@@ -49,6 +49,8 @@ const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xh
 export const selectCodexRunAuthRoute = selectStrictAuthRoute;
 
 export {
+  CODEX_FILE_AUTH_ARGS,
+  CODEX_FILE_AUTH_OVERRIDE,
   codexApiKey,
   codexAuthModeAt,
   defaultNativeCodexHome,
@@ -56,6 +58,7 @@ export {
   probeLogin,
 } from "./auth.js";
 import {
+  CODEX_FILE_AUTH_ARGS,
   codexApiKey,
   codexAuthModeAt,
   defaultNativeCodexHome,
@@ -101,26 +104,24 @@ async function smokeIsolatedApiKey(
   const codexHome = join(dir, ".codex");
   try {
     ensureCodexApiAuth({ CODEX_HOME: codexHome });
-    const r = await runCapture(
-      BIN,
-      ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "Reply exactly OK"],
-      {
-        cwd: dir,
-        env: {
-          ...providerScrubEnv(),
-          HOME: dir,
-          XDG_CONFIG_HOME: join(dir, ".config"),
-          CODEX_HOME: codexHome,
-          OPENAI_API_KEY: null,
-          CODEX_API_KEY: null,
-          CLAUDEXOR_CODEX_API_KEY: null,
-        },
-        timeoutMs: 25_000,
-        abortSignal,
-        cancelSignal: "SIGTERM",
-        cancelKillDelayMs: 0,
+    const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS];
+    args.push("--sandbox", "read-only", "--skip-git-repo-check", "Reply exactly OK");
+    const r = await runCapture(BIN, args, {
+      cwd: dir,
+      env: {
+        ...providerScrubEnv(),
+        HOME: dir,
+        XDG_CONFIG_HOME: join(dir, ".config"),
+        CODEX_HOME: codexHome,
+        OPENAI_API_KEY: null,
+        CODEX_API_KEY: null,
+        CLAUDEXOR_CODEX_API_KEY: null,
       },
-    );
+      timeoutMs: 25_000,
+      abortSignal,
+      cancelSignal: "SIGTERM",
+      cancelKillDelayMs: 0,
+    });
     const text = `${r.stdout}\n${r.stderr}`;
     if (r.code === 0 && text.includes('"turn.completed"') && text.includes("OK")) {
       return { ok: true, detail: "isolated CODEX_HOME smoke passed" };
@@ -281,17 +282,16 @@ export function codexExecArgs(
       "resume",
       spec.resume_session_id,
       "--json",
+      ...CODEX_FILE_AUTH_ARGS,
       ...sandboxConfigArgs(spec.access),
       "--skip-git-repo-check",
     ];
-    // Structured output, LIVE-VERIFIED (0.137): --output-schema <FILE>.
     if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
     if (spec.model_hint) args.push("-m", spec.model_hint);
     if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
     // ALL `-c` config overrides go BEFORE `-i` so the variadic `-i/--image
-    // <FILE>...` can't swallow them as image paths; then images, then `--` so the
-    // positional prompt survives, then the prompt.
+    // <FILE>...` can't swallow them as image paths.
     args.push(...codexBrowserArgs(spec.browser, spec.external_context_policy));
     args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
@@ -304,8 +304,8 @@ export function codexExecArgs(
     args.push(spec.prompt);
     return args;
   }
-  const args = ["exec", "--json", ...sandboxArgs(spec.access), "--skip-git-repo-check"];
-  // Structured output, LIVE-VERIFIED (0.137): --output-schema <FILE>.
+  const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS];
+  args.push(...sandboxArgs(spec.access), "--skip-git-repo-check");
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
@@ -434,7 +434,6 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
                 : null,
             credential_transports: [
               { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-              { source: "native_session", kind: "os_keychain", relocatable_by: [] },
               { source: "provider_auth_file", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
             ],
           },

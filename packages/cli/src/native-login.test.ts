@@ -1,11 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { isAbsolute } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nativeLoginDisplayCommand, nativeLoginEnv, nativeLoginSpec } from "./native-login.js";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
-import { defaultNativeCodexHome } from "@claudexor/harness-codex";
+import { CODEX_FILE_AUTH_OVERRIDE, defaultNativeCodexHome } from "@claudexor/harness-codex";
 
 describe("native login specs", () => {
   const resolver = (binary: string): string => `/normalized/bin/${binary}`;
+  let previousNativeHome: string | undefined;
+  let nativeHome: string;
+
+  beforeEach(() => {
+    previousNativeHome = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    nativeHome = mkdtempSync(join(tmpdir(), "claudexor-native-codex-"));
+    process.env.CLAUDEXOR_CODEX_NATIVE_HOME = nativeHome;
+  });
+
+  afterEach(() => {
+    if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
+    rmSync(nativeHome, { recursive: true, force: true });
+  });
 
   it("uses the exact allowlisted vendor commands and absolute resolved binaries", () => {
     const names = ["CLAUDEXOR_CODEX_BIN", "CLAUDEXOR_CLAUDE_BIN", "CLAUDEXOR_CURSOR_BIN"] as const;
@@ -14,8 +30,8 @@ describe("native login specs", () => {
     try {
       expect(nativeLoginSpec("codex", resolver)).toEqual({
         binary: "/normalized/bin/codex",
-        args: ["login"],
-        displayCommand: "codex login",
+        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login"],
+        displayCommand: "codex login (isolated Claudexor profile)",
       });
       expect(nativeLoginSpec("claude", resolver)).toEqual({
         binary: "/normalized/bin/claude",
@@ -43,7 +59,7 @@ describe("native login specs", () => {
     expect(nativeLoginSpec("codex", () => null)).toBeNull();
     expect(nativeLoginSpec("codex", () => "codex")).toBeNull();
     expect(nativeLoginSpec("opencode", resolver)).toBeNull();
-    expect(nativeLoginDisplayCommand("codex")).toBe("codex login");
+    expect(nativeLoginDisplayCommand("codex")).toBe("codex login (isolated Claudexor profile)");
   });
 
   it("resolves the same explicit binary override used by the adapter", () => {

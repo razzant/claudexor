@@ -603,7 +603,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       manifestDigest: manifest.manifestDigest,
     } satisfies SetupLoginPermit);
   }
-
   async function observeAndPermit(jobId: string, state: SetupLoginRunnerState): Promise<void> {
     let job = store.status(jobId);
     const manifest = manifestFor(jobId);
@@ -636,7 +635,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       );
       return;
     }
-    if (processGroups.compareLeader(handle) !== "same") {
+    if (!job.execution?.permitIssuedAt && processGroups.compareLeader(handle) !== "same") {
       finish(
         jobId,
         "failed",
@@ -671,8 +670,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         message: `Durably authorized ${job.harness} native login execution.`,
       });
     }
-    // A crash after the journal ACK and before this atomic sidecar write is
-    // safe: restart reissues the exact same permit from durable evidence.
     persistPermit(job, manifest);
     if (job.phase === "launching") {
       update(jobId, {

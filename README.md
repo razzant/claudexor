@@ -232,9 +232,10 @@ Native login stays vendor-owned: Claudexor launches the official CLI with an
 absolute executable and structured argv, inherits its TTY, and removes provider
 key/token variables from the child environment. The native-login path never
 receives an OAuth callback, copies a credential file, or receives/stores vendor
-session tokens: Codex owns its configured `CODEX_HOME` and file/keyring/auto store,
-Claude owns its config plus the macOS login Keychain, and Cursor owns its
-Keychain-backed native state. Claudexor's separate API-key and Claude
+session tokens. Codex owns a Claudexor-dedicated `CODEX_HOME` and is forced to
+file credential storage there, so login cannot replace the operator's ordinary
+Codex CLI/app Keychain session. Claude owns its config plus the macOS login
+Keychain, and Cursor owns its Keychain-backed native state. Claudexor's separate API-key and Claude
 setup-token routes remain explicit local-secret-store flows.
 A zero vendor exit is only provisional; Claudexor then performs a fresh,
 source-targeted native probe and an isolated same-harness capability smoke. The

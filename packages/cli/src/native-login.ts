@@ -1,6 +1,7 @@
 import { harnessRuntimeEnv, resolveHarnessBinary } from "@claudexor/core";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
-import { defaultNativeCodexHome } from "@claudexor/harness-codex";
+import { CODEX_FILE_AUTH_ARGS, defaultNativeCodexHome } from "@claudexor/harness-codex";
+import { ensureDir } from "@claudexor/util";
 import { isAbsolute } from "node:path";
 
 export interface NativeLoginSpec {
@@ -14,8 +15,8 @@ type LoginDefinition = Omit<NativeLoginSpec, "binary"> & { binaryName: () => str
 const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
   codex: {
     binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
-    args: ["login"],
-    displayCommand: "codex login",
+    args: [...CODEX_FILE_AUTH_ARGS, "login"],
+    displayCommand: "codex login (isolated Claudexor profile)",
   },
   claude: {
     binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
@@ -116,7 +117,9 @@ export function nativeLoginEnv(
   }
   // Login and post-exit verification must address the SAME vendor-owned store.
   // These are paths only; Claudexor never reads or copies credential contents.
-  if (harness === "codex") env.CODEX_HOME = defaultNativeCodexHome();
-  else if (harness === "claude") env.CLAUDE_CONFIG_DIR = defaultNativeClaudeConfigDir();
+  if (harness === "codex") {
+    env.CODEX_HOME = defaultNativeCodexHome();
+    ensureDir(env.CODEX_HOME);
+  } else if (harness === "claude") env.CLAUDE_CONFIG_DIR = defaultNativeClaudeConfigDir();
   return env;
 }

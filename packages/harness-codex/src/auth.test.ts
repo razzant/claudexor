@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import type { CliRunLoopOptions } from "@claudexor/core";
 import {
+  CODEX_FILE_AUTH_OVERRIDE,
   codexAuthModeAt,
   codexExecArgs,
   createCodexAdapter,
@@ -15,6 +16,23 @@ import {
 } from "./index.js";
 
 describe("Codex strict runtime auth routing", () => {
+  it("defaults native subscription state under Claudexor, never ordinary ~/.codex", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-config-"));
+    const previousConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    const previousNative = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    try {
+      expect(defaultNativeCodexHome()).toBe(join(root, "native", "codex"));
+    } finally {
+      if (previousConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfig;
+      if (previousNative === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNative;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not fall back for explicit routes and keeps auto subscription-first", () => {
     const attempts: string[] = [];
     const sub = () => {
@@ -134,6 +152,7 @@ describe("ensureCodexApiAuth", () => {
       resume_session_id: "th-123",
     });
     expect(args.slice(0, 4)).toEqual(["exec", "resume", "th-123", "--json"]);
+    expect(args).toContain(CODEX_FILE_AUTH_OVERRIDE);
     expect(args[args.length - 1]).toBe("follow up");
   });
 
@@ -151,6 +170,8 @@ describe("ensureCodexApiAuth", () => {
     ).toEqual([
       "exec",
       "--json",
+      "-c",
+      CODEX_FILE_AUTH_OVERRIDE,
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",
@@ -197,12 +218,22 @@ describe("codexAuthModeAt (route evidence from codex's own auth.json)", () => {
 
 describe("probeLogin (native-session probe vs probe failure)", () => {
   let dir: string;
+  let previousConfigDir: string | undefined;
+  let previousNativeHome: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "codex-probe-"));
+    previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    previousNativeHome = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    process.env.CLAUDEXOR_CONFIG_DIR = join(dir, "claudexor");
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
   });
 
   afterEach(() => {
+    if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -289,13 +320,15 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     expect(helpResult.probeError).toContain("unrecognized login status");
   });
 
-  it("uses the vendor-owned native CODEX_HOME and forwards hard-cancel options", async () => {
+  it("uses the independent native CODEX_HOME, file storage, and hard-cancel options", async () => {
     const controller = new AbortController();
     let captured: Record<string, unknown> | undefined;
+    let capturedArgs: string[] = [];
     const result = await probeLogin("/fake/codex", {
       env: { HOME: "/scoped/home", CODEX_HOME: "/must/not/win", OPENAI_API_KEY: "secret" },
       abortSignal: controller.signal,
-      runCapture: async (_cmd, _args, options) => {
+      runCapture: async (_cmd, args, options) => {
+        capturedArgs = args;
         captured = options as unknown as Record<string, unknown>;
         return { code: 0, signal: null, stdout: "Logged in using ChatGPT\n", stderr: "" };
       },
@@ -304,6 +337,7 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     expect((captured?.env as Record<string, unknown>).HOME).toBe("/scoped/home");
     expect((captured?.env as Record<string, unknown>).CODEX_HOME).toBe(defaultNativeCodexHome());
     expect((captured?.env as Record<string, unknown>).OPENAI_API_KEY).toBeNull();
+    expect(capturedArgs).toEqual(["-c", CODEX_FILE_AUTH_OVERRIDE, "login", "status"]);
     expect(captured?.abortSignal).toBe(controller.signal);
     expect(captured?.cancelSignal).toBe("SIGTERM");
     expect(captured?.cancelKillDelayMs).toBe(0);
@@ -346,17 +380,22 @@ describe("Codex transport-aware native doctor", () => {
         verification: "passed",
       }),
     ]);
-    await expect(adapter.discover()).resolves.toMatchObject({
+    const manifest = await adapter.discover();
+    expect(manifest).toMatchObject({
       capability_profile: {
         auth: {
           supported_sources: ["native_session", "provider_auth_file"],
           credential_transports: expect.arrayContaining([
             { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-            { source: "native_session", kind: "os_keychain", relocatable_by: [] },
           ]),
         },
         isolation: { supported_containment: expect.arrayContaining(["host_user_context"]) },
       },
+    });
+    expect(manifest.capability_profile.auth.credential_transports).not.toContainEqual({
+      source: "native_session",
+      kind: "os_keychain",
+      relocatable_by: [],
     });
   });
 

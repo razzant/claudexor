@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { labelStreams, providerScrubEnv, runCapture } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { redactSecrets } from "@claudexor/util";
+import { ensureDir, redactSecrets, userConfigDir } from "@claudexor/util";
 
 const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+export const CODEX_FILE_AUTH_OVERRIDE = 'cli_auth_credentials_store="file"';
+export const CODEX_FILE_AUTH_ARGS = ["-c", CODEX_FILE_AUTH_OVERRIDE] as const;
 
 /**
  * Resolve an OpenAI API key for codex from the environment. Claudexor-managed
@@ -49,11 +50,11 @@ export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = t
   });
 }
 
-/** The user's real codex home (native ChatGPT/subscription session lives here). */
+/** Claudexor's independent Codex profile; never the operator's ordinary ~/.codex. */
 export function defaultNativeCodexHome(): string {
   const override = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
   if (override && override.trim()) return override;
-  return join(homedir(), ".codex");
+  return join(userConfigDir(), "native", "codex");
 }
 
 export type CodexLoginMethod = "chatgpt" | "api_key" | "access_token" | "logged_out" | "unknown";
@@ -84,18 +85,23 @@ export async function probeLogin(
   options: CodexLoginProbeOptions = {},
 ): Promise<CodexLoginProbe> {
   try {
+    ensureDir(defaultNativeCodexHome());
     const env: Record<string, string | null | undefined> = {
       ...(options.env ?? {}),
       ...providerScrubEnv(),
       CODEX_HOME: defaultNativeCodexHome(),
     };
-    const r = await (options.runCapture ?? runCapture)(bin, ["login", "status"], {
-      env,
-      timeoutMs: 10_000,
-      abortSignal: options.abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-    });
+    const r = await (options.runCapture ?? runCapture)(
+      bin,
+      [...CODEX_FILE_AUTH_ARGS, "login", "status"],
+      {
+        env,
+        timeoutMs: 10_000,
+        abortSignal: options.abortSignal,
+        cancelSignal: "SIGTERM",
+        cancelKillDelayMs: 0,
+      },
+    );
     const text = `${r.stdout}\n${r.stderr}`;
     const statusLines = text
       .replaceAll("\r", "")

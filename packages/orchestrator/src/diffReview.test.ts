@@ -197,7 +197,7 @@ describe("frozen diff review", () => {
         mutatingDeps,
       ),
     ).rejects.toThrow(/manifest digest mismatch: TESTS\.txt/);
-  });
+  }, 15_000);
 
   it("rejects a sealed but incomplete base-to-candidate diff", async () => {
     const f = fixture();

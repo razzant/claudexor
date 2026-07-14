@@ -245,9 +245,10 @@ setup-token source is also unavailable), and emits a typed `readiness_preferred`
 disclosure so clients can show the billing/readiness tradeoff.
 
 Native sessions remain in vendor-owned stores rather than being copied into
-Claudexor state or envelopes. Codex points native runs at the vendor-owned
-`CODEX_HOME` and its file/keyring/auto storage; Claude points at the vendor
-config and uses the macOS login Keychain; Cursor uses its Keychain-backed native
+Claudexor state or envelopes. Codex points native runs at a Claudexor-dedicated
+`CODEX_HOME` and forces the vendor's file credential store, isolating it from
+the operator's ordinary Codex CLI/app Keychain session. Claude points at the
+vendor config and uses the macOS login Keychain; Cursor uses its Keychain-backed native
 state. Claudexor's API-key store and Claude setup-token source are separate
 routes with their own typed readiness and route-specific injection.
 
@@ -372,7 +373,7 @@ always preferred.
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |
 | `CLAUDEXOR_CODEX_MODEL` | codex adapter | Default model override for the codex route. |
-| `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit native session/config directories when auto-detection must be bypassed. |
+| `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit Claudexor-owned Codex profile or Claude native config directory overrides. |
 | `CLAUDEXOR_RAWAPI_BASE_URL` / `CLAUDEXOR_RAWAPI_KEY` / `CLAUDEXOR_RAWAPI_MODEL` | raw-api adapter | OpenAI-compatible endpoint, key, and model for the raw-API route. |
 | `CLAUDEXOR_OPENROUTER_BASE_URL` / `CLAUDEXOR_OPENROUTER_MODEL` | openrouter route | Base URL and default model for the built-in OpenRouter raw-API instance (key: `OPENROUTER_API_KEY`). |
 | `CLAUDEXOR_CONTROL_PORT` | daemon | Pin the control-API port (default: OS-assigned loopback port). |

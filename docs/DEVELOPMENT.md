@@ -224,8 +224,9 @@ Do not fork contracts in UI code, CLI parsing, adapter output, or docs.
   mapping
   is stable across adapters: absent/logged-out = `unavailable + not_run`, probe
   failure = `unknown + not_run`, and present-but-unusable = `available + failed`.
-- Native session transport remains vendor-owned. Codex uses the native
-  `CODEX_HOME` file/keyring/auto store, Claude uses the vendor config plus macOS
+- Native session transport remains vendor-owned. Codex uses a
+  Claudexor-dedicated `CODEX_HOME` with the vendor's file credential store forced,
+  never the operator's ordinary Codex home or OS Keychain. Claude uses the vendor config plus macOS
   Keychain, and Cursor uses its Keychain-backed state. Do not read or copy those
   credential files/tokens into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed

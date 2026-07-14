@@ -197,8 +197,10 @@ process below. Never paper over the conflict.
 - **INV-061** Explicit `subscription` never falls back to an API key. `auto` is
   native-first for Codex, Claude, and Cursor; a paid route is eligible only under
   the typed paid-fallback policy. Requested/effective credential route and
-  source plus the selection reason are preserved as evidence. verify: adapter
-  auth tests; setup capability receipts; routing paid-fallback tests.
+  source plus the selection reason are preserved as evidence. Codex subscription
+  auth uses a Claudexor-owned `CODEX_HOME` with file-only credential storage,
+  never the operator's ordinary `~/.codex` or OS Keychain. verify: adapter auth
+  isolation tests; setup capability receipts; routing paid-fallback tests.
 - **INV-062** Raw secrets must not appear in run params, `jobs.json`, task
   contracts, events, summaries, patches, PR text, logs, or docs. The PROMPT
   is included: a secret-like value inside the prompt text is hard-blocked at

@@ -345,7 +345,7 @@ describe("setup jobs", () => {
           harness: "codex",
           action: "login",
           state: "waiting_for_input",
-          command: "codex login",
+          command: "codex login (isolated Claudexor profile)",
           guideUrl: null,
           logPath: null,
           message: "legacy",
@@ -612,6 +612,38 @@ describe("setup jobs", () => {
         },
       },
     });
+    await manager.shutdown();
+  });
+
+  it("keeps a permitted job live while the worker publishes its zero-exit result", async () => {
+    const leader = knownLeader(62);
+    const group = processGroupFixture({ leader });
+    const capability = capabilityVerifier();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "result-publication-race"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      monitorPollMs: 1,
+      processGroups: group.service,
+      authCapabilityVerifier: capability.verifier,
+      probeAuthSource: async () => nativeReadiness(true),
+    });
+    await manager.start();
+    const job = manager.create(LOGIN_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeRunnerStateV2(manager, job.jobId, leader, "running", observedAt);
+    group.setObserved({ status: "missing", pid: leader.pid, platform: "darwin" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(manager.status({ jobId: job.jobId })).toMatchObject({
+      state: "waiting_for_input",
+      phase: "awaiting_user",
+    });
+    writeRunnerResultV2(manager, job.jobId);
+    expect(await waitForTerminal(manager, job.jobId)).toBe("succeeded");
+    expect(capability.runs).toHaveLength(1);
     await manager.shutdown();
   });
 

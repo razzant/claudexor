@@ -102,9 +102,9 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/workspace`: git worktree envelopes and scoped harness homes/config
   dirs for write envelopes and read-only routes via `readOnlyHomeEnv`; these keep
   relocatable, route-local state outside both the worktree and the operator's
-  home. A selected native Codex/Claude route deliberately re-points only its
-  vendor config/session store at the vendor-owned host-user location described
-  in §5. The package also owns diff capture and path-safe disposal.
+  home. A selected native Codex route uses its Claudexor-owned file-only profile;
+  native Claude re-points only its vendor config/session store at the host-user
+  location described in §5. The package also owns diff capture and path-safe disposal.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
 - `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
@@ -303,10 +303,12 @@ unusable source material is `available + failed`.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
 containment strategy that keeps it honest. Native-session state remains owned by
-the vendor: Codex reads the configured vendor `CODEX_HOME` and its
-file/keyring/auto credential store; Claude reads the vendor config directory and
+the vendor: Codex reads a Claudexor-dedicated `CODEX_HOME` with
+`cli_auth_credentials_store="file"`, never the operator's ordinary Codex profile
+or OS Keychain; Claude reads the vendor config directory and
 uses the macOS login Keychain; Cursor declares an OS-keychain native route. The
-native route points at that host-user context and never copies a vendor
+Claude/Cursor native route points at that host-user context; Codex keeps its
+separate vendor credential file outside every envelope. No route copies a vendor
 credential file into an envelope. Separate fallback routes may materialize only
 their selected source: Codex API-key auth seeds a temporary scoped `auth.json`,
 Claude injects either the stored setup token or `ANTHROPIC_API_KEY`, and Cursor
@@ -649,7 +651,8 @@ duplicate/regressive frame, malformed payload, or EOF without terminal evidence
 requires a resnapshot.
 
 Native login specs are a shared `{binary,args,displayCommand}` contract for
-Codex (`codex login`), Claude (`claude auth login --claudeai`), and Cursor
+Codex (`codex -c cli_auth_credentials_store=file login` in its dedicated
+`CODEX_HOME`), Claude (`claude auth login --claudeai`), and Cursor
 (`cursor-agent login`). The daemon writes a private runner manifest; Terminal
 starts the bundled absolute Node + runner; the runner executes the absolute
 vendor binary without a shell, inherits the TTY, scrubs provider credentials,
