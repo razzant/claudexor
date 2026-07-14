@@ -49,7 +49,7 @@ struct OnboardingView: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(Theme.accent)
                 Spacer()
-                Button { Task { await model.refreshHarnesses() } } label: {
+                Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
                     Label("Recheck", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
@@ -186,7 +186,7 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .tint(Theme.accent)
                 .help(available ? "Open \(family.label) auth details and fallback key management." : "Open native login and API-key fallback setup for \(family.label).")
-                Button { Task { await model.refreshHarnesses() } } label: {
+                Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
                     Label("Recheck", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)

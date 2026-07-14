@@ -45,6 +45,7 @@ function report(status: ConformanceReport["status"], extra: Partial<ConformanceR
     enabled_intents: [],
     disabled_intents: [],
     reasons: [],
+    auth_sources: [],
     ...extra,
   };
 }

@@ -515,7 +515,6 @@ function collectSourceHaystack() {
     const NOT_ENV_VARS = new Set([
       "CLAUDEXOR_BIBLE", // the constitution filename (CLAUDEXOR_BIBLE.md)
       "CLAUDEXOR_VERSION", // the generated version CONSTANT in @claudexor/util
-      "CLAUDEXOR_ARTIFACT_DIRS", // exported const of artifact dir names, not env
     ]);
     const envVars = new Set();
     const allLiterals = new Set();

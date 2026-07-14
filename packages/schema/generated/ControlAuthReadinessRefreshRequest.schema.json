@@ -1,0 +1,38 @@
+{
+  "$ref": "#/definitions/ControlAuthReadinessRefreshRequest",
+  "definitions": {
+    "ControlAuthReadinessRefreshRequest": {
+      "type": "object",
+      "properties": {
+        "authRequest": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ],
+          "description": "Requested credential behavior: exact subscription, exact managed API key, or policy-governed auto selection."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "native_session",
+            "oauth_token_env",
+            "api_key_env",
+            "api_key_flag",
+            "provider_auth_file",
+            "none"
+          ],
+          "description": "Concrete credential source used or probed by a harness."
+        }
+      },
+      "required": [
+        "authRequest",
+        "source"
+      ],
+      "additionalProperties": false,
+      "description": "Request to refresh one exact harness authentication source without probing unrelated routes."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

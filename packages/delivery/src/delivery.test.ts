@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -87,6 +95,54 @@ describe("delivery", () => {
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
   });
 
+  it("never captures a path staged concurrently after preflight", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const wrapperDir = mkdtempSync(join(tmpdir(), "claudexor-git-wrapper-"));
+    const marker = join(wrapperDir, "inject-on-live-write-tree");
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const testHome = join(wrapperDir, "home");
+    const wrapperBin = join(testHome, ".claudexor", "node", "bin");
+    mkdirSync(wrapperBin, { recursive: true });
+    const wrapper = join(wrapperBin, "git");
+    writeFileSync(marker, "armed\n");
+    writeFileSync(
+      wrapper,
+      [
+        "#!/bin/sh",
+        `REAL_GIT=${JSON.stringify(realGit)}`,
+        `MARKER=${JSON.stringify(marker)}`,
+        'if [ "$1" = "-C" ] && [ "$3" = "write-tree" ] && [ -z "$GIT_INDEX_FILE" ] && [ -f "$MARKER" ]; then',
+        '  rm -f "$MARKER"',
+        '  printf "concurrent user state\\n" > "$2/concurrent.txt"',
+        '  "$REAL_GIT" -C "$2" add -- concurrent.txt',
+        "fi",
+        'exec "$REAL_GIT" "$@"',
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    chmodSync(wrapper, 0o700);
+    const oldPath = process.env.PATH;
+    const oldHome = process.env.HOME;
+    process.env.HOME = testHome;
+    process.env.PATH = `${wrapperBin}:${oldPath ?? ""}`;
+    try {
+      const res = await deliver(repo, patch, { mode: "commit", message: "must stay scoped" });
+      expect(res.applied).toBe(false);
+      expect(res.treeMutated).toBe(false);
+      expect(res.detail).toContain("outside the exact candidate tree");
+      expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
+      expect(readFileSync(join(repo, "concurrent.txt"), "utf8")).toBe("concurrent user state\n");
+      expect((await git(repo, ["diff", "--cached", "--name-only"])).stdout.trim()).toBe(
+        "concurrent.txt",
+      );
+      expect((await git(repo, ["rev-parse", "HEAD"])).stdout.trim()).not.toBe(res.commit);
+    } finally {
+      process.env.PATH = oldPath;
+      process.env.HOME = oldHome;
+    }
+  });
+
   it("pr delivery reports failure when the terminal push step fails", async () => {
     const { repo, patch } = await makePatchRepo();
     const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
@@ -129,7 +185,9 @@ describe("delivery", () => {
 });
 
 const gitq = (repo: string, args: string[]): void => {
-  execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { stdio: "pipe" });
+  execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+    stdio: "pipe",
+  });
 };
 
 async function initRepo(): Promise<string> {
@@ -184,17 +242,22 @@ describe("protected apply path", () => {
     const res = await deliver(repo, badPatch, { mode: "branch", branch: "claudexor/scratch-x" });
     expect(res.applied).toBe(false);
     expect(res.treeMutated).toBe(false);
-    const head = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const head = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
     expect(head).not.toBe("claudexor/scratch-x");
-    const branches = execFileSync("git", ["branch", "--list", "claudexor/scratch-x"], { cwd: repo, encoding: "utf8" });
+    const branches = execFileSync("git", ["branch", "--list", "claudexor/scratch-x"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
     expect(branches.trim()).toBe("");
   });
 
-  it("commit delivery stages successfully when the project gitignores .claudexor and a stray evidence dir exists", async () => {
+  it("treats repo-local .claudexor-review-evidence as user state and refuses to absorb it", async () => {
     const repo = await initRepo();
-    // The seeded-gitignore case: Claudexor-initialized repos ignore .claudexor;
-    // the old :(exclude) pathspec HARD-ERRORED here and delivery refused on a
-    // stray evidence dir. Both must be non-issues now.
+    // Runtime/review packets are external in v2. A similarly named repo path is
+    // not silently deleted or excluded: it is ordinary user state.
     writeFileSync(join(repo, ".gitignore"), ".claudexor/\n");
     gitq(repo, ["add", "-A"]);
     gitq(repo, ["commit", "-qm", "ignore"]);
@@ -212,11 +275,10 @@ describe("protected apply path", () => {
       "",
     ].join("\n");
     const res = await deliver(repo, patch, { mode: "commit", message: "test: protected staging" });
-    expect(res.detail ?? "").toBe("");
-    expect(res.applied).toBe(true);
-    const show = execFileSync("git", ["show", "--stat", "--name-only", "HEAD"], { cwd: repo, encoding: "utf8" });
-    expect(show).toContain("added.txt");
-    expect(show).not.toContain(".claudexor-review-evidence");
+    expect(res.applied).toBe(false);
+    expect(res.detail).toContain("working tree is dirty");
+    expect(existsSync(join(repo, ".claudexor-review-evidence", "GOAL.md"))).toBe(true);
+    expect(existsSync(join(repo, "added.txt"))).toBe(false);
   });
 });
 
@@ -229,10 +291,17 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
   const wp = { kind: "patch", meta: { patch_sha256: "" } };
   const patch = "diff --git a/x b/x\n";
 
-  function gateWith(finalVerify: Record<string, unknown> | null, decisionOverrides: Record<string, unknown> = {}) {
+  function gateWith(
+    finalVerify: Record<string, unknown> | null,
+    decisionOverrides: Record<string, unknown> = {},
+  ) {
     return validateApplyGate({
       state: "succeeded",
-      decision: DecisionRecord.parse({ ...baseDecision, final_verify: finalVerify, ...decisionOverrides }),
+      decision: DecisionRecord.parse({
+        ...baseDecision,
+        final_verify: finalVerify,
+        ...decisionOverrides,
+      }),
       workProduct: { ...wp, meta: { patch_sha256: sha256(patch) } } as never,
       patch,
       originalRepoRoot: process.cwd(),

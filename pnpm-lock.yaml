@@ -142,6 +142,9 @@ importers:
       '@claudexor/interview':
         specifier: workspace:*
         version: link:../interview
+      '@claudexor/journal':
+        specifier: workspace:*
+        version: link:../journal
       '@claudexor/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
@@ -214,12 +217,18 @@ importers:
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudexor/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/daemon:
     dependencies:
       '@claudexor/event-log':
         specifier: workspace:*
         version: link:../event-log
+      '@claudexor/journal':
+        specifier: workspace:*
+        version: link:../journal
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
@@ -359,6 +368,12 @@ importers:
         specifier: workspace:*
         version: link:../util
 
+  packages/journal:
+    dependencies:
+      '@claudexor/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/mcp-server:
     dependencies:
       '@claudexor/schema':
@@ -434,6 +449,9 @@ importers:
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
+      '@claudexor/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/review:
     dependencies:

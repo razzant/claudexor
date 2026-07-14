@@ -12,6 +12,22 @@ const RAW_API_TIMEOUT_MS = 180_000;
 /** Model enumeration is interactive (a picker waits on it): keep it snappy. */
 const RAW_API_MODELS_TIMEOUT_MS = 15_000;
 const RAW_API_TRANSIENT_STATUS = new Set([408, 502, 503, 504]);
+const RAW_API_ENABLED_INTENTS = [
+  "plan",
+  "spec",
+  "review",
+  "synthesize",
+  "explain",
+  "orchestrate",
+] as const;
+const RAW_API_DISABLED_INTENTS = [
+  "implement",
+  "create_from_scratch",
+  "repair",
+  "verify",
+  "audit",
+] as const;
+const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INTENTS] as const;
 
 /**
  * Build the chat-completions user `content`. With image attachments, switch
@@ -52,9 +68,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const keyEnv = config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
   const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
 
-  function apiKey(): string | undefined {
-    const env = process.env[keyEnv];
-    if (env) return env;
+  function apiKey(env: Record<string, string | null | undefined> = process.env): string | undefined {
+    const value = env[keyEnv];
+    if (value) return value;
     // Secret fallback is INSTANCE-SCOPED so a key for one provider is never sent
     // to another (e.g. an OpenAI "raw" key must not reach openrouter.ai). The
     // default OpenAI-compatible instance owns the managed "raw" (and "openai")
@@ -113,13 +129,51 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       });
     },
 
-    async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
-      if (!apiKey()) {
+    async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
+      const requestedSource = spec.authSource;
+      if (requestedSource !== undefined && requestedSource !== "api_key_env") {
+        return ConformanceReportSchema.parse({
+          harness_id: id,
+          status: "unavailable",
+          checks: [
+            {
+              id: "auth_source",
+              status: "fail",
+              detail: `raw-api does not support ${requestedSource}`,
+            },
+          ],
+          enabled_intents: [],
+          disabled_intents: ALL_RAW_API_INTENTS,
+          reasons: [`raw-api does not support auth source ${requestedSource}`],
+          auth_sources: [
+            {
+              source: requestedSource,
+              availability: "unavailable",
+              verification: "not_run",
+              detail: `raw-api does not support ${requestedSource}`,
+            },
+          ],
+        });
+      }
+
+      const keyAvailable = apiKey({ ...process.env, ...spec.env }) !== undefined;
+      const readiness = {
+        source: "api_key_env" as const,
+        availability: keyAvailable ? ("available" as const) : ("unavailable" as const),
+        verification: "not_run" as const,
+        detail: keyAvailable
+          ? "credential source is present; verification requires an isolated capability smoke"
+          : `${keyEnv} is not configured`,
+      };
+      if (!keyAvailable) {
         return ConformanceReportSchema.parse({
           harness_id: id,
           status: "unavailable",
           checks: [{ id: "api_key", status: "fail", detail: `${keyEnv} not set` }],
+          enabled_intents: [],
+          disabled_intents: ALL_RAW_API_INTENTS,
           reasons: [`set ${keyEnv} to enable the raw-api harness`],
+          auth_sources: [readiness],
         });
       }
       // A key STRING is source availability, not proven readiness: no isolated
@@ -133,9 +187,10 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
         ],
         // No native edit tools: planner/reviewer roles only.
-        enabled_intents: ["plan", "spec", "review", "synthesize", "explain", "orchestrate"],
-        disabled_intents: ["implement", "create_from_scratch", "repair", "verify"],
+        enabled_intents: RAW_API_ENABLED_INTENTS,
+        disabled_intents: RAW_API_DISABLED_INTENTS,
         reasons: ["key present but route unproven (no isolated smoke)"],
+        auth_sources: [readiness],
       });
     },
 
@@ -160,7 +215,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     },
 
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      const key = apiKey();
+      const key = apiKey({ ...process.env, ...spec.env });
       if (!key) {
         yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: `raw-api: ${keyEnv} not set` };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
@@ -168,7 +223,14 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       }
       const model = spec.model_hint ?? defaultModel;
       // The model is only REQUESTED here; the observed model comes from the response.
-      yield { type: "started", session_id: spec.session_id, ts: nowIso(), payload: { requested_model: model } };
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        credential_route: "managed_api_key",
+        credential_source: "api_key_env",
+        payload: { requested_model: model },
+      };
       try {
         const specSignal = abortSignalFromSpec(spec);
         const timeoutSignal = AbortSignal.timeout(RAW_API_TIMEOUT_MS);

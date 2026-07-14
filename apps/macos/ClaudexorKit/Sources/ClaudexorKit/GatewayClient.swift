@@ -17,8 +17,14 @@ public final class GatewayClient: Sendable {
         self.session = session
     }
 
-    private func request(_ path: String, method: String, timeout: TimeInterval? = nil) -> URLRequest {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func request(_ path: String, method: String, timeout: TimeInterval? = nil,
+                         queryItems: [URLQueryItem] = []) -> URLRequest {
+        var url = baseURL.appendingPathComponent(path)
+        if !queryItems.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = queryItems
+            if let encoded = components.url { url = encoded }
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let timeout { req.timeoutInterval = timeout }
@@ -27,6 +33,25 @@ public final class GatewayClient: Sendable {
 
     private static let encoder = JSONEncoder()
     private static let decoder = JSONDecoder()
+
+    /// AsyncStream buffers are not lossless. Every boundary must observe a
+    /// dropped element and fail the protocol instead of silently skipping it.
+    private static func yieldChecked<Element: Sendable>(
+        _ element: Element,
+        to continuation: AsyncThrowingStream<Element, Error>.Continuation,
+        context: String
+    ) throws -> Bool {
+        switch continuation.yield(element) {
+        case .enqueued:
+            return true
+        case .dropped:
+            throw GatewayError.transport("\(context) buffer overflow; resnapshot is required")
+        case .terminated:
+            return false
+        @unknown default:
+            throw GatewayError.transport("\(context) returned an unknown buffering result")
+        }
+    }
 
     public func health() async throws -> Bool {
         let req = request("healthz", method: "GET")
@@ -154,14 +179,45 @@ public final class GatewayClient: Sendable {
         return data
     }
 
-    public func listHarnesses() async throws -> [HarnessStatus] {
-        let req = request("harnesses", method: "GET")
+    public func listHarnesses(fresh: Bool = false) async throws -> [HarnessStatus] {
+        let query = fresh ? [URLQueryItem(name: "fresh", value: "true")] : []
+        let req = request("harnesses", method: "GET", queryItems: query)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return (try Self.decoder.decode(HarnessListResponse.self, from: data)).harnesses
+    }
+
+    /// Refresh exactly one harness credential source. This route deliberately
+    /// cannot fan out to unrelated adapters or overwrite aggregate catalog truth.
+    public func refreshAuthReadiness(
+        harnessId: String,
+        request body: AuthReadinessRefreshRequest
+    ) async throws -> AuthReadinessRefreshResponse {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        guard !harnessId.isEmpty,
+              let escaped = harnessId.addingPercentEncoding(withAllowedCharacters: allowed) else {
+            throw GatewayError.decoding("invalid auth-readiness harness id")
+        }
+        var req = request("v2/harnesses/\(escaped)/auth-readiness", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try Self.encoder.encode(body)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        let result = try Self.decoder.decode(AuthReadinessRefreshResponse.self, from: data)
+        guard result.harnessId == harnessId,
+              result.authRequest == body.authRequest,
+              result.requestedSource == body.source,
+              result.readiness.source == body.source else {
+            throw GatewayError.decoding("auth-readiness response does not match its exact request")
+        }
+        return result
     }
 
     /// Enumerable models for one harness (the ADP4 consumer of the adapter
@@ -191,7 +247,8 @@ public final class GatewayClient: Sendable {
     }
 
     public func setupJob(jobId: String) async throws -> SetupJob {
-        let req = request("setup/jobs/\(jobId)", method: "GET")
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let req = request("setup/jobs/\(escaped)", method: "GET")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -200,10 +257,48 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(SetupJob.self, from: data)
     }
 
-    public func confirmSetupJob(jobId: String) async throws -> SetupJob {
-        var req = request("setup/jobs/\(jobId)/confirm", method: "POST")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try Self.encoder.encode(SetupJobConfirmRequest())
+    public func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let req = request("setup/jobs/\(escaped)/snapshot", method: "GET")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SetupJobSnapshot.self, from: data)
+    }
+
+    public func listSetupJobs(filter: SetupJobListFilter = SetupJobListFilter()) async throws -> [SetupJob] {
+        var query: [URLQueryItem] = []
+        if let harness = filter.harness { query.append(URLQueryItem(name: "harness", value: harness)) }
+        if let action = filter.action { query.append(URLQueryItem(name: "action", value: action)) }
+        if let active = filter.active { query.append(URLQueryItem(name: "active", value: active ? "true" : "false")) }
+        if let limit = filter.limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        let req = request("setup/jobs", method: "GET", queryItems: query)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SetupJobListResponse.self, from: data).jobs
+    }
+
+    public func cancelSetupJob(jobId: String) async throws -> SetupJob {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let req = request("setup/jobs/\(escaped)/cancel", method: "POST")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SetupJob.self, from: data)
+    }
+
+    /// Extend the server-owned native-login deadline by its fixed 15-minute
+    /// increment. The amount deliberately is not a client-controlled field.
+    public func extendSetupJob(jobId: String) async throws -> SetupJob {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let req = request("setup/jobs/\(escaped)/extend", method: "POST")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -478,44 +573,122 @@ public final class GatewayClient: Sendable {
         sseStream(path: "events", lastEventId: nil)
     }
 
+    /// Full-snapshot setup lifecycle stream. Unknown names, malformed payloads,
+    /// and buffer loss are protocol failures that force a scoped resnapshot.
+    public func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let frames = sseFrames(path: "setup/jobs/\(escaped)/events", lastEventId: lastEventId)
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
+            let task = Task {
+                do {
+                    for try await frame in frames {
+                        switch frame.event {
+                        case "end":
+                            continuation.finish()
+                            return
+                        case "error":
+                            throw GatewayError.transport(frame.data)
+                        case "setup":
+                            guard let data = frame.data.data(using: .utf8) else {
+                                throw GatewayError.decoding("setup SSE payload is not UTF-8")
+                            }
+                            let event = try Self.decoder.decode(SetupJobEvent.self, from: data)
+                            guard frame.id == event.cursor else {
+                                throw GatewayError.decoding("setup SSE id does not match its durable event cursor")
+                            }
+                            guard try Self.yieldChecked(event, to: continuation, context: "setup SSE") else { return }
+                        default:
+                            throw GatewayError.decoding("unknown setup SSE event '\(frame.event)'")
+                        }
+                    }
+                    throw GatewayError.transport("setup SSE ended without a terminal end event")
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Byte-level SSE consumption (SSEParser). `bytes.lines` is NEVER used here:
     /// it swallows the empty delimiter lines and silently drops every event.
     private func sseStream(path: String, lastEventId: Int?) -> AsyncThrowingStream<BusEnvelope, Error> {
-        AsyncThrowingStream { continuation in
+        let frames = sseFrames(path: path, lastEventId: lastEventId.map(String.init))
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
+            let task = Task {
+                do {
+                    for try await frame in frames {
+                        if frame.event == "end" {
+                            continuation.finish()
+                            return
+                        }
+                        if frame.event == "error" { throw GatewayError.transport(frame.data) }
+                        guard !frame.event.isEmpty,
+                              let id = frame.id, let sequence = Int(id), sequence >= 0,
+                              let payload = Self.parseJSON(frame.data) else {
+                            throw GatewayError.decoding("run SSE frame has an invalid name, id, or JSON payload")
+                        }
+                        let envelope = BusEnvelope(seq: sequence, kind: frame.event, event: payload)
+                        guard try Self.yieldChecked(envelope, to: continuation, context: "run SSE") else { return }
+                    }
+                    throw GatewayError.transport("run SSE ended without a terminal end event")
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Raw byte-level frame stream shared by run and setup consumers. Keeping
+    /// this below the DTO wrappers prevents the `AsyncBytes.lines` empty-line
+    /// regression from returning through a second SSE implementation.
+    private func sseFrames(path: String, lastEventId: String?) -> AsyncThrowingStream<SSEFrame, Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             let task = Task {
                 do {
                     var req = self.request(path, method: "GET")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    if let last = lastEventId { req.setValue(String(last), forHTTPHeaderField: "Last-Event-ID") }
-
+                    if let last = lastEventId { req.setValue(last, forHTTPHeaderField: "Last-Event-ID") }
                     let (bytes, resp) = try await self.session.bytes(for: req)
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
                         throw GatewayError.http(status: status, body: "events stream failed")
                     }
-
+                    guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else {
+                        throw GatewayError.transport("events response is not text/event-stream")
+                    }
                     var parser = SSEParser()
                     var chunk: [UInt8] = []
                     chunk.reserveCapacity(1024)
-                    func flush() -> Bool {
+                    func flush() throws -> (stop: Bool, terminalEnd: Bool) {
+                        defer { chunk.removeAll(keepingCapacity: true) }
                         for frame in parser.feed(chunk) {
-                            if frame.event == "end" { return true }
-                            if let payload = Self.parseJSON(frame.data) {
-                                continuation.yield(BusEnvelope(seq: frame.id ?? 0, kind: frame.event, event: payload))
+                            guard try Self.yieldChecked(frame, to: continuation, context: "raw SSE") else {
+                                return (true, false)
                             }
+                            if frame.event == "end" { return (true, true) }
                         }
-                        chunk.removeAll(keepingCapacity: true)
-                        return false
+                        return (false, false)
                     }
                     for try await byte in bytes {
                         chunk.append(byte)
-                        if byte == 0x0A, flush() {
-                            continuation.finish()
-                            return
+                        if byte == 0x0A {
+                            let result = try flush()
+                            if result.stop {
+                                if result.terminalEnd { continuation.finish() }
+                                return
+                            }
                         }
                     }
-                    _ = flush()
-                    continuation.finish()
+                    let result = try flush()
+                    if result.terminalEnd {
+                        continuation.finish()
+                    } else if result.stop {
+                        return
+                    } else {
+                        throw GatewayError.transport("events stream ended without a terminal end event")
+                    }
                 } catch {
                     continuation.finish(throwing: error)
                 }

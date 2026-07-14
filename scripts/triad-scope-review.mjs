@@ -18,27 +18,24 @@
  *     --round <n>             # round number for the output dir
  *     --out <dir>             # default .adversarial-review/triad
  *     --goal-file <path>      # user intent / goal text file
- *     --skip-scope            # triad only
  *
- * Panel selection (required): TRIAD_MODELS / SCOPE_MODEL env vars, or a
- * local pinned panel in .adversarial-review/PANEL.lock (gitignored):
- *   triad: vendor/model-a,vendor/model-b,vendor/model-c
- *   scope: vendor/model-d
- * The gate always runs on a PINNED panel: the first configured panel is
- * written to PANEL.lock automatically (disclosed in summary.json), and from
- * then on env overrides against the pin require an explicit
- * TRIAD_ALLOW_OVERRIDE acknowledgement and are recorded.
+ * The release panel and transport are immutable in source:
+ *   triad: openai/gpt-5.6-sol, anthropic/claude-fable-5,
+ *          google/gemini-3.5-flash
+ *   scope: anthropic/claude-fable-5
+ *   route: OpenRouter only
+ * A matching local PANEL.lock is written after the first responsive run.
+ * Environment overrides, substitutions, direct-provider routes, and
+ * --skip-scope fail before evidence leaves the machine.
  *
- * Optional infrastructure fallbacks, off by default:
- *   TRIAD_MAX_OUTPUT_TOKENS=12000
+ * Bounded transport settings:
+ *   TRIAD_MAX_OUTPUT_TOKENS=100000
  *   TRIAD_MAX_PACK_BYTES=3000000
- *   TRIAD_DIRECT_OPENAI=1 OPENAI_API_KEY=...
- *   TRIAD_DIRECT_ANTHROPIC=1 ANTHROPIC_API_KEY=...
  *
  * Outputs (per round): raw per-model responses (NEVER truncated), parsed
- * findings JSON, and a markdown summary table. Exit code 1 when quorum is not
- * met or any reviewer infra call fails; 0 otherwise (findings themselves are
- * data for the operator, not an exit signal).
+ * findings JSON, and a markdown summary table. Exit code 1 when quorum/scope
+ * fails, a response is malformed/truncated/incomplete, or any reviewer emits
+ * a FAIL verdict. Exit 0 means the exact panel returned complete PASS coverage.
  */
 
 import { execFileSync } from "node:child_process";
@@ -48,18 +45,16 @@ import { join, resolve } from "node:path";
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 import { exactObservedModelMatch } from "./lib/openrouter-panel.mjs";
+import {
+  REQUIRED_SCOPE_MODEL,
+  REQUIRED_TRIAD_MODELS,
+  SCOPE_ITEMS,
+  TRIAD_ITEMS,
+  completionTermination,
+  releaseReviewDecision,
+  validateChecklistResponse,
+} from "./lib/release-review-contract.mjs";
 
-// The reviewer panel is PINNED, not hardcoded: models come from env
-// (TRIAD_MODELS / SCOPE_MODEL) or from a local gate config file
-// (.adversarial-review/PANEL.lock, gitignored) with two lines:
-//   triad: vendor/model-a,vendor/model-b,vendor/model-c
-//   scope: vendor/model-d
-// When the lock file exists it is the release panel of record: an env value
-// that differs from it is a hard error unless the operator explicitly
-// acknowledges the substitution — a silent swap would let a weaker panel
-// impersonate the release gate. Every acknowledged override is recorded in
-// the review summary.
-const OVERRIDE_ACK = "I_UNDERSTAND_THIS_VIOLATES_THE_LOCKED_PANEL";
 const PANEL_LOCK_PATH = resolve(".adversarial-review", "PANEL.lock");
 
 function arg(name, fallback = null) {
@@ -68,16 +63,7 @@ function arg(name, fallback = null) {
   const next = process.argv[idx + 1];
   return next && !next.startsWith("--") ? next : true;
 }
-// Order-insensitive: reordering the same locked models is not a panel
-// violation (the panel is a SET; sequence carries no meaning here). Blank
-// segments from sloppy values ("a,,b", trailing commas) are ignored.
-const normalizePanel = (s) =>
-  s
-    .split(",")
-    .map((m) => m.trim())
-    .filter(Boolean)
-    .sort()
-    .join(",");
+
 function readPanelLock() {
   if (!existsSync(PANEL_LOCK_PATH)) return {};
   const out = {};
@@ -87,91 +73,41 @@ function readPanelLock() {
   }
   return out;
 }
+
+const TRIAD_MODELS = [...REQUIRED_TRIAD_MODELS];
+const SCOPE_MODEL = REQUIRED_SCOPE_MODEL;
+const expectedTriad = TRIAD_MODELS.join(",");
 const panelLock = readPanelLock();
-const ackActive = process.env.TRIAD_ALLOW_OVERRIDE === OVERRIDE_ACK;
-for (const [envName, lockKey] of [["TRIAD_MODELS", "triad"], ["SCOPE_MODEL", "scope"]]) {
-  const v = process.env[envName];
-  const locked = panelLock[lockKey];
-  if (v && locked && normalizePanel(v) !== normalizePanel(locked) && !ackActive) {
-    console.error(
-      `${envName} override ('${v}') conflicts with the pinned reviewer panel ('${locked}') in ${PANEL_LOCK_PATH}.\n` +
-        `The pinned panel is the release gate of record. If this override is a deliberate, disclosed decision,\n` +
-        `set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK} — the override will be recorded in the review summary.`,
-    );
-    process.exit(1);
-  }
-  if (v && locked && normalizePanel(v) !== normalizePanel(locked)) {
-    // Reachable only with the ack set (the guard above exits otherwise).
-    console.error(`WARNING: ${envName} override active — acknowledged panel substitution; recording it in summary.json.`);
+
+for (const [name, actual, expected] of [
+  ["TRIAD_MODELS", process.env.TRIAD_MODELS, expectedTriad],
+  ["SCOPE_MODEL", process.env.SCOPE_MODEL, SCOPE_MODEL],
+]) {
+  if (actual !== undefined && actual.trim() !== expected) {
+    console.error(`${name} cannot override the exact release panel: expected '${expected}', got '${actual}'.`);
+    process.exit(2);
   }
 }
-const triadPanelValue = process.env.TRIAD_MODELS || panelLock.triad || "";
-const scopePanelValue = (process.env.SCOPE_MODEL || panelLock.scope || "").trim();
-// --skip-scope runs the triad only; demand a scope model only when the scope
-// pass will actually run.
-const scopeRequired = arg("skip-scope") === null;
-// A partial lock must not fail open: a lock that pins only one half while the
-// unpinned half is supplied from env would let that half be substituted with
-// no ack. Refuse and make the operator complete (or consciously override) it.
-const lockPartial = (panelLock.triad && !panelLock.scope) || (!panelLock.triad && panelLock.scope);
-if (lockPartial && scopeRequired && !ackActive) {
-  console.error(
-    `${PANEL_LOCK_PATH} is PARTIAL (pins ${panelLock.triad ? "only triad" : "only scope"}). A half-pinned panel lets the\n` +
-      `other half be substituted silently. Complete the lock file with both lines:\n` +
-      `  triad: vendor/model-a,vendor/model-b,vendor/model-c\n` +
-      `  scope: vendor/model-d\n` +
-      `or set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK} to proceed anyway (recorded).`,
-  );
+if (process.env.TRIAD_DIRECT_OPENAI === "1" || process.env.TRIAD_DIRECT_ANTHROPIC === "1") {
+  console.error("Direct-provider reviewer routes are forbidden: the release panel must use the exact OpenRouter route.");
   process.exit(2);
 }
-if (!triadPanelValue || (scopeRequired && !scopePanelValue)) {
-  console.error(
-    "No reviewer panel configured. Provide TRIAD_MODELS (comma-separated OpenRouter model ids from at least two vendors)\n" +
-      (scopeRequired ? "and SCOPE_MODEL " : "") +
-      "via env, or pin them in .adversarial-review/PANEL.lock:\n" +
-      "  triad: vendor/model-a,vendor/model-b,vendor/model-c\n" +
-      "  scope: vendor/model-d",
-  );
+if (arg("skip-scope") !== null) {
+  console.error("--skip-scope is diagnostic-only in older releases and cannot satisfy the v2 release gate.");
   process.exit(2);
 }
-const TRIAD_MODELS = triadPanelValue
-  .split(",")
-  .map((m) => m.trim())
-  .filter(Boolean);
-const SCOPE_MODEL = scopePanelValue;
-// Cross-vendor rigor: the triad exists to put DISTINCT model families in the
-// room. Fewer than 3 reviewers or fewer than 2 vendors needs the explicit ack,
-// and running below the bar is recorded in summary.json either way.
-const panelMeetsCrossVendorBar =
-  new Set(TRIAD_MODELS).size >= 3 && new Set(TRIAD_MODELS.map((m) => m.split("/")[0])).size >= 2;
-if (!panelMeetsCrossVendorBar && !ackActive) {
-  console.error(
-    `Triad panel '${TRIAD_MODELS.join(",")}' is below the cross-vendor bar (need >=3 DISTINCT models from >=2 vendors).\n` +
-      `If this reduced panel is a deliberate, disclosed decision, set TRIAD_ALLOW_OVERRIDE=${OVERRIDE_ACK}.`,
-  );
+if (
+  (panelLock.triad && panelLock.triad.trim() !== expectedTriad) ||
+  (panelLock.scope && panelLock.scope.trim() !== SCOPE_MODEL) ||
+  Boolean(panelLock.triad) !== Boolean(panelLock.scope)
+) {
+  console.error(`${PANEL_LOCK_PATH} does not contain the exact complete v2 reviewer panel.`);
   process.exit(2);
 }
-// First-run pinning: the release gate runs on a PINNED panel (local gate
-// config), never on ephemeral env alone. When no lock file exists yet, the
-// first COMPLETE panel (triad AND scope) becomes the pin — disclosed on stderr
-// and in summary.json — so every later substitution needs the explicit ack.
-// The write is deferred until the panel PROVES itself this run (triad quorum
-// met and the scope reviewer responded): a botched first run (bad key, wrong
-// model ids) must not freeze a dead panel into the gate config. A --skip-scope
-// bootstrap deliberately does NOT pin: a lock missing its scope entry would
-// let a later scope substitution slip past the override guard.
-const panelPinPending = !panelLock.triad && !panelLock.scope && Boolean(scopePanelValue);
+
+const panelPinPending = !panelLock.triad && !panelLock.scope;
 let panelPinnedNow = false;
-const SCOPE_ITEMS = [
-  "intent_alignment",
-  "forgotten_touchpoints",
-  "cross_surface_consistency",
-  "regression_surface",
-  "prompt_doc_sync",
-  "architecture_fit",
-  "cross_module_bugs",
-  "implicit_contracts",
-];
+
 function positiveIntEnv(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -352,6 +288,11 @@ ${CRITICAL_CALIBRATION}
 
 ${JSON_CONTRACT}
 
+The three checklist item identifiers you MUST cover are exactly:
+${TRIAD_ITEMS.map((item, index) => `    ${index + 1}. ${item}`).join("\n")}
+Return at least one row for every identifier. An empty array, an unknown
+identifier, or a missing identifier makes your reviewer slot unusable.
+
 ## Anti pattern-lock guard
 
 ${ANTI_PATTERN_LOCK}
@@ -465,12 +406,6 @@ ${diffText(base)}
 // ---------------------------------------------------------------------------
 
 async function callModel(model, prompt) {
-  if (process.env.TRIAD_DIRECT_OPENAI === "1" && model.startsWith("openai/")) {
-    return callOpenAI(model, prompt);
-  }
-  if (process.env.TRIAD_DIRECT_ANTHROPIC === "1" && model.startsWith("anthropic/")) {
-    return callAnthropic(model, prompt);
-  }
   return callOpenRouter(model, prompt);
 }
 
@@ -511,6 +446,7 @@ async function callOpenRouter(model, prompt) {
     }
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
+    const finishReason = body.choices?.[0]?.finish_reason ?? null;
     const usage = body.usage ?? {};
     const observedModel = typeof body.model === "string" ? body.model : null;
     if (!exactObservedModelMatch(model, observedModel)) {
@@ -530,70 +466,17 @@ async function callOpenRouter(model, prompt) {
         completedAt: new Date().toISOString(),
       };
     }
-    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-  } catch (err) {
-    const timedOut = isAbortError(err);
-    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function openAiText(body) {
-  if (typeof body.output_text === "string") return body.output_text;
-  const chunks = [];
-  for (const item of body.output ?? []) {
-    for (const part of item.content ?? []) {
-      if (typeof part.text === "string") chunks.push(part.text);
-      else if (typeof part.output_text === "string") chunks.push(part.output_text);
-    }
-  }
-  return chunks.join("");
-}
-
-async function callOpenAI(model, prompt) {
-  const started = Date.now();
-  const startedAt = new Date(started).toISOString();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const route = { transport: "openai-responses", source: "direct-openai", routeProof: "openai:/v1/responses" };
-  try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return { model, ...route, status: "error", raw: "", error: "OPENAI_API_KEY is required for TRIAD_DIRECT_OPENAI", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
-    const directModel = model.replace(/^openai\//, "");
-    const res = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: directModel,
-        input: prompt,
-        max_output_tokens: MAX_OUTPUT_TOKENS,
-      }),
-    });
-    const firstEventAt = new Date().toISOString();
-    const bodyText = await res.text();
-    if (!res.ok) {
-      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    }
-    const body = JSON.parse(bodyText);
-    const raw = openAiText(body);
-    const observedModel = typeof body.model === "string" ? body.model : null;
-    if (!exactObservedModelMatch(directModel, observedModel)) {
+    const termination = completionTermination(finishReason);
+    if (!termination.complete) {
       return {
         model,
         ...route,
         observedModel,
         responseId: body.id ?? null,
+        finishReason,
         status: "error",
         raw: bodyText,
-        error: observedModel
-          ? `OpenAI model mismatch: requested '${directModel}', observed '${observedModel}'`
-          : `OpenAI response omitted the observed model for requested '${directModel}'`,
+        error: termination.error,
         ms: Date.now() - started,
         startedAt,
         firstEventAt,
@@ -601,74 +484,7 @@ async function callOpenAI(model, prompt) {
       };
     }
     if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-  } catch (err) {
-    const timedOut = isAbortError(err);
-    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function anthropicModelId(model) {
-  // OpenRouter ids use dotted minor versions (claude-opus-4.8); Anthropic's
-  // direct API uses dashes (claude-opus-4-8). Generic dot->dash on version
-  // tails, no per-model hardcode.
-  const direct = model.replace(/^anthropic\//, "");
-  return direct.replace(/(\d)\.(\d)/g, "$1-$2");
-}
-
-async function callAnthropic(model, prompt) {
-  const started = Date.now();
-  const startedAt = new Date(started).toISOString();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const route = { transport: "anthropic-messages", source: "direct-anthropic", routeProof: "anthropic:/v1/messages" };
-  try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return { model, ...route, status: "error", raw: "", error: "ANTHROPIC_API_KEY is required for TRIAD_DIRECT_ANTHROPIC", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
-    const directModel = anthropicModelId(model);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: directModel,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-    const firstEventAt = new Date().toISOString();
-    const bodyText = await res.text();
-    if (!res.ok) {
-      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    }
-    const body = JSON.parse(bodyText);
-    const raw = (body.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
-    const observedModel = typeof body.model === "string" ? body.model : null;
-    if (!exactObservedModelMatch(directModel, observedModel)) {
-      return {
-        model,
-        ...route,
-        observedModel,
-        responseId: body.id ?? null,
-        status: "error",
-        raw: bodyText,
-        error: observedModel
-          ? `Anthropic model mismatch: requested '${directModel}', observed '${observedModel}'`
-          : `Anthropic response omitted the observed model for requested '${directModel}'`,
-        ms: Date.now() - started,
-        startedAt,
-        firstEventAt,
-        completedAt: new Date().toISOString(),
-      };
-    }
-    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    return { model, ...route, observedModel, responseId: body.id ?? null, status: "responded", raw, usage: body.usage ?? {}, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    return { model, ...route, observedModel, responseId: body.id ?? null, finishReason, status: "responded", raw, usage, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
   } catch (err) {
     const timedOut = isAbortError(err);
     return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
@@ -712,24 +528,6 @@ function extractJsonArray(raw) {
   return null;
 }
 
-function normalizeFindings(items, model) {
-  const out = [];
-  for (const entry of items ?? []) {
-    if (!entry || typeof entry !== "object") continue;
-    const item = String(entry.item ?? "");
-    const verdict = String(entry.verdict ?? "").toUpperCase();
-    if (!item || (verdict !== "PASS" && verdict !== "FAIL")) continue;
-    out.push({
-      item,
-      verdict,
-      severity: String(entry.severity ?? "advisory").toLowerCase(),
-      reason: String(entry.reason ?? "").trim(),
-      model,
-    });
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -764,27 +562,47 @@ async function main() {
     writeFileSync(join(outDir, `triad-${slug}.raw.txt`), redactSecrets(result.raw ?? ""));
     let status = result.status;
     let parsed = [];
+    let parseError = result.error ?? null;
+    let missingItems = [...TRIAD_ITEMS];
     if (status === "responded") {
       const arr = extractJsonArray(result.raw);
       if (arr === null) {
         status = "parse_failure";
-        writeFileSync(join(outDir, `triad-${slug}.parse-error.json`), JSON.stringify({ error: "no_parseable_json_array", raw_file: `triad-${slug}.raw.txt` }, null, 2) + "\n");
+        parseError = "no_parseable_json_array";
       } else {
-        parsed = normalizeFindings(arr, result.model);
+        const validation = validateChecklistResponse(arr, result.model, TRIAD_ITEMS);
+        status = validation.status;
+        parsed = validation.findings;
+        parseError = validation.error;
+        missingItems = validation.missingItems;
         writeFileSync(join(outDir, `triad-${slug}.parsed-json-blocks.json`), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
       }
     }
+    if (status !== "responded") {
+      writeFileSync(
+        join(outDir, `triad-${slug}.parse-error.json`),
+        JSON.stringify({
+          error: parseError ?? status,
+          missing_items: missingItems,
+          raw_file: `triad-${slug}.raw.txt`,
+        }, null, 2) + "\n",
+      );
+    }
     const record = {
       model_id: result.model,
+      requested_model: result.model,
       observed_model: result.observedModel ?? null,
+      observed_model_source: result.observedModel ? "openrouter_response_body" : null,
       requested_effort: null,
       transport: result.transport ?? null,
       source: result.source ?? null,
       route_proof: result.routeProof ?? null,
       response_id: result.responseId ?? null,
+      finish_reason: result.finishReason ?? null,
       status,
       slot: idx + 1,
       parsed_count: parsed.length,
+      missing_items: missingItems,
       usage: result.usage ?? null,
       started_at: result.startedAt ?? null,
       // Non-streaming transport: there is no separate first-event timestamp;
@@ -792,8 +610,9 @@ async function main() {
       first_event_at: result.firstEventAt ?? null,
       completed_at: result.completedAt ?? null,
       duration_ms: result.ms,
-      error: result.error ?? null,
+      error: parseError,
       raw_file: `triad-${slug}.raw.txt`,
+      findings: parsed,
     };
     actorRecords.push(record);
     writeFileSync(join(outDir, `triad-${slug}.metadata.json`), JSON.stringify(record, null, 2) + "\n");
@@ -824,7 +643,7 @@ async function main() {
   const degraded = actorRecords.filter((r) => r.status !== "responded").map((r) => `${r.model_id}=${r.status}`);
 
   let scope = null;
-  if (!arg("skip-scope")) {
+  {
     const scopePrompt = buildScopePrompt(base);
     if (containsSecretLikeToken(scopePrompt)) {
       console.error("ABORT: scope evidence contains a secret-like token; scrub the diff/atlas first.");
@@ -845,57 +664,78 @@ async function main() {
         role: "scope",
       });
     }
-    progress({
-      ts: scopeResult.completedAt ?? new Date().toISOString(),
-      type: scopeResult.status === "responded" ? "reviewer.completed" : scopeResult.timedOut || scopeResult.status === "timed_out" ? "reviewer.timed_out" : "reviewer.failed",
-      model: SCOPE_MODEL,
-      observed_model: scopeResult.observedModel ?? null,
-      source: scopeResult.source ?? null,
-      transport: scopeResult.transport ?? null,
-      role: "scope",
-      duration_ms: scopeResult.ms,
-    });
     writeFileSync(join(outDir, "scope.raw.txt"), redactSecrets(scopeResult.raw ?? ""));
     let scopeStatus = scopeResult.status;
     let scopeFindings = [];
+    let scopeError = scopeResult.error ?? null;
+    let scopeMissing = [...SCOPE_ITEMS];
     const scopeMeta = {
       model_id: SCOPE_MODEL,
+      requested_model: SCOPE_MODEL,
       observed_model: scopeResult.observedModel ?? null,
+      observed_model_source: scopeResult.observedModel ? "openrouter_response_body" : null,
       requested_effort: null,
       transport: scopeResult.transport ?? null,
       source: scopeResult.source ?? null,
       route_proof: scopeResult.routeProof ?? null,
       response_id: scopeResult.responseId ?? null,
+      finish_reason: scopeResult.finishReason ?? null,
       status: scopeStatus,
       usage: scopeResult.usage ?? null,
       started_at: scopeResult.startedAt ?? null,
       first_event_at: scopeResult.firstEventAt ?? null,
       completed_at: scopeResult.completedAt ?? null,
       duration_ms: scopeResult.ms,
-      error: scopeResult.error ?? null,
+      error: scopeError,
       raw_file: "scope.raw.txt",
     };
     if (scopeStatus === "responded") {
       const arr = extractJsonArray(scopeResult.raw);
       if (arr === null) {
         scopeStatus = "parse_failure";
-        writeFileSync(join(outDir, "scope.parse-error.json"), JSON.stringify({ error: "no_parseable_json_array", raw_file: "scope.raw.txt" }, null, 2) + "\n");
+        scopeError = "no_parseable_json_array";
       }
       else {
-        scopeFindings = normalizeFindings(arr, SCOPE_MODEL);
+        const validation = validateChecklistResponse(arr, SCOPE_MODEL, SCOPE_ITEMS);
+        scopeStatus = validation.status;
+        scopeFindings = validation.findings;
+        scopeError = validation.error;
+        scopeMissing = validation.missingItems;
         writeFileSync(join(outDir, "scope.parsed-json-blocks.json"), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
-        const covered = new Set(scopeFindings.map((f) => f.item));
-        const missing = SCOPE_ITEMS.filter((i) => !covered.has(i));
-        if (missing.length > 0) scopeStatus = "partial";
         scopeMeta.status = scopeStatus;
-        scope = { status: scopeStatus, findings: scopeFindings, missing_items: missing, usage: scopeResult.usage ?? null, metadata: scopeMeta };
+        scopeMeta.error = scopeError;
+        scope = { status: scopeStatus, findings: scopeFindings, missing_items: scopeMissing, error: scopeError, usage: scopeResult.usage ?? null, metadata: scopeMeta };
       }
     }
     if (!scope) {
       scopeMeta.status = scopeStatus;
-      scope = { status: scopeStatus, findings: scopeFindings, missing_items: SCOPE_ITEMS, error: scopeResult.error ?? null, metadata: scopeMeta };
+      scopeMeta.error = scopeError;
+      scope = { status: scopeStatus, findings: scopeFindings, missing_items: scopeMissing, error: scopeError, metadata: scopeMeta };
     }
+    if (scopeStatus !== "responded") {
+      writeFileSync(
+        join(outDir, "scope.parse-error.json"),
+        JSON.stringify({ error: scopeError ?? scopeStatus, missing_items: scopeMissing, raw_file: "scope.raw.txt" }, null, 2) + "\n",
+      );
+    }
+    scopeMeta.findings = scopeFindings;
+    scopeMeta.missing_items = scopeMissing;
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
+    progress({
+      ts: scopeResult.completedAt ?? new Date().toISOString(),
+      type: scopeStatus === "responded"
+        ? "reviewer.completed"
+        : scopeResult.timedOut || scopeStatus === "timed_out"
+          ? "reviewer.timed_out"
+          : "reviewer.failed",
+      model: SCOPE_MODEL,
+      observed_model: scopeResult.observedModel ?? null,
+      source: scopeResult.source ?? null,
+      transport: scopeResult.transport ?? null,
+      role: "scope",
+      status: scopeStatus,
+      duration_ms: scopeResult.ms,
+    });
   }
 
   // "responded" only: a partial/parse-failed scope pass exits this run FAILED
@@ -905,30 +745,21 @@ async function main() {
     mkdirSync(resolve(".adversarial-review"), { recursive: true });
     writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
     panelPinnedNow = true;
-    console.error(`panel pinned: wrote ${PANEL_LOCK_PATH} — future runs enforce this panel (override needs the explicit ack).`);
+    console.error(`panel pinned: wrote the exact immutable v2 reviewer panel to ${PANEL_LOCK_PATH}.`);
   }
 
+  const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
   const summary = {
     round: Number(round),
     base,
     generated_at: new Date().toISOString(),
-    // Explicit audit markers. `panel_override_active` is the truth signal: the
-    // panel actually ran with models that differ from the pinned lock file (an
-    // unacknowledged override is impossible — the guard at the top hard-errors
-    // first). The ack alone with a matching panel is a no-op and must not read
-    // as a violation. Without a lock file there is nothing to override, but a
-    // panel below the cross-vendor bar is still recorded explicitly so an
-    // acknowledged reduced panel can never pass as a full one.
     panel: { triad: TRIAD_MODELS, scope: SCOPE_MODEL },
-    panel_source: process.env.TRIAD_MODELS || process.env.SCOPE_MODEL ? "env" : "lock_file",
+    panel_source: "built_in_exact",
     panel_pinned_now: panelPinnedNow,
-    panel_meets_cross_vendor_bar: panelMeetsCrossVendorBar,
-    panel_override_active:
-      (Boolean(panelLock.triad) && normalizePanel(TRIAD_MODELS.join(",")) !== normalizePanel(panelLock.triad)) ||
-      (Boolean(panelLock.scope) && normalizePanel(SCOPE_MODEL) !== normalizePanel(panelLock.scope)),
-    panel_override_acknowledged: ackActive,
+    panel_override_active: false,
     triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
     scope,
+    decision,
   };
   writeFileSync(join(outDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
 
@@ -951,14 +782,8 @@ async function main() {
   writeFileSync(join(outDir, "summary.md"), redactSecrets(table));
   console.log(table);
 
-  if (!quorumMet) {
-    console.error(`REVIEW_BLOCKED: only ${responsive.length} of ${TRIAD_MODELS.length} review models responded successfully (minimum 2 required).`);
-    process.exit(1);
-  }
-  // The scope reviewer is part of the release gate: an erroring, unparseable,
-  // or item-incomplete scope review blocks too (not ceremonial).
-  if (scope && (scope.status !== "responded" || (scope.missing_items?.length ?? 0) > 0)) {
-    console.error(`REVIEW_BLOCKED: scope review ${scope.status}${scope.missing_items?.length ? ` (missing items: ${scope.missing_items.join(", ")})` : ""}.`);
+  if (!decision.passed) {
+    console.error(`REVIEW_BLOCKED: ${decision.reasons.join("; ")}.`);
     process.exit(1);
   }
 }

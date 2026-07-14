@@ -61,7 +61,10 @@ export function implementedEndpoints(srcPath = "packages/control-api/src/daemon-
 // POST for body transport, not for mutation. Keep in lockstep with the
 // handler docs — a new dry-check route must be added here or agents will see
 // a false mutating flag.
-const READ_ONLY_NON_GET = new Set(["POST /runs/:id/apply/check"]);
+const READ_ONLY_NON_GET = new Set([
+  "POST /runs/:id/apply/check",
+  "POST /v2/harnesses/:id/auth-readiness",
+]);
 
 // Responses produced through HELPERS the slice-scan cannot see into (e.g.
 // `this.json(res, 200, detailFor(...))` where detailFor zod-parses the DTO).
@@ -89,7 +92,7 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
     // Schema DTOs are PascalCase exports; a lowercase arg (err, body, ...) is
     // not a schema reference. Hand-built JSON stays null — honest absence.
     const serviceMatch =
-      /this\.service\(res, "\w+",[\s\S]*?, ([A-Z]\w+)\);/.exec(body) ??
+      /this\.service\(\s*res,\s*"\w+",[\s\S]*?,\s*([A-Z]\w+)\s*,?\s*\);/.exec(body) ??
       /this\.json\(res, \w+, (?:await )?([A-Z]\w+)\.parse\(/.exec(body);
     const key = `${site.method} ${site.path}`;
     return {

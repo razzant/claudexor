@@ -1,6 +1,13 @@
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
-import { ensureDir, listDir, readTextSafe, writeJson, writeText } from "@claudexor/util";
+import {
+  ensureDir,
+  listDir,
+  projectRuntimeDir,
+  readTextSafe,
+  writeJson,
+  writeText,
+} from "@claudexor/util";
 
 export interface RunPaths {
   runId: string;
@@ -15,15 +22,15 @@ export interface RunPaths {
 }
 
 /**
- * Files-first artifact store. Canonical artifacts live under
- * `<repo>/.claudexor/`. Nothing here is a database; an optional SQLite index can
- * be rebuilt from these files later.
+ * Files-first artifact store. Runtime artifacts live in the per-user external
+ * project namespace; `<repo>/.claudexor/` is always user-owned versioned config.
+ * Nothing here is a database; projections can be rebuilt from durable state.
  */
 export class ArtifactStore {
   readonly claudexorDir: string;
 
   constructor(public readonly repoRoot: string, options: { claudexorDir?: string } = {}) {
-    this.claudexorDir = options.claudexorDir ?? join(repoRoot, ".claudexor");
+    this.claudexorDir = options.claudexorDir ?? projectRuntimeDir(repoRoot);
   }
 
   runsDir(): string {

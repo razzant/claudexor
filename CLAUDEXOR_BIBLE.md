@@ -187,14 +187,18 @@ process below. Never paper over the conflict.
 
 ## 6. Secrets Never Become Artifacts
 
-- **INV-060** Native harness auth is preferred only when doctor proves that
-  route for the active context; API keys are fallback secret refs stored in
-  Keychain or a `0600` store. verify: secrets tests; doctor route checks.
-- **INV-061** Cursor keeps normal `auto` runs native-first and may prefer
-  the smoke-proven API-key route only for scoped/envelope `auto` runs, while
-  still honoring explicit `subscription`; that paid-route choice is
-  typed-disclosed when a native route also exists. verify: cursor adapter
-  auth tests.
+- **INV-060** Native harness auth is ready only after the exact source-targeted
+  doctor probe and, for setup success, an isolated same-harness capability smoke
+  over the normal adapter stream. Process exit, another provider, an API key,
+  tools, external context, or workspace mutation cannot satisfy the proof. The
+  receipt proves credential transport, not plan tier, entitlement, quota, or
+  zero cost. verify: auth-capability verifier; setup restart/route/challenge
+  tests; doctor route checks.
+- **INV-061** Explicit `subscription` never falls back to an API key. `auto` is
+  native-first for Codex, Claude, and Cursor; a paid route is eligible only under
+  the typed paid-fallback policy. Requested/effective credential route and
+  source plus the selection reason are preserved as evidence. verify: adapter
+  auth tests; setup capability receipts; routing paid-fallback tests.
 - **INV-062** Raw secrets must not appear in run params, `jobs.json`, task
   contracts, events, summaries, patches, PR text, logs, or docs. The PROMPT
   is included: a secret-like value inside the prompt text is hard-blocked at

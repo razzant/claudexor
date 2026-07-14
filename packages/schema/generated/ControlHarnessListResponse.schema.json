@@ -80,12 +80,13 @@
                                   "type": "string",
                                   "enum": [
                                     "native_session",
+                                    "oauth_token_env",
                                     "api_key_env",
                                     "api_key_flag",
                                     "provider_auth_file",
                                     "none"
                                   ],
-                                  "description": "Where a harness's credentials can come from: a native login session, an API key via env var or CLI flag, a provider auth file, or none."
+                                  "description": "Concrete credential source used or probed by a harness."
                                 },
                                 "default": [],
                                 "description": "Auth sources this harness supports."
@@ -435,6 +436,46 @@
                 },
                 "default": [],
                 "description": "Human-readable reasons for degraded/unavailable status."
+              },
+              "authSources": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "$ref": "#/definitions/ControlHarnessListResponse/properties/harnesses/items/properties/manifest/anyOf/0/properties/capability_profile/properties/auth/properties/supported_sources/items"
+                    },
+                    "availability": {
+                      "type": "string",
+                      "enum": [
+                        "available",
+                        "unavailable",
+                        "unknown"
+                      ]
+                    },
+                    "verification": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "not_run"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "description": "Redacted human-readable source evidence."
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "availability",
+                    "verification"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Doctor-backed readiness for one exact credential source."
+                },
+                "default": [],
+                "description": "Doctor-backed readiness by authentication source; an empty array means readiness was not reported."
               },
               "configuredModel": {
                 "type": [

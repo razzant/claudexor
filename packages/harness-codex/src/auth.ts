@@ -1,7 +1,7 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { labelStreams, runCapture } from "@claudexor/core";
+import { join, resolve } from "node:path";
+import { labelStreams, providerScrubEnv, runCapture } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { redactSecrets } from "@claudexor/util";
 
@@ -30,16 +30,15 @@ export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = t
   if (!allowApiKey) return;
   const home = env?.["CODEX_HOME"];
   if (!home) return;
+  if (resolve(home) === resolve(defaultNativeCodexHome())) {
+    throw new Error("refusing to read or write the vendor-owned native Codex auth store");
+  }
   const apiKey = codexApiKey();
   if (!apiKey) return;
   const authPath = join(home, "auth.json");
   if (existsSync(authPath)) return;
-  try {
-    mkdirSync(home, { recursive: true });
-    writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", { mode: 0o600 });
-  } catch {
-    /* best-effort: codex will surface an auth error if this did not take */
-  }
+  mkdirSync(home, { recursive: true });
+  writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", { mode: 0o600 });
 }
 
 /** The user's real codex home (native ChatGPT/subscription session lives here). */
@@ -49,44 +48,19 @@ export function defaultNativeCodexHome(): string {
   return join(homedir(), ".codex");
 }
 
-/**
- * Seed the user's NATIVE codex session (`auth.json`, ChatGPT/subscription mode)
- * into an isolated CODEX_HOME so a Max/Pro subscriber with NO API key can run
- * inside a Claudexor envelope. This is the "subscription-first must actually
- * work" fix: previously the scoped empty CODEX_HOME hid the native session and
- * the run failed demanding an API key.
- *
- * Copies ONLY if the scoped auth is absent and a native `auth.json` exists; never
- * overwrites (codex refreshes the token in place). Returns true when scoped auth
- * is present afterwards. No-op when not isolated or no native session exists.
- */
-export function ensureCodexNativeAuth(
-  env?: Record<string, string>,
-  nativeHome: string = defaultNativeCodexHome(),
-): boolean {
-  const home = env?.["CODEX_HOME"];
-  if (!home) return false;
-  const dest = join(home, "auth.json");
-  if (existsSync(dest)) return true; // already seeded (api or native)
-  const src = join(nativeHome, "auth.json");
-  if (!existsSync(src)) return false;
-  try {
-    mkdirSync(home, { recursive: true });
-    copyFileSync(src, dest);
-    try {
-      chmodSync(dest, 0o600);
-    } catch {
-      /* best-effort: perms */
-    }
-    return existsSync(dest);
-  } catch {
-    return false;
-  }
+export type CodexLoginMethod = "chatgpt" | "api_key" | "access_token" | "logged_out" | "unknown";
+export interface CodexLoginProbe {
+  /** True for any typed authenticated status; native readiness additionally requires method=chatgpt. */
+  authed: boolean;
+  method: CodexLoginMethod;
+  probeError: string | null;
 }
 
-/** True when a native codex session exists and can be seeded into an envelope. */
-export function nativeCodexSeedable(): boolean {
-  return existsSync(join(defaultNativeCodexHome(), "auth.json"));
+export interface CodexLoginProbeOptions {
+  /** Exact environment the eventual Codex child will use. */
+  env?: Record<string, string | null | undefined>;
+  abortSignal?: AbortSignal;
+  runCapture?: typeof runCapture;
 }
 
 /**
@@ -97,49 +71,75 @@ export function nativeCodexSeedable(): boolean {
  * into "not logged in" hid a real subscription behind a config error; doctor
  * must fail loudly with the CLI's own message instead.
  */
-export async function probeLogin(bin: string = BIN): Promise<{ authed: boolean; probeError: string | null }> {
+export async function probeLogin(
+  bin: string = BIN,
+  options: CodexLoginProbeOptions = {},
+): Promise<CodexLoginProbe> {
   try {
-    const r = await runCapture(bin, ["login", "status"], { timeoutMs: 10_000 });
-    if (r.code === 0) return { authed: true, probeError: null };
+    const env: Record<string, string | null | undefined> = {
+      ...(options.env ?? {}),
+      ...providerScrubEnv(),
+      CODEX_HOME: defaultNativeCodexHome(),
+    };
+    const r = await (options.runCapture ?? runCapture)(bin, ["login", "status"], {
+      env,
+      timeoutMs: 10_000,
+      abortSignal: options.abortSignal,
+      cancelSignal: "SIGTERM",
+      cancelKillDelayMs: 0,
+    });
+    const text = `${r.stdout}\n${r.stderr}`;
+    const statusLines = text.replaceAll("\r", "").split("\n").map((line) => line.trim()).filter(Boolean);
     // "Not logged in" is codex's NORMAL logged-out answer (exit 1, no error
     // prefix). Anything else on a failing probe is a probe error, not an auth
     // verdict (adapter-local knowledge of the native CLI's output is allowed).
-    if (/not logged in/i.test(`${r.stderr}\n${r.stdout}`)) return { authed: false, probeError: null };
+    if (statusLines.some((line) => /^not logged in[.!]?$/i.test(line))) {
+      return { authed: false, method: "logged_out", probeError: null };
+    }
+    if (r.code === 0 && statusLines.some((line) => /^logged in using chatgpt[.!]?$/i.test(line))) {
+      return { authed: true, method: "chatgpt", probeError: null };
+    }
+    if (r.code === 0 && statusLines.some((line) => /^logged in using (?:an? )?api key[.!]?$/i.test(line))) {
+      return { authed: true, method: "api_key", probeError: null };
+    }
+    if (r.code === 0 && statusLines.some((line) => /^logged in using (?:an? )?access token[.!]?$/i.test(line))) {
+      return { authed: true, method: "access_token", probeError: null };
+    }
     // Redact BEFORE labelStreams truncates: truncation could split a token
     // into a prefix the redactor no longer recognizes.
     const detail = labelStreams(r.stderr, r.stdout, { transform: redactSecrets });
-    if (detail === null) return { authed: false, probeError: null };
-    return { authed: false, probeError: detail };
+    const reason = detail ?? `codex login status exited with ${r.code ?? r.signal ?? "unknown result"}`;
+    return {
+      authed: false,
+      method: "unknown",
+      probeError: r.code === 0 ? `unrecognized login status: ${reason}` : reason,
+    };
   } catch (err) {
-    return { authed: false, probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))].slice(0, 300).join("") };
+    return {
+      authed: false,
+      method: "unknown",
+      probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))].slice(0, 300).join(""),
+    };
   }
-}
-
-export async function loggedIn(): Promise<boolean> {
-  return (await probeLogin()).authed;
 }
 
 export function hasApiKey(): boolean {
   return Boolean(codexApiKey());
 }
 
-export function hasScopedCodexAuth(env?: Record<string, string>): boolean {
-  const home = env?.["CODEX_HOME"];
-  return Boolean(home && existsSync(join(home, "auth.json")));
-}
-
 /**
  * Auth route the codex child will ACTUALLY run under, read from the same
- * `auth.json` codex itself loads (the resolved CODEX_HOME, else the native
- * ~/.codex). The file's own `auth_mode` field is the typed source of truth:
+ * `auth.json` codex itself loads in a Claudexor-created scoped CODEX_HOME.
+ * The vendor-owned native home is deliberately not a fallback and must remain
+ * opaque. The file's own `auth_mode` field is the typed source of truth:
  * "chatgpt" = subscription session, "apikey" = API key. Null when the file is
  * absent/unreadable or carries an unknown mode — callers must treat that as
  * undisclosed, never guess.
  */
-export function codexAuthModeAt(home: string | null | undefined): "local_session" | "api_key" | null {
-  const dir = home && home.trim() ? home : defaultNativeCodexHome();
+export function codexAuthModeAt(home: string): "local_session" | "api_key" | null {
+  if (!home.trim() || resolve(home) === resolve(defaultNativeCodexHome())) return null;
   try {
-    const parsed = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")) as { auth_mode?: unknown };
+    const parsed = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) as { auth_mode?: unknown };
     if (parsed.auth_mode === "chatgpt") return "local_session";
     if (parsed.auth_mode === "apikey") return "api_key";
     return null;

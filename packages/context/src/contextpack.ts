@@ -1,10 +1,11 @@
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import type { ContextPack, TaskContract } from "@claudexor/schema";
 import { ContextPack as ContextPackSchema } from "@claudexor/schema";
 import { ContextOverflowError } from "@claudexor/core";
-import { hashJson, readTextSafe } from "@claudexor/util";
+import { hashJson, readTextSafe, sensitiveResourcePolicy } from "@claudexor/util";
 import { loadAgentsInstructions } from "./agents.js";
-import { type AtlasOptions, buildScopeAtlas } from "./atlas.js";
+import { type AtlasOptions, buildScopeAtlas, contextSymlinkDenyReason } from "./atlas.js";
 
 export interface ContextPackOptions extends AtlasOptions {
   /** Fail closed if explicitly-requested mandatory files are missing/unreadable. Default true. */
@@ -26,6 +27,13 @@ export function assertMandatoryContext(repoRoot: string, mandatoryFiles: readonl
   if (mandatoryFiles.length === 0) return;
   const base = resolve(repoRoot);
   const missing: string[] = [];
+  const refused: string[] = [];
+  let canonicalBase = base;
+  try {
+    canonicalBase = realpathSync(base);
+  } catch {
+    // Missing roots are accounted below as missing mandatory paths.
+  }
   for (const rel of mandatoryFiles) {
     // Versioned project config must not point mandatory context OUTSIDE the repo
     // (absolute paths or `..` traversal): fail closed rather than read host files
@@ -34,7 +42,31 @@ export function assertMandatoryContext(repoRoot: string, mandatoryFiles: readonl
     if (isAbsolute(rel) || (abs !== base && !abs.startsWith(base + sep))) {
       throw new ContextOverflowError(`mandatory context path escapes the repo: ${rel}`);
     }
-    if (readTextSafe(abs) === null) missing.push(rel);
+    try {
+      lstatSync(abs);
+    } catch {
+      missing.push(rel);
+      continue;
+    }
+    const pathDecision = sensitiveResourcePolicy.classifyPath(rel);
+    const symlinkReason = contextSymlinkDenyReason(base, canonicalBase, rel);
+    if (pathDecision.sensitive || symlinkReason) {
+      refused.push(rel);
+      continue;
+    }
+    const text = readTextSafe(abs);
+    const contentDecision =
+      text === null ? null : sensitiveResourcePolicy.inspectContent(text, "reject");
+    if (contentDecision?.containsSensitiveContent) {
+      refused.push(rel);
+      continue;
+    }
+    if (text === null) missing.push(rel);
+  }
+  if (refused.length > 0) {
+    throw new ContextOverflowError(
+      `mandatory context is sensitive or escapes its trust boundary: ${refused.join(", ")}`,
+    );
   }
   if (missing.length > 0) {
     throw new ContextOverflowError(`mandatory context missing/unreadable: ${missing.join(", ")}`);
@@ -55,7 +87,11 @@ export async function buildContextPack(
   const mandatory = opts.mandatory ?? DEFAULT_MANDATORY_CONTEXT;
   const atlas = await buildScopeAtlas(repoRoot, { ...opts, mandatory });
 
-  if (usingExplicitMandatory && (opts.failOnMissingMandatory ?? true) && atlas.missingMandatory.length > 0) {
+  if (
+    usingExplicitMandatory &&
+    (opts.failOnMissingMandatory ?? true) &&
+    atlas.missingMandatory.length > 0
+  ) {
     throw new ContextOverflowError(
       `mandatory context missing/unreadable: ${atlas.missingMandatory.join(", ")}`,
     );

@@ -107,6 +107,10 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   REPO_ROOT="$(cd "$MACOS_DIR/../.." && pwd)"
   ENGINE_JS="$APP/Contents/Resources/claudexord.bundle.cjs"
+  # esbuild emits CommonJS for the self-contained helper. Keep the .cjs
+  # suffix explicit so Node does not inherit the repository's type=module
+  # package scope during local/package smoke runs.
+  SETUP_RUNNER_JS="$APP/Contents/Resources/setup-login-runner.cjs"
   echo "==> Building engine workspace (pnpm -w build)"
   ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
   echo "==> Bundling claudexord (esbuild single-file)"
@@ -124,6 +128,26 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     echo "ERROR: esbuild bundle failed; cannot build self-contained app" >&2
     exit 1
   fi
+  echo "==> Bundling native-login runner"
+  if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/setup-login-runner.js \
+        --bundle --platform=node --format=cjs --target=node22 \
+        --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
+        --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
+        --outfile="$SETUP_RUNNER_JS" >/dev/null ); then
+    echo "    setup-login-runner.cjs $(wc -c < "$SETUP_RUNNER_JS" | tr -d ' ') bytes"
+  else
+    echo "ERROR: setup-login runner bundle failed; native subscription login would be broken" >&2
+    exit 1
+  fi
+  PROCESS_IDENTITY_HELPER="$APP/Contents/Resources/native/claudexor-process-identity"
+  mkdir -p "$(dirname "$PROCESS_IDENTITY_HELPER")"
+  cp "$REPO_ROOT/packages/core/dist/native/claudexor-process-identity" "$PROCESS_IDENTITY_HELPER"
+  chmod 755 "$PROCESS_IDENTITY_HELPER"
+  if ! "$PROCESS_IDENTITY_HELPER" --pid $$ | grep -Eq '^claudexor-process-identity-v2[[:space:]]'; then
+    echo "ERROR: bundled process-identity helper failed its offline probe" >&2
+    exit 1
+  fi
+  echo "    bundled universal process-identity helper"
   # Prefer an explicit/notarized Node for the bundled engine. CI release builds
   # always set CLAUDEXOR_NODE_BIN (release.yml captures process.execPath from
   # actions/setup-node), so the PATH fallback below only ever applies to LOCAL
@@ -142,11 +166,25 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     exit 1
   fi
 
+  # Prove the adjacent runner executes under the exact Node shipped in the app.
+  set +e
+  "$APP/Contents/Resources/node" "$SETUP_RUNNER_JS" >"$APP/Contents/Resources/setup-runner-smoke.out" 2>&1
+  SETUP_RUNNER_STATUS=$?
+  set -e
+  if [ "$SETUP_RUNNER_STATUS" -ne 2 ] || ! grep -q "usage: setup-login-runner" "$APP/Contents/Resources/setup-runner-smoke.out"; then
+    echo "ERROR: bundled setup-login runner did not execute its direct entrypoint" >&2
+    cat "$APP/Contents/Resources/setup-runner-smoke.out" >&2
+    rm -f "$APP/Contents/Resources/setup-runner-smoke.out"
+    exit 1
+  fi
+  rm -f "$APP/Contents/Resources/setup-runner-smoke.out"
+  echo "    bundled setup-login runner launches"
+
   # Boot smoke: the bundled daemon must actually START (a load-time crash in
   # the bundle shipped in v1.0.0 and survived every gate because nothing
   # executed the bundle). Scratch HOME so the smoke never touches real state.
   echo "==> Bundle boot smoke"
-  SMOKE_HOME="$(mktemp -d)"
+  SMOKE_HOME="$(cd "$(mktemp -d)" && pwd -P)"
   ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
   SMOKE_OK=0
   for _ in $(seq 1 20); do
@@ -174,6 +212,11 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
     codesign --force --options runtime --timestamp \
       --entitlements "$PACKAGING/NodeRuntime.entitlements" \
       --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/node"
+  fi
+  if [ -x "$APP/Contents/Resources/native/claudexor-process-identity" ]; then
+    codesign --force --options runtime --timestamp \
+      --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/native/claudexor-process-identity"
+    codesign --verify --strict --verbose=2 "$APP/Contents/Resources/native/claudexor-process-identity"
   fi
   codesign --force --options runtime --timestamp \
     --entitlements "$PACKAGING/Claudexor.entitlements" \

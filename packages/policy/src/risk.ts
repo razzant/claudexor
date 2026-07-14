@@ -1,5 +1,6 @@
 import type { RiskLevel } from "@claudexor/schema";
 import { matchAny } from "@claudexor/context";
+import { sensitiveResourcePolicy } from "@claudexor/util";
 
 /**
  * Risk is classified from typed diff/path metadata (and optional LLM judgment
@@ -21,11 +22,6 @@ export interface RiskAssessment {
 }
 
 const CRITICAL_PATTERNS = [
-  "**/secrets/**",
-  "**/.env",
-  "**/.env.*",
-  "**/*.pem",
-  "**/credentials*",
   "**/deploy/**/prod*",
   "**/terraform/**",
   "**/.github/workflows/release*",
@@ -62,16 +58,25 @@ export function classifyRisk(meta: DiffMeta): RiskAssessment {
   const churn = (meta.additions ?? 0) + (meta.deletions ?? 0);
 
   const protectedHit = paths.filter((p) => matchAny(p, meta.protectedPaths ?? []));
-  if (protectedHit.length > 0) reasons.push(`touches protected paths: ${protectedHit.slice(0, 3).join(", ")}`);
+  if (protectedHit.length > 0)
+    reasons.push(`touches protected paths: ${protectedHit.slice(0, 3).join(", ")}`);
 
-  const criticalHit = paths.filter((p) => matchAny(p, CRITICAL_PATTERNS));
+  const sensitiveHit = paths.filter((p) => sensitiveResourcePolicy.classifyPath(p).sensitive);
+  const domainCriticalHit = paths.filter((p) => matchAny(p, CRITICAL_PATTERNS));
+  const criticalHit = [...new Set([...sensitiveHit, ...domainCriticalHit])];
   if (criticalHit.length > 0 || protectedHit.length > 0) {
     reasons.unshift(
-      criticalHit.length > 0
-        ? `critical paths: ${criticalHit.slice(0, 3).join(", ")}`
-        : "protected-path change",
+      sensitiveHit.length > 0
+        ? `sensitive resource paths: ${sensitiveHit.slice(0, 3).join(", ")}`
+        : criticalHit.length > 0
+          ? `critical paths: ${criticalHit.slice(0, 3).join(", ")}`
+          : "protected-path change",
     );
-    return { level: "critical", reasons, matchedPaths: [...new Set([...criticalHit, ...protectedHit])] };
+    return {
+      level: "critical",
+      reasons,
+      matchedPaths: [...new Set([...criticalHit, ...protectedHit])],
+    };
   }
 
   const highHit = paths.filter((p) => matchAny(p, HIGH_PATTERNS));
@@ -82,7 +87,8 @@ export function classifyRisk(meta: DiffMeta): RiskAssessment {
 
   const depHit = paths.filter((p) => matchAny(p, DEP_PATTERNS));
   const large = paths.length >= LARGE_DIFF_FILES || churn >= LARGE_DIFF_LINES;
-  if (depHit.length > 0) reasons.push(`dependency/manifest change: ${depHit.slice(0, 2).join(", ")}`);
+  if (depHit.length > 0)
+    reasons.push(`dependency/manifest change: ${depHit.slice(0, 2).join(", ")}`);
   if (large) reasons.push(`large diff (${paths.length} files, ${churn} lines)`);
   if (depHit.length > 0 && large) return { level: "high", reasons, matchedPaths: depHit };
   if (depHit.length > 0 || large) return { level: "medium", reasons, matchedPaths: depHit };

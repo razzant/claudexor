@@ -9,7 +9,7 @@ import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import type { ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
-import { noProjectRepoRoot } from "@claudexor/util";
+import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
@@ -277,7 +277,7 @@ const reviewers = () => [
 ];
 
 describe("Orchestrator", () => {
-  it("fails closed when review evidence cannot be copied into the candidate tree", () => {
+  it("keeps review evidence external even when a candidate path would block the old in-tree copy", () => {
     const source = mkdtempSync(join(tmpdir(), "claudexor-review-source-"));
     writeEvidencePacket(source, {
       userIntent: "review this candidate",
@@ -291,13 +291,13 @@ describe("Orchestrator", () => {
     writeFileSync(candidateFile, "file blocks candidate evidence dir");
     const orch = new Orchestrator({ registry: new Map() });
 
-    expect(() =>
-      (
-        orch as unknown as {
-          prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string;
-        }
-      ).prepareReviewEvidenceDir(source, candidateFile),
-    ).toThrow(/review evidence copy into candidate tree failed/);
+    const selected = (
+      orch as unknown as {
+        prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string;
+      }
+    ).prepareReviewEvidenceDir(source, candidateFile);
+    expect(selected).toBe(source);
+    expect(readFileSync(candidateFile, "utf8")).toBe("file blocks candidate evidence dir");
   });
 
   it("terminates agent runs when review evidence setup fails", async () => {
@@ -3227,7 +3227,7 @@ describe("Orchestrator", () => {
     expect(planRes.summary).toMatch(/unknown reviewer harness 'missing-reviewer'/);
     expect(plannerStarted).toBe(false);
     expect(runStarted).toBe(true);
-    const failure = readFileSync(join(repo, ".claudexor", "runs", "invalid-panel-plan", "final", "failure.yaml"), "utf8");
+    const failure = readFileSync(join(planRes.runDir, "final", "failure.yaml"), "utf8");
     expect(failure).toContain("review_preflight");
   });
 
@@ -3989,7 +3989,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(subCwd).not.toBeNull();
     // The sub-run executed in an ISOLATED envelope worktree, not the live tree.
     expect(subCwd).not.toBe(repo);
-    expect(subCwd as unknown as string).toContain(".claudexor");
+    expect((subCwd as unknown as string).startsWith(projectRuntimeDir(repo))).toBe(true);
   });
 
   it("auto_full applies a referenced run's clean patch through the single apply gate", async () => {
@@ -4247,15 +4247,14 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       n: 1,
     });
     expect(existsSync(join(dir, ".git"))).toBe(true);
-    const gitignore = readFileSync(join(dir, ".gitignore"), "utf8");
-    expect(gitignore).toContain(".claudexor/");
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
     const events = readRunEvents(res.runDir);
     const initEvent = events.find((e) => e.type === "project.git.initialized");
     expect(initEvent).toBeDefined();
     expect(initEvent?.payload["baseline_committed"]).toBe(true);
     const log = await runCapture("git", ["-C", dir, "log", "--oneline"]);
     expect(log.stdout).toContain("claudexor: initialize repository baseline");
-    // The baseline must include the user's pre-existing file but never .claudexor/.
+    // The baseline includes user files; runtime lives outside the repository.
     const tracked = await runCapture("git", ["-C", dir, "ls-files"]);
     expect(tracked.stdout).toContain("notes.txt");
     expect(tracked.stdout).not.toContain(".claudexor/runs");
@@ -4556,28 +4555,28 @@ describe("interaction channel registration order", () => {
 });
 
 describe("auth-route attempt telemetry (route evidence)", () => {
-  it("captures the adapter's typed auth_route disclosure from the started payload (first-wins) into the record", async () => {
+  it("captures the adapter's first-class credential route (first-wins) into the record", async () => {
     const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, {
-      type: "started", session_id: "s", ts, payload: { auth_route: "local_session" },
+      type: "started", session_id: "s", ts, credential_route: "vendor_native",
     } as never);
     // A later conflicting value must not overwrite the decided route.
     observeAttemptTelemetry(t, {
-      type: "message", session_id: "s", ts, text: "x", payload: { auth_route: "api_key" },
+      type: "message", session_id: "s", ts, text: "x", credential_route: "managed_api_key",
     } as never);
     expect(t.authMode).toBe("local_session");
     expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBe("local_session");
   });
 
-  it("unknown or absent auth_route values stay undisclosed (never guessed)", async () => {
+  it("an absent credential route stays undisclosed (never guessed from payload)", async () => {
     const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, { type: "started", session_id: "s", ts } as never);
     observeAttemptTelemetry(t, {
-      type: "started", session_id: "s", ts, payload: { auth_route: "oauth_gadget" },
+      type: "started", session_id: "s", ts, payload: { auth_route: "local_session" },
     } as never);
     expect(t.authMode).toBeNull();
     expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBeNull();

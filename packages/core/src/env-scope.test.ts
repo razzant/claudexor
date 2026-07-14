@@ -7,6 +7,10 @@ describe("providerScrubEnv", () => {
     expect(scrub.OPENAI_API_KEY).toBeNull();
     expect(scrub.ANTHROPIC_API_KEY).toBeNull();
     expect(scrub.CLAUDE_CODE_OAUTH_TOKEN).toBeNull();
+    expect(scrub.CODEX_ACCESS_TOKEN).toBeNull();
+    expect(scrub.CLAUDE_CODE_USE_FOUNDRY).toBeNull();
+    expect(scrub.ANTHROPIC_FOUNDRY_AUTH_TOKEN).toBeNull();
+    expect(scrub.AZURE_CLIENT_SECRET).toBeNull();
     expect(scrub.OPENROUTER_API_KEY).toBeNull();
     expect(scrub.AWS_SECRET_ACCESS_KEY).toBeNull();
     // base-URL redirects are always scrubbed (cannot exfiltrate a seeded cred).

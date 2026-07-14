@@ -55,7 +55,41 @@ enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
         }
     }
     var color: Color { Theme.harness(rawValue) }
-    var setupHarnessId: String { self == .raw ? "raw" : rawValue }
+    /// Setup and runtime use the same canonical harness id. The retired `raw`
+    /// alias must never reappear at a client boundary.
+    var setupHarnessId: String { rawValue }
+
+    var defaultAuthReadinessRequest: AuthReadinessRefreshRequest? {
+        switch self {
+        case .codex, .claude, .cursor:
+            AuthReadinessRefreshRequest(authRequest: .subscription, source: .nativeSession)
+        case .opencode, .raw:
+            AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
+        case .fake:
+            nil
+        }
+    }
+
+    var apiKeyAuthReadinessRequest: AuthReadinessRefreshRequest? {
+        switch self {
+        case .codex:
+            AuthReadinessRefreshRequest(authRequest: .apiKey, source: .providerAuthFile)
+        case .claude, .cursor, .opencode, .raw:
+            AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
+        case .fake:
+            nil
+        }
+    }
+
+    func authReadinessRequest(after job: SetupJob?) -> AuthReadinessRefreshRequest? {
+        if let disclosure = job?.authCapability?.disclosure {
+            return AuthReadinessRefreshRequest(
+                authRequest: disclosure.requested,
+                source: disclosure.requiredSource
+            )
+        }
+        return defaultAuthReadinessRequest
+    }
 }
 
 // MARK: - Run status
@@ -746,6 +780,7 @@ struct HarnessInfo: Identifiable, Hashable {
     var health: HarnessHealth
     var version: String
     var auth: String
+    var authSources: [HarnessAuthSource] = []
     var intents: [String]
     var reasons: [String] = []
     var checks: [String] = []
@@ -761,6 +796,8 @@ struct HarnessInfo: Identifiable, Hashable {
     /// (nil = no model configured or check ok): the actionable refusal text.
     var configuredModelIssue: String? = nil
     var id: String { family.rawValue }
+    var nativeAuthSource: HarnessAuthSource? { authSources.first { $0.source == "native_session" } }
+    var nativeSessionReady: Bool { nativeAuthSource?.isVerifiedNativeSession == true }
 }
 
 struct HarnessAvailability: Hashable {

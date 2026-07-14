@@ -13,7 +13,7 @@ import {
   HarnessRunSpec,
   ReviewFinding as ReviewFindingSchema,
 } from "@claudexor/schema";
-import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
@@ -25,6 +25,7 @@ import {
   nowIso,
   readTextSafe,
   redactSecrets,
+  sensitiveResourcePolicy,
   sha256,
   writeJson,
   writeText,
@@ -587,7 +588,8 @@ async function collectReviewerOutput(
   let costUsd = 0;
   let costEstimated = false;
   let partialText = "";
-  const isCancelled = () => cancelledBySignal || signal?.aborted === true || controller.signal.aborted;
+  const isCancelled = () =>
+    cancelledBySignal || signal?.aborted === true || controller.signal.aborted;
 
   const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
     const iter = (reviewer.adapter.review ?? reviewer.adapter.run).call(reviewer.adapter, runSpec);
@@ -903,7 +905,9 @@ async function prepareReviewerWorkspace(input: {
     const evidenceDir = join(root, ".claudexor-review-evidence");
     if (existsSync(sourceEvidenceDir)) {
       const resolvedSourceEvidenceDir = realpathSync(sourceEvidenceDir);
-      const evidenceExcludeRoots = excludeRoots.filter((root) => !isSameOrInside(root, sourceEvidenceDir));
+      const evidenceExcludeRoots = excludeRoots.filter(
+        (root) => !isSameOrInside(root, sourceEvidenceDir),
+      );
       await rm(evidenceDir, { recursive: true, force: true });
       await cp(sourceEvidenceDir, evidenceDir, {
         recursive: true,
@@ -944,7 +948,13 @@ async function copyReviewEvidencePacket(
     if (!shouldCopyEvidencePacketPath(source, resolvedSource, sourcePath, target)) {
       continue;
     }
-    await copyReviewEvidenceEntry(source, resolvedSource, sourcePath, join(target, entry.name), target);
+    await copyReviewEvidenceEntry(
+      source,
+      resolvedSource,
+      sourcePath,
+      join(target, entry.name),
+      target,
+    );
   }
 }
 
@@ -960,7 +970,14 @@ async function copyReviewEvidenceEntry(
     await mkdir(targetPath, { recursive: true, mode: 0o700 });
     for (const entry of await readdir(sourcePath, { withFileTypes: true })) {
       const childSource = join(sourcePath, entry.name);
-      if (!shouldCopyEvidencePacketPath(sourceEvidenceDir, resolvedSourceEvidenceDir, childSource, targetEvidenceDir)) {
+      if (
+        !shouldCopyEvidencePacketPath(
+          sourceEvidenceDir,
+          resolvedSourceEvidenceDir,
+          childSource,
+          targetEvidenceDir,
+        )
+      ) {
         continue;
       }
       await copyReviewEvidenceEntry(
@@ -978,7 +995,9 @@ async function copyReviewEvidenceEntry(
     if (raw === null) throw new Error(`could not read review evidence file: ${sourcePath}`);
     const text = shouldFailClosedEvidenceFile(sourcePath) ? raw : redactSecrets(raw);
     if (containsSecretLikeToken(text)) {
-      throw new Error(`review evidence file contains a secret-like token: ${relative(sourceEvidenceDir, sourcePath)}`);
+      throw new Error(
+        `review evidence file contains a secret-like token: ${relative(sourceEvidenceDir, sourcePath)}`,
+      );
     }
     writeText(targetPath, text);
     return;
@@ -1012,9 +1031,14 @@ function shouldCopyEvidencePacketPath(
   const resolvedSourcePath = resolve(sourcePath);
   if (isSameOrInside(resolvedSourcePath, targetEvidenceDir)) return false;
   if (isSameOrInside(targetEvidenceDir, resolvedSourcePath)) return false;
-  return shouldCopyReviewerPath(sourceEvidenceDir, resolvedSourceEvidenceDir, resolvedSourcePath, [
-    targetEvidenceDir,
-  ]);
+  return shouldCopyReviewerPath(
+    sourceEvidenceDir,
+    resolvedSourceEvidenceDir,
+    resolvedSourcePath,
+    [targetEvidenceDir],
+    new Set(),
+    false,
+  );
 }
 
 async function cleanupReviewerWorkspace(
@@ -1060,6 +1084,7 @@ function shouldCopyReviewerPath(
   sourcePath: string,
   excludeRoots: string[],
   preservePaths = new Set<string>(),
+  enforceContentPolicy = true,
 ): boolean {
   const resolvedSourcePath = resolve(sourcePath);
   if (
@@ -1071,21 +1096,17 @@ function shouldCopyReviewerPath(
   const rel = relative(sourceRoot, resolvedSourcePath);
   if (!rel) return true;
   const parts = rel.split(/[\\/]+/);
-  if (parts.some(isReviewerSecretLikePathPart)) {
+  if (sensitiveResourcePolicy.classifyPath(rel).sensitive) {
     return false;
   }
   if (parts[0] === ".claudexor") {
-    return isCopyableReviewerClaudexorPath(rel, parts, preservePaths);
+    return (
+      isCopyableReviewerClaudexorPath(rel, parts, preservePaths) &&
+      (!enforceContentPolicy || reviewerFileContentAllowed(resolvedSourcePath))
+    );
   }
   if (
-    parts.some((part) =>
-      [
-        ".git",
-        ".adversarial-review",
-        ".turbo",
-        "node_modules",
-      ].includes(part),
-    )
+    parts.some((part) => [".git", ".adversarial-review", ".turbo", "node_modules"].includes(part))
   ) {
     return false;
   }
@@ -1095,38 +1116,22 @@ function shouldCopyReviewerPath(
   ) {
     return false;
   }
-  return !rel.endsWith(".tsbuildinfo");
+  return (
+    !rel.endsWith(".tsbuildinfo") &&
+    (!enforceContentPolicy || reviewerFileContentAllowed(resolvedSourcePath))
+  );
 }
 
-function isReviewerSecretLikePathPart(part: string): boolean {
-  const lower = part.toLowerCase();
-  if (lower.startsWith(".env") && !isSafeEnvTemplateName(lower)) return true;
-  if (
-    [
-      ".npmrc",
-      ".netrc",
-      ".pypirc",
-      ".git-credentials",
-      ".ssh",
-      ".aws",
-      ".azure",
-      ".gcloud",
-      ".cursor",
-      ".codex",
-      ".claude",
-      ".anthropic",
-      ".openai",
-    ].includes(lower)
-  ) {
-    return true;
+function reviewerFileContentAllowed(path: string): boolean {
+  let targetStat: Stats;
+  try {
+    targetStat = statSync(path);
+  } catch {
+    return false;
   }
-  if (/^id_(rsa|dsa|ecdsa|ed25519)$/.test(lower)) return true;
-  if (lower.endsWith(".pem") || lower.endsWith(".p12") || lower.endsWith(".pfx")) return true;
-  return false;
-}
-
-function isSafeEnvTemplateName(lower: string): boolean {
-  return [".env.example", ".env.sample", ".env.template"].includes(lower);
+  if (!targetStat.isFile()) return true;
+  const content = readTextSafe(path);
+  return content !== null && !sensitiveResourcePolicy.containsSensitiveContent(content);
 }
 
 function isCopyableReviewerClaudexorPath(
@@ -1220,26 +1225,26 @@ function isCopyableReviewerSymlink(
   if (!stat.isSymbolicLink()) return true;
   let linkTarget = "";
   let resolvedTarget = "";
+  let targetKind: "directory" | "file" | "other" = "other";
   try {
     linkTarget = readlinkSync(sourcePath);
     resolvedTarget = realpathSync(sourcePath);
+    const targetStat = statSync(sourcePath);
+    targetKind = targetStat.isDirectory() ? "directory" : targetStat.isFile() ? "file" : "other";
   } catch {
     return false;
   }
-  if (isAbsolute(linkTarget)) return false;
-  if (!isSameOrInside(resolvedSourceRoot, resolvedTarget)) return false;
-  if (excludeRoots.some((root) => isSameOrInside(root, resolvedTarget))) return false;
-
-  const sourceParentRel = relative(sourceRoot, dirname(sourcePath));
-  if (sourceParentRel.split(/[\\/]+/)[0] === ".." || isAbsolute(sourceParentRel)) return false;
-
-  const relocatedTargetRel = normalize(join(sourceParentRel, linkTarget));
-  const relocatedFirstPart = relocatedTargetRel.split(/[\\/]+/)[0];
-  if (relocatedFirstPart === ".." || isAbsolute(relocatedTargetRel)) return false;
-
-  const relocatedTargetPath = resolve(sourceRoot, relocatedTargetRel);
-  if (!isSameOrInside(sourceRoot, relocatedTargetPath)) return false;
-  return !excludeRoots.some((root) => isSameOrInside(root, relocatedTargetPath));
+  return sensitiveResourcePolicy.assessSymlink({
+    sourceRoot,
+    canonicalSourceRoot: resolvedSourceRoot,
+    sourcePath,
+    linkTarget,
+    resolvedTargetPath: resolvedTarget,
+    targetKind,
+    allowedTargetKinds: ["file", "directory"],
+    excludedRoots: excludeRoots,
+    relocationRoot: sourceRoot,
+  }).allowed;
 }
 
 async function initializeReviewerWorkspaceGit(root: string): Promise<void> {
@@ -1420,4 +1425,3 @@ function insufficientEvidenceFinding(reviewer: ReviewerInfo, claim: string): Rev
     status: "insufficient_evidence",
   });
 }
-

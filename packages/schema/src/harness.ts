@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
 import { AccessProfile, AuthPreference, ExternalContextPolicy, Id, Intent, ProviderFamily } from "./primitives.js";
 import { Attachment, ImageInputMode } from "./attachment.js";
 
@@ -157,13 +158,6 @@ export const HarnessCapabilities = z
   .describe("Declared harness capabilities the engine actually consumes for intent gating, routing, knob support, and disclosure.");
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
 
-export const AuthSourceKind = z
-  .enum(["native_session", "api_key_env", "api_key_flag", "provider_auth_file", "none"])
-  .describe(
-    "Where a harness's credentials can come from: a native login session, an API key via env var or CLI flag, a provider auth file, or none.",
-  );
-export type AuthSourceKind = z.infer<typeof AuthSourceKind>;
-
 export const CredentialTransportKind = z
   .enum(["config_file", "env_var", "oauth_token_env", "os_keychain", "http_header", "none"])
   .describe("Mechanism that carries a credential to the harness process (config file, env var, OAuth token env, OS keychain, HTTP header, or none).");
@@ -310,6 +304,10 @@ export const ConformanceReport = z
     enabled_intents: z.array(Intent).default([]).describe("Intents the gateway will route to this harness."),
     disabled_intents: z.array(Intent).default([]).describe("Intents the doctor disabled."),
     reasons: z.array(z.string()).default([]).describe("Human-readable reasons for degraded/unavailable status or disabled intents."),
+    auth_sources: z
+      .array(AuthSourceReadiness)
+      .default([])
+      .describe("Doctor-backed readiness by authentication source; an empty array means the adapter did not report source readiness."),
   })
   .describe("Doctor/conformance report for one harness: status, probe results, and the intents enabled or disabled by it.");
 export type ConformanceReport = z.infer<typeof ConformanceReport>;
@@ -396,6 +394,10 @@ export const HarnessRunSpec = z
       .describe(
         "How the child harness env is composed: mirror_native inherits the parent env (minus provider-secret scrub); clean spawns from a minimal allowlist.",
       ),
+    evidence_policy: z
+      .enum(["stream_only", "allow_vendor_session_artifacts"])
+      .default("allow_vendor_session_artifacts")
+      .describe("Whether route evidence may read vendor session artifacts; auth capability smokes require stream_only."),
     env: z.record(z.string(), z.string()).default({}).describe("Extra environment variables injected into the harness process."),
     /**
      * User/agent attachments (images, files) forwarded to the harness in its
@@ -554,6 +556,12 @@ export const HarnessEvent = z
       .optional()
       .describe("Token/cost usage reported by the harness."),
     observed_model: z.string().optional().describe("Model the harness actually reported using."),
+    credential_route: CredentialRoute.optional().describe(
+      "Concrete credential route selected before spawn; first-class route evidence, never inferred from free-form payload text.",
+    ),
+    credential_source: AuthSourceKind.optional().describe(
+      "Concrete credential source selected before spawn; exact native subscription requires native_session, never an OAuth token or API key.",
+    ),
     /**
      * Typed quota/usage-window signal: the harness CLI's OWN record of how
      * much of its subscription/rate window is consumed. Producers read native
@@ -634,6 +642,7 @@ export const HarnessEvent = z
       .optional()
       .describe("Typed transient-failure signal set by the adapter from native CLI/API error shapes, consumed for bounded retry policy."),
     error: z.string().optional().describe("Error text for error events."),
+    aborted: z.boolean().optional().describe("Typed terminal cancellation marker, set on completed events when the run was aborted."),
     payload: z.record(z.string(), z.unknown()).optional().describe("Raw adapter-specific payload for diagnostics."),
   })
   .describe("Normalized event emitted by every adapter (the SSOT of adapter output).");

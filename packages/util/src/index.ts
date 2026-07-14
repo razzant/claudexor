@@ -1,14 +1,24 @@
 export { CLAUDEXOR_VERSION } from "./version.js";
+export * from "./sensitive-resource.js";
+import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Generate a short unique id, optionally prefixed (e.g. "run-3f2a...."). */
 export function newId(prefix = ""): string {
@@ -55,6 +65,70 @@ export function ensureDir(path: string): void {
   // directories Claudexor does not own. Claudexor-owned SENSITIVE stores
   // (secrets, daemon token) assert their own permissions at their writers.
   mkdirSync(path, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * Establish a private daemon-owned directory without following any symlink in
+ * the supplied spelling. The direct parent must already exist canonically;
+ * callers create nested owned roots one level at a time. No chmod occurs until
+ * pathname identity has been proven.
+ */
+export function ensureCanonicalPrivateDirectory(path: string): string {
+  const absolute = resolve(path);
+  if (!existsSync(absolute)) {
+    const parent = dirname(absolute);
+    const parentStat = lstatSync(parent);
+    if (
+      parentStat.isSymbolicLink() ||
+      !parentStat.isDirectory() ||
+      realpathSync.native(parent) !== parent
+    ) {
+      throw new Error(`owned directory parent is not canonical: ${parent}`);
+    }
+    mkdirSync(absolute, { recursive: false, mode: 0o700 });
+    fsyncCanonicalDirectory(parent);
+  }
+  const preliminary = lstatSync(absolute);
+  if (preliminary.isSymbolicLink() || !preliminary.isDirectory()) {
+    throw new Error(`owned directory path is not canonical: ${absolute}`);
+  }
+  let fd: number;
+  try {
+    fd = openSync(absolute, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch {
+    throw new Error(`owned directory path is not canonical: ${absolute}`);
+  }
+  try {
+    const opened = fstatSync(fd);
+    const named = lstatSync(absolute);
+    if (
+      !opened.isDirectory() ||
+      named.isSymbolicLink() ||
+      !named.isDirectory() ||
+      opened.dev !== named.dev ||
+      opened.ino !== named.ino ||
+      realpathSync.native(absolute) !== absolute ||
+      (typeof process.getuid === "function" && opened.uid !== process.getuid())
+    ) {
+      throw new Error(`owned directory path is not canonical: ${absolute}`);
+    }
+    // Mutate permissions only through the descriptor whose inode and pathname
+    // identity were proven above; never follow a replacement path with chmod.
+    fchmodSync(fd, 0o700);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  return absolute;
+}
+
+function fsyncCanonicalDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function writeText(path: string, text: string): void {
@@ -122,7 +196,9 @@ export function userHomeDir(): string {
     usableAbsoluteDir(process.env.USERPROFILE) ??
     usableAbsoluteDir(homedir());
   if (!home) {
-    throw new Error("Unable to resolve a safe user home directory; set HOME or CLAUDEXOR_CONFIG_DIR");
+    throw new Error(
+      "Unable to resolve a safe user home directory; set HOME or CLAUDEXOR_CONFIG_DIR",
+    );
   }
   return home;
 }
@@ -137,38 +213,34 @@ export function userConfigDir(): string {
   return join(userHomeDir(), ".claudexor");
 }
 
+/**
+ * Stable external runtime namespace for a project.
+ *
+ * A repository's `.claudexor/` directory is user-owned, versionable project
+ * configuration. Runtime state (runs, worktrees, scoped homes, review packets)
+ * therefore must never be placed below the repository or require Claudexor to
+ * edit either of the user's `.gitignore` files. Existing roots are resolved
+ * through symlinks before hashing so two spellings of the same project share a
+ * single namespace; a not-yet-existing root still gets a deterministic absolute
+ * identity and is re-keyed only after it exists and is registered.
+ */
+export function canonicalProjectRoot(repoRoot: string): string {
+  const absolute = resolve(repoRoot);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+export function projectRuntimeDir(repoRoot: string): string {
+  const digest = sha256(canonicalProjectRoot(repoRoot)).slice("sha256:".length);
+  return join(userConfigDir(), "projects", digest);
+}
+
 export function noProjectRepoRoot(): string {
   return join(userHomeDir(), ".cache", "claudexor", "no-project");
 }
-
-const SECRET_PATTERNS: RegExp[] = [
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bghp_[A-Za-z0-9]{20,}\b/g,
-  /\bgho_[A-Za-z0-9]{20,}\b/g,
-  /\bghs_[A-Za-z0-9]{20,}\b/g,
-  /\bghu_[A-Za-z0-9]{20,}\b/g,
-  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
-  /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
-  /\bsk-or-v1-[A-Za-z0-9]{20,}\b/g,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
-  /\bAIza[A-Za-z0-9_-]{30,}\b/g,
-  /\bxai-[A-Za-z0-9_-]{20,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  // Slack tokens incl. xoxe (refresh) and xoxc (session) classes.
-  /\bxox[abceprs]-[A-Za-z0-9-]{10,}\b/g,
-  // Cursor API keys (key_<hex>); OpenRouter keys (sk-or-v1-... handled above).
-  /\bkey_[A-Za-z0-9]{20,}\b/g,
-  // Google OAuth access tokens.
-  /\bya29\.[A-Za-z0-9._-]{20,}\b/g,
-  // npm granular access tokens.
-  /\bnpm_[A-Za-z0-9]{20,}\b/g,
-  // PEM private key blocks (RSA/EC/OPENSSH/PKCS8 headers all match).
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  // Bearer tokens (length-gated to avoid redacting prose like "Bearer of news").
-  /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi,
-  // JWTs (header.payload.signature) — anthropic/cursor/openai OAuth tokens.
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b/g,
-];
 
 /**
  * Best-effort redaction of obvious secret tokens from text destined for logs or
@@ -176,16 +248,18 @@ const SECRET_PATTERNS: RegExp[] = [
  * not reach this layer in the first place.
  */
 export function redactSecrets(text: string): string {
-  let out = text;
-  for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, "[redacted]");
-  return out;
+  return sensitiveResourcePolicy.redact(text);
 }
 
 export function containsSecretLikeToken(text: string): boolean {
-  return redactSecrets(text) !== text;
+  return sensitiveResourcePolicy.containsSensitiveContent(text);
 }
 
-export function assertNoInlineSecretValues(value: unknown, path = "$", context = "run params"): void {
+export function assertNoInlineSecretValues(
+  value: unknown,
+  path = "$",
+  context = "run params",
+): void {
   if (typeof value === "string") {
     if (containsSecretLikeToken(value)) {
       // Prompts get a tailored remediation: they are DURABLE run artifacts
@@ -196,10 +270,13 @@ export function assertNoInlineSecretValues(value: unknown, path = "$", context =
       const remediation = inPrompt
         ? "the prompt contains a secret-like value; prompts are durable run artifacts — remove the credential (store it with `claudexor secrets set` and reference it instead) and retry"
         : "store values via secrets and pass refs/profiles";
-      throw Object.assign(new Error(`secret-like value is not accepted in ${context} (${path}); ${remediation}`), {
-        status: 400,
-        code: "inline_secret_rejected",
-      });
+      throw Object.assign(
+        new Error(`secret-like value is not accepted in ${context} (${path}); ${remediation}`),
+        {
+          status: 400,
+          code: "inline_secret_rejected",
+        },
+      );
     }
     return;
   }
@@ -209,9 +286,15 @@ export function assertNoInlineSecretValues(value: unknown, path = "$", context =
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "env" || key === "secrets" || /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)) {
+    if (
+      key === "env" ||
+      key === "secrets" ||
+      /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)
+    ) {
       throw Object.assign(
-        new Error(`inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`),
+        new Error(
+          `inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`,
+        ),
         { status: 400, code: "inline_secret_rejected" },
       );
     }
@@ -221,7 +304,12 @@ export function assertNoInlineSecretValues(value: unknown, path = "$", context =
 
 /** The machine-readable `code` a typed error carries (e.g. inline_secret_rejected), if any. */
 export function errorCode(err: unknown): string | undefined {
-  if (err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string") {
+  if (
+    err &&
+    typeof err === "object" &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  ) {
     return (err as { code: string }).code;
   }
   return undefined;

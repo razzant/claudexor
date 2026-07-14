@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -29,7 +29,7 @@ describe("claudexor follow", () => {
   let prevConfigDir: string | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "claudexor-follow-"));
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "claudexor-follow-"));
     prevConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = dir;
   });
@@ -41,9 +41,11 @@ describe("claudexor follow", () => {
 
   function writeControlApiInfo(port: number): void {
     const daemonDir = join(dir, "daemon");
-    mkdirSync(daemonDir, { recursive: true });
-    writeFileSync(join(daemonDir, "control-api.json"), JSON.stringify({ host: "127.0.0.1", port }));
-    writeFileSync(join(daemonDir, "token"), "tkn-follow");
+    mkdirSync(daemonDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(daemonDir, "control-api.json"), JSON.stringify({ host: "127.0.0.1", port }), {
+      mode: 0o600,
+    });
+    writeFileSync(join(daemonDir, "token"), "tkn-follow", { mode: 0o600 });
   }
 
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {

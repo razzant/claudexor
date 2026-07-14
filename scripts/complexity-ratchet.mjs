@@ -3,8 +3,8 @@
  * Complexity ratchet — readability only goes up (owner-locked policy).
  *
  * Records a committed baseline of per-file line counts for TS + Swift sources
- * and fails CI when any tracked file GROWS beyond its baseline (plus a small
- * slack), or when a new file exceeds the hard cap for new code. Shrinking a
+ * and fails CI when any tracked file GROWS beyond its exact baseline, or when
+ * a new file exceeds the hard cap for new code. Shrinking a
  * file below its baseline (or deleting it) auto-tightens the baseline: run
  * with --update after a refactor to commit the lower bar. The bar can never be
  * raised by --update; raising requires editing the baseline by hand in a
@@ -27,13 +27,16 @@ const baselinePath = join(root, "scripts", "complexity-baseline.json");
 /** Files above this size are ratcheted individually; smaller files are governed by NEW_FILE_CAP only. */
 const TRACK_THRESHOLD = 600;
 /** A brand-new source file may not exceed this. Split it before it is born big. */
-const NEW_FILE_CAP = 1000;
-/** Growth slack per tracked file, so a one-line bugfix in a legacy giant never blocks. */
-const SLACK = 40;
+const NEW_FILE_CAP = 600;
+/** Phase-0 normalization locks every adopted legacy cap exactly; growth requires an explicit reviewed rebase. */
+const SLACK = 0;
 
 const update = process.argv.includes("--update");
 
-const tracked = execFileSync("git", ["ls-files", "packages", "apps", "benchmarks"], { cwd: root, encoding: "utf8" })
+const tracked = execFileSync("git", ["ls-files", "packages", "apps", "benchmarks"], {
+  cwd: root,
+  encoding: "utf8",
+})
   .split("\n")
   .filter(
     (f) =>
@@ -66,7 +69,9 @@ if (!existsSync(baselinePath)) {
   const baseline = {};
   for (const [f, n] of [...counts].sort()) if (n >= TRACK_THRESHOLD) baseline[f] = n;
   writeFileSync(baselinePath, JSON.stringify(baseline, null, 2) + "\n");
-  console.log(`complexity-ratchet: baseline seeded with ${Object.keys(baseline).length} files >= ${TRACK_THRESHOLD} lines`);
+  console.log(
+    `complexity-ratchet: baseline seeded with ${Object.keys(baseline).length} files >= ${TRACK_THRESHOLD} lines`,
+  );
   process.exit(0);
 }
 
@@ -81,7 +86,9 @@ for (const [f, cap] of Object.entries(baseline)) {
     continue;
   }
   if (now > cap + SLACK) {
-    failures.push(`${f}: ${now} lines (baseline ${cap} + slack ${SLACK}). Split or shrink it — the ratchet only goes down.`);
+    failures.push(
+      `${f}: ${now} lines (baseline ${cap} + slack ${SLACK}). Split or shrink it — the ratchet only goes down.`,
+    );
   } else if (now < cap) {
     improvements.push([f, now]);
   }
@@ -90,7 +97,9 @@ for (const [f, cap] of Object.entries(baseline)) {
 for (const [f, n] of counts) {
   if (f in baseline) continue;
   if (n > NEW_FILE_CAP) {
-    failures.push(`${f}: ${n} lines is over the ${NEW_FILE_CAP}-line cap for files outside the legacy baseline. Split it.`);
+    failures.push(
+      `${f}: ${n} lines is over the ${NEW_FILE_CAP}-line cap for files outside the legacy baseline. Split it.`,
+    );
   }
 }
 
@@ -111,7 +120,9 @@ if (update && (improvements.length > 0 || adoptions.length > 0)) {
     else baseline[f] = n;
   }
   for (const [f, n] of adoptions) baseline[f] = n;
-  const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
+  const sorted = Object.fromEntries(
+    Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)),
+  );
   writeFileSync(baselinePath, JSON.stringify(sorted, null, 2) + "\n");
   console.log(
     `complexity-ratchet: baseline tightened for ${improvements.length} file(s), adopted ${adoptions.length} newly-tracked file(s)`,

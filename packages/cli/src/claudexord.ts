@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   DaemonClient,
+  JournalManager,
   DaemonServer,
   InteractionRegistry,
   RunEventBus,
@@ -10,6 +11,7 @@ import {
   daemonDir,
   defaultSocketPath,
   ensureToken,
+  ensureDaemonRuntimeRoot,
   logPath,
   socketAlive,
 } from "@claudexor/daemon";
@@ -25,247 +27,328 @@ import {
   containsSecretLikeToken,
   noProjectRepoRoot,
   readTextSafe,
+  redactSecrets,
 } from "@claudexor/util";
 import {
   type AttachmentInput,
-  type ControlRunStartRequest as ControlRunStartRequestDto,
   ControlSettingsUpdateRequest,
   InterviewAnswer,
 } from "@claudexor/schema";
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
+import { AuthReadinessService } from "@claudexor/gateway";
 import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { applyHarnessSettingsPatches, assertSettingsPatchValid } from "./settings-service.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SetupJobStore } from "./setup-job-store.js";
+import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
+import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
 import {
   buildGroundingPrompt,
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
   persistSpec,
 } from "./spec.js";
-
-
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 async function main(): Promise<void> {
-  // The daemon dir holds the auth token, jobs registry, and setup logs: it must
-  // never be group/world readable (mkdir mode only applies on creation).
-  mkdirSync(daemonDir(), { recursive: true, mode: 0o700 });
-  chmodSync(daemonDir(), 0o700);
-  const token = ensureToken();
-  const socketPath = defaultSocketPath();
+  // No lock/token/log writer may run until both config and daemon roots have
+  // been proven canonical without following links. Permission repair happens
+  // inside that proof, never before it.
+  ensureDaemonRuntimeRoot();
+  let shutdownRuntime: DaemonRuntimeShutdown | null = null;
+  let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
+  try {
+    const token = ensureToken();
+    const socketPath = defaultSocketPath();
+    let requestRootShutdown: () => Promise<void> = async () => {
+      throw new Error("daemon shutdown coordinator is not initialized");
+    };
 
-  // Live observation plane: every RunEvent is pushed onto the in-process bus
-  // (SSE latency drops to immediate; events.jsonl stays the canonical log) and
-  // harness questions park in the interaction registry until answered.
-  const bus = new RunEventBus();
-  const interactions = new InteractionRegistry();
-  // Thread/session SSOT: durable conversation registry; vendor CLI session
-  // ids are the re-hostable cache that lets later turns resume natively.
-  const threads = new ThreadStore(join(daemonDir(), "threads.json"));
+    // Live observation plane: every RunEvent is pushed onto the in-process bus
+    // (SSE latency drops to immediate; events.jsonl stays the canonical log) and
+    // harness questions park in the interaction registry until answered.
+    const bus = new RunEventBus();
+    const interactions = new InteractionRegistry();
+    // Thread/session SSOT: durable conversation registry; vendor CLI session
+    // ids are the re-hostable cache that lets later turns resume natively.
+    const threads = new ThreadStore(join(daemonDir(), "threads.json"));
 
-  const server = new DaemonServer({
-    socketPath,
-    token,
-    // Durable run registry so the run list survives a daemon/Mac restart.
-    persistPath: join(daemonDir(), "jobs.json"),
-    // A terminal run must stop advertising waiting_on_user immediately —
-    // cancelled/failed runs otherwise park their questions in the registry
-    // until the interaction timeout.
-    onRunTerminal: (runId) => interactions.dropForRun(runId),
-    // A turn whose job died BEFORE a run bound (trust gate, preflight throw)
-    // records the refusal on itself — the chat renders it inline instead of
-    // an eternally-empty bubble.
-    onTurnEnqueueFailed: (turnId, error, code) => threads.setTurnEnqueueError(turnId, error, code),
-    runner: async (params, ctx) => {
-      const p = normalizeDaemonRunStart(params);
-      const mode = p.mode;
-      const noProjectAsk = mode === "ask" && p.scope.kind === "none";
-      const repoRoot = p.scope.kind === "project" ? p.scope.root : NO_PROJECT_ROOT;
-      if (noProjectAsk) mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-      const orchestrator = new Orchestrator({
-        registry: buildRegistry(),
-        portfolio: p.portfolio,
-        reviewerPanel: p.reviewerPanel,
-        reviewerModels:
-          p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
-        reviewerEfforts:
-          p.reviewerEfforts && typeof p.reviewerEfforts === "object"
-            ? p.reviewerEfforts
-            : undefined,
-      });
-      // Fail loud on bogus socket-caller thread/turn ids (job settles failed).
-      const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
-      // Resolve the execution tree: an ISOLATED thread runs in its persistent
-      // worktree (lazily created); in-place threads and ordinary runs use the
-      // project root. Config/artifacts stay anchored to repoRoot either way.
-      let executionRoot: string | undefined;
-      let inPlace = p.execution.isolation === "live";
-      if (threadId && repoRoot !== NO_PROJECT_ROOT) {
-        const thread = threads.getThread(threadId);
-        if (thread?.workspace.mode === "isolated") {
-          const wt = await ensureThreadWorktree(repoRoot, threadId);
-          executionRoot = wt.path;
-          // Persist the base ONLY on creation: `apply` advances base_sha, and a
-          // later turn must not clobber it back to the worktree HEAD (which never
-          // moves, since turns don't commit) — that would re-apply old work.
-          if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
-          inPlace = true; // isolated turns run in-place WITHIN the worktree
-        }
-      }
-      // Single-writer turn binding: control-api pre-creates the turn and passes
-      // its id, which we bind when the run starts. A thread run WITHOUT a
-      // pre-created turn (a direct POST /runs with threadId) gets its turn
-      // created and bound here, so "a run is always recorded on its thread".
-      const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
-        ctx.onRunStart?.(info);
-        if (!threadId) return;
-        try {
-          if (turnId) {
-            threads.bindTurnRun(turnId, info.runId);
-          } else {
-            const turn = threads.createTurn(threadId, String(p.prompt ?? ""), {
-              parentRunId: typeof p.parentRunId === "string" ? p.parentRunId : null,
-            });
-            threads.bindTurnRun(turn.id, info.runId);
-          }
-        } catch {
-          /* turn binding must never fail the run */
-        }
-      };
-      return orchestrator.run({
-        onEvent: (event) => bus.publish(event),
-        onInteraction: (ctx2) => interactions.register(ctx2),
-        interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
-        threadId,
-        executionRoot,
-        // Native session continuity: resume each routed harness's own prior
-        // conversation in this thread; record new native ids for future turns.
-        resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
-        onSessionObserved: threadId
-          ? (harnessId, nativeSessionId, observedModel) =>
-              threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
-          : undefined,
-        authPreference: p.authPreference,
-        // Orchestrate autonomy (suggest/auto_safe/auto_full): consumed by the
-        // executor in runOrchestrate. The daemon also lends the executor a live
-        // answer-delivery service for answer_question steps (the engine does not
-        // own the interaction registry).
-        autonomy: p.autonomy,
-        answerInteraction: async (subRunId, interactionId, answers) =>
-          interactions.answer(subRunId, interactionId, answers).status === "delivered",
-        repoRoot,
-        prompt: String(p.prompt ?? ""),
-        // Attachments ride on the turn (resolved to scoped paths); a direct
-        // POST /runs without a turn resolves them here. Never base64 in jobs.json.
-        attachments: turnId
-          ? (threads.getTurn(turnId)?.attachments ?? [])
-          : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
-        // Agent-driven browser opt-in (Playwright MCP). The orchestrator gates it
-        // on the harness's browser_tool capability + web policy != off.
-        browser: (p as { browser?: boolean }).browser === true,
-        mode: p.mode,
-        contextMode: noProjectAsk
-          ? "off"
-          : p.scope.kind === "project"
-            ? p.scope.context
-            : undefined,
-        harnesses: p.harnesses,
-        primaryHarness: p.primaryHarness,
-        portfolio: p.portfolio,
-        n: p.n,
-        attempts: p.attempts ?? null,
-        untilClean: p.untilClean === true,
-        swarm: p.swarm === true,
-        create: p.create === true,
-        synthesis: p.synthesis,
-        // Policy from the GUI composer / API client (applied, not just displayed).
-        maxUsd: p.maxUsd ?? null,
-        maxToolCalls: p.maxToolCalls ?? null,
-        access: p.access,
-        web: p.web ?? p.externalContextPolicy,
-        externalContextPolicy: p.externalContextPolicy ?? p.web,
-        model: p.model,
-        models: p.models,
-        effort: p.effort,
-        tests: Array.isArray(p.tests) ? p.tests : undefined,
-        protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
-          ? p.protectedPathApprovals
-          : undefined,
-        specId: typeof p.specId === "string" ? p.specId : undefined,
-        specHash: typeof p.specHash === "string" ? p.specHash : undefined,
-        specPath: typeof p.specPath === "string" ? p.specPath : undefined,
-        inPlace,
-        signal: ctx.signal,
-        onRunStart,
-      });
-    },
-  });
-
-  // SINGLETON GUARD FIRST: a second claudexord must refuse BEFORE crash GC —
-  // otherwise it would reap the LIVE daemon's recorded children and sweep
-  // envelopes its running jobs still own. server.start() re-checks (race-safe
-  // enough: the window between the probe and listen is milliseconds, and GC
-  // only runs when the probe found no live daemon).
-  if (await socketAlive(socketPath)) {
-    throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
-  }
-
-  // Crash GC before any new work (reap surviving children, sweep orphaned
-  // envelopes/branches/tmp-homes), then arm live-children bookkeeping and
-  // graceful SIGTERM/SIGINT shutdown.
-  await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
-
-  await server.start();
-  appendFileSync(
-    logPath(),
-    `[${new Date().toISOString()}] claudexord listening on ${socketPath}\n`,
-  );
-  const lifecycle = armDaemonLifecycle({
-    daemonDir: daemonDir(),
-    logPath: logPath(),
-    stop: () => server.stop(),
-  });
-  const control =
-    process.env.CLAUDEXOR_NO_CONTROL_API === "1"
-      ? null
-      : new DaemonControlApiServer({
-          token,
-          daemon: new DaemonClient(socketPath, token),
-          port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
-          bus,
-          services: controlServices(interactions, threads),
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      // Durable run registry so the run list survives a daemon/Mac restart.
+      persistPath: join(daemonDir(), "jobs.json"),
+      // A terminal run must stop advertising waiting_on_user immediately —
+      // cancelled/failed runs otherwise park their questions in the registry
+      // until the interaction timeout.
+      onRunTerminal: (runId) => interactions.dropForRun(runId),
+      // A turn whose job died BEFORE a run bound (trust gate, preflight throw)
+      // records the refusal on itself — the chat renders it inline instead of
+      // an eternally-empty bubble.
+      onTurnEnqueueFailed: (turnId, error, code) =>
+        threads.setTurnEnqueueError(turnId, error, code),
+      onShutdownRequested: () => requestRootShutdown(),
+      runner: async (params, ctx) => {
+        const p = normalizeRunStartRequest(params);
+        const mode = p.mode;
+        const noProjectAsk = mode === "ask" && p.scope.kind === "none";
+        const repoRoot = p.scope.kind === "project" ? p.scope.root : NO_PROJECT_ROOT;
+        if (noProjectAsk) mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
+        const orchestrator = new Orchestrator({
+          registry: buildRegistry(),
+          portfolio: p.portfolio,
+          reviewerPanel: p.reviewerPanel,
+          reviewerModels:
+            p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
+          reviewerEfforts:
+            p.reviewerEfforts && typeof p.reviewerEfforts === "object"
+              ? p.reviewerEfforts
+              : undefined,
         });
-  if (control) {
-    const controlAddr = await control.start();
-    writeFileSync(
-      join(daemonDir(), "control-api.json"),
-      JSON.stringify({ ...controlAddr, tokenPath: join(daemonDir(), "token") }, null, 2) + "\n",
-      { mode: 0o600 },
+        // Fail loud on bogus socket-caller thread/turn ids (job settles failed).
+        const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
+        // Resolve the execution tree: an ISOLATED thread runs in its persistent
+        // worktree (lazily created); in-place threads and ordinary runs use the
+        // project root. Config/artifacts stay anchored to repoRoot either way.
+        let executionRoot: string | undefined;
+        let inPlace = p.execution.isolation === "live";
+        if (threadId && repoRoot !== NO_PROJECT_ROOT) {
+          const thread = threads.getThread(threadId);
+          if (thread?.workspace.mode === "isolated") {
+            const wt = await ensureThreadWorktree(repoRoot, threadId);
+            executionRoot = wt.path;
+            // Persist the base ONLY on creation: `apply` advances base_sha, and a
+            // later turn must not clobber it back to the worktree HEAD (which never
+            // moves, since turns don't commit) — that would re-apply old work.
+            if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
+            inPlace = true; // isolated turns run in-place WITHIN the worktree
+          }
+        }
+        // Single-writer turn binding: control-api pre-creates the turn and passes
+        // its id, which we bind when the run starts. A thread run WITHOUT a
+        // pre-created turn (a direct POST /runs with threadId) gets its turn
+        // created and bound here, so "a run is always recorded on its thread".
+        const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
+          ctx.onRunStart?.(info);
+          if (!threadId) return;
+          try {
+            if (turnId) {
+              threads.bindTurnRun(turnId, info.runId);
+            } else {
+              const turn = threads.createTurn(threadId, String(p.prompt ?? ""), {
+                parentRunId: typeof p.parentRunId === "string" ? p.parentRunId : null,
+              });
+              threads.bindTurnRun(turn.id, info.runId);
+            }
+          } catch {
+            /* turn binding must never fail the run */
+          }
+        };
+        return orchestrator.run({
+          onEvent: (event) => bus.publish(event),
+          onInteraction: (ctx2) => interactions.register(ctx2),
+          interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
+          threadId,
+          executionRoot,
+          // Native session continuity: resume each routed harness's own prior
+          // conversation in this thread; record new native ids for future turns.
+          resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
+          onSessionObserved: threadId
+            ? (harnessId, nativeSessionId, observedModel) =>
+                threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
+            : undefined,
+          authPreference: p.authPreference,
+          // Orchestrate autonomy (suggest/auto_safe/auto_full): consumed by the
+          // executor in runOrchestrate. The daemon also lends the executor a live
+          // answer-delivery service for answer_question steps (the engine does not
+          // own the interaction registry).
+          autonomy: p.autonomy,
+          answerInteraction: async (subRunId, interactionId, answers) =>
+            interactions.answer(subRunId, interactionId, answers).status === "delivered",
+          repoRoot,
+          prompt: String(p.prompt ?? ""),
+          // Attachments ride on the turn (resolved to scoped paths); a direct
+          // POST /runs without a turn resolves them here. Never base64 in jobs.json.
+          attachments: turnId
+            ? (threads.getTurn(turnId)?.attachments ?? [])
+            : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
+          // Agent-driven browser opt-in (Playwright MCP). The orchestrator gates it
+          // on the harness's browser_tool capability + web policy != off.
+          browser: (p as { browser?: boolean }).browser === true,
+          mode: p.mode,
+          contextMode: noProjectAsk
+            ? "off"
+            : p.scope.kind === "project"
+              ? p.scope.context
+              : undefined,
+          harnesses: p.harnesses,
+          primaryHarness: p.primaryHarness,
+          portfolio: p.portfolio,
+          n: p.n,
+          attempts: p.attempts ?? null,
+          untilClean: p.untilClean === true,
+          swarm: p.swarm === true,
+          create: p.create === true,
+          synthesis: p.synthesis,
+          // Policy from the GUI composer / API client (applied, not just displayed).
+          maxUsd: p.maxUsd ?? null,
+          maxToolCalls: p.maxToolCalls ?? null,
+          access: p.access,
+          web: p.web ?? p.externalContextPolicy,
+          externalContextPolicy: p.externalContextPolicy ?? p.web,
+          model: p.model,
+          models: p.models,
+          effort: p.effort,
+          tests: Array.isArray(p.tests) ? p.tests : undefined,
+          protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
+            ? p.protectedPathApprovals
+            : undefined,
+          specId: typeof p.specId === "string" ? p.specId : undefined,
+          specHash: typeof p.specHash === "string" ? p.specHash : undefined,
+          specPath: typeof p.specPath === "string" ? p.specPath : undefined,
+          inPlace,
+          signal: ctx.signal,
+          onRunStart,
+        });
+      },
+    });
+
+    // SINGLETON GUARD FIRST: a second claudexord must refuse BEFORE crash GC —
+    // otherwise it would reap the LIVE daemon's recorded children and sweep
+    // envelopes its running jobs still own. server.start() re-checks (race-safe
+    // enough: the window between the probe and listen is milliseconds, and GC
+    // only runs when the probe found no live daemon).
+    if (await socketAlive(socketPath)) {
+      throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
+    }
+
+    // Crash GC before any new work (reap surviving children, sweep orphaned
+    // envelopes/branches/tmp-homes), then arm live-children bookkeeping and
+    // graceful SIGTERM/SIGINT shutdown.
+    await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
+
+    // One composition-root journal owner. A corrupt global partition is a
+    // supported degraded startup: setup routes fail closed while recovery
+    // inspect/export/validate/quarantine remain available on the control plane.
+    const journalManager = new JournalManager(daemonDir());
+    const setupStoreSlot = journalManager.registerProjection({
+      name: "setup",
+      create: (journal) => new SetupJobStore(daemonDir(), { journal }),
+      validate: (store) => store.validateProjection(),
+    });
+    const authReadiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
+      cwd: NO_PROJECT_ROOT,
+    });
+    const setupBinding = new SetupLifecycleBinding(setupStoreSlot, (store) =>
+      createSetupJobManager({
+        rootDir: daemonDir(),
+        store,
+        onCredentialStateMayHaveChanged: (harness) => authReadiness.invalidate(harness),
+      }),
     );
-    appendFileSync(
-      logPath(),
-      `[${new Date().toISOString()}] claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`,
-    );
-  } else {
-    appendFileSync(
-      logPath(),
-      `[${new Date().toISOString()}] claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1\n`,
-    );
+    let control: DaemonControlApiServer | null = null;
+    shutdownRuntime = new DaemonRuntimeShutdown({
+      daemon: server,
+      setup: setupBinding,
+      control: () => control,
+      journal: journalManager,
+    });
+    requestRootShutdown = () => shutdownRuntime!.request();
+    control =
+      process.env.CLAUDEXOR_NO_CONTROL_API === "1"
+        ? null
+        : new DaemonControlApiServer({
+            token,
+            daemon: new DaemonClient(socketPath, token),
+            port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
+            bus,
+            services: controlServices(
+              interactions,
+              threads,
+              setupBinding,
+              journalManager,
+              authReadiness,
+            ),
+          });
+    // Signals are armed before the first journal/setup/listener startup await.
+    // Daemon and control start/stop are serialized, so a signal at any startup
+    // boundary fences future listen() calls instead of allowing a late server.
+    lifecycle = armDaemonLifecycle({
+      daemonDir: daemonDir(),
+      logPath: logPath(),
+      stop: () => shutdownRuntime!.request(),
+    });
+
+    journalManager.start();
+    await setupBinding.start();
+    if (!shutdownRuntime.requested()) await server.start();
+    if (!shutdownRuntime.requested()) {
+      appendFileSync(
+        logPath(),
+        `[${new Date().toISOString()}] claudexord listening on ${socketPath}\n`,
+      );
+    }
+    if (control && !shutdownRuntime.requested()) {
+      const controlAddr = await control.start();
+      if (!shutdownRuntime.requested()) {
+        writeFileSync(
+          join(daemonDir(), "control-api.json"),
+          `${JSON.stringify({ ...controlAddr, tokenPath: join(daemonDir(), "token") }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+        appendFileSync(
+          logPath(),
+          `[${new Date().toISOString()}] claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`,
+        );
+      }
+    } else if (!control && !shutdownRuntime.requested()) {
+      appendFileSync(
+        logPath(),
+        `[${new Date().toISOString()}] claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1\n`,
+      );
+    }
+    await shutdownRuntime.wait();
+    lifecycle.finalize();
+    lifecycle = null;
+    appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord shut down\n`);
+  } catch (error) {
+    try {
+      appendFileSync(
+        logPath(),
+        `[${new Date().toISOString()}] daemon lifecycle FAILED: ${redactSecrets(
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        )}\n`,
+      );
+    } catch {
+      /* preserve the lifecycle failure */
+    }
+    if (shutdownRuntime) {
+      try {
+        await shutdownRuntime.request();
+        lifecycle?.finalize();
+        lifecycle = null;
+      } catch (shutdownError) {
+        try {
+          appendFileSync(
+            logPath(),
+            `[${new Date().toISOString()}] shutdown FAILED: ${redactSecrets(
+              shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+            )}\n`,
+          );
+        } catch {
+          /* preserve the shutdown failure */
+        }
+        throw new AggregateError(
+          [error, shutdownError],
+          "claudexord failed and could not complete shutdown",
+        );
+      }
+    }
+    throw error;
   }
-  await server.waitForShutdown();
-  await control?.stop();
-  lifecycle.finalize();
-  appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord shut down\n`);
-  process.exit(0);
 }
-
-// Run-start normalization has exactly one owner (control-api); the socket
-// runner path delegates so scope/secret/absolute-root rules cannot drift.
-const normalizeDaemonRunStart = (raw: unknown): ControlRunStartRequestDto =>
-  normalizeRunStartRequest(raw);
-
 function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string): string {
   if ("repoRoot" in p)
     throw new Error(
@@ -346,10 +429,33 @@ async function applyThreadDiff(
           : "applied";
   return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
 }
+type SetupJobManager = ReturnType<typeof createSetupJobManager>;
+type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
 
-function controlServices(interactions: InteractionRegistry, threads: ThreadStore) {
+function controlServices(
+  interactions: InteractionRegistry,
+  threads: ThreadStore,
+  setupBinding: SetupBinding,
+  journalManager: JournalManager,
+  authReadiness: AuthReadinessService,
+) {
   const secretStore = new SecretStore();
-  const setupJobs = createSetupJobManager();
+  const setupJobs = (): SetupJobManager => {
+    try {
+      return setupBinding.current();
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        ((error as { code: unknown }).code === "journal_recovery_required" ||
+          (error as { code: unknown }).code === "journal_append_uncertain")
+      ) {
+        Object.assign(error, { evidenceRefs: journalManager.inspect().evidenceRefs });
+      }
+      throw error;
+    }
+  };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
     createThread: async (input: unknown) =>
@@ -397,8 +503,12 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
       }),
     applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) =>
       applyThreadDiff(threads, id, opts),
-    setTurnEnqueueError: (turnId: string, message: string, code: string | null, retryable?: boolean) =>
-      threads.setTurnEnqueueError(turnId, message, code, retryable ?? true),
+    setTurnEnqueueError: (
+      turnId: string,
+      message: string,
+      code: string | null,
+      retryable?: boolean,
+    ) => threads.setTurnEnqueueError(turnId, message, code, retryable ?? true),
     // User-level trust surface (narrow by design): list per-repo trust files
     // and grant/revoke ONE flag — the same file/writer `claudexor trust` owns.
     listTrust: listTrustService,
@@ -406,9 +516,10 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
       interactions.answer(runId, interactionId, answers),
-    harnesses: async () => {
+    harnesses: async (input?: { fresh?: boolean }) => {
       const statuses = await buildGateway({ includeFakes: false }).statusAll({
         cwd: NO_PROJECT_ROOT,
+        ...(input?.fresh !== undefined ? { fresh: input.fresh } : {}),
       });
       // The doctor's configured-model truth check rides the status DTO
       // so the UI renders the same honesty the CLI prints (never a green
@@ -432,14 +543,32 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
     },
     harnessModels: async (input: { harnessId: string }) =>
       harnessModels(input.harnessId, NO_PROJECT_ROOT),
+    authReadiness: async (input: { harnessId: string; request: unknown }) =>
+      authReadiness.refresh(input.harnessId, input.request),
     // Derived catalog for external agents; same composer the CLI verb and the
     // MCP tool use, so all three surfaces answer identically.
     agentCapabilities: async () => buildAgentCapabilityCatalog(),
-    createSetupJob: async (input: unknown) => setupJobs.create(input),
-    listSetupJobs: async () => ({ jobs: setupJobs.list() }),
-    setupJobStatus: async (input: unknown) => setupJobs.status(input),
-    cancelSetupJob: async (input: unknown) => setupJobs.cancel(input),
-    confirmSetupJob: async (input: unknown) => setupJobs.confirm(input),
+    createSetupJob: async (input: unknown) => setupJobs().create(input),
+    listSetupJobs: async (input?: unknown) => {
+      const jobs = setupJobs();
+      return { jobs: jobs.list(input as Parameters<typeof jobs.list>[0]) };
+    },
+    setupJobStatus: async (input: unknown) => setupJobs().status(input),
+    setupJobSnapshot: async (input: unknown) => setupJobs().snapshot(input),
+    setupJobEvents: async (input: unknown) => setupJobs().events(input),
+    cancelSetupJob: async (input: unknown) => setupJobs().cancel(input),
+    extendSetupJob: async (input: unknown) => setupJobs().extend(input),
+    recoveryInspectGlobal: async () => journalManager.inspect(),
+    recoveryValidateGlobal: async () => journalManager.validate(),
+    recoveryExportGlobal: async () => journalManager.exportRecovery(),
+    recoveryQuarantineGlobal: async (input: unknown) => {
+      const request = input as Parameters<JournalManager["quarantineAndStartFresh"]>[0];
+      const preflight = journalManager.preflightQuarantine(request);
+      if (preflight.disposition === "completed" && setupBinding.isBoundToCurrentGeneration()) {
+        return preflight.receipt;
+      }
+      return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
+    },
     settings: async () => {
       const cfg = loadConfig(NO_PROJECT_ROOT);
       return {
@@ -655,5 +784,5 @@ function controlServices(interactions: InteractionRegistry, threads: ThreadStore
 
 main().catch((err: unknown) => {
   process.stderr.write(`claudexord: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+  process.exitCode = 1;
 });

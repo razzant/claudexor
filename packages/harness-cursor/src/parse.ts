@@ -1,4 +1,4 @@
-import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
+import type { AuthSourceKind, CredentialRoute, HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
@@ -52,9 +52,9 @@ export type CursorEventParser = (obj: Json, sessionId: string) => HarnessEvent[]
  * the originating tool so completed events become self-describing
  * `tool_result`s instead of duplicate `tool_call`s.
  */
-export function createCursorParser(): CursorEventParser {
+export function createCursorParser(credentialRoute?: CredentialRoute, credentialSource?: AuthSourceKind): CursorEventParser {
   const pending = new Map<string, ToolRef>();
-  return (obj: Json, sessionId: string): HarnessEvent[] | null => parseCursorEventStateful(obj, sessionId, pending);
+  return (obj: Json, sessionId: string): HarnessEvent[] | null => parseCursorEventStateful(obj, sessionId, pending, credentialRoute, credentialSource);
 }
 
 /** Stateless convenience used by tests; resolves results within one call only. */
@@ -66,6 +66,8 @@ function parseCursorEventStateful(
   obj: Json,
   sessionId: string,
   pending: Map<string, ToolRef>,
+  credentialRoute?: CredentialRoute,
+  credentialSource?: AuthSourceKind,
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
@@ -81,6 +83,8 @@ function parseCursorEventStateful(
         session_id: sessionId,
         ts,
         observed_model: typeof obj.model === "string" ? obj.model : undefined,
+        ...(credentialRoute ? { credential_route: credentialRoute } : {}),
+        ...(credentialSource ? { credential_source: credentialSource } : {}),
         ...(nativeId ? { payload: { native_session_id: nativeId } } : {}),
       },
     ];

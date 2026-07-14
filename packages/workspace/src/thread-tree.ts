@@ -1,9 +1,8 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDir } from "@claudexor/util";
+import { ensureDir, projectRuntimeDir } from "@claudexor/util";
 import { branchDelete, isGitRepo, revParse, snapshotTree, worktreeAdd, worktreeAddExisting } from "./git.js";
-import { ensureSelfIgnore } from "./self-ignore.js";
 
 export interface ThreadWorktreeResult {
   /** Absolute path to the thread's persistent worktree (the execution root). */
@@ -21,8 +20,8 @@ export interface ThreadWorktreeResult {
  * the cumulative patch to the project. Race candidates still branch off the
  * worktree's current state into throwaway envelopes.
  *
- * The worktree lives under the project's self-ignored `.claudexor/`, so the
- * project's own git never sees it and snapshots exclude it.
+ * The worktree lives in Claudexor's external per-project runtime namespace;
+ * the project's own git and ignore files are never used as a runtime boundary.
  */
 export async function ensureThreadWorktree(projectRoot: string, threadId: string): Promise<ThreadWorktreeResult> {
   if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
@@ -31,19 +30,15 @@ export async function ensureThreadWorktree(projectRoot: string, threadId: string
   if (!(await isGitRepo(projectRoot))) {
     throw new WorkspaceError(`isolated threads require a git project: ${projectRoot}`);
   }
-  const path = join(projectRoot, ".claudexor", "threads", threadId, "tree");
+  const threadDir = join(projectRuntimeDir(projectRoot), "threads", threadId);
+  const path = join(threadDir, "tree");
   if (existsSync(join(path, ".git"))) {
     // Turns never commit on the branch (in-place envelopes leave changes in the
     // working tree), so HEAD still points at the original base snapshot.
     return { path, baseSha: await revParse(path, "HEAD"), created: false };
   }
   const baseSha = await snapshotTree(projectRoot);
-  const threadDir = join(projectRoot, ".claudexor", "threads", threadId);
   ensureDir(threadDir);
-  // Self-ignore the project's `.claudexor/` so the user's own `git add -A` never
-  // captures the thread worktree (shared content-checked owner with
-  // WorkspaceManager: a user-edited/emptied file is repaired, not trusted).
-  ensureSelfIgnore(join(projectRoot, ".claudexor"));
   const branch = `claudexor/thread-${threadId}`;
   // Thread branches are PERSISTENT live-thread state. When the branch
   // survives but the worktree directory was lost, RECOVER by recreating the

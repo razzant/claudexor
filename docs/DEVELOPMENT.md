@@ -99,7 +99,9 @@ pnpm release:verify
 
 It runs Node/schema checks, Swift build/test checks, and local (unsigned)
 app packaging; the CI release build signs and notarizes when the Apple
-secrets are present.
+secrets are present. App packaging also asserts that the separately bundled
+setup-login runner exists and can start under the bundled Node; a daemon-only
+bundle is incomplete.
 
 Publishing happens FROM THE TAG: pushing `v<semver>` runs
 `.github/workflows/release.yml`, which re-runs the full gate battery on a
@@ -177,6 +179,10 @@ Tests and local smokes must never touch real user state:
   the 0600 file store so secret reads/writes never hit the real macOS login
   Keychain — which `CLAUDEXOR_CONFIG_DIR` alone cannot redirect because the
   Keychain is not path-scoped.
+- Setup-job/runner tests inject filesystem, clock, launcher, process identity,
+  signal, and timer dependencies and use temp roots only. They checksum the
+  legacy registry before/after, exercise PID reuse and symlink/path fences, and
+  never open Terminal or write `~/.claudexor`.
 - The `fake-*` harnesses are the offline, keyless, deterministic fixtures
   (`--harness fake-success`, etc.); they are only selectable by explicit id and
   never enter auto/reviewer/orchestrate pools. `fake-implement` additionally writes a
@@ -221,6 +227,19 @@ Do not fork contracts in UI code, CLI parsing, adapter output, or docs.
   readiness comes from doctor status, enabled intents, and smoke/conformance
   checks. Do not route, mark Auth UI ready, or select reviewers from source
   availability alone.
+- A native-login success assertion requires the journaled hash-bound vendor
+  result, a fresh source-targeted probe, and an isolated same-harness capability
+  smoke on the exact native route; process exit, browser confirmation, manifest
+  capability, another provider, or an API key alone is insufficient. Readiness
+  mapping
+  is stable across adapters: absent/logged-out = `unavailable + not_run`, probe
+  failure = `unknown + not_run`, and present-but-unusable = `available + failed`.
+- Native session transport remains vendor-owned. Codex uses the native
+  `CODEX_HOME` file/keyring/auto store, Claude uses the vendor config plus macOS
+  Keychain, and Cursor uses its Keychain-backed state. Do not read or copy those
+  credential files/tokens into Claudexor state or an envelope. API keys and the
+  Claude setup-token are separate secret-store/env routes with separate typed
+  source evidence.
 - Diffs come from git in the target workspace or envelope.
 - Files and typed artifacts are the source of truth; terminal text and UI rows
   are projections.

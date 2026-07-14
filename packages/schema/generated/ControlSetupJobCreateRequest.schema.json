@@ -9,29 +9,27 @@
           "enum": [
             "codex",
             "claude",
-            "cursor",
-            "opencode",
-            "raw"
+            "cursor"
           ],
-          "description": "Harness ids that have a managed setup flow."
+          "description": "Harness ids with a managed native-login flow."
         },
         "action": {
           "type": "string",
-          "enum": [
-            "install",
-            "login",
-            "doctor",
-            "store_key"
-          ],
-          "description": "Setup action to perform: install the vendor CLI, log in, run the doctor, or store an API key."
+          "const": "login",
+          "description": "The daemon-managed native-login action."
+        },
+        "authRequest": {
+          "type": "string",
+          "const": "subscription"
         }
       },
       "required": [
         "harness",
-        "action"
+        "action",
+        "authRequest"
       ],
       "additionalProperties": false,
-      "description": "Request body to create a harness setup job."
+      "description": "Request body to create an exact-subscription native-login job."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -1,4 +1,4 @@
-import type { ConformanceCheck, HarnessManifest, Intent } from "@claudexor/schema";
+import type { AuthSourceKind, AuthSourceReadiness, ConformanceCheck, HarnessManifest, Intent } from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runDoctor } from "@claudexor/core";
 import { allowedIntents } from "./gating.js";
@@ -12,6 +12,7 @@ export interface HarnessStatus {
   disabledIntents: Intent[];
   checks: ConformanceCheck[];
   reasons: string[];
+  authSources: AuthSourceReadiness[];
 }
 
 /**
@@ -28,6 +29,25 @@ export class HarnessGateway {
 
   get(id: string): HarnessAdapter | undefined {
     return this.registry.get(id);
+  }
+
+  /**
+   * Probe one concrete auth source on one concrete harness. This deliberately
+   * bypasses discover() and every other adapter: post-login verification must
+   * not spend or accidentally accept an unrelated credential route.
+   */
+  async probeAuthSource(
+    harnessId: string,
+    source: AuthSourceKind,
+    spec: DoctorSpec,
+  ): Promise<AuthSourceReadiness | null> {
+    const adapter = this.registry.get(harnessId);
+    if (!adapter) return null;
+    const report = (await runDoctor(
+      new Map([[adapter.id, adapter]]),
+      { ...spec, authSource: source },
+    ))[0];
+    return report?.auth_sources.find((candidate) => candidate.source === source) ?? null;
   }
 
   /**
@@ -66,6 +86,7 @@ export class HarnessGateway {
         disabledIntents: report?.disabled_intents ?? [],
         checks: report?.checks ?? [],
         reasons: [...(discoverError ? [discoverError] : []), ...(report?.reasons ?? [])],
+        authSources: report?.auth_sources ?? [],
       });
     }
     return out;

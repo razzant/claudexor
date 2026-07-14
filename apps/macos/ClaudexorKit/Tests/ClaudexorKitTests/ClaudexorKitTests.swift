@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import ClaudexorKit
 
@@ -274,19 +277,6 @@ import Testing
         #expect(old.budget == nil)
     }
 
-    @Test func controlApiDiscoveryLoadsEndpointAndToken() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let token = dir.appendingPathComponent("token")
-        try "secret-token\n".write(to: token, atomically: true, encoding: .utf8)
-        let doc = dir.appendingPathComponent("control-api.json")
-        try #"{"host":"127.0.0.1","port":12345,"tokenPath":"\#(token.path)"}"#.write(to: doc, atomically: true, encoding: .utf8)
-
-        let discovery = try ControlApiDiscovery.load(from: doc)
-        #expect(discovery.baseURL?.absoluteString == "http://127.0.0.1:12345")
-        #expect(try discovery.readToken() == "secret-token")
-    }
-
     // MARK: SSE parser (the bytes.lines pitfall regression suite)
 
     @Test func sseParserDispatchesFramesOnEmptyLines() {
@@ -294,8 +284,8 @@ import Testing
         let wire = "id: 7\nevent: run.created\ndata: {\"a\":1}\n\nid: 8\nevent: output.ready\ndata: {\"b\":2}\n\n"
         let frames = parser.feed(Array(wire.utf8))
         #expect(frames.count == 2)
-        #expect(frames[0] == SSEFrame(id: 7, event: "run.created", data: "{\"a\":1}"))
-        #expect(frames[1] == SSEFrame(id: 8, event: "output.ready", data: "{\"b\":2}"))
+        #expect(frames[0] == SSEFrame(id: "7", event: "run.created", data: "{\"a\":1}"))
+        #expect(frames[1] == SSEFrame(id: "8", event: "output.ready", data: "{\"b\":2}"))
     }
 
     @Test func sseParserHandlesChunkBoundariesMidLine() {
@@ -305,14 +295,14 @@ import Testing
         for chunk in ["id: 4", "2\nev", "ent: harness.event\nda", "ta: {\"x\":", "true}\n", "\n"] {
             frames.append(contentsOf: parser.feed(Array(chunk.utf8)))
         }
-        #expect(frames == [SSEFrame(id: 42, event: "harness.event", data: "{\"x\":true}")])
+        #expect(frames == [SSEFrame(id: "42", event: "harness.event", data: "{\"x\":true}")])
     }
 
     @Test func sseParserHandlesCRLFAndComments() {
         var parser = SSEParser()
         let wire = ": ping 123\r\nid: 1\r\nevent: end\r\ndata: {}\r\n\r\n"
         let frames = parser.feed(Array(wire.utf8))
-        #expect(frames == [SSEFrame(id: 1, event: "end", data: "{}")])
+        #expect(frames == [SSEFrame(id: "1", event: "end", data: "{}")])
     }
 
     @Test func sseParserJoinsMultiLineDataAndSkipsEmptyEvents() {
@@ -328,9 +318,9 @@ import Testing
         var parser = SSEParser()
         let frames = parser.feed(Array("id: 5\ndata: {\"a\":1}\n\ndata: {\"b\":2}\n\n".utf8))
         #expect(frames.count == 2)
-        #expect(frames[0].id == 5)
+        #expect(frames[0].id == "5")
         // Per WHATWG, the last seen id persists for subsequent frames.
-        #expect(frames[1].id == 5)
+        #expect(frames[1].id == "5")
     }
 
     // MARK: Interactive DTOs
@@ -950,4 +940,870 @@ import Testing
     #expect(b.errored)
     #expect(b.finalReviewClean == nil)
     #expect(b.diffstat == nil)
+}
+
+@Suite(.serialized) struct SetupLifecycleTests {
+    @Test func setupJobRejectsDeadFieldsAndUnknownV2Enums() throws {
+        let legacy = """
+        {"jobId":"old","harness":"claude","action":"login","state":"waiting_for_input",
+         "command":"claude auth login","guideUrl":null,"logPath":null,"message":"Waiting",
+         "createdAt":"2026-07-13T00:00:00Z"}
+        """
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: Data(legacy.utf8))
+        }
+
+        let current = makeSetupJob(id: "new", state: "timed_out", phase: .completed,
+                                   outcome: SetupJobOutcome(reason: .timedOut, exitCode: 17, signal: "SIGTERM"))
+        let data = try JSONEncoder().encode(current)
+        let job = try JSONDecoder().decode(SetupJob.self, from: data)
+        #expect(job.phase == .completed)
+        #expect(job.outcome?.reason == .timedOut)
+        #expect(job.outcome?.exitCode == 17)
+        #expect(job.isTerminal)
+        let encoded = try JSONDecoder().decode(SetupJob.self, from: JSONEncoder().encode(job))
+        #expect(encoded == job)
+
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        for mutation in [
+            ("phase", "future_phase"),
+            ("action", "future_action"),
+        ] {
+            var invalid = object
+            invalid[mutation.0] = mutation.1
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: invalid))
+            }
+        }
+        var obsolete = object
+        obsolete["logPath"] = "/tmp/no-longer-public.log"
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: obsolete))
+        }
+    }
+
+    @Test func setupEventRequiresExplicitPredecessorAndPreservesNullOnTheWire() throws {
+        let active = makeSetupJob(id: "j", state: "running", phase: .verifying)
+        let event = SetupJobEvent(jobId: active.jobId, cursor: "cursor-1", previousCursor: nil,
+                                  sequence: 3, time: "2026-07-13T00:00:00Z",
+                                  state: active.state, message: active.message, job: active)
+        let encoded = try JSONEncoder().encode(event)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object.keys.contains("previousCursor"))
+        #expect(object["previousCursor"] is NSNull)
+        #expect(try JSONDecoder().decode(SetupJobEvent.self, from: encoded) == event)
+
+        var missing = object
+        missing.removeValue(forKey: "previousCursor")
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJobEvent.self, from: JSONSerialization.data(withJSONObject: missing))
+        }
+
+        let chained = SetupJobEvent(jobId: active.jobId, cursor: "cursor-2", previousCursor: "cursor-1",
+                                    sequence: 9, time: "2026-07-13T00:00:01Z",
+                                    state: active.state, message: active.message, job: active)
+        #expect(try JSONDecoder().decode(SetupJobEvent.self, from: JSONEncoder().encode(chained)) == chained)
+
+        var selfLinked = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(chained)) as? [String: Any])
+        selfLinked["previousCursor"] = "cursor-2"
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJobEvent.self, from: JSONSerialization.data(withJSONObject: selfLinked))
+        }
+    }
+
+    @Test func loginCreateEncodesExactSubscription() throws {
+        let login = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            SetupJobCreateRequest(harness: .claude, action: .login)
+        )) as? [String: String])
+        #expect(login == ["harness": "claude", "action": "login", "authRequest": "subscription"])
+        let legacyHarness = #"{"id":"claude","status":"ok","manifest":null}"#
+        #expect(try JSONDecoder().decode(HarnessStatus.self, from: Data(legacyHarness.utf8)).authSources.isEmpty)
+        let currentHarness = """
+        {"id":"claude","status":"ok","manifest":null,
+         "authSources":[{"source":"native_session","availability":"available","verification":"passed","detail":"OAuth smoke passed"}]}
+        """
+        let status = try JSONDecoder().decode(HarnessStatus.self, from: Data(currentHarness.utf8))
+        #expect(status.authSources.first?.isVerifiedNativeSession == true)
+    }
+
+    @Test func setupHarnessRejectsNonNativeLoginHarnesses() throws {
+        #expect(try JSONDecoder().decode(SetupHarness.self, from: Data(#""claude""#.utf8)) == .claude)
+        for raw in ["raw-api", "raw", "opencode"] {
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(SetupHarness.self, from: Data("\"\(raw)\"".utf8))
+            }
+        }
+    }
+
+    @Test func setupJobStrictlyDecodesCapabilityAndNativeCommandEvidence() throws {
+        let digest = String(repeating: "a", count: 64)
+        let manifest = String(repeating: "b", count: 64)
+        let json = """
+        {
+          "jobId":"job-strict","harness":"claude","action":"login","state":"failed",
+          "phase":"completed","outcome":{"reason":"launch_failed"},
+          "command":"claude auth login","guideUrl":null,"message":"failed",
+          "createdAt":"2026-07-14T00:00:00Z","startedAt":"2026-07-14T00:00:01Z",
+          "finishedAt":"2026-07-14T00:00:02Z",
+          "authCapability":{
+            "attemptId":"attempt-1","challengeDigest":"\(digest)","requestDigest":"\(digest)",
+            "disclosure":{"schemaVersion":1,"protocolVersion":1,"harness":"claude",
+              "requested":"subscription","requiredRoute":"vendor_native","requiredSource":"native_session",
+              "networkScope":"selected_harness_only","billingKnowledge":"unknown",
+              "incrementalCostKnowledge":"unknown","mayConsumeQuota":true,
+              "generatedAt":"2026-07-14T00:00:00Z"},
+            "state":"disclosed"
+          },
+          "authorization":{"executionId":"exec-1",
+            "executable":{"realpath":"/usr/bin/true","sha256":"\(digest)","size":1,"mode":493,"device":"1","inode":"2"},
+            "args":[],"commandDigest":"\(digest)","manifestDigest":"\(manifest)"},
+          "nativeCommand":{"executionId":"exec-1","commandDigest":"\(digest)","manifestDigest":"\(manifest)",
+            "permitIssuedAt":null,"commandStarted":false,"exitCode":null,"signal":null,
+            "errorCode":"spawn_failed","finishedAt":"2026-07-14T00:00:02Z"}
+        }
+        """
+        let job = try JSONDecoder().decode(SetupJob.self, from: Data(json.utf8))
+        #expect(job.authCapability?.state == .disclosed)
+        #expect(job.nativeCommand?.errorCode == .spawnFailed)
+        #expect(try JSONDecoder().decode(SetupJob.self, from: JSONEncoder().encode(job)) == job)
+
+        var object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        var capability = try #require(object["authCapability"] as? [String: Any])
+        capability["futureField"] = true
+        object["authCapability"] = capability
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+
+        object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        var native = try #require(object["nativeCommand"] as? [String: Any])
+        native.removeValue(forKey: "permitIssuedAt")
+        object["nativeCommand"] = native
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+
+        object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        native = try #require(object["nativeCommand"] as? [String: Any])
+        native["manifestDigest"] = digest
+        object["nativeCommand"] = native
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+
+        object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        var authorization = try #require(object["authorization"] as? [String: Any])
+        authorization["futureField"] = true
+        object["authorization"] = authorization
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+
+        object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        native = try #require(object["nativeCommand"] as? [String: Any])
+        native["finishedAt"] = "not-a-timestamp"
+        object["nativeCommand"] = native
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+    }
+
+    @Test func authCapabilityReceiptPreservesRequiredNullableFields() throws {
+        let digest = String(repeating: "c", count: 64)
+        let json = """
+        {"receiptId":"receipt-1","attemptId":"attempt-1","harness":"claude",
+         "requested":"subscription","requiredRoute":"vendor_native","requiredSource":"native_session",
+         "effective":null,"effectiveSource":null,"selectionReason":"route_missing",
+         "availability":"unavailable","verification":"failed","billingKnowledge":"unknown",
+         "costKnowledge":"unknown","startedAt":"2026-07-14T00:00:00Z",
+         "completedAt":"2026-07-14T00:00:01Z","challengeDigest":"\(digest)",
+         "requestDigest":"\(digest)","responseDigest":"\(digest)","streamDigest":"\(digest)",
+         "scratchBeforeDigest":"\(digest)","scratchAfterDigest":"\(digest)",
+         "stream":{"startedEvents":0,"completedEvents":0,"errorEvents":0,
+           "unexpectedToolEvents":0,"interactionEvents":0,"sessionMismatchEvents":0,
+           "eventsAfterCompleted":0,"aborted":false},"evidenceRefs":[]}
+        """
+        let receipt = try JSONDecoder().decode(AuthCapabilityReceipt.self, from: Data(json.utf8))
+        let encoded = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(receipt)) as? [String: Any]
+        )
+        #expect(encoded["effective"] is NSNull)
+        #expect(encoded["effectiveSource"] is NSNull)
+        #expect(encoded["costUsd"] == nil)
+    }
+
+    @Test func safelyTerminatedLoginCanRetry() {
+        #expect(makeSetupJob(id: "login", state: "timed_out", phase: .completed).canRetry)
+    }
+
+    @Test func loginDeadlineCanBeExtendedDuringLaunchAndUserWait() {
+        #expect(makeSetupJob(id: "launching", state: "waiting_for_input", phase: .launching).canExtend)
+        #expect(makeSetupJob(id: "waiting", state: "waiting_for_input", phase: .awaitingUser).canExtend)
+        #expect(!makeSetupJob(id: "verifying", state: "running", phase: .verifying).canExtend)
+    }
+
+    @Test func terminationUnconfirmedIsNotSafeForCancelAndClose() {
+        let unconfirmed = makeSetupJob(
+            id: "uncertain", state: "cancelled", phase: .completed,
+            outcome: SetupJobOutcome(reason: .terminationUnconfirmed)
+        )
+        let confirmed = makeSetupJob(
+            id: "cancelled", state: "cancelled", phase: .completed,
+            outcome: SetupJobOutcome(reason: .cancelledByUser)
+        )
+        #expect(unconfirmed.isTerminal)
+        #expect(unconfirmed.blocksReplacement)
+        #expect(!unconfirmed.canRetry)
+        #expect(!unconfirmed.hasConfirmedTermination)
+        #expect(!confirmed.blocksReplacement)
+        #expect(confirmed.canRetry)
+        #expect(confirmed.hasConfirmedTermination)
+    }
+
+    @Test func controllerRecoversUnsafeTerminalAndDoesNotRetryIt() async {
+        let unconfirmed = makeSetupJob(
+            id: "uncertain", state: "cancelled", phase: .completed,
+            outcome: SetupJobOutcome(reason: .terminationUnconfirmed)
+        )
+        let gateway = FakeSetupGateway(
+            listResult: [unconfirmed], snapshots: [], streams: []
+        )
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+
+        await controller.recoverActiveJob(harness: "claude")
+        let recovered = await controller.snapshot()
+        #expect(recovered.job == unconfirmed)
+        #expect(recovered.connection == .terminal)
+        #expect(gateway.filters == [
+            SetupJobListFilter(harness: "claude", active: true, limit: 1),
+            SetupJobListFilter(harness: "claude", active: false, limit: 1)
+        ])
+
+        await controller.retry()
+        #expect(!gateway.calls.contains("create:login"))
+        #expect(await controller.snapshot().job == unconfirmed)
+    }
+
+    @Test func zeroActiveRecoveryIgnoresOrdinaryTerminalHistory() async {
+        let completed = makeSetupJob(
+            id: "done", state: "succeeded", phase: .completed,
+            outcome: SetupJobOutcome(reason: .completed)
+        )
+        let gateway = FakeSetupGateway(listResult: [completed], snapshots: [], streams: [])
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+
+        await controller.recoverActiveJob(harness: "claude")
+
+        let recovered = await controller.snapshot()
+        #expect(recovered.job == nil)
+        #expect(recovered.connection == .idle)
+    }
+
+    @Test func controllerRecoversLoginWithFullSnapshots() async throws {
+        let active = makeSetupJob(id: "login", state: "waiting_for_input", phase: .awaitingUser)
+        let done = makeSetupJob(id: "login", state: "succeeded", phase: .completed,
+                                outcome: SetupJobOutcome(reason: .completed))
+        let gateway = FakeSetupGateway(listResult: [active], snapshots: [active], streams: [.events([
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-event-1", previousCursor: "cursor-snapshot-1",
+                          sequence: 2, time: "t", state: .succeeded, message: done.message, job: done)
+        ])])
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        let terminal = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        #expect(terminal?.job == done)
+        #expect(gateway.lastFilter == SetupJobListFilter(harness: "claude", active: true, limit: 1))
+        #expect(gateway.calls.prefix(3) == ["list", "get:login", "stream:login"])
+    }
+
+    @Test func controllerAcceptsSparseSequencesOnlyWhenTheCursorChainIsExact() async {
+        let active = makeSetupJob(id: "sparse", state: "running", phase: .verifying)
+        let progress = makeSetupJob(id: "sparse", state: "running", phase: .verifying)
+        let done = makeSetupJob(id: "sparse", state: "succeeded", phase: .completed)
+        let gateway = FakeSetupGateway(listResult: [active], snapshots: [active], streams: [.events([
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-15", previousCursor: "cursor-snapshot-1",
+                          sequence: 15, time: "t1", state: progress.state, message: progress.message, job: progress),
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-42", previousCursor: "cursor-15",
+                          sequence: 42, time: "t2", state: done.state, message: done.message, job: done),
+        ])])
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        let terminal = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        #expect(terminal?.job == done)
+        #expect(gateway.getCount == 1)
+    }
+
+    @Test(arguments: ["wrong_predecessor", "duplicate_cursor", "regressive_sequence"])
+    func controllerResnapshotsOnBrokenCursorChains(_ defect: String) async {
+        let active = makeSetupJob(id: "broken", state: "running", phase: .verifying)
+        let first = SetupJobEvent(jobId: active.jobId, cursor: "cursor-15", previousCursor: "cursor-snapshot-1",
+                                  sequence: 15, time: "t1", state: active.state, message: active.message, job: active)
+        let broken: SetupJobEvent = switch defect {
+        case "wrong_predecessor":
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-42", previousCursor: "wrong",
+                          sequence: 42, time: "t2", state: active.state, message: active.message, job: active)
+        case "duplicate_cursor":
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-15", previousCursor: "cursor-15",
+                          sequence: 42, time: "t2", state: active.state, message: active.message, job: active)
+        default:
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-42", previousCursor: "cursor-15",
+                          sequence: 14, time: "t2", state: active.state, message: active.message, job: active)
+        }
+        let attempts = Array(repeating: FakeStreamResult.events([first, broken]), count: 6)
+        let gateway = FakeSetupGateway(
+            listResult: [active], snapshots: Array(repeating: active, count: 6), streams: attempts
+        )
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        let lost = await firstSnapshot(in: updates) { $0.connection == .streamLost }
+        #expect(lost?.reconnectAttempt == 5)
+        #expect(lost?.lastError?.contains("mismatch") == true)
+        #expect(gateway.getCount == 6)
+    }
+
+    @Test func interruptedUnknownEventStopsObservationAsTerminal() async {
+        let active = makeSetupJob(id: "unknown", state: "running", phase: .verifying)
+        let unknown = makeSetupJob(id: "unknown", state: "interrupted_unknown", phase: .completed)
+        let gateway = FakeSetupGateway(listResult: [active], snapshots: [active], streams: [.events([
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-unknown", previousCursor: "cursor-snapshot-1",
+                          sequence: 2, time: "t", state: unknown.state, message: unknown.message, job: unknown),
+        ])])
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        let terminal = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        #expect(terminal?.job?.state == .interruptedUnknown)
+        #expect(gateway.streamCount == 1)
+    }
+
+    @Test func controllerBoundsNormalEndReconnectsAtExactlyFive() async {
+        let active = makeSetupJob(id: "live", state: "waiting_for_input", phase: .awaitingUser)
+        let gateway = FakeSetupGateway(
+            listResult: [active],
+            snapshots: Array(repeating: active, count: 8),
+            streams: Array(repeating: .finish, count: 8)
+        )
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        let lost = await firstSnapshot(in: updates) { $0.connection == .streamLost }
+        #expect(lost?.reconnectAttempt == 5)
+        #expect(gateway.getCount == 6)       // initial attach + five reconnects
+        #expect(gateway.streamCount == 6)
+    }
+
+    @Test func controllerUsesAuthoritativeEventAndDetachDoesNotCancel() async {
+        let active = makeSetupJob(id: "authoritative", state: "waiting_for_input", phase: .awaitingUser)
+        let done = makeSetupJob(id: "authoritative", state: "failed", phase: .completed,
+                                outcome: SetupJobOutcome(reason: .authNotReady))
+        let gateway = FakeSetupGateway(listResult: [active], snapshots: [active], streams: [.events([
+            SetupJobEvent(jobId: active.jobId, cursor: "cursor-event-1", previousCursor: "cursor-snapshot-1",
+                          sequence: 2, time: "t", state: .failed, message: done.message, job: done)
+        ])])
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        await controller.recoverActiveJob(harness: "claude")
+        _ = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        await controller.detach()
+        #expect(gateway.getCount == 1)
+        #expect(gateway.cancelCount == 0)
+    }
+
+    @Test func joblessTransportErrorsRequireSuccessfulActiveLookupBeforeRestart() async {
+        let active = makeSetupJob(id: "accepted-login", state: "running", phase: .verifying)
+        let done = makeSetupJob(id: "accepted-login", state: "succeeded", phase: .completed,
+                                outcome: SetupJobOutcome(reason: .completed))
+        let startGateway = FakeSetupGateway(
+            listResult: [active], snapshots: [active], streams: [.events([
+                SetupJobEvent(jobId: active.jobId, cursor: "cursor-event-1", previousCursor: "cursor-snapshot-1",
+                              sequence: 2, time: "t", state: done.state,
+                              message: done.message, job: done)
+            ])], createFailures: 1
+        )
+        let startController = SetupLifecycleController(gateway: startGateway, reconnectDelays: [.zero])
+        await startController.start(harness: "claude", action: "login")
+        let unknownAfterStart = await startController.snapshot()
+        #expect(unknownAfterStart.job == nil)
+        #expect(unknownAfterStart.connection == .streamLost)
+        #expect(unknownAfterStart.lastError != nil)
+
+        let updates = await startController.updates()
+        await startController.reconnect(harness: "claude")
+        let recovered = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        #expect(recovered?.job == done)
+        #expect(startGateway.lastFilter == SetupJobListFilter(harness: "claude", active: true, limit: 1))
+
+        let recoveryGateway = FakeSetupGateway(
+            listResult: [], snapshots: [], streams: [], listFailures: 1
+        )
+        let recoveryController = SetupLifecycleController(gateway: recoveryGateway, reconnectDelays: [.zero])
+        await recoveryController.recoverActiveJob(harness: "claude")
+        #expect(await recoveryController.snapshot().connection == .streamLost)
+        await recoveryController.reconnect(harness: "claude")
+        let reconciled = await recoveryController.snapshot()
+        #expect(reconciled.connection == .idle)
+        #expect(reconciled.job == nil)
+    }
+
+    @Test func staleMutationResponseCannotReplaceReconnectSnapshot() async {
+        let cancelGate = AsyncTestGate()
+        let active = makeSetupJob(id: "active", state: "waiting_for_input", phase: .awaitingUser)
+        let cancelled = makeSetupJob(id: "active", state: "cancelled", phase: .completed,
+                                     outcome: SetupJobOutcome(reason: .cancelledByUser))
+        let gateway = MutationRaceGateway(active: active, cancelled: cancelled, cancelGate: cancelGate)
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        await controller.recoverActiveJob(harness: "claude")
+
+        let cancellation = Task { await controller.cancel() }
+        await cancelGate.waitUntilSuspended()
+        await controller.reconnect(harness: "claude")
+        await cancelGate.resume()
+        await cancellation.value
+
+        let current = await controller.snapshot()
+        #expect(current.job == active)
+        #expect(current.connection == .connected)
+        await controller.detach()
+    }
+
+    @Test func gatewaySetupSSEFailsVisiblyOnUnknownMalformedMismatchedEOFAndOverflow() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t", session: session)
+        defer { RequestStubURLProtocol.handler = nil }
+
+        func install(_ body: String) {
+            RequestStubURLProtocol.handler = { request in
+                guard request.url?.path == "/setup/jobs/j/events" else {
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "text/event-stream; charset=utf-8"]
+                )!
+                return (response, Data(body.utf8))
+            }
+        }
+
+        func consume(_ stream: AsyncThrowingStream<SetupJobEvent, Error>) async -> ([SetupJobEvent], Error?) {
+            var events: [SetupJobEvent] = []
+            do {
+                for try await event in stream { events.append(event) }
+                return (events, nil)
+            } catch {
+                return (events, error)
+            }
+        }
+
+        let active = makeSetupJob(id: "j", state: "running", phase: .verifying)
+        let event = SetupJobEvent(jobId: "j", cursor: "cursor-1", previousCursor: "snapshot",
+                                  sequence: 2, time: "t", state: active.state, message: active.message, job: active)
+        let eventJSON = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
+
+        install("id: cursor-1\nevent: setup\ndata: \(eventJSON)\n\nevent: end\ndata: {}\n\n")
+        let valid = await consume(client.setupJobEvents(jobId: "j", lastEventId: "snapshot"))
+        #expect(valid.0 == [event])
+        #expect(valid.1 == nil)
+
+        install("event: mystery\ndata: {}\n\nevent: end\ndata: {}\n\n")
+        let unknown = await consume(client.setupJobEvents(jobId: "j", lastEventId: "snapshot"))
+        #expect(String(describing: unknown.1).contains("unknown setup SSE event"))
+
+        install("id: cursor-1\nevent: setup\ndata: {\n\nevent: end\ndata: {}\n\n")
+        let malformed = await consume(client.setupJobEvents(jobId: "j", lastEventId: "snapshot"))
+        #expect(malformed.1 != nil)
+
+        install("id: wrong-id\nevent: setup\ndata: \(eventJSON)\n\nevent: end\ndata: {}\n\n")
+        let mismatched = await consume(client.setupJobEvents(jobId: "j", lastEventId: "snapshot"))
+        #expect(String(describing: mismatched.1).contains("does not match"))
+
+        install("id: cursor-1\nevent: setup\ndata: \(eventJSON)\n\n")
+        let eof = await consume(client.setupJobEvents(jobId: "j", lastEventId: "snapshot"))
+        #expect(eof.0 == [event])
+        #expect(String(describing: eof.1).contains("without a terminal end event"))
+
+        var frames = ""
+        var predecessor = "snapshot"
+        for index in 1...96 {
+            let cursor = "cursor-overflow-\(index)"
+            let item = SetupJobEvent(jobId: "j", cursor: cursor, previousCursor: predecessor,
+                                     sequence: index + 2, time: "t", state: active.state,
+                                     message: active.message, job: active)
+            let json = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
+            frames += "id: \(cursor)\nevent: setup\ndata: \(json)\n\n"
+            predecessor = cursor
+        }
+        frames += "event: end\ndata: {}\n\n"
+        install(frames)
+        let overflowing = client.setupJobEvents(jobId: "j", lastEventId: "snapshot")
+        try await Task.sleep(for: .milliseconds(100))
+        let overflow = await consume(overflowing)
+        #expect(overflow.0.count <= 64)
+        #expect(String(describing: overflow.1).contains("buffer overflow"))
+    }
+
+    @Test func gatewayEncodesFreshHarnessAndSetupRecoveryQueries() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t", session: session)
+
+        RequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/harnesses", request.url?.query == "fresh=true" else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            return (Self.response(for: request), Data(#"{"harnesses":[]}"#.utf8))
+        }
+        _ = try await client.listHarnesses(fresh: true)
+
+        RequestStubURLProtocol.handler = { request in
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+            guard request.url?.path == "/setup/jobs",
+                  values == ["harness":"claude", "active":"true", "limit":"1"] else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            return (Self.response(for: request), Data(#"{"jobs":[]}"#.utf8))
+        }
+        _ = try await client.listSetupJobs(filter: SetupJobListFilter(harness: "claude", active: true, limit: 1))
+        RequestStubURLProtocol.handler = nil
+    }
+
+    @Test func gatewayRefreshesOneExactAuthSourceAndDecodesControlProblems() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        RequestStubURLProtocol.handler = { request in
+            let body = try #require(testRequestBody(request))
+            let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+            guard request.httpMethod == "POST",
+                  request.url?.path == "/v2/harnesses/raw-api/auth-readiness",
+                  request.url?.query == nil,
+                  object == ["authRequest":"api_key", "source":"api_key_env"] else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            return (Self.response(for: request), Data("""
+            {"harnessId":"raw-api","authRequest":"api_key","requestedSource":"api_key_env",
+             "observedAt":"2026-07-14T00:00:00Z",
+             "readiness":{"source":"api_key_env","availability":"available","verification":"passed"}}
+            """.utf8))
+        }
+        let result = try await client.refreshAuthReadiness(
+            harnessId: "raw-api",
+            request: AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
+        )
+        #expect(result.harnessId == "raw-api")
+        #expect(result.readiness.verification == .passed)
+
+        RequestStubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type":"application/problem+json"]
+            )!
+            return (response, Data("""
+            {"code":"auth_readiness_probe_failed","message":"probe unavailable","retryable":true,
+             "fieldErrors":{},"requiredActions":["retry_auth_readiness_refresh"],"evidenceRefs":[]}
+            """.utf8))
+        }
+        do {
+            _ = try await client.refreshAuthReadiness(
+                harnessId: "raw-api",
+                request: AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
+            )
+            Issue.record("Expected typed auth-readiness failure")
+        } catch let error as GatewayError {
+            #expect(error.controlProblem?.code == "auth_readiness_probe_failed")
+            #expect(error.controlProblem?.requiredActions == ["retry_auth_readiness_refresh"])
+        }
+    }
+
+    @Test func authReadinessRejectsMismatchedAndUnknownResponseFields() throws {
+        let mismatch = """
+        {"harnessId":"claude","authRequest":"subscription","requestedSource":"native_session",
+         "observedAt":"2026-07-14T00:00:00Z",
+         "readiness":{"source":"api_key_env","availability":"available","verification":"passed"}}
+        """
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(AuthReadinessRefreshResponse.self, from: Data(mismatch.utf8))
+        }
+        let unknown = mismatch.replacingOccurrences(
+            of: #""verification":"passed""#,
+            with: #""verification":"passed","future":true"#
+        )
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(AuthReadinessRefreshResponse.self, from: Data(unknown.utf8))
+        }
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ControlProblem.self, from: Data("""
+            {"code":"bad","message":"","retryable":false,
+             "fieldErrors":{},"requiredActions":null,"evidenceRefs":[]}
+            """.utf8))
+        }
+    }
+
+    private static func response(for request: URLRequest) -> HTTPURLResponse {
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type":"application/json"])!
+    }
+}
+
+private func testRequestBody(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { return nil }
+        if count == 0 { break }
+        data.append(buffer, count: count)
+    }
+    return data
+}
+
+private func makeSetupCapability(state: SetupJobState) -> AuthCapabilityLifecycle {
+    let digest = String(repeating: "a", count: 64)
+    let disclosure = AuthSmokeDisclosure(harness: "claude", generatedAt: "2026-07-13T00:00:00Z")
+    if state == .succeeded {
+        let receipt = try! JSONDecoder().decode(AuthCapabilityReceipt.self, from: Data("""
+        {"receiptId":"receipt-test","attemptId":"attempt-test","harness":"claude",
+         "requested":"subscription","requiredRoute":"vendor_native","requiredSource":"native_session",
+         "effective":"vendor_native","effectiveSource":"native_session","selectionReason":"exact_requested_route",
+         "availability":"available","verification":"passed","billingKnowledge":"unknown","costKnowledge":"unknown",
+         "startedAt":"2026-07-13T00:00:01Z","completedAt":"2026-07-13T00:00:02Z",
+         "challengeDigest":"\(digest)","requestDigest":"\(digest)","responseDigest":"\(digest)",
+         "streamDigest":"\(digest)","scratchBeforeDigest":"\(digest)","scratchAfterDigest":"\(digest)",
+         "stream":{"startedEvents":1,"completedEvents":1,"errorEvents":0,"unexpectedToolEvents":0,
+          "interactionEvents":0,"sessionMismatchEvents":0,"eventsAfterCompleted":0,"aborted":false},"evidenceRefs":[]}
+        """.utf8))
+        return AuthCapabilityLifecycle(
+            attemptId: "attempt-test", challengeDigest: digest, requestDigest: digest,
+            disclosure: disclosure, state: .completed, startedAt: receipt.startedAt,
+            completedAt: receipt.completedAt, receipt: receipt
+        )
+    }
+    if state == .interruptedUnknown {
+        return AuthCapabilityLifecycle(
+            attemptId: "attempt-test", challengeDigest: digest, requestDigest: digest,
+            disclosure: disclosure, state: .interruptedUnknown,
+            startedAt: "2026-07-13T00:00:01Z", interruptedAt: "2026-07-13T00:00:02Z"
+        )
+    }
+    return AuthCapabilityLifecycle(
+        attemptId: "attempt-test", challengeDigest: digest, requestDigest: digest,
+        disclosure: disclosure, state: .disclosed
+    )
+}
+
+private func makeSetupJob(id: String, state: String,
+                          phase: SetupJobPhase, outcome: SetupJobOutcome? = nil) -> SetupJob {
+    let typedState = SetupJobState(rawValue: state)!
+    let terminal = typedState == .succeeded || typedState == .failed || typedState == .cancelled
+        || typedState == .timedOut || typedState == .interruptedUnknown || typedState == .notSupported
+    let defaultOutcome: SetupJobOutcome? = switch typedState {
+    case .succeeded: SetupJobOutcome(reason: .completed)
+    case .failed: SetupJobOutcome(reason: .commandFailed)
+    case .cancelled: SetupJobOutcome(reason: .cancelledByUser)
+    case .timedOut: SetupJobOutcome(reason: .timedOut)
+    case .interruptedUnknown: SetupJobOutcome(reason: .interruptedUnknown)
+    case .notSupported: SetupJobOutcome(reason: .notSupported)
+    case .queued, .running, .waitingForInput: nil
+    }
+    return SetupJob(jobId: id, harness: .claude, action: .login, state: typedState, phase: phase,
+             deadlineAt: state == "waiting_for_input" ? "2099-01-01T00:00:00Z" : nil,
+             outcome: outcome ?? defaultOutcome, message: state, createdAt: "2026-07-13T00:00:00Z",
+             startedAt: typedState == .queued ? nil : "2026-07-13T00:00:01Z",
+             finishedAt: terminal ? "2026-07-13T00:00:02Z" : nil,
+             authCapability: makeSetupCapability(state: typedState))
+}
+
+private func firstSnapshot(
+    in stream: AsyncStream<SetupLifecycleSnapshot>,
+    where predicate: @escaping @Sendable (SetupLifecycleSnapshot) -> Bool
+) async -> SetupLifecycleSnapshot? {
+    for await snapshot in stream where predicate(snapshot) { return snapshot }
+    return nil
+}
+
+private enum FakeStreamResult: Sendable {
+    case events([SetupJobEvent])
+    case finish
+    case failure
+}
+
+private struct FakeSetupError: Error, Sendable {}
+
+private final class FakeSetupGateway: SetupJobGateway, @unchecked Sendable {
+    private let lock = NSLock()
+    private var listResultStorage: [SetupJob]
+    private var snapshots: [SetupJob]
+    private var streams: [FakeStreamResult]
+    private var callsStorage: [String] = []
+    private var filterStorage: SetupJobListFilter?
+    private var filtersStorage: [SetupJobListFilter] = []
+    private var cancelCountStorage = 0
+    private var createFailuresRemaining: Int
+    private var listFailuresRemaining: Int
+
+    init(listResult: [SetupJob], snapshots: [SetupJob], streams: [FakeStreamResult],
+         createFailures: Int = 0, listFailures: Int = 0) {
+        self.listResultStorage = listResult
+        self.snapshots = snapshots
+        self.streams = streams
+        self.createFailuresRemaining = createFailures
+        self.listFailuresRemaining = listFailures
+    }
+
+    var calls: [String] { lock.withLock { callsStorage } }
+    var lastFilter: SetupJobListFilter? { lock.withLock { filterStorage } }
+    var filters: [SetupJobListFilter] { lock.withLock { filtersStorage } }
+    var getCount: Int { calls.filter { $0.hasPrefix("get:") }.count }
+    var streamCount: Int { calls.filter { $0.hasPrefix("stream:") }.count }
+    var cancelCount: Int { lock.withLock { cancelCountStorage } }
+
+    func createSetupJob(_ body: SetupJobCreateRequest) async throws -> SetupJob {
+        try lock.withLock {
+            callsStorage.append("create:\(body.action.rawValue)")
+            if createFailuresRemaining > 0 {
+                createFailuresRemaining -= 1
+                throw FakeSetupError()
+            }
+        }
+        return makeSetupJob(id: "created", state: "running", phase: .verifying)
+    }
+
+    func listSetupJobs(filter: SetupJobListFilter) async throws -> [SetupJob] {
+        try lock.withLock {
+            filterStorage = filter
+            filtersStorage.append(filter)
+            callsStorage.append("list")
+            if listFailuresRemaining > 0 {
+                listFailuresRemaining -= 1
+                throw FakeSetupError()
+            }
+            return listResultStorage.filter { job in
+                (filter.harness == nil || filter.harness == job.harness.rawValue)
+                    && (filter.active == nil || filter.active == job.isActive)
+            }
+        }
+    }
+
+    private func nextSetupJob(jobId: String) throws -> SetupJob {
+        try lock.withLock {
+            callsStorage.append("get:\(jobId)")
+            guard let first = snapshots.first else { throw FakeSetupError() }
+            if snapshots.count > 1 { snapshots.removeFirst() }
+            return first
+        }
+    }
+
+    func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot {
+        let job = try nextSetupJob(jobId: jobId)
+        return SetupJobSnapshot(job: job, cursor: "cursor-snapshot-\(getCount)", sequence: 1)
+    }
+
+    func cancelSetupJob(jobId: String) async throws -> SetupJob {
+        lock.withLock { cancelCountStorage += 1 }
+        return try nextSetupJob(jobId: jobId)
+    }
+
+    func extendSetupJob(jobId: String) async throws -> SetupJob { try nextSetupJob(jobId: jobId) }
+
+    func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
+        let result: FakeStreamResult = lock.withLock {
+            callsStorage.append("stream:\(jobId)")
+            if streams.isEmpty { return .finish }
+            return streams.removeFirst()
+        }
+        return AsyncThrowingStream { continuation in
+            switch result {
+            case .events(let events):
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            case .finish:
+                continuation.finish()
+            case .failure:
+                continuation.finish(throwing: FakeSetupError())
+            }
+        }
+    }
+}
+
+private actor AsyncTestGate {
+    private var suspended = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        suspended = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilSuspended() async {
+        while !suspended { await Task.yield() }
+    }
+
+    func resume() {
+        suspended = false
+        let pending = continuation
+        continuation = nil
+        pending?.resume()
+    }
+}
+
+private struct MutationRaceGateway: SetupJobGateway {
+    let active: SetupJob
+    let cancelled: SetupJob
+    let cancelGate: AsyncTestGate
+
+    func createSetupJob(_ body: SetupJobCreateRequest) async throws -> SetupJob { active }
+    func listSetupJobs(filter: SetupJobListFilter) async throws -> [SetupJob] { [active] }
+    func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot { SetupJobSnapshot(job: active, cursor: "cursor", sequence: 1) }
+    func extendSetupJob(jobId: String) async throws -> SetupJob { active }
+
+    func cancelSetupJob(jobId: String) async throws -> SetupJob {
+        await cancelGate.wait()
+        return cancelled
+    }
+
+    func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                try? await Task.sleep(for: .seconds(60))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+private enum TestTransportError: Error { case badRequest(String) }
+
+private final class RequestStubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        do {
+            guard let handler = Self.handler else { throw TestTransportError.badRequest("missing handler") }
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

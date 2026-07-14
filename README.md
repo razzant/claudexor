@@ -211,17 +211,49 @@ reason and are gated out of launch.
 
 Claudexor mirrors native harness auth where that route is readiness-proven; API
 keys are fallback secret refs and live in the OS Keychain where available,
-otherwise a `0600` file. Cursor keeps normal non-scoped `auto` runs on the
-native session when it is ready, and only lets scoped/envelope `auto` prefer a
-smoke-proven API-key route; if a native Cursor session is also available, that
-scoped paid-route choice emits a typed auth-route disclosure so API billing is
-not silent. Run params, daemon `jobs.json`, artifacts, summaries, patches, and
-PR text store only refs/metadata, not raw secret values. Subscription/native
-routes scrub provider API-key env vars unless an API-key source is selected.
+otherwise a `0600` file. `auto` is native-first for Codex, Claude, and Cursor in
+both host and scoped/envelope runs; it reaches an API-key fallback only when the
+native route is not ready (and, for Claude, no verified setup-token source is
+ready). A typed auth-route disclosure makes that paid-route switch visible. Run
+params, daemon `jobs.json`, artifacts, summaries, patches, and PR text store
+only refs/metadata, not raw secret values.
+Subscription/native routes scrub provider API-key, token, and endpoint-override
+environment variables unless a distinct stored API-key or Claude setup-token
+route is selected.
+Doctor reports each produced auth source as two separate facts: credential
+`availability` (`available | unavailable | unknown`) and live `verification`
+(`passed | failed | not_run`). Explicit `subscription` never runs or accepts an
+API-key smoke, explicit `api_key` is never rescued by a native session, and
+`auto` remains native-first. A missing/logged-out source is
+`unavailable + not_run`; an indeterminate probe is `unknown + not_run`; source
+material that is present but wrong or unusable is `available + failed`.
+
+Native login stays vendor-owned: Claudexor launches the official CLI with an
+absolute executable and structured argv, inherits its TTY, and removes provider
+key/token variables from the child environment. The native-login path never
+receives an OAuth callback, copies a credential file, or receives/stores vendor
+session tokens: Codex owns its configured `CODEX_HOME` and file/keyring/auto store,
+Claude owns its config plus the macOS login Keychain, and Cursor owns its
+Keychain-backed native state. Claudexor's separate API-key and Claude
+setup-token routes remain explicit local-secret-store flows.
+A zero vendor exit is only provisional; Claudexor then performs a fresh,
+source-targeted native probe and an isolated same-harness capability smoke. The
+smoke must answer an unpredictable challenge over the normal adapter stream
+from the exact `vendor_native` / `native_session` route, with no tools, external
+context, workspace mutation, or provider-key fallback. A timeout or crash is
+`interrupted_unknown`, never success and never auto-replayed. This proves the
+selected credential transport can answer; it does not prove a subscription
+tier, entitlement, quota, or zero incremental cost.
+The command routes follow the official [Codex auth](https://developers.openai.com/codex/auth/),
+[Claude authentication](https://code.claude.com/docs/en/authentication), and
+[Cursor CLI authentication](https://docs.cursor.com/en/cli/reference/authentication)
+documentation.
 
 ```bash
 claudexor auth status
-claudexor auth login codex   # runs the harness's native login in YOUR terminal (hint-only with --json/non-TTY); no SaaS broker
+claudexor auth login codex    # codex login
+claudexor auth login claude   # claude auth login --claudeai
+claudexor auth login cursor   # cursor-agent login
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
 claudexor secrets list --backend file   # force the 0600 file store (also: CLAUDEXOR_SECRETS_BACKEND=file)
@@ -233,9 +265,9 @@ Secrets default to the OS Keychain (or a `0600` file). `--backend file` /
 `CLAUDEXOR_SECRETS_BACKEND=file` forces the file store so a sandboxed run or test
 never touches the real login Keychain; an invalid value fails loudly.
 
-`auth status` distinguishes source availability from readiness: manifest auth
-sources say what could be used, while doctor status/checks decide whether a
-harness is actually routable.
+`auth status` prints both typed readiness axes. Manifest auth sources say only
+what could be used; doctor source verification decides whether a route is
+actually ready.
 
 ## Daemon And Control API
 
@@ -246,11 +278,27 @@ The canonical endpoint inventory lives in
 this README does not duplicate it.
 
 Harness setup is server-owned. `/setup/jobs` (create / status / confirm /
-cancel) is the only supported setup surface: the execution lifecycle for
-allowlisted install/login jobs with redacted logs, risk flags, persistence
-across restarts, watchdog timeouts, and an SSE lifecycle stream; doctor
-verification runs in-process inside the daemon (no PATH dependency). UI surfaces
-must not invent harness setup commands or accept inline secrets.
+cancel / extend) is the only supported setup surface. Native login uses a
+bundled observable runner: 10-second launch watchdog, 15-minute user deadline,
+explicit unlimited `+15 min` extensions, identity-fenced TERM/KILL cancellation,
+and fresh post-exit capability verification. Before the detached runner may
+spawn, the daemon journals and fsyncs the exact executable/argv digests and a
+one-use permit; the runner's hash-bound result is journaled before verification.
+Cancel is asynchronous and becomes terminal only after termination is proven.
+Duplicate create returns the same active action, while a different active
+mutating action refuses instead of being laundered into success.
+
+The daemon's checksummed global journal is the only setup lifecycle authority.
+Per-job `0700` directories contain operational runner handshake files only;
+there is no `job.json`, `events.jsonl`, metadata snapshot, or imported v1
+authority. Full job snapshots stream over SSE with opaque request-relative
+cursor predecessors. Clients GET-resnapshot on every reconnect; malformed,
+duplicate, regressive, dropped, or prematurely ended streams are visible
+protocol errors. A capability smoke that was running at daemon restart becomes
+`interrupted_unknown` and is not replayed. Vendor output stays in Terminal,
+which remains open on the result until Return. Doctor verification runs
+in-process inside the daemon (no shell PATH dependency). UI surfaces must not
+invent setup commands or accept inline secrets.
 
 Run events carry a monotonic per-run `seq`; `GET /runs/:id` returns the
 snapshot plus `lastSeq`, so clients subscribe to `GET /runs/:id/events` with

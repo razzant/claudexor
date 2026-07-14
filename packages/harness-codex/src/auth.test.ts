@@ -2,7 +2,25 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { codexAuthModeAt, codexExecArgs, ensureCodexApiAuth, ensureCodexNativeAuth, probeLogin } from "./index.js";
+import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import type { CliRunLoopOptions } from "@claudexor/core";
+import { codexAuthModeAt, codexExecArgs, createCodexAdapter, defaultNativeCodexHome, ensureCodexApiAuth, probeLogin, selectCodexRunAuthRoute } from "./index.js";
+
+describe("Codex strict runtime auth routing", () => {
+  it("does not fall back for explicit routes and keeps auto subscription-first", () => {
+    const attempts: string[] = [];
+    const sub = () => { attempts.push("subscription"); return false; };
+    const key = () => { attempts.push("api_key"); return true; };
+    expect(selectCodexRunAuthRoute("subscription", sub, key)).toBeNull();
+    expect(attempts).toEqual(["subscription"]);
+    attempts.length = 0;
+    expect(selectCodexRunAuthRoute("auto", sub, key)).toBe("api_key");
+    expect(attempts).toEqual(["subscription", "api_key"]);
+    attempts.length = 0;
+    expect(selectCodexRunAuthRoute("api_key", () => { attempts.push("subscription"); return true; }, () => { attempts.push("api_key"); return false; })).toBeNull();
+    expect(attempts).toEqual(["api_key"]);
+  });
+});
 
 /** Fake `codex` binary printing a canned login-status verdict. */
 function fakeCodexBin(dir: string, script: string): string {
@@ -70,39 +88,6 @@ describe("ensureCodexApiAuth", () => {
     expect(parsed.auth_mode).toBe("chatgpt");
   });
 
-  it("seeds the NATIVE session auth.json into an isolated CODEX_HOME (subscription pass-through)", () => {
-    const nativeHome = mkdtempSync(join(tmpdir(), "codex-native-"));
-    const scoped = mkdtempSync(join(tmpdir(), "codex-scoped-"));
-    try {
-      writeFileSync(join(nativeHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { id: "native" } }));
-      const ok = ensureCodexNativeAuth({ CODEX_HOME: scoped }, nativeHome);
-      expect(ok).toBe(true);
-      const parsed = JSON.parse(readFileSync(join(scoped, "auth.json"), "utf8"));
-      expect(parsed.auth_mode).toBe("chatgpt");
-    } finally {
-      rmSync(nativeHome, { recursive: true, force: true });
-      rmSync(scoped, { recursive: true, force: true });
-    }
-  });
-
-  it("native seed is a no-op without a native session and never overwrites scoped auth", () => {
-    const nativeHome = mkdtempSync(join(tmpdir(), "codex-native-empty-"));
-    const scoped = mkdtempSync(join(tmpdir(), "codex-scoped-"));
-    try {
-      // No native auth.json -> cannot seed.
-      expect(ensureCodexNativeAuth({ CODEX_HOME: scoped }, nativeHome)).toBe(false);
-      expect(existsSync(join(scoped, "auth.json"))).toBe(false);
-      // Existing scoped auth (e.g. api-key already seeded) is preserved.
-      writeFileSync(join(scoped, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-x" }));
-      writeFileSync(join(nativeHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt" }));
-      expect(ensureCodexNativeAuth({ CODEX_HOME: scoped }, nativeHome)).toBe(true);
-      expect(JSON.parse(readFileSync(join(scoped, "auth.json"), "utf8")).auth_mode).toBe("apikey");
-    } finally {
-      rmSync(nativeHome, { recursive: true, force: true });
-      rmSync(scoped, { recursive: true, force: true });
-    }
-  });
-
   it("emits `exec resume <id>` args when resuming a native session", () => {
     const args = codexExecArgs({ access: "workspace_write", model_hint: null, effort_hint: null, external_context_policy: "auto", attachments: [], browser: null, prompt: "follow up", resume_session_id: "th-123" });
     expect(args.slice(0, 4)).toEqual(["exec", "resume", "th-123", "--json"]);
@@ -165,14 +150,30 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("scrubs provider credentials and endpoint redirects from the native login-status probe", async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousBase = process.env.OPENAI_BASE_URL;
+    process.env.OPENAI_API_KEY = "must-not-reach-probe";
+    process.env.OPENAI_BASE_URL = "https://redirect.invalid";
+    try {
+      const bin = fakeCodexBin(dir, `[ -z "$OPENAI_API_KEY" ] && [ -z "$OPENAI_BASE_URL" ] || exit 9\necho 'Logged in using ChatGPT'; exit 0`);
+      expect(await probeLogin(bin)).toEqual({ authed: true, method: "chatgpt", probeError: null });
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = previousBase;
+    }
+  });
+
   it("exit 0 means logged in", async () => {
     const bin = fakeCodexBin(dir, 'echo "Logged in using ChatGPT"; exit 0');
-    expect(await probeLogin(bin)).toEqual({ authed: true, probeError: null });
+    expect(await probeLogin(bin)).toEqual({ authed: true, method: "chatgpt", probeError: null });
   });
 
   it("'Not logged in' on a failing exit is a clean logged-out verdict, not a probe error", async () => {
     const bin = fakeCodexBin(dir, 'echo "Not logged in" >&2; exit 1');
-    expect(await probeLogin(bin)).toEqual({ authed: false, probeError: null });
+    expect(await probeLogin(bin)).toEqual({ authed: false, method: "logged_out", probeError: null });
   });
 
   it("a config-load failure is a PROBE ERROR, never silently 'not logged in'", async () => {
@@ -182,12 +183,142 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     const bin = fakeCodexBin(dir, 'echo "Error loading configuration: config.toml:3:26: unknown variant \\`ultra\\`" >&2; exit 1');
     const r = await probeLogin(bin);
     expect(r.authed).toBe(false);
+    expect(r.method).toBe("unknown");
     expect(r.probeError).toContain("unknown variant");
   });
 
   it("a missing binary is a probe error", async () => {
     const r = await probeLogin(join(dir, "does-not-exist"));
     expect(r.authed).toBe(false);
+    expect(r.method).toBe("unknown");
     expect(r.probeError).toBeTruthy();
+  });
+
+  it("classifies API-key and access-token status without accepting either as native", async () => {
+    const api = fakeCodexBin(dir, 'echo "Logged in using an API key"; exit 0');
+    expect(await probeLogin(api)).toEqual({ authed: true, method: "api_key", probeError: null });
+    const access = fakeCodexBin(dir, 'echo "Logged in using access token"; exit 0');
+    expect(await probeLogin(access)).toEqual({ authed: true, method: "access_token", probeError: null });
+  });
+
+  it("treats exit 0 with an unrecognized status as a probe error", async () => {
+    const bin = fakeCodexBin(dir, 'echo "Logged in somehow"; exit 0');
+    const result = await probeLogin(bin);
+    expect(result).toMatchObject({ authed: false, method: "unknown" });
+    expect(result.probeError).toContain("unrecognized login status");
+  });
+
+  it("does not accept ChatGPT help or failure prose as a native status verdict", async () => {
+    const unavailable = fakeCodexBin(dir, 'echo "ChatGPT authentication unavailable"; exit 0');
+    const unavailableResult = await probeLogin(unavailable);
+    expect(unavailableResult).toMatchObject({ authed: false, method: "unknown" });
+    expect(unavailableResult.probeError).toContain("unrecognized login status");
+    const help = fakeCodexBin(dir, 'echo "Use ChatGPT to log in"; exit 0');
+    const helpResult = await probeLogin(help);
+    expect(helpResult).toMatchObject({ authed: false, method: "unknown" });
+    expect(helpResult.probeError).toContain("unrecognized login status");
+  });
+
+  it("uses the vendor-owned native CODEX_HOME and forwards hard-cancel options", async () => {
+    const controller = new AbortController();
+    let captured: Record<string, unknown> | undefined;
+    const result = await probeLogin("/fake/codex", {
+      env: { HOME: "/scoped/home", CODEX_HOME: "/must/not/win", OPENAI_API_KEY: "secret" },
+      abortSignal: controller.signal,
+      runCapture: async (_cmd, _args, options) => {
+        captured = options as unknown as Record<string, unknown>;
+        return { code: 0, signal: null, stdout: "Logged in using ChatGPT\n", stderr: "" };
+      },
+    });
+    expect(result.method).toBe("chatgpt");
+    expect((captured?.env as Record<string, unknown>).HOME).toBe("/scoped/home");
+    expect((captured?.env as Record<string, unknown>).CODEX_HOME).toBe(defaultNativeCodexHome());
+    expect((captured?.env as Record<string, unknown>).OPENAI_API_KEY).toBeNull();
+    expect(captured?.abortSignal).toBe(controller.signal);
+    expect(captured?.cancelSignal).toBe("SIGTERM");
+    expect(captured?.cancelKillDelayMs).toBe(0);
+  });
+});
+
+describe("Codex transport-aware native doctor", () => {
+  it("probes only native_session in the exact host-user context without API smoke", async () => {
+    let smokeCalls = 0;
+    let probeEnv: Record<string, string | null | undefined> | undefined;
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex 0.144.1",
+      probeLogin: async (_bin, options) => {
+        probeEnv = options?.env;
+        return { authed: true, method: "chatgpt", probeError: null };
+      },
+      hasApiKey: () => true,
+      codexApiKey: () => "api-key",
+      smokeIsolatedApiKey: async () => {
+        smokeCalls += 1;
+        return { ok: true, detail: "must not run" };
+      },
+    });
+
+    const report = await adapter.doctor({
+      cwd: "/repo",
+      env: { HOME: "/scoped/home", CODEX_HOME: "/scoped/codex" },
+      authPreference: "subscription",
+      authSource: "native_session",
+      fresh: true,
+    });
+
+    expect(smokeCalls).toBe(0);
+    expect(probeEnv?.HOME).toBe("/scoped/home");
+    expect(probeEnv?.CODEX_HOME).toBe(defaultNativeCodexHome());
+    expect(report.auth_sources).toEqual([
+      expect.objectContaining({ source: "native_session", availability: "available", verification: "passed" }),
+    ]);
+    await expect(adapter.discover()).resolves.toMatchObject({
+      capability_profile: {
+        auth: {
+          supported_sources: ["native_session", "provider_auth_file"],
+          credential_transports: expect.arrayContaining([
+            { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
+            { source: "native_session", kind: "os_keychain", relocatable_by: [] },
+          ]),
+        },
+        isolation: { supported_containment: expect.arrayContaining(["host_user_context"]) },
+      },
+    });
+  });
+
+  it("runs native Codex against the same vendor-owned home the probe verified", async () => {
+    let probeEnv: Record<string, string | null | undefined> | undefined;
+    let cliOptions: CliRunLoopOptions | undefined;
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex 0.144.1",
+      probeLogin: async (_bin, options) => {
+        probeEnv = options?.env;
+        return { authed: true, method: "chatgpt", probeError: null };
+      },
+      hasApiKey: () => true,
+      codexApiKey: () => "api-key",
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        cliOptions = options;
+        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+      },
+    });
+    const spec = HarnessRunSpec.parse({
+      session_id: "codex-native-run",
+      intent: "review",
+      prompt: "review",
+      cwd: "/repo",
+      env: { HOME: "/scoped/home", CODEX_HOME: "/scoped/codex" },
+      auth_preference: "auto",
+    });
+
+    for await (const _event of adapter.run(spec)) {
+      // drain
+    }
+
+    expect(probeEnv?.HOME).toBe("/scoped/home");
+    expect(probeEnv?.CODEX_HOME).toBe(defaultNativeCodexHome());
+    expect(cliOptions?.env?.HOME).toBe("/scoped/home");
+    expect(cliOptions?.env?.CODEX_HOME).toBe(defaultNativeCodexHome());
+    expect(cliOptions?.env?.OPENAI_API_KEY).toBeNull();
   });
 });

@@ -1263,7 +1263,10 @@ describe("reviewEngine", () => {
       reviewers: [{ adapter, providerFamily: "openai" }],
     });
 
-    const persistentEvidence = readFileSync(join(artifactsDir, "evidence", "USER_INTENT.md"), "utf8");
+    const persistentEvidence = readFileSync(
+      join(artifactsDir, "evidence", "USER_INTENT.md"),
+      "utf8",
+    );
     expect(readFileSync(join(evidenceDir, "USER_INTENT.md"), "utf8")).toContain(fakeKey);
     expect(persistentEvidence).toContain("[redacted]");
     expect(persistentEvidence).not.toContain(fakeKey);
@@ -1781,7 +1784,14 @@ describe("reviewEngine", () => {
     const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
-    for (const dir of ["dist", "coverage", ".next", ".cache", ".claudexor/specs", ".claudexor/runs/run-x"]) {
+    for (const dir of [
+      "dist",
+      "coverage",
+      ".next",
+      ".cache",
+      ".claudexor/specs",
+      ".claudexor/runs/run-x",
+    ]) {
       mkdirSync(join(candidateRoot, dir), { recursive: true });
     }
     writeFileSync(join(candidateRoot, "dist", "bundle.js"), "candidate bundle\n");
@@ -1928,7 +1938,7 @@ describe("reviewEngine", () => {
     expect(trackedIgnoredFile).toBe("ignored-but-versioned.txt");
   });
 
-  it("does not copy local env secret files into reviewer workspaces", async () => {
+  it("does not copy paths from the shared sensitive-resource policy into reviewer workspaces", async () => {
     const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
@@ -1936,6 +1946,11 @@ describe("reviewEngine", () => {
     writeFileSync(join(candidateRoot, ".envrc"), "export TOKEN=secret\n");
     writeFileSync(join(candidateRoot, ".env.local"), "TOKEN=local-secret\n");
     writeFileSync(join(candidateRoot, ".env.example"), "TOKEN=\n");
+    writeFileSync(join(candidateRoot, "signing.key"), "not-real-key\n");
+    writeFileSync(join(candidateRoot, "credentials.json"), "{}\n");
+    const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(20)}.${"c".repeat(20)}`;
+    writeFileSync(join(candidateRoot, "notes.txt"), `embedded ${jwt}\n`);
+    symlinkSync(".env", join(candidateRoot, "env-alias"));
     writeFileSync(join(candidateRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
     writeFileSync(join(candidateRoot, ".netrc"), "machine example.test password secret\n");
     mkdirSync(join(candidateRoot, ".ssh"), { recursive: true });
@@ -1953,6 +1968,10 @@ describe("reviewEngine", () => {
     let sawEnvrc = true;
     let sawLocalEnv = true;
     let sawEnvExample = false;
+    let sawKey = true;
+    let sawCredentials = true;
+    let sawEnvAlias = true;
+    let sawContentSecret = true;
     let sawNpmrc = true;
     let sawNetrc = true;
     let sawSsh = true;
@@ -1982,6 +2001,10 @@ describe("reviewEngine", () => {
         sawEnvrc = existsSync(join(spec.cwd, ".envrc"));
         sawLocalEnv = existsSync(join(spec.cwd, ".env.local"));
         sawEnvExample = existsSync(join(spec.cwd, ".env.example"));
+        sawKey = existsSync(join(spec.cwd, "signing.key"));
+        sawCredentials = existsSync(join(spec.cwd, "credentials.json"));
+        sawEnvAlias = existsSync(join(spec.cwd, "env-alias"));
+        sawContentSecret = existsSync(join(spec.cwd, "notes.txt"));
         sawNpmrc = existsSync(join(spec.cwd, ".npmrc"));
         sawNetrc = existsSync(join(spec.cwd, ".netrc"));
         sawSsh = existsSync(join(spec.cwd, ".ssh"));
@@ -2007,6 +2030,10 @@ describe("reviewEngine", () => {
     expect(sawEnvrc).toBe(false);
     expect(sawLocalEnv).toBe(false);
     expect(sawEnvExample).toBe(true);
+    expect(sawKey).toBe(false);
+    expect(sawCredentials).toBe(false);
+    expect(sawEnvAlias).toBe(false);
+    expect(sawContentSecret).toBe(false);
     expect(sawNpmrc).toBe(false);
     expect(sawNetrc).toBe(false);
     expect(sawSsh).toBe(false);
@@ -2303,7 +2330,10 @@ describe("reviewEngine", () => {
       candidateLabel: "Candidate A",
       diff: "diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-old\n+new\n",
       ...makeReviewWorkspace(),
-      reviewers: [{ adapter, providerFamily: "openai" }, makeReviewer("clean-anthropic", "anthropic", [])],
+      reviewers: [
+        { adapter, providerFamily: "openai" },
+        makeReviewer("clean-anthropic", "anthropic", []),
+      ],
     });
 
     expect(res.findings.some((f) => f.claim === "keep this finding" && f.severity === "WARN")).toBe(
@@ -2378,9 +2408,9 @@ describe("reviewEngine", () => {
       reviewers: [{ adapter, providerFamily: "openai" }],
     });
 
-    expect(res.findings.filter((f) => f.claim === "valid insufficient finding survives once")).toHaveLength(
-      1,
-    );
+    expect(
+      res.findings.filter((f) => f.claim === "valid insufficient finding survives once"),
+    ).toHaveLength(1);
     expect(
       res.findings.some(
         (f) =>
@@ -2446,7 +2476,10 @@ describe("reviewEngine", () => {
       candidateLabel: "Candidate A",
       diff: "diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-old\n+new\n",
       ...makeReviewWorkspace(),
-      reviewers: [{ adapter, providerFamily: "openai" }, makeReviewer("clean-anthropic", "anthropic", [])],
+      reviewers: [
+        { adapter, providerFamily: "openai" },
+        makeReviewer("clean-anthropic", "anthropic", []),
+      ],
     });
 
     expect(

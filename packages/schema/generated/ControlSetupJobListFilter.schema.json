@@ -1,0 +1,35 @@
+{
+  "$ref": "#/definitions/ControlSetupJobListFilter",
+  "definitions": {
+    "ControlSetupJobListFilter": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "enum": [
+            "codex",
+            "claude",
+            "cursor"
+          ],
+          "description": "Harness ids with a managed native-login flow."
+        },
+        "action": {
+          "type": "string",
+          "const": "login",
+          "description": "The daemon-managed native-login action."
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 500
+        }
+      },
+      "additionalProperties": false,
+      "description": "Supported GET /setup/jobs filters."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

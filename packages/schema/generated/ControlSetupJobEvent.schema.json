@@ -9,13 +9,35 @@
           "minLength": 1,
           "description": "Setup job the event belongs to."
         },
-        "seq": {
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Opaque durable global-journal cursor for exact SSE resume."
+        },
+        "previousCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact client-relative predecessor cursor; null only at the beginning of the global journal."
+        },
+        "sequence": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Monotonic event sequence within the job."
+          "exclusiveMinimum": 0,
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Global partition sequence used to reject duplicate or regressive frames; gaps are valid."
         },
         "time": {
           "type": "string",
+          "format": "date-time",
           "description": "Event timestamp."
         },
         "kind": {
@@ -34,6 +56,8 @@
             "succeeded",
             "failed",
             "cancelled",
+            "timed_out",
+            "interrupted_unknown",
             "not_supported"
           ],
           "description": "Lifecycle state of a setup job, including waiting_for_input (needs user confirmation/input) and not_supported."
@@ -41,14 +65,828 @@
         "message": {
           "type": "string",
           "description": "Human-readable status message."
+        },
+        "job": {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Setup job id."
+            },
+            "harness": {
+              "type": "string",
+              "enum": [
+                "codex",
+                "claude",
+                "cursor"
+              ],
+              "description": "Harness ids with a managed native-login flow."
+            },
+            "action": {
+              "type": "string",
+              "const": "login",
+              "description": "The daemon-managed native-login action."
+            },
+            "state": {
+              "$ref": "#/definitions/ControlSetupJobEvent/properties/state"
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "preparing",
+                "launching",
+                "awaiting_user",
+                "verifying",
+                "cancelling",
+                "completed"
+              ],
+              "description": "Fine-grained setup phase; cancellation remains a phase until the underlying process has actually stopped."
+            },
+            "deadlineAt": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Current native-login deadline when the job has one."
+            },
+            "outcome": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "completed",
+                    "not_supported",
+                    "launch_failed",
+                    "command_failed",
+                    "auth_not_ready",
+                    "capability_verification_failed",
+                    "credential_route_mismatch",
+                    "timed_out",
+                    "cancelled_by_user",
+                    "cancelled_on_restart",
+                    "interrupted",
+                    "interrupted_unknown",
+                    "termination_unconfirmed"
+                  ]
+                },
+                "exitCode": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "additionalProperties": false,
+              "description": "Typed terminal setup outcome with native command evidence when available."
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Display-only native-login command description, when available."
+            },
+            "guideUrl": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Official vendor login guide URL."
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable status message."
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the job was created."
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "When the job started running."
+            },
+            "finishedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "When the job finished."
+            },
+            "authCapability": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "attemptId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Non-empty identifier string."
+                    },
+                    "challengeDigest": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "requestDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "disclosure": {
+                      "type": "object",
+                      "properties": {
+                        "schemaVersion": {
+                          "type": "number",
+                          "const": 1
+                        },
+                        "protocolVersion": {
+                          "type": "number",
+                          "const": 1
+                        },
+                        "harness": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                        },
+                        "requested": {
+                          "type": "string",
+                          "enum": [
+                            "subscription",
+                            "api_key",
+                            "auto"
+                          ],
+                          "description": "Requested credential behavior: exact subscription, exact managed API key, or policy-governed auto selection."
+                        },
+                        "requiredRoute": {
+                          "type": "string",
+                          "enum": [
+                            "vendor_native",
+                            "managed_api_key",
+                            "local"
+                          ],
+                          "description": "Effective credential route: vendor-owned native session, Claudexor-managed API key, or credential-free local execution."
+                        },
+                        "requiredSource": {
+                          "type": "string",
+                          "enum": [
+                            "native_session",
+                            "oauth_token_env",
+                            "api_key_env",
+                            "api_key_flag",
+                            "provider_auth_file",
+                            "none"
+                          ],
+                          "description": "Concrete credential source used or probed by a harness."
+                        },
+                        "networkScope": {
+                          "type": "string",
+                          "const": "selected_harness_only"
+                        },
+                        "billingKnowledge": {
+                          "type": "string",
+                          "enum": [
+                            "proven_zero",
+                            "subscription_entitlement",
+                            "metered",
+                            "unknown"
+                          ],
+                          "description": "What is actually known about incremental billing; a native credential route alone never proves entitlement or zero cost."
+                        },
+                        "incrementalCostKnowledge": {
+                          "type": "string",
+                          "enum": [
+                            "exact",
+                            "estimated",
+                            "unknown"
+                          ],
+                          "description": "Quality of incremental-cash cost evidence for an operation."
+                        },
+                        "mayConsumeQuota": {
+                          "type": "boolean"
+                        },
+                        "generatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "schemaVersion",
+                        "protocolVersion",
+                        "harness",
+                        "requested",
+                        "requiredRoute",
+                        "requiredSource",
+                        "networkScope",
+                        "billingKnowledge",
+                        "incrementalCostKnowledge",
+                        "mayConsumeQuota",
+                        "generatedAt"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Pre-execution disclosure for the exact same-harness capability smoke required by auth setup."
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "disclosed"
+                    }
+                  },
+                  "required": [
+                    "attemptId",
+                    "challengeDigest",
+                    "requestDigest",
+                    "disclosure",
+                    "state"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "attemptId": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                    },
+                    "challengeDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "requestDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "disclosure": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    "startedAt": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                    }
+                  },
+                  "required": [
+                    "attemptId",
+                    "challengeDigest",
+                    "requestDigest",
+                    "disclosure",
+                    "state",
+                    "startedAt"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "attemptId": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                    },
+                    "challengeDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "requestDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "disclosure": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    "startedAt": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                    },
+                    "completedAt": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                    },
+                    "receipt": {
+                      "type": "object",
+                      "properties": {
+                        "receiptId": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                        },
+                        "attemptId": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                        },
+                        "harness": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                        },
+                        "requested": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/requested"
+                        },
+                        "requiredRoute": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/requiredRoute"
+                        },
+                        "requiredSource": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/requiredSource"
+                        },
+                        "effective": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/requiredRoute"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Effective credential route: vendor-owned native session, Claudexor-managed API key, or credential-free local execution."
+                        },
+                        "effectiveSource": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/requiredSource"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Concrete credential source used or probed by a harness."
+                        },
+                        "selectionReason": {
+                          "type": "string",
+                          "enum": [
+                            "exact_requested_route",
+                            "adapter_unavailable",
+                            "request_mismatch",
+                            "route_missing",
+                            "route_mismatch",
+                            "source_missing",
+                            "source_mismatch",
+                            "harness_error",
+                            "adapter_error",
+                            "missing_completion",
+                            "response_mismatch",
+                            "scratch_mutated",
+                            "protocol_violation",
+                            "adapter_identity_mismatch",
+                            "cancelled"
+                          ]
+                        },
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable",
+                            "unknown"
+                          ]
+                        },
+                        "verification": {
+                          "type": "string",
+                          "enum": [
+                            "passed",
+                            "failed",
+                            "not_run"
+                          ]
+                        },
+                        "billingKnowledge": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/billingKnowledge"
+                        },
+                        "costKnowledge": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/incrementalCostKnowledge"
+                        },
+                        "costUsd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "startedAt": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                        },
+                        "completedAt": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                        },
+                        "challengeDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "requestDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "responseDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "streamDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "scratchBeforeDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "scratchAfterDigest": {
+                          "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                        },
+                        "stream": {
+                          "type": "object",
+                          "properties": {
+                            "startedEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "completedEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "errorEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "unexpectedToolEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "interactionEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "sessionMismatchEvents": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "eventsAfterCompleted": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "aborted": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "startedEvents",
+                            "completedEvents",
+                            "errorEvents",
+                            "unexpectedToolEvents",
+                            "interactionEvents",
+                            "sessionMismatchEvents",
+                            "eventsAfterCompleted",
+                            "aborted"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "evidenceRefs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "receiptId",
+                        "attemptId",
+                        "harness",
+                        "requested",
+                        "requiredRoute",
+                        "requiredSource",
+                        "effective",
+                        "effectiveSource",
+                        "selectionReason",
+                        "availability",
+                        "verification",
+                        "billingKnowledge",
+                        "costKnowledge",
+                        "startedAt",
+                        "completedAt",
+                        "challengeDigest",
+                        "requestDigest",
+                        "responseDigest",
+                        "streamDigest",
+                        "scratchBeforeDigest",
+                        "scratchAfterDigest",
+                        "stream",
+                        "evidenceRefs"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Immutable result of one exact-route same-harness capability smoke."
+                    }
+                  },
+                  "required": [
+                    "attemptId",
+                    "challengeDigest",
+                    "requestDigest",
+                    "disclosure",
+                    "state",
+                    "startedAt",
+                    "completedAt",
+                    "receipt"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "attemptId": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/attemptId"
+                    },
+                    "challengeDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "requestDigest": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/challengeDigest"
+                    },
+                    "disclosure": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "interrupted_unknown"
+                    },
+                    "startedAt": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                    },
+                    "interruptedAt": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/authCapability/anyOf/0/properties/disclosure/properties/generatedAt"
+                    }
+                  },
+                  "required": [
+                    "attemptId",
+                    "challengeDigest",
+                    "requestDigest",
+                    "disclosure",
+                    "state",
+                    "startedAt",
+                    "interruptedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Single durable lifecycle for the exact-route same-harness capability proof."
+            },
+            "execution": {
+              "type": "object",
+              "properties": {
+                "executionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9-]+$"
+                },
+                "commandDigest": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "manifestDigest": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                },
+                "processGroup": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": {
+                      "type": "number",
+                      "const": 1
+                    },
+                    "pgid": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "leader": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "known"
+                        },
+                        "pid": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        },
+                        "platform": {
+                          "type": "string",
+                          "enum": [
+                            "linux",
+                            "darwin"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "procfs_stat",
+                            "proc_pidinfo"
+                          ]
+                        },
+                        "startToken": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "processGroupId": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "pid",
+                        "platform",
+                        "source",
+                        "startToken",
+                        "processGroupId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "schemaVersion",
+                    "pgid",
+                    "leader"
+                  ],
+                  "additionalProperties": false
+                },
+                "observedAt": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                },
+                "permitIssuedAt": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                }
+              },
+              "required": [
+                "executionId",
+                "commandDigest",
+                "manifestDigest",
+                "processGroup",
+                "observedAt"
+              ],
+              "additionalProperties": false,
+              "description": "Durable process-group and pre-execution permit evidence."
+            },
+            "authorization": {
+              "type": "object",
+              "properties": {
+                "executionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9-]+$"
+                },
+                "executable": {
+                  "type": "object",
+                  "properties": {
+                    "realpath": {
+                      "type": "string",
+                      "pattern": "^\\/"
+                    },
+                    "sha256": {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "mode": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "device": {
+                      "type": "string",
+                      "pattern": "^[0-9]+$"
+                    },
+                    "inode": {
+                      "type": "string",
+                      "pattern": "^[0-9]+$"
+                    }
+                  },
+                  "required": [
+                    "realpath",
+                    "sha256",
+                    "size",
+                    "mode",
+                    "device",
+                    "inode"
+                  ],
+                  "additionalProperties": false
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "commandDigest": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                },
+                "manifestDigest": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                }
+              },
+              "required": [
+                "executionId",
+                "executable",
+                "args",
+                "commandDigest",
+                "manifestDigest"
+              ],
+              "additionalProperties": false,
+              "description": "Immutable hash-bound command authorized before external handoff."
+            },
+            "nativeCommand": {
+              "type": "object",
+              "properties": {
+                "executionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9-]+$"
+                },
+                "commandDigest": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                },
+                "manifestDigest": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/execution/properties/commandDigest"
+                },
+                "permitIssuedAt": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "commandStarted": {
+                  "type": "boolean"
+                },
+                "exitCode": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "errorCode": {
+                  "type": "string",
+                  "enum": [
+                    "permit_timeout",
+                    "spawn_failed"
+                  ]
+                },
+                "finishedAt": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                }
+              },
+              "required": [
+                "executionId",
+                "commandDigest",
+                "manifestDigest",
+                "permitIssuedAt",
+                "commandStarted",
+                "exitCode",
+                "signal",
+                "finishedAt"
+              ],
+              "additionalProperties": false,
+              "description": "Durable result of the hash-bound native login command, persisted before capability verification."
+            }
+          },
+          "required": [
+            "jobId",
+            "harness",
+            "action",
+            "state",
+            "phase",
+            "command",
+            "guideUrl",
+            "message",
+            "createdAt",
+            "startedAt",
+            "finishedAt"
+          ],
+          "additionalProperties": false,
+          "description": "Full authoritative setup-job snapshot at this cursor."
         }
       },
       "required": [
         "jobId",
-        "seq",
+        "cursor",
+        "previousCursor",
+        "sequence",
         "time",
         "kind",
-        "message"
+        "state",
+        "message",
+        "job"
       ],
       "additionalProperties": false,
       "description": "Status event on a setup job's event stream."

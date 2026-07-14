@@ -11,6 +11,7 @@ import {
   ProviderFamily,
 } from "./primitives.js";
 import { Portfolio } from "./budget.js";
+import { AuthSourceReadiness } from "./auth.js";
 import {
   AdapterStatus,
   ConformanceCheck,
@@ -196,84 +197,6 @@ export const ControlRunStartRequest = z
   .strict()
   .describe("Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and spec/thread linkage.");
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
-
-/** Harness ids that have a managed setup flow (shared by the async setup-jobs path). */
-export const ControlHarnessSetupHarness = z
-  .enum(["codex", "claude", "cursor", "opencode", "raw"])
-  .describe("Harness ids that have a managed setup flow.");
-export type ControlHarnessSetupHarness = z.infer<typeof ControlHarnessSetupHarness>;
-
-export const ControlSetupJobAction = z
-  .enum(["install", "login", "doctor", "store_key"])
-  .describe("Setup action to perform: install the vendor CLI, log in, run the doctor, or store an API key.");
-export type ControlSetupJobAction = z.infer<typeof ControlSetupJobAction>;
-
-export const ControlSetupJobState = z
-  .enum(["queued", "running", "waiting_for_input", "succeeded", "failed", "cancelled", "not_supported"])
-  .describe("Lifecycle state of a setup job, including waiting_for_input (needs user confirmation/input) and not_supported.");
-export type ControlSetupJobState = z.infer<typeof ControlSetupJobState>;
-
-export const ControlSetupJobCreateRequest = z
-  .object({
-    harness: ControlHarnessSetupHarness,
-    action: ControlSetupJobAction,
-  })
-  .strict()
-  .describe("Request body to create a harness setup job.");
-export type ControlSetupJobCreateRequest = z.infer<typeof ControlSetupJobCreateRequest>;
-
-export const ControlSetupJob = z
-  .object({
-    jobId: Id.describe("Setup job id."),
-    harness: ControlHarnessSetupHarness,
-    action: ControlSetupJobAction,
-    state: ControlSetupJobState,
-    command: z.string().nullable().default(null).describe("Shell command the job runs, when applicable."),
-    guideUrl: z.string().url().nullable().default(null).describe("Vendor guide URL for manual steps, when applicable."),
-    logPath: z.string().nullable().default(null).describe("On-disk log path for the job's output."),
-    message: z.string().describe("Human-readable status message."),
-    riskFlags: z.array(z.string()).default([]).describe("Risk flags for the action (e.g. network_download, shell_pipe), surfaced before confirmation."),
-    requiresConfirmation: z.boolean().default(false).describe("Whether the job waits for explicit user confirmation before running."),
-    createdAt: z.string().describe("When the job was created."),
-    startedAt: z.string().nullable().default(null).describe("When the job started running."),
-    firstOutputAt: z.string().nullable().default(null).describe("When the job produced its first output."),
-    lastOutputAt: z.string().nullable().default(null).describe("When the job last produced output."),
-    finishedAt: z.string().nullable().default(null).describe("When the job finished."),
-    retryCount: z.number().int().nonnegative().default(0).describe("How many times the job was retried."),
-  })
-  .strict()
-  .describe("One managed harness setup job (install/login/doctor/store_key) with its lifecycle timestamps.");
-export type ControlSetupJob = z.infer<typeof ControlSetupJob>;
-
-export const ControlSetupJobEvent = z
-  .object({
-    jobId: Id.describe("Setup job the event belongs to."),
-    seq: z.number().int().nonnegative().describe("Monotonic event sequence within the job."),
-    time: z.string().describe("Event timestamp."),
-    /** Only "status" is ever produced (v0.15 triage: the log/end kinds had no
-     * producer; SSE stream end is a transport frame, not a payload kind). */
-    kind: z.enum(["status"]).describe("Event kind; only status is ever produced."),
-    state: ControlSetupJobState.optional(),
-    message: z.string().describe("Human-readable status message."),
-  })
-  .strict()
-  .describe("Status event on a setup job's event stream.");
-export type ControlSetupJobEvent = z.infer<typeof ControlSetupJobEvent>;
-
-export const ControlSetupJobListResponse = z
-  .object({
-    jobs: z.array(ControlSetupJob).describe("All known setup jobs."),
-  })
-  .describe("Response for listing setup jobs.");
-export type ControlSetupJobListResponse = z.infer<typeof ControlSetupJobListResponse>;
-
-export const ControlSetupJobConfirmRequest = z
-  .object({
-    confirmed: z.boolean().default(true).describe("Whether the user confirmed the pending action."),
-  })
-  .strict()
-  .describe("Request body confirming a setup job that waits for user confirmation.");
-export type ControlSetupJobConfirmRequest = z.infer<typeof ControlSetupJobConfirmRequest>;
 
 export const ControlSpecQuestionsRequest = z
   .object({
@@ -1004,6 +927,10 @@ export const HarnessStatusDto = z
     disabledIntents: z.array(z.string()).default([]).describe("Intents the doctor disabled."),
     checks: z.array(ConformanceCheck).default([]).describe("Doctor probe results."),
     reasons: z.array(z.string()).default([]).describe("Human-readable reasons for degraded/unavailable status."),
+    authSources: z
+      .array(AuthSourceReadiness)
+      .default([])
+      .describe("Doctor-backed readiness by authentication source; an empty array means readiness was not reported."),
     /** The user's configured per-harness default model, if any. */
     configuredModel: z.string().nullable().default(null).describe("The user's configured per-harness default model, if any."),
     /** Strict truth-source check of `configuredModel`: null when no model

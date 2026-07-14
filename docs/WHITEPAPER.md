@@ -68,16 +68,31 @@ deeper on unresolved choices. Freeze remains a single contract commit for v1:
 after `/spec/freeze` there is no spec-version ladder.
 
 Auth is subscription-first where that route is readiness-proven: native
-codex/claude sessions are seeded into envelopes so a Max/Pro user with NO API
-key is fully routable. Cursor keeps normal `auto` runs native-first, may prefer
-its smoke-proven API-key route only for scoped/envelope `auto` runs, and
-discloses that paid-route choice when native Cursor auth also exists. Explicit
-`subscription` fails closed when native Cursor auth is not ready; explicit
-`api_key` may fall back to native only with a typed `route.fallback.auth_switched`
-disclosure, never silently. Secret I/O defaults to
+Codex, Claude, and Cursor routes use the vendor-owned native store rather than
+copying session credentials into envelopes. `auto` stays native-first in host
+and scoped/envelope runs, reaches a smoke-proven API-key route only when native
+readiness fails (and Claude's setup-token source is not ready), and discloses
+that paid-route choice. Explicit `subscription` fails closed when all of its
+eligible subscription sources are absent; explicit `api_key` fails closed
+when the key route is not smoke-proven and never borrows native readiness.
+Doctor exposes source availability and verification as separate typed facts:
+absent is `unavailable + not_run`, probe failure is `unknown + not_run`, and
+present-but-unusable is `available + failed`, so a credential string cannot
+impersonate a working route. Secret I/O defaults to
 the OS Keychain (or a `0600` file); `CLAUDEXOR_SECRETS_BACKEND=file` forces the
 file store so a sandboxed run or test never touches the real login Keychain, and
-an invalid value fails loudly. Read-only run lookups (`inspect`/`apply`) never
+an invalid value fails loudly. That API-key store, and Claude's separately
+stored setup-token route, are not the native-login state. Native login itself
+remains a vendor-CLI/browser ceremony: Claudexor observes an identity-fenced
+official process, journals its hash-bound result, verifies the fresh native
+source, and then requires an isolated same-harness capability response over the
+exact native route. It never brokers the callback, receives/copies/stores the
+vendor session token or credential file, or treats browser/process completion,
+another provider, or an API key as auth proof. The capability receipt proves
+transport only; tier, entitlement, quota, and incremental cost remain separate
+unknowns unless their own typed evidence exists. An in-flight proof interrupted
+by restart is terminal `interrupted_unknown` and is not replayed.
+Read-only run lookups (`inspect`/`apply`) never
 auto-start the daemon (only acting paths do), and `claudexor doctor` emits a
 non-gating advisory when the running Node is an at-risk Homebrew build. A blocked
 NEEDS_HUMAN run is unblocked only through a typed, audited, patch-hash-bound
@@ -178,8 +193,11 @@ requires each reviewer family's route proof to be OBSERVED, not an argv echo:
 a model reported in the harness stream, or — for a CLI whose stream omits the
 model (codex) — the model the CLI recorded in its own session transcript. An
 unobserved reviewer does not count toward verification. Read-only and reviewer
-harness runs execute in a scoped, throwaway home so their native state (plan
-files, session rollouts) never escapes into the operator's real home.
+harness runs execute with a scoped, throwaway HOME so relocatable route-local
+state cannot leak into the worktree or operator home. A selected native
+Codex/Claude route is the explicit exception for its vendor-owned config/session
+store: it uses that store in place rather than copying credentials into the
+throwaway home.
 
 Release and dogfood reviews can name an explicit `reviewerPanel`, preserving
 ordered reviewers and repeated harness entries for same-provider multi-model
@@ -311,7 +329,8 @@ harness stream that goes silent past the inactivity window is killed with a
 typed timeout instead of parking a run in "running" forever; and the daemon
 shuts down gracefully on host signals, records its live child process
 groups, and on the next start reaps surviving orphans and sweeps workspace
-envelopes nothing owns — including the seeded credentials inside them.
+envelopes nothing owns — including temporary harness state inside them. Native
+vendor credentials remain outside those disposable envelopes.
 
 ## Observability
 
@@ -353,12 +372,10 @@ Routing claims are evidence, not configuration echoes: run telemetry records
 the model the harness stream actually disclosed (`observed_model`), and UI
 route-proof badges key off that observation, not the requested route.
 
-Setup jobs are also observable: queued/running/waiting/succeeded/failed/
-cancelled, command preview, risk flags, started time, first output, latest
-output, terminal result, retry count, doctor result, and log path. Doctor and
-key-verification phases run in-process inside the daemon (no shell-out to a
-CLI that may not be on PATH), so a missing binary cannot masquerade as a
-failed key.
+Native-login setup jobs are also observable: queued/running/waiting/succeeded/
+failed/cancelled, command preview, phase, deadline, terminal outcome, and the
+exact same-harness capability receipt. Doctor/auth-readiness and secret writes
+remain separate services instead of masquerading as setup-job phases.
 
 ## Budget And Settings
 

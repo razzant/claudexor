@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +19,138 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("daemon", () => {
+  it("has no constructor registry mutation and stop-before-start preserves jobs.json byte-identically", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-unloaded-stop-"));
+    const persistPath = join(dir, "jobs.json");
+    const original = Buffer.from(
+      '[ { "id": "user-format", "state": "succeeded", "params": {}, "createdAt": "2026-07-14T00:00:00.000Z" } ]\r\n',
+    );
+    writeFileSync(persistPath, original, { mode: 0o640 });
+    chmodSync(persistPath, 0o640);
+    const mode = statSync(persistPath).mode & 0o777;
+
+    const server = new DaemonServer({
+      socketPath: join(dir, "s.sock"),
+      token: "tkn-unloaded-stop",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+    });
+    expect(readFileSync(persistPath)).toEqual(original);
+    expect(statSync(persistPath).mode & 0o777).toBe(mode);
+
+    await server.stop();
+    await server.waitForShutdown();
+    expect(readFileSync(persistPath)).toEqual(original);
+    expect(statSync(persistPath).mode & 0o777).toBe(mode);
+  });
+
+  it("preserves jobs.json when shutdown fences startup before registry load", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-before-load-stop-"));
+    const persistPath = join(dir, "jobs.json");
+    const original = Buffer.from(
+      '[{"id":"before-load","state":"succeeded","params":{},"createdAt":"2026-07-14T00:00:00.000Z"}]\n',
+    );
+    writeFileSync(persistPath, original, { mode: 0o600 });
+    const reached = deferred();
+    const release = deferred();
+    const server = new DaemonServer({
+      socketPath: join(dir, "s.sock"),
+      token: "tkn-before-load-stop",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+      startupBarrier: async (barrier) => {
+        if (barrier !== "before_registry_load") return;
+        reached.resolve();
+        await release.promise;
+      },
+    });
+
+    const starting = server.start();
+    await reached.promise;
+    const stopping = server.stop();
+    expect(readFileSync(persistPath)).toEqual(original);
+    release.resolve();
+    await stopping;
+    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
+    expect(readFileSync(persistPath)).toEqual(original);
+  });
+
+  it("persists the loaded registry when shutdown fences startup after load", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-after-load-stop-"));
+    const persistPath = join(dir, "jobs.json");
+    writeFileSync(
+      persistPath,
+      JSON.stringify([
+        {
+          id: "loaded-running",
+          state: "running",
+          params: {},
+          createdAt: "2026-07-14T00:00:00.000Z",
+        },
+      ]),
+      { mode: 0o600 },
+    );
+    const reached = deferred();
+    const release = deferred();
+    let runnerCalls = 0;
+    const server = new DaemonServer({
+      socketPath: join(dir, "s.sock"),
+      token: "tkn-after-load-stop",
+      persistPath,
+      runner: async () => {
+        runnerCalls += 1;
+        return { status: "success" };
+      },
+      startupBarrier: async (barrier) => {
+        if (barrier !== "after_registry_load") return;
+        reached.resolve();
+        await release.promise;
+      },
+    });
+
+    const starting = server.start();
+    await reached.promise;
+    const stopping = server.stop();
+    release.resolve();
+    await stopping;
+    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
+    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{
+      id: string;
+      state: string;
+    }>;
+    expect(persisted).toEqual([
+      expect.objectContaining({ id: "loaded-running", state: "interrupted" }),
+    ]);
+    expect(runnerCalls).toBe(0);
+  });
+
+  it("does not leave a listener when shutdown races startup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-start-stop-"));
+    const socketPath = join(dir, "s.sock");
+    const server = new DaemonServer({
+      socketPath,
+      token: "tkn-start-stop",
+      runner: async () => ({ status: "success" }),
+    });
+
+    const starting = server.start();
+    const stopping = server.stop();
+    await stopping;
+    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
+    await server.waitForShutdown();
+    expect(existsSync(socketPath)).toBe(false);
+    await expect(server.start()).rejects.toMatchObject({ code: "daemon_stopping" });
+  });
+
   it("health, enqueue -> run via injected runner, status, auth, shutdown", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
@@ -62,7 +202,11 @@ describe("daemon", () => {
       runner: async (params, ctx) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
-        ctx.onRunStart({ runId: `run-${(params as { x: number }).x}`, taskId: "t", runDir: "/tmp/x" });
+        ctx.onRunStart({
+          runId: `run-${(params as { x: number }).x}`,
+          taskId: "t",
+          runDir: "/tmp/x",
+        });
         try {
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, 1000);
@@ -106,6 +250,90 @@ describe("daemon", () => {
       await server.stop();
     }
   }, 20000);
+
+  it("drains the exact accepted runner before shutdown and never starts queued work after the fence", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-drain-"));
+    const socketPath = join(dir, "s.sock");
+    const persistPath = join(dir, "jobs.json");
+    const token = "tkn-drain";
+    const started: number[] = [];
+    let aborted = false;
+    let release: (() => void) | undefined;
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath,
+      maxConcurrent: 1,
+      runner: async (params, ctx) => {
+        const id = (params as { id: number }).id;
+        started.push(id);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+          ctx.signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+            },
+            { once: true },
+          );
+        });
+        return { status: "success" };
+      },
+    });
+    await server.start();
+    const client = new DaemonClient(socketPath, token);
+    const first = await client.enqueue({ id: 1 });
+    for (let i = 0; i < 100 && started.length === 0; i++) await sleep(2);
+    const second = await client.enqueue({ id: 2 });
+    expect(started).toEqual([1]);
+
+    let stopped = false;
+    const stopping = server.stop().then(() => {
+      stopped = true;
+    });
+    for (let i = 0; i < 100 && !aborted; i++) await sleep(2);
+    expect(aborted).toBe(true);
+    expect(stopped).toBe(false);
+    expect(started).toEqual([1]);
+
+    release?.();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(started).toEqual([1]);
+    await server.waitForShutdown();
+
+    const records = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{
+      id: string;
+      state: string;
+    }>;
+    expect(records.find((record) => record.id === first.id)?.state).toBe("cancelled");
+    expect(records.find((record) => record.id === second.id)?.state).toBe("queued");
+    await server.stop(); // idempotent: the same completed drain promise is returned.
+  });
+
+  it("fails shutdown closed when the final registry fsync cannot be established", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-persist-fail-"));
+    const socketPath = join(dir, "s.sock");
+    const registryDir = join(dir, "registry");
+    const persistPath = join(registryDir, "jobs.json");
+    mkdirSync(registryDir);
+    const server = new DaemonServer({
+      socketPath,
+      token: "tkn-persist-fail",
+      persistPath,
+      runner: async () => ({ status: "success" }),
+    });
+    await server.start();
+    rmSync(registryDir, { recursive: true });
+    writeFileSync(registryDir, "not-a-directory");
+    await expect(server.stop()).rejects.toMatchObject({ code: "daemon_persistence_failed" });
+    let resolved = false;
+    void server.waitForShutdown().then(() => {
+      resolved = true;
+    });
+    await sleep(5);
+    expect(resolved).toBe(false);
+  });
 
   it("onTurnEnqueueFailed fires when a turn-carrying job dies BEFORE a run binds — and never when one did", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
@@ -164,7 +392,10 @@ describe("daemon", () => {
       // The typed code SURVIVES the registry round-trip: persisted by the
       // serializer, salvaged on reload — a daemon restart must not strip the
       // machine-readable refusal from job history.
-      const persisted = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8")) as Array<{ id: string; errorCode?: string }>;
+      const persisted = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8")) as Array<{
+        id: string;
+        errorCode?: string;
+      }>;
       expect(persisted.find((r) => r.id === j1.id)?.errorCode).toBe("trust_full_access_required");
     } finally {
       await server.stop();
@@ -260,7 +491,9 @@ describe("daemon", () => {
     // Simulate a daemon that went down with a job still QUEUED (never started).
     writeFileSync(
       persistPath,
-      JSON.stringify([{ id: "job-q1", state: "queued", params: { x: 5 }, createdAt: new Date().toISOString() }]),
+      JSON.stringify([
+        { id: "job-q1", state: "queued", params: { x: 5 }, createdAt: new Date().toISOString() },
+      ]),
     );
     let ran = 0;
     const server = new DaemonServer({
@@ -334,9 +567,21 @@ describe("daemon", () => {
     const secret = "sk-" + "e".repeat(24);
     writeFileSync(
       persistPath,
-      JSON.stringify([{ id: "job-legacy", state: "failed", params: { prompt: `use ${secret}` }, createdAt: new Date().toISOString() }]),
+      JSON.stringify([
+        {
+          id: "job-legacy",
+          state: "failed",
+          params: { prompt: `use ${secret}` },
+          createdAt: new Date().toISOString(),
+        },
+      ]),
     );
-    const server = new DaemonServer({ socketPath, token, persistPath, runner: async () => ({ status: "success", summary: "x" }) });
+    const server = new DaemonServer({
+      socketPath,
+      token,
+      persistPath,
+      runner: async () => ({ status: "success", summary: "x" }),
+    });
     await server.start();
     try {
       const client = new DaemonClient(socketPath, token);
@@ -377,7 +622,12 @@ describe("daemon", () => {
       const raw = await new Promise<string>((resolvePromise, rejectPromise) => {
         const sock = createConnection(socketPath, () => {
           sock.write(
-            JSON.stringify({ id: "e1", method: "claudexor.enqueue", token, params: { prompt: "k sk-" + "b".repeat(24) } }) + "\n",
+            JSON.stringify({
+              id: "e1",
+              method: "claudexor.enqueue",
+              token,
+              params: { prompt: "k sk-" + "b".repeat(24) },
+            }) + "\n",
           );
         });
         let buf = "";
@@ -405,7 +655,11 @@ describe("daemon", () => {
       socketPath,
       token,
       runner: async (_params, ctx) => {
-        ctx.onRunStart({ runId: "run-not-converged", taskId: "t", runDir: "/tmp/run-not-converged" });
+        ctx.onRunStart({
+          runId: "run-not-converged",
+          taskId: "t",
+          runDir: "/tmp/run-not-converged",
+        });
         return { status: "not_converged", summary: "best attempt still has blockers" };
       },
     });
@@ -438,7 +692,15 @@ describe("InteractionRegistry", () => {
       request: {
         interaction_id: "int-1", // same native id in BOTH runs
         source_tool: "AskUserQuestion",
-        questions: [{ id: "q1", question: "Color?", header: null, options: [{ label: "Red", description: null }], multi_select: false }],
+        questions: [
+          {
+            id: "q1",
+            question: "Color?",
+            header: null,
+            options: [{ label: "Red", description: null }],
+            multi_select: false,
+          },
+        ],
       },
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
@@ -492,8 +754,18 @@ describe("jobs.json robustness", () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
     const socketPath = join(dir, "s.sock");
     const persistPath = join(dir, "jobs.json");
-    const good = { id: "job-good", state: "succeeded", params: {}, createdAt: new Date().toISOString() };
-    const badState = { id: "job-bad-state", state: "totally-new-state", params: {}, createdAt: new Date().toISOString() };
+    const good = {
+      id: "job-good",
+      state: "succeeded",
+      params: {},
+      createdAt: new Date().toISOString(),
+    };
+    const badState = {
+      id: "job-bad-state",
+      state: "totally-new-state",
+      params: {},
+      createdAt: new Date().toISOString(),
+    };
     const notObject = "garbage";
     writeFileSync(persistPath, JSON.stringify([good, badState, notObject]));
     const server = new DaemonServer({
@@ -553,7 +825,10 @@ describe("interrupt terminal stamping", () => {
       const client = new DaemonClient(socketPath, "tkn-interrupt");
       const list = (await client.list()) as JobRecord[];
       expect(list.find((r) => r.id === "job-orphan")?.state).toBe("interrupted");
-      const lines = readFileSync(eventsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { type: string; seq: number; payload: { status?: string } });
+      const lines = readFileSync(eventsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { type: string; seq: number; payload: { status?: string } });
       const terminal = lines.at(-1);
       expect(terminal?.type).toBe("run.failed");
       expect(terminal?.payload.status).toBe("interrupted");

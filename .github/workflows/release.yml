@@ -246,12 +246,33 @@ jobs:
             echo "::error::Packaged app is missing the SwiftPM resource bundle."
             exit 1
           }
+          verify_setup_runner() {
+            app="$1"
+            node="$app/Contents/Resources/node"
+            runner="$app/Contents/Resources/setup-login-runner.cjs"
+            test -x "$node" || { echo "::error::Packaged app is missing executable bundled Node: $node"; exit 1; }
+            test -s "$runner" || { echo "::error::Packaged app is missing setup-login-runner.cjs: $runner"; exit 1; }
+            output="$(mktemp)"
+            set +e
+            "$node" "$runner" >"$output" 2>&1
+            status=$?
+            set -e
+            if [ "$status" -ne 2 ] || ! grep -q "usage: setup-login-runner" "$output"; then
+              echo "::error::Packaged setup-login runner does not execute under bundled Node: $runner"
+              cat "$output"
+              rm -f "$output"
+              exit 1
+            fi
+            rm -f "$output"
+          }
+          verify_setup_runner "apps/macos/dist/Claudexor.app"
           zipstage="$(mktemp -d)"
           /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" "$zipstage"
           test -f "$zipstage/Claudexor.app/Contents/Resources/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
             echo "::error::Release ZIP app is missing the SwiftPM resource bundle."
             exit 1
           }
+          verify_setup_runner "$zipstage/Claudexor.app"
           # Signed builds: Gatekeeper must actually accept the stapled app.
           if [ -z "${ASSET_SUFFIX}" ]; then
             spctl --assess --type execute --verbose=2 "$zipstage/Claudexor.app"

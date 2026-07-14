@@ -1,0 +1,24 @@
+{
+  "$ref": "#/definitions/ControlJournalQuarantineRequest",
+  "definitions": {
+    "ControlJournalQuarantineRequest": {
+      "type": "object",
+      "properties": {
+        "expectedFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "confirmation": {
+          "type": "string",
+          "const": "quarantine_and_start_fresh"
+        }
+      },
+      "required": [
+        "expectedFingerprint",
+        "confirmation"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

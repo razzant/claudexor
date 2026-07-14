@@ -1,22 +1,18 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { extname, join, relative, sep } from "node:path";
+import {
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  type Stats,
+} from "node:fs";
+import { extname, join, relative } from "node:path";
 import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
-import { sha256 } from "@claudexor/util";
+import { sensitiveResourcePolicy, sha256, type SymlinkTargetKind } from "@claudexor/util";
 import { matchAny } from "./glob.js";
 
-const SENSITIVE = [
-  "**/.env",
-  "**/.env.*",
-  ".env",
-  ".env.*",
-  "**/secrets/**",
-  "**/*.pem",
-  "**/*.key",
-  "**/id_rsa*",
-  "**/*.p12",
-  "**/credentials*.json",
-];
 const MANIFEST_ONLY = [
   "**/pnpm-lock.yaml",
   "pnpm-lock.yaml",
@@ -39,9 +35,36 @@ const VENDORED = [
   "**/*.map",
 ];
 const BINARY_EXT = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".tar",
-  ".tgz", ".zst", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mov", ".mp3", ".wav",
-  ".bin", ".so", ".dylib", ".dll", ".node", ".class", ".jar", ".wasm", ".o", ".a",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".pdf",
+  ".zip",
+  ".gz",
+  ".tar",
+  ".tgz",
+  ".zst",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".eot",
+  ".mp4",
+  ".mov",
+  ".mp3",
+  ".wav",
+  ".bin",
+  ".so",
+  ".dylib",
+  ".dll",
+  ".node",
+  ".class",
+  ".jar",
+  ".wasm",
+  ".o",
+  ".a",
 ]);
 
 export interface AtlasOptions {
@@ -70,7 +93,10 @@ async function listFiles(repoRoot: string): Promise<string[]> {
       { timeoutMs: 30_000 },
     );
     if (r.code === 0) {
-      const files = r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+      const files = r.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (files.length > 0) return files;
     }
   } catch {
@@ -108,23 +134,33 @@ function walk(root: string, dir: string, seenDirs: Set<string> = new Set()): str
       // maps ONLY when its resolved target stays INSIDE the mapped tree —
       // `ln -s ~/.ssh/id_rsa leak.txt` must never pull host files into the
       // ContextPack (context collection is scoped to the target tree).
-      let resolved;
-      let rootReal;
+      let resolved: string;
+      let rootReal: string;
+      let linkTarget: string;
       try {
         rootReal = realpathSync(root);
         resolved = realpathSync(full);
+        linkTarget = readlinkSync(full);
       } catch {
         continue;
       }
-      let s;
+      let s: ReturnType<typeof statSync>;
       try {
         s = statSync(full);
       } catch {
         continue;
       }
-      if (s.isDirectory()) continue;
-      const insideTree = resolved === rootReal || resolved.startsWith(rootReal + sep);
-      if (!insideTree) continue;
+      const targetKind = statKind(s);
+      const decision = sensitiveResourcePolicy.assessSymlink({
+        sourceRoot: root,
+        canonicalSourceRoot: rootReal,
+        sourcePath: full,
+        linkTarget,
+        resolvedTargetPath: resolved,
+        targetKind,
+        allowedTargetKinds: ["file"],
+      });
+      if (!decision.allowed) continue;
       out.push(relative(root, full));
       continue;
     }
@@ -144,7 +180,10 @@ function estTokens(n: number): number {
  * Source files are inlined ("full") until the token budget is reached; the rest
  * are recorded as omitted with a reason, plus an explicit OMISSIONS list.
  */
-export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {}): Promise<AtlasResult> {
+export async function buildScopeAtlas(
+  repoRoot: string,
+  opts: AtlasOptions = {},
+): Promise<AtlasResult> {
   const exclude = opts.exclude ?? [];
   const include = opts.include ?? [];
   const mandatorySet = new Set(opts.mandatory ?? []);
@@ -154,6 +193,7 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
   const files = new Set(await listFiles(repoRoot));
   const atlas: ScopeAtlasEntry[] = [];
   const candidates: { rel: string; bytes: number; mandatory: boolean }[] = [];
+  const missingMandatory: string[] = [];
 
   // Symlink containment at the READ point (not just the fallback walker):
   // `git ls-files` happily lists a TRACKED symlink like `leak.txt ->
@@ -166,19 +206,10 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
   } catch {
     repoRootReal = repoRoot;
   }
-  const escapesTree = (rel: string): boolean => {
-    try {
-      if (!lstatSync(join(repoRoot, rel)).isSymbolicLink()) return false;
-      const resolved = realpathSync(join(repoRoot, rel));
-      return resolved !== repoRootReal && !resolved.startsWith(repoRootReal + sep);
-    } catch {
-      return true; // unresolvable symlink: never read through it
-    }
-  };
-
   for (const rel of files) {
-    if (escapesTree(rel)) {
-      atlas.push({ path: rel, disposition: "excluded", reason: "symlink resolves outside the tree" });
+    const symlinkReason = contextSymlinkDenyReason(repoRoot, repoRootReal, rel);
+    if (symlinkReason) {
+      atlas.push({ path: rel, disposition: "excluded", reason: symlinkReason });
       continue;
     }
     let bytes = 0;
@@ -189,11 +220,18 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
       continue;
     }
     const mandatory = mandatorySet.has(rel);
+    const sensitive = sensitiveResourcePolicy.classifyPath(rel);
+    if (sensitive.sensitive) {
+      atlas.push({
+        path: rel,
+        disposition: "sensitive",
+        bytes,
+        reason: sensitive.reason ?? undefined,
+      });
+      if (mandatory) missingMandatory.push(rel);
+      continue;
+    }
     if (!mandatory) {
-      if (matchAny(rel, SENSITIVE)) {
-        atlas.push({ path: rel, disposition: "sensitive", bytes });
-        continue;
-      }
       if (BINARY_EXT.has(extname(rel).toLowerCase())) {
         atlas.push({ path: rel, disposition: "binary", bytes });
         continue;
@@ -215,7 +253,12 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
         continue;
       }
       if (bytes > maxFileBytes) {
-        atlas.push({ path: rel, disposition: "oversized", bytes, reason: `> ${maxFileBytes} bytes` });
+        atlas.push({
+          path: rel,
+          disposition: "oversized",
+          bytes,
+          reason: `> ${maxFileBytes} bytes`,
+        });
         continue;
       }
     }
@@ -230,7 +273,6 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
   const mandatory: ContextFileRef[] = [];
   const included: ContextFileRef[] = [];
   const omitted: OmissionEntry[] = [];
-  const missingMandatory: string[] = [];
 
   for (const c of candidates) {
     if (!c.mandatory && used + estTokens(c.bytes) > tokenLimit) {
@@ -246,6 +288,17 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
       if (c.mandatory) missingMandatory.push(c.rel);
       continue;
     }
+    const contentDecision = sensitiveResourcePolicy.inspectContent(content, "reject");
+    if (contentDecision.containsSensitiveContent) {
+      atlas.push({
+        path: c.rel,
+        disposition: "sensitive",
+        bytes: c.bytes,
+        reason: `content signatures: ${contentDecision.signatures.join(", ")}`,
+      });
+      if (c.mandatory) missingMandatory.push(c.rel);
+      continue;
+    }
     const hash = sha256(content);
     used += estTokens(content.length);
     atlas.push({ path: c.rel, disposition: "full", bytes: c.bytes, hash });
@@ -258,5 +311,47 @@ export async function buildScopeAtlas(repoRoot: string, opts: AtlasOptions = {})
   }
 
   atlas.sort((a, b) => a.path.localeCompare(b.path));
-  return { atlas, mandatory, included, omitted, estimatedTokens: used, tokenLimit, missingMandatory };
+  return {
+    atlas,
+    mandatory,
+    included,
+    omitted,
+    estimatedTokens: used,
+    tokenLimit,
+    missingMandatory,
+  };
+}
+
+function statKind(stat: Stats): SymlinkTargetKind {
+  if (stat.isFile()) return "file";
+  if (stat.isDirectory()) return "directory";
+  return "other";
+}
+
+/** Filesystem adapter for the shared pure symlink policy. */
+export function contextSymlinkDenyReason(
+  repoRoot: string,
+  canonicalRepoRoot: string,
+  rel: string,
+): string | null {
+  const full = join(repoRoot, rel);
+  try {
+    if (!lstatSync(full).isSymbolicLink()) return null;
+    const resolved = realpathSync(full);
+    const stat = statSync(full);
+    const decision = sensitiveResourcePolicy.assessSymlink({
+      sourceRoot: repoRoot,
+      canonicalSourceRoot: canonicalRepoRoot,
+      sourcePath: full,
+      linkTarget: readlinkSync(full),
+      resolvedTargetPath: resolved,
+      targetKind: statKind(stat),
+      allowedTargetKinds: ["file"],
+    });
+    return decision.allowed
+      ? null
+      : (decision.detail ?? "symlink target denied by sensitive-resource policy");
+  } catch {
+    return "symlink target cannot be resolved";
+  }
 }

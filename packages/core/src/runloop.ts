@@ -178,6 +178,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     type: "completed",
     session_id: spec.session_id,
     ts: ts(),
+    ...(aborted ? { aborted: true } : {}),
     ...(Object.keys(payload).length > 0 ? { payload } : {}),
   };
 }

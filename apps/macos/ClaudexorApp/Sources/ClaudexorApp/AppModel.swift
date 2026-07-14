@@ -155,6 +155,7 @@ final class AppModel {
     /// "Apply thread"). Fixed at thread creation, so it's only editable in the draft.
     var draftIsolatedWorkspace = false
     var liveHarnesses: [HarnessInfo] = []
+    private var exactAuthSources: [HarnessFamily: [AuthSourceKind: HarnessAuthSource]] = [:]
     var settingsSnapshot: SettingsSnapshot?
     var secretBackend = "unknown"
     var storedSecrets: [SecretInfo] = []
@@ -220,10 +221,11 @@ final class AppModel {
         return eventDateFormatterFractional.date(from: raw) ?? eventDateFormatter.date(from: raw)
     }
 
-    init() {
+    init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true) {
+        self.client = client
         // Without this first-run authorization request, run-completion
         // notifications are silently dropped in the bundled .app forever.
-        Notifier.requestAuthIfPossible()
+        if requestNotificationAuthorization { Notifier.requestAuthIfPossible() }
         if let raw = UserDefaults.standard.string(forKey: "claudexor.appearance"),
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved
@@ -310,8 +312,8 @@ final class AppModel {
     private func tryConnect() async -> Bool {
         do {
             let discovery = try ControlApiDiscovery.load()
-            endpoint = "\(discovery.host):\(discovery.port)"
             let client = try discovery.makeClient()
+            endpoint = "\(discovery.host):\(discovery.port)"
             self.client = client
             if try await client.health() {
                 health = .connected
@@ -376,10 +378,11 @@ final class AppModel {
         }
     }
 
-    func refreshHarnesses() async {
-        guard let client else { return }
+    @discardableResult
+    func refreshHarnesses(fresh: Bool = false) async -> Bool {
+        guard let client else { return false }
         do {
-            liveHarnesses = try await client.listHarnesses().compactMap { status in
+            liveHarnesses = try await client.listHarnesses(fresh: fresh).compactMap { status in
                 guard let family = HarnessFamily(rawValue: status.id) else { return nil }
                 let health = HarnessHealth(rawValue: status.status) ?? .unavailable
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
@@ -395,18 +398,57 @@ final class AppModel {
                     return "\(model): \(check.message ?? "refused by the model truth source")"
                 }()
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
+                                   authSources: status.authSources,
                                    intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks,
                                    acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
                                    configuredModelIssue: modelIssue)
             }
+            return true
         } catch {
             // Keep last-known harness rows.
+            return false
         }
+    }
+
+    @discardableResult
+    func refreshAuthReadinessAfterSetupLifecycle(for family: HarnessFamily, job: SetupJob?) async -> Bool {
+        guard let request = family.authReadinessRequest(after: job) else { return false }
+        return await refreshAuthReadiness(for: family, request: request)
+    }
+
+    @discardableResult
+    func refreshAuthReadiness(for family: HarnessFamily, request: AuthReadinessRefreshRequest) async -> Bool {
+        guard let client else { return false }
+        do {
+            let response = try await client.refreshAuthReadiness(harnessId: family.rawValue, request: request)
+            let source = HarnessAuthSource(
+                source: response.readiness.source.rawValue,
+                availability: response.readiness.availability.rawValue,
+                verification: response.readiness.verification.rawValue,
+                detail: response.readiness.detail
+            )
+            exactAuthSources[family, default: [:]][response.requestedSource] = source
+            if let index = liveHarnesses.firstIndex(where: { $0.family == family }) {
+                if let sourceIndex = liveHarnesses[index].authSources.firstIndex(where: { $0.source == source.source }) {
+                    liveHarnesses[index].authSources[sourceIndex] = source
+                } else {
+                    liveHarnesses[index].authSources.append(source)
+                }
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func authSource(for family: HarnessFamily, source: AuthSourceKind) -> HarnessAuthSource? {
+        exactAuthSources[family]?[source]
+            ?? harnessInfo(for: family)?.authSources.first { $0.source == source.rawValue }
     }
 
     private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
         let smokeReady = status.checks.contains { $0.id.contains("smoke") && $0.status == "pass" }
-        let sourceText = authSourceAvailability(manifest: status.manifest)
+        let sourceText = authSourceAvailability(status: status)
         switch health {
         case .ok:
             return smokeReady ? "Ready: doctor smoke passed. Auth sources: \(sourceText)." : "Ready by doctor. Auth sources: \(sourceText)."
@@ -417,11 +459,18 @@ final class AppModel {
         }
     }
 
-    private static func authSourceAvailability(manifest: JSONValue?) -> String {
+    private static func authSourceAvailability(status: HarnessStatus) -> String {
+        if !status.authSources.isEmpty {
+            return status.authSources.map { source in
+                "\(source.source): \(source.availability), verification \(source.verification)"
+            }.joined(separator: "; ")
+        }
+        // Legacy manifest auth_modes describe availability, never readiness.
+        let manifest = status.manifest
         let auth = manifest?["capability_profile"]?["auth"]
         let supported = stringArray(auth?["supported_sources"])
         let present = stringArray(manifest?["auth_modes"])
-        let presentLabel = present.isEmpty ? "present unknown" : "present \(present.joined(separator: ", "))"
+        let presentLabel = present.isEmpty ? "legacy readiness not reported" : "legacy availability \(present.joined(separator: ", ")); unverified"
         if !supported.isEmpty {
             let preferred = auth?["preferred_source"]?.stringValue
             let supportedLabel = "supported \(supported.joined(separator: ", "))"
@@ -435,46 +484,11 @@ final class AppModel {
         return values.compactMap(\.stringValue)
     }
 
-    func startSetupJob(family: HarnessFamily, action: String) async -> SetupJob? {
-        guard let client else {
-            settingsStatus = "Engine offline: reconnect before starting \(family.label) setup."
-            return nil
-        }
-        do {
-            let job = try await client.createSetupJob(SetupJobCreateRequest(harness: family.setupHarnessId, action: action))
-            settingsStatus = job.message
-            return job
-        } catch {
-            settingsStatus = "Could not start \(family.label) setup: \(error)"
-            return nil
-        }
-    }
-
     /// Enumerable models for one harness (ADP4 picker). Returns nil when the
     /// engine is offline OR the request fails, so the view falls back to free text.
     func harnessModels(for family: HarnessFamily) async -> HarnessModelsResponse? {
         guard let client else { return nil }
         return try? await client.harnessModels(harnessId: family.rawValue)
-    }
-
-    func confirmSetupJob(_ jobId: String) async -> SetupJob? {
-        guard let client else {
-            settingsStatus = "Engine offline: reconnect before confirming setup."
-            return nil
-        }
-        do {
-            let job = try await client.confirmSetupJob(jobId: jobId)
-            settingsStatus = job.message
-            return job
-        } catch {
-            settingsStatus = "Could not confirm setup job: \(error)"
-            return nil
-        }
-    }
-
-    func setupJobStatus(_ jobId: String) async -> SetupJob? {
-        guard let client else { return nil }
-        return try? await client.setupJob(jobId: jobId)
     }
 
     func refreshSettings() async {
@@ -1535,6 +1549,11 @@ final class AppModel {
     /// "HTTP 400" hid the real reason during the v0.10 polish).
     func userMessage(for error: Error) -> String {
         switch error {
+        case let gateway as GatewayError where gateway.controlProblem != nil:
+            guard case GatewayError.http(let status, _) = gateway,
+                  let problem = gateway.controlProblem else { return "Request failed." }
+            let action = problem.requiredActions.first.map { " Required action: \($0)." } ?? ""
+            return "Request failed (HTTP \(status), \(problem.code)): \(problem.message)\(action)"
         case GatewayError.http(let status, let body):
             if status == 501 { return "This engine build does not support threads. Update Claudexor." }
             if status == 404 { return "The engine is out of date — restart the daemon." }
@@ -1854,15 +1873,15 @@ final class AppModel {
         return files
     }
 
-    func storeSecret(name: String, value: String) async -> Bool {
-        guard let client else { return false }
+    func storeSecret(name: String, value: String, for family: HarnessFamily) async -> (stored: Bool, readinessRefreshed: Bool) {
+        guard let client else { return (false, false) }
         do {
             try await client.setSecret(name: name, value: value)
             await refreshSecrets()
-            await refreshHarnesses()
-            return true
+            guard let request = family.apiKeyAuthReadinessRequest else { return (true, false) }
+            return (true, await refreshAuthReadiness(for: family, request: request))
         } catch {
-            return false
+            return (false, false)
         }
     }
 

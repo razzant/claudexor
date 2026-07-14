@@ -99,10 +99,12 @@ are NOT aliases: they hard-error at every wire boundary.
   are deterministic offline test fixtures (incl. `fake-implement`, which writes a
   real worktree file and emits an orchestrate plan); they are explicit-`--harness`
   only and never enter auto/reviewer/orchestrate pools.
-- `packages/workspace`: git worktree envelopes, scoped harness homes/config dirs
-  (for write envelopes AND read-only routes via `readOnlyHomeEnv`, so plan files,
-  session rollouts, and transcripts never escape into the operator's real home),
-  diff capture, cleanup with path-safe dispose.
+- `packages/workspace`: git worktree envelopes and scoped harness homes/config
+  dirs for write envelopes and read-only routes via `readOnlyHomeEnv`; these keep
+  relocatable, route-local state outside both the worktree and the operator's
+  home. A selected native Codex/Claude route deliberately re-points only its
+  vendor config/session store at the vendor-owned host-user location described
+  in §5. The package also owns diff capture and path-safe disposal.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
 - `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
@@ -278,23 +280,39 @@ Keychain where available, otherwise a `0600` file under the user config dir.
 and an invalid value fails loudly, so a sandboxed run/test can force the `0600`
 file store and never touch the real login Keychain (which is not path-scoped).
 The routing/auth policy is subscription/native first where that route is
-readiness-proven; API-key refs are fallback secret refs. Cursor keeps normal
-non-scoped `auto` runs on the native session when it is available, and only lets
-scoped/envelope `auto` prefer the API-key route after the adapter smoke-proves
-that key. When a scoped `auto` run selects API-key while native Cursor auth is
-also available, the adapter emits a typed `route.fallback.auth_switched`
-disclosure with reason `readiness_preferred`, preventing a silent paid-route
-switch. Native/subscription runs scrub provider API-key env vars unless the run
-chooses an API-key source, preventing accidental API billing.
+readiness-proven; API-key refs are fallback secret refs. `auto` probes the native
+route first for Codex, Claude, and Cursor in host and scoped/envelope contexts;
+only an unavailable or unusable native route (and, for Claude, no verified
+setup-token source) permits the verified API-key fallback. Selecting that
+fallback emits typed `route.fallback.auth_switched`
+evidence with reason `readiness_preferred`, preventing a silent paid-route
+switch. Native/subscription runs scrub provider API-key, token, cloud-route, and
+endpoint-override env vars unless the selected route explicitly needs one,
+preventing accidental API billing or source substitution.
+Every Codex/Claude/Cursor doctor report is also a typed producer of
+`auth_sources`: source material availability (`available | unavailable |
+unknown`) and route verification (`passed | failed | not_run`) are independent.
+Control API DTOs project the same array as `authSources`; setup verification,
+CLI `auth status`, and macOS Auth UI consume it. Explicit `subscription` excludes
+API-key smoke, explicit `api_key` excludes native fallback, and `auto` preserves
+native-first fallback. A point probe may request `fresh` evidence, bypassing
+adapter/doctor caches without clearing or replacing shared cached reports.
+An absent/logged-out source is `unavailable + not_run`; a probe failure that
+cannot decide source presence is `unknown + not_run`; present but wrong or
+unusable source material is `available + failed`.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
-containment strategy that keeps it honest. Codex routes seed `auth.json` into a
-scoped `CODEX_HOME`; Claude API-key routes inject `ANTHROPIC_API_KEY`; Cursor
-declares an OS-keychain native route plus `CURSOR_API_KEY` fallback. On macOS,
-only routes whose declared transport/containment requires it (Cursor today)
-bridge the user's `~/Library/Keychains` directory into the scoped HOME so native
-Security-framework probes keep working while `.cursor` state still lands in the
-disposable scoped home.
+containment strategy that keeps it honest. Native-session state remains owned by
+the vendor: Codex reads the configured vendor `CODEX_HOME` and its
+file/keyring/auto credential store; Claude reads the vendor config directory and
+uses the macOS login Keychain; Cursor declares an OS-keychain native route. The
+native route points at that host-user context and never copies a vendor
+credential file into an envelope. Separate fallback routes may materialize only
+their selected source: Codex API-key auth seeds a temporary scoped `auth.json`,
+Claude injects either the stored setup token or `ANTHROPIC_API_KEY`, and Cursor
+injects `CURSOR_API_KEY`. Cursor's scoped native route bridges the user's
+`~/Library/Keychains` directory so Security-framework probes work while
+`.cursor` state still lands in the disposable scoped home.
 
 Run params are validated before daemon enqueue. Inline `env`, `secrets`,
 `api_key`, `token`, `password`, or similar fields are rejected, so daemon
@@ -458,8 +476,9 @@ files.
 - `POST /setup/jobs`
 - `GET /setup/jobs/:id`
 - `POST /setup/jobs/:id/cancel`
-- `POST /setup/jobs/:id/confirm`
 - `GET /setup/jobs/:id/events`
+- `POST /setup/jobs/:id/extend`
+- `GET /setup/jobs/:id/snapshot`
 - `POST /spec/freeze`
 - `POST /spec/questions`
 - `GET /threads`
@@ -471,6 +490,11 @@ files.
 - `POST /threads/:id/turns/:id/retry`
 - `GET /trust`
 - `POST /trust`
+- `POST /v2/harnesses/:id/auth-readiness`
+- `GET /v2/recovery/partitions/global`
+- `POST /v2/recovery/partitions/global/export`
+- `POST /v2/recovery/partitions/global/quarantine`
+- `POST /v2/recovery/partitions/global/validate`
 <!-- END GENERATED ENDPOINTS -->
 
 Endpoint semantics beyond the inventory:
@@ -612,13 +636,56 @@ decline (`interaction.timeout`) — the model continues with stated assumptions
 and the run never hangs forever. Declined/timed-out interactive flow-control
 tools are benign timeline events, never blocking tool errors.
 
-`/setup/jobs` (create / status / confirm / cancel) is the only supported setup
-surface; it owns the execution lifecycle for install/login/doctor setup work.
-Jobs validate typed setup actions, reject inline secrets, and expose only
-server-side allowlisted commands, official guide URLs, and redacted log
-metadata, plus state, risk flags, command preview, log path, cancel, and an SSE
-status projection. Native clients may open the job's Terminal handoff or show
-the returned command; they do not construct setup commands locally.
+`/setup/jobs` (create / status / snapshot / events / cancel / extend)
+is the native-login setup surface for Codex, Claude, and Cursor. Readiness and
+secret writes remain in their existing doctor/auth-readiness and secret services;
+setup does not duplicate them as jobs. Jobs expose a required typed phase, coarse state (including
+`timed_out` and `interrupted_unknown`), deadline, and typed terminal outcome.
+`GET /setup/jobs` accepts schema-validated `harness`, `action`, `active`, and
+`limit` filters. Setup SSE carries complete authoritative job snapshots from the
+global journal. Each event has an opaque cursor plus the exact request-relative
+`previousCursor`; global sequence gaps are valid, while a broken cursor chain,
+duplicate/regressive frame, malformed payload, or EOF without terminal evidence
+requires a resnapshot.
+
+Native login specs are a shared `{binary,args,displayCommand}` contract for
+Codex (`codex login`), Claude (`claude auth login --claudeai`), and Cursor
+(`cursor-agent login`). The daemon writes a private runner manifest; Terminal
+starts the bundled absolute Node + runner; the runner executes the absolute
+vendor binary without a shell, inherits the TTY, scrubs provider credentials,
+and atomically records PID/kernel-start/process-group and result sidecars. It
+never receives or persists a vendor token or credential file. Vendor output is
+not copied into durable logs, and Terminal stays open on the result until the
+operator presses Return. The daemon fsyncs an immutable executable/argv
+authorization and one-use permit before the detached runner may spawn. The
+runner's hash-bound result is journaled before verification. Exit zero enters a
+fresh, source-targeted native probe followed by an isolated same-harness
+capability smoke over the normal adapter stream; only the exact
+`vendor_native` / `native_session` route may pass. Another provider, an API key,
+tool use, external context, or workspace mutation invalidates the receipt. No
+plan-tier, entitlement, quota, or zero-cost inference is part of this proof.
+
+Login launch has a 10-second watchdog and a 15-minute deadline. Extend adds 15
+minutes without a cumulative limit. Duplicate create returns the same active
+action instead of launching a second Terminal; a conflicting active mutating
+action is refused. Cancel is asynchronous. Cancel/timeout sends TERM and, after
+five seconds, KILL only when PID + kernel-start identity still matches; an
+unproven identity is never signalled or called cancelled. Restart consumes an
+existing result first and reconciles a still-live proven login runner. A
+capability smoke with no durable completed receipt becomes
+`interrupted_unknown` and is never auto-replayed. Terminal outcomes distinguish
+`completed`, `not_supported`, `launch_failed`, `command_failed`,
+`auth_not_ready`, `capability_verification_failed`,
+`credential_route_mismatch`, `timed_out`, `cancelled_by_user`,
+`cancelled_on_restart`, `interrupted`, `interrupted_unknown`, and
+`termination_unconfirmed`.
+
+The checksummed, fsync-before-ACK global journal is the only setup lifecycle and
+event authority. Per-job `0700` directories under the daemon data root contain
+only runner manifest/state/result/permit/launcher artifacts. There is no
+per-job `job.json`, `events.jsonl`, metadata snapshot, or imported v1 registry.
+Corrupt journal state fails closed; operational artifacts cannot reconstruct or
+override lifecycle truth.
 
 Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead

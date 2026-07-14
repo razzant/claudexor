@@ -8,7 +8,16 @@
  * product rule.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,8 +39,8 @@ export function makeSandbox(): Sandbox {
   // layout sits near that cap — do NOT lengthen this prefix or nest the
   // config dir deeper, or canaries will fail with an obscure bind error on
   // macOS runners only.
-  const base = mkdtempSync(join(tmpdir(), "claudexor-canary-"));
-  const home = join(base, "home");
+  const base = mkdtempSync(join(realpathSync.native(tmpdir()), "cx-"));
+  const home = base;
   const configDir = join(base, "config");
   const repo = join(base, "repo");
   mkdirSync(home, { recursive: true });

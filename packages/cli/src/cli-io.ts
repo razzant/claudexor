@@ -22,20 +22,17 @@ export function statusGlyph(status: string): string {
 }
 
 export function authSourceAvailability(status: {
-  manifest?: {
-    auth_modes?: string[];
-    capability_profile?: {
-      auth?: { supported_sources?: string[]; preferred_source?: string | null };
-    };
-  } | null;
+  authSources?: {
+    source: string;
+    availability: "available" | "unavailable" | "unknown";
+    verification: "passed" | "failed" | "not_run";
+  }[];
 }): string {
-  const auth = status.manifest?.capability_profile?.auth;
-  const present = status.manifest?.auth_modes?.length
-    ? status.manifest.auth_modes.join(",")
-    : "unknown";
-  const supported = auth?.supported_sources?.length ? auth.supported_sources.join(",") : "unknown";
-  const preferred = auth?.preferred_source ? ` preferred=${auth.preferred_source}` : "";
-  return `present=${present} supported=${supported}${preferred}`;
+  const sources = status.authSources ?? [];
+  if (sources.length === 0) return "readiness-not-reported";
+  return sources
+    .map((source) => `${source.source}[availability=${source.availability},verification=${source.verification}]`)
+    .join(", ");
 }
 
 export function checksSummary(status: {

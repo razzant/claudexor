@@ -1,5 +1,6 @@
 import type {
   AuthPreference,
+  AuthSourceKind,
   ConformanceReport,
   HarnessEvent,
   HarnessManifest,
@@ -15,6 +16,12 @@ export interface DoctorSpec {
   env?: Record<string, string | null | undefined>;
   /** Optional auth route preference for probes that must mirror a concrete run route. */
   authPreference?: AuthPreference;
+  /** Bypass every readiness cache for this probe without reading, writing, or clearing shared cache state. */
+  fresh?: boolean;
+  /** Probe only this concrete auth source; adapters must not verify unrelated routes. */
+  authSource?: AuthSourceKind;
+  /** Cancels active vendor probes. This runtime-only value is never part of a cache key. */
+  abortSignal?: AbortSignal;
 }
 
 /**

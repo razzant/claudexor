@@ -22,6 +22,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceManager, git, processStartTime } from "@claudexor/workspace";
+import { projectRuntimeDir } from "@claudexor/util";
 
 const RO_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -83,9 +84,9 @@ function knownThreadIds(threadsPath: string): Set<string> {
   }
 }
 
-/** Isolated-thread worktrees nest their own envelopes: <root>/.claudexor/threads/<tid>/tree. */
+/** Isolated-thread worktrees live in the external per-project runtime namespace. */
 function threadTreesUnder(root: string): string[] {
-  const threadsDir = join(root, ".claudexor", "threads");
+  const threadsDir = join(projectRuntimeDir(root), "threads");
   if (!existsSync(threadsDir)) return [];
   try {
     return readdirSync(threadsDir)
@@ -98,7 +99,7 @@ function threadTreesUnder(root: string): string[] {
 
 async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
   const actions: string[] = [];
-  const workspacesDir = join(execRoot, ".claudexor", "workspaces");
+  const workspacesDir = join(projectRuntimeDir(execRoot), "workspaces");
   if (!existsSync(workspacesDir)) return actions;
   const wsm = new WorkspaceManager(execRoot);
   for (const taskId of safeReaddir(workspacesDir)) {
@@ -130,8 +131,8 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
 }
 
 /** How long an envelope may be KEPT on live-pid evidence alone when
- * start-time recycling proof is unavailable on either side. Bounds credential
- * retention: a recycled pid cannot pin a seeded-credential home forever. */
+ * start-time recycling proof is unavailable on either side. Bounds scoped
+ * auth/scratch retention: a recycled pid cannot pin a route-scoped home forever. */
 const OWNERLESS_PROOF_KEEP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** The live owner pid recorded in the envelope's owner.json, or null when the
@@ -140,7 +141,7 @@ const OWNERLESS_PROOF_KEEP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  * names/titles mutate, start times never do). FAIL-SAFE, bounded: when
  * start-time evidence is unavailable on either side (`ps` missing/sandboxed,
  * legacy marker), a LIVE pid keeps the envelope only while it is FRESH —
- * in-flight work survives, but a recycled pid cannot retain credential-bearing
+ * in-flight work survives, but a recycled pid cannot retain route-scoped
  * homes indefinitely. A pid alive under another uid (EPERM) counts as alive. */
 function envelopeOwner(envelopeBase: string): number | null {
   try {
@@ -169,7 +170,7 @@ function envelopeOwner(envelopeBase: string): number | null {
     // only the file's mtime, not its parent directory's, so directory stats
     // alone would sweep a live owner that edits in place. A live long-running
     // owner keeps extending its own window; a recycled pid cannot pin a
-    // seeded-credential home forever.
+    // route-scoped home forever.
     const newestMtime = Math.max(
       safeMtime(envelopeBase),
       safeMtime(join(envelopeBase, "owner.json")),
@@ -220,7 +221,7 @@ async function sweepAttemptBranches(
       // Dead thread branch: its worktree dir decides — an existing tree means
       // the thread store lost the record but the work is still there; keep it
       // (evidence beats cleanup) and only note it.
-      const threadTree = join(execRoot, ".claudexor", "threads", tid, "tree");
+      const threadTree = join(projectRuntimeDir(execRoot), "threads", tid, "tree");
       if (existsSync(threadTree)) {
         actions.push(`kept branch ${branch}: thread tree still on disk (store record missing)`);
         continue;
@@ -231,7 +232,7 @@ async function sweepAttemptBranches(
     }
     const [taskId, attemptId] = rest.split("/");
     if (!taskId || !attemptId) continue;
-    const envelopeBase = join(execRoot, ".claudexor", "workspaces", taskId, attemptId);
+    const envelopeBase = join(projectRuntimeDir(execRoot), "workspaces", taskId, attemptId);
     if (existsSync(envelopeBase)) continue; // still owned (sweep order: envelopes first)
     const del = await git(execRoot, ["branch", "-D", branch]);
     if (del.code === 0) actions.push(`deleted orphan attempt branch ${branch} under ${execRoot}`);
@@ -239,7 +240,7 @@ async function sweepAttemptBranches(
   return actions;
 }
 
-/** Read-only scoped homes and verify worktree dirs leak on crash; ro homes can hold seeded credentials. */
+/** Read-only scoped homes and verify worktree dirs leak on crash; ro homes can hold injected API-route material. */
 function sweepReadOnlyHomes(): string[] {
   const actions: string[] = [];
   const tmp = tmpdir();

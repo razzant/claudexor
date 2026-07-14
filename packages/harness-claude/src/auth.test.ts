@@ -1,9 +1,60 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { claudeArgsForSpec, ensureClaudeNativeAuth, probeAuthStatus } from "./index.js";
-import type { HarnessRunSpec } from "@claudexor/schema";
+import { claudeArgsForSpec, claudeAuthSourceReadiness, createClaudeAdapter, defaultNativeClaudeConfigDir, probeAuthStatus, selectClaudeRunAuthRoute } from "./index.js";
+import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import type { CliRunLoopOptions } from "@claudexor/core";
+
+const readonlySupported = async () => ({
+  supported: true,
+  missingFlags: [],
+  detail: "test readonly profile supported",
+});
+
+const readonlyUnsupported = async () => ({
+  supported: false,
+  missingFlags: ["--tools"],
+  detail: "test readonly profile unavailable",
+});
+
+describe("Claude strict runtime auth routing", () => {
+  it("does not fall back for explicit routes and keeps auto subscription-first", () => {
+    const attempts: string[] = [];
+    const sub = () => { attempts.push("subscription"); return false; };
+    const key = () => { attempts.push("api_key"); return true; };
+    expect(selectClaudeRunAuthRoute("subscription", sub, key)).toBeNull();
+    expect(attempts).toEqual(["subscription"]);
+    attempts.length = 0;
+    expect(selectClaudeRunAuthRoute("auto", sub, key)).toBe("api_key");
+    expect(attempts).toEqual(["subscription", "api_key"]);
+    attempts.length = 0;
+    expect(selectClaudeRunAuthRoute("api_key", () => { attempts.push("subscription"); return true; }, () => { attempts.push("api_key"); return false; })).toBeNull();
+    expect(attempts).toEqual(["api_key"]);
+  });
+});
+
+describe("Claude setup-token readiness", () => {
+  it("never impersonates an official native-session proof when the CLI is logged out", () => {
+    const sources = claudeAuthSourceReadiness({
+      native: { loggedIn: false, authed: false, authMethod: "none", probeError: null },
+      oauthAvailable: true,
+      oauthVerification: "passed",
+      oauthDetail: "isolated setup-token smoke passed",
+      apiKeyAvailable: false,
+      apiKeyVerification: "not_run",
+      apiKeyDetail: "no key",
+    });
+    expect(sources.find((source) => source.source === "native_session")).toMatchObject({
+      availability: "unavailable",
+      verification: "not_run",
+    });
+    expect(sources.find((source) => source.source === "oauth_token_env")).toMatchObject({
+      availability: "available",
+      verification: "passed",
+    });
+  });
+});
 
 function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
   return {
@@ -25,38 +76,6 @@ function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
     ...over,
   } as HarnessRunSpec;
 }
-
-describe("ensureClaudeNativeAuth", () => {
-  it("seeds the native .credentials.json into an isolated CLAUDE_CONFIG_DIR (subscription pass-through)", () => {
-    const nativeDir = mkdtempSync(join(tmpdir(), "claude-native-"));
-    const scoped = mkdtempSync(join(tmpdir(), "claude-scoped-"));
-    try {
-      writeFileSync(join(nativeDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "native" } }));
-      const ok = ensureClaudeNativeAuth({ CLAUDE_CONFIG_DIR: scoped }, nativeDir);
-      expect(ok).toBe(true);
-      expect(JSON.parse(readFileSync(join(scoped, ".credentials.json"), "utf8")).claudeAiOauth.accessToken).toBe("native");
-    } finally {
-      rmSync(nativeDir, { recursive: true, force: true });
-      rmSync(scoped, { recursive: true, force: true });
-    }
-  });
-
-  it("is a no-op without a native session and never overwrites scoped creds", () => {
-    const nativeDir = mkdtempSync(join(tmpdir(), "claude-native-empty-"));
-    const scoped = mkdtempSync(join(tmpdir(), "claude-scoped-"));
-    try {
-      expect(ensureClaudeNativeAuth({ CLAUDE_CONFIG_DIR: scoped }, nativeDir)).toBe(false);
-      expect(existsSync(join(scoped, ".credentials.json"))).toBe(false);
-      writeFileSync(join(scoped, ".credentials.json"), JSON.stringify({ existing: true }));
-      writeFileSync(join(nativeDir, ".credentials.json"), JSON.stringify({ native: true }));
-      expect(ensureClaudeNativeAuth({ CLAUDE_CONFIG_DIR: scoped }, nativeDir)).toBe(true);
-      expect(JSON.parse(readFileSync(join(scoped, ".credentials.json"), "utf8")).existing).toBe(true);
-    } finally {
-      rmSync(nativeDir, { recursive: true, force: true });
-      rmSync(scoped, { recursive: true, force: true });
-    }
-  });
-});
 
 describe("claudeArgsForSpec --bare guard", () => {
   it("passes --bare normally but suppresses it on the subscription route (--bare disables OAuth)", () => {
@@ -87,17 +106,27 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
       const bin = fakeClaudeBin(dir, `echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`);
-      expect(await probeAuthStatus(bin)).toEqual({ authed: false, probeError: null });
+      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: false, authed: false, authMethod: "none", probeError: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("trusts loggedIn:true regardless of exit code", async () => {
+  it("accepts only the exact claude.ai auth method", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
-      const bin = fakeClaudeBin(dir, `echo '{"loggedIn": true, "authMethod": "claudeai"}'; exit 0`);
-      expect(await probeAuthStatus(bin)).toEqual({ authed: true, probeError: null });
+      const bin = fakeClaudeBin(dir, `echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exit 0`);
+      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: true, authed: true, authMethod: "claude.ai", probeError: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a typed wrong auth method distinct from native subscription", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
+    try {
+      const bin = fakeClaudeBin(dir, `echo '{"loggedIn": true, "authMethod": "api_key"}'; exit 0`);
+      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: true, authed: false, authMethod: "api_key", probeError: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -109,19 +138,253 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
       const bin = fakeClaudeBin(dir, `echo "Error: config corrupted" >&2; exit 1`);
       const r = await probeAuthStatus(bin);
       expect(r.authed).toBe(false);
+      expect(r.loggedIn).toBe(false);
       expect(r.probeError).toContain("config corrupted");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("no JSON + exit 0 still counts as logged in (older CLI shape)", async () => {
+  it("no typed JSON + exit 0 is a probe error, never native readiness", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
       const bin = fakeClaudeBin(dir, `echo "Logged in"; exit 0`);
-      expect(await probeAuthStatus(bin)).toEqual({ authed: true, probeError: null });
+      const result = await probeAuthStatus(bin);
+      expect(result).toMatchObject({ loggedIn: false, authed: false, authMethod: null });
+      expect(result.probeError).toContain("Logged in");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("uses vendor-owned CLAUDE_CONFIG_DIR, preserves scoped HOME, and forwards hard cancellation", async () => {
+    const controller = new AbortController();
+    let captured: Record<string, unknown> | undefined;
+    const result = await probeAuthStatus("/fake/claude", {
+      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/must/not/win", ANTHROPIC_API_KEY: "secret" },
+      abortSignal: controller.signal,
+      runCapture: async (_cmd, _args, options) => {
+        captured = options as unknown as Record<string, unknown>;
+        return {
+          code: 0,
+          signal: null,
+          stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+          stderr: "",
+        };
+      },
+    });
+    expect(result.authed).toBe(true);
+    const env = captured?.env as Record<string, unknown>;
+    expect(env.HOME).toBe("/scoped/home");
+    expect(env.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
+    expect(env.ANTHROPIC_API_KEY).toBeNull();
+    expect(captured?.abortSignal).toBe(controller.signal);
+    expect(captured?.cancelSignal).toBe("SIGTERM");
+    expect(captured?.cancelKillDelayMs).toBe(0);
+  });
+});
+
+describe("Claude readonly enforcement capability", () => {
+  const nativeProbe = {
+    loggedIn: true,
+    authed: true,
+    authMethod: "claude.ai",
+    probeError: null,
+  } as const;
+
+  it("does not advertise readonly and degrades doctor when the CLI cannot prove the profile", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "test-claude",
+      probeReadonlyProfile: readonlyUnsupported,
+      probeAuthStatus: async () => nativeProbe,
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+    const manifest = await adapter.discover();
+    expect(manifest.access_profiles_supported).not.toContain("readonly");
+    expect(manifest.capability_profile.access_control.readonly_mechanism).toBe("none");
+
+    const report = await adapter.doctor({
+      cwd: "/repo",
+      authPreference: "subscription",
+      authSource: "native_session",
+      fresh: true,
+    });
+    expect(report.status).toBe("degraded");
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      id: "readonly_enforcement",
+      status: "fail",
+    }));
+    expect(report.reasons).toContain("test readonly profile unavailable");
+  });
+
+  it("refuses a readonly run before auth resolution or CLI launch", async () => {
+    let authReads = 0;
+    let launches = 0;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "test-claude",
+      probeReadonlyProfile: readonlyUnsupported,
+      probeAuthStatus: async () => {
+        authReads += 1;
+        return nativeProbe;
+      },
+      anthropicApiKey: () => {
+        authReads += 1;
+        return "must-not-read";
+      },
+      claudeOAuthToken: () => {
+        authReads += 1;
+        return "must-not-read";
+      },
+      runCliHarness: async function* (): AsyncGenerator<HarnessEvent> {
+        launches += 1;
+      },
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(spec({ access: "readonly" }))) events.push(event);
+    expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+    expect(events[0]).toMatchObject({
+      error: expect.stringContaining("readonly enforcement is unavailable"),
+      payload: { code: "readonly_enforcement_unavailable" },
+    });
+    expect(authReads).toBe(0);
+    expect(launches).toBe(0);
+  });
+});
+
+describe("Claude transport-aware source selection", () => {
+  const nativeProbe = {
+    loggedIn: true,
+    authed: true,
+    authMethod: "claude.ai",
+    probeError: null,
+  } as const;
+
+  it("targeted native doctor does not resolve or smoke OAuth/API routes", async () => {
+    let apiSecretReads = 0;
+    let oauthSecretReads = 0;
+    let smokeCalls = 0;
+    let probeEnv: Record<string, string | null | undefined> | undefined;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async (_bin, options) => {
+        probeEnv = options?.env;
+        return nativeProbe;
+      },
+      anthropicApiKey: () => { apiSecretReads += 1; return "api-key"; },
+      claudeOAuthToken: () => { oauthSecretReads += 1; return "oauth-token"; },
+      smokeIsolatedApiKey: async () => { smokeCalls += 1; return { ok: true, detail: "must not run" }; },
+      smokeIsolatedOAuthToken: async () => { smokeCalls += 1; return { ok: true, detail: "must not run" }; },
+    });
+
+    const report = await adapter.doctor({
+      cwd: "/repo",
+      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
+      authPreference: "subscription",
+      authSource: "native_session",
+      fresh: true,
+    });
+
+    expect(apiSecretReads).toBe(0);
+    expect(oauthSecretReads).toBe(0);
+    expect(smokeCalls).toBe(0);
+    expect(probeEnv?.HOME).toBe("/scoped/home");
+    expect(probeEnv?.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
+    expect(report.auth_sources).toEqual([
+      expect.objectContaining({ source: "native_session", availability: "available", verification: "passed" }),
+    ]);
+  });
+
+  it("declares config-file plus Keychain transport and prefers native source", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => nativeProbe,
+      anthropicApiKey: () => "api-key",
+      claudeOAuthToken: () => "oauth-token",
+    });
+    await expect(adapter.discover()).resolves.toMatchObject({
+      capability_profile: {
+        auth: {
+          preferred_source: "native_session",
+          credential_transports: expect.arrayContaining([
+            { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
+            { source: "native_session", kind: "os_keychain", relocatable_by: [] },
+          ]),
+        },
+        isolation: { supported_containment: expect.arrayContaining(["host_user_context"]) },
+      },
+    });
+  });
+
+  it("never injects an OAuth token when exact native auth was selected", async () => {
+    let cliOptions: CliRunLoopOptions | undefined;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => nativeProbe,
+      anthropicApiKey: () => "api-key",
+      claudeOAuthToken: () => "oauth-token",
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        cliOptions = options;
+        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+      },
+    });
+
+    for await (const _event of adapter.run(spec({
+      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
+      auth_preference: "auto",
+    }))) {
+      // drain
+    }
+
+    expect(cliOptions?.env?.HOME).toBe("/scoped/home");
+    expect(cliOptions?.env?.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
+    expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeNull();
+    expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+  });
+
+  it("selects the OAuth-token subscription source only after native is unavailable", async () => {
+    let cliOptions: CliRunLoopOptions | undefined;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({ loggedIn: false, authed: false, authMethod: "none", probeError: null }),
+      anthropicApiKey: () => "api-key",
+      claudeOAuthToken: () => "oauth-token",
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        cliOptions = options;
+        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+      },
+    });
+
+    for await (const _event of adapter.run(spec({
+      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
+      auth_preference: "auto",
+    }))) {
+      // drain
+    }
+
+    expect(cliOptions?.env?.CLAUDE_CONFIG_DIR).toBe("/scoped/config");
+    expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+  });
+
+  it("reports a typed wrong native auth method as available but failed", () => {
+    const sources = claudeAuthSourceReadiness({
+      native: { loggedIn: true, authed: false, authMethod: "api_key", probeError: null },
+      oauthAvailable: false,
+      oauthVerification: "not_run",
+      oauthDetail: "none",
+      apiKeyAvailable: false,
+      apiKeyVerification: "not_run",
+      apiKeyDetail: "none",
+    });
+    expect(sources[0]).toMatchObject({
+      source: "native_session",
+      availability: "available",
+      verification: "failed",
+    });
   });
 });

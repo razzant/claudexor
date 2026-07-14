@@ -1,10 +1,36 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { userConfigDir } from "@claudexor/util";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+import { ensureCanonicalPrivateDirectory, userConfigDir } from "@claudexor/util";
 
 export function daemonDir(): string {
   return join(userConfigDir(), "daemon");
+}
+
+/**
+ * Prove every daemon-owned root component before any token/log/lock writer is
+ * allowed to touch it. The default config root is one level below the already
+ * existing canonical home; a custom root must likewise have a canonical parent.
+ */
+export function ensureDaemonRuntimeRoot(): string {
+  const configRoot = ensureCanonicalPrivateDirectory(userConfigDir());
+  const root = ensureCanonicalPrivateDirectory(join(configRoot, "daemon"));
+  if (root !== resolve(daemonDir())) throw new Error("daemon runtime root is not canonical");
+  return root;
 }
 
 export function defaultSocketPath(): string {
@@ -15,49 +41,138 @@ export function logPath(): string {
   return join(daemonDir(), "claudexord.log");
 }
 
-/** Read or generate a per-user local auth token (0600). */
+/** Read or generate a per-user local auth token (0600), never through links. */
 export function ensureToken(): string {
-  const dir = daemonDir();
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "token");
+  const root = ensureDaemonRuntimeRoot();
+  const path = join(root, "token");
   try {
-    const existing = readFileSync(path, "utf8").trim();
-    if (existing) return existing;
-  } catch {
-    /* generate below */
+    return readValidatedToken(path, true);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
   }
+
   const token = randomUUID();
-  writeFileSync(path, token + "\n", { mode: 0o600 });
+  let fd: number | undefined;
   try {
-    chmodSync(path, 0o600);
-  } catch {
-    /* best-effort */
+    fd = openSync(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error("daemon token target is unsafe");
+    fchmodSync(fd, 0o600);
+    const bytes = Buffer.from(`${token}\n`, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    fsyncSync(fd);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EEXIST") return readValidatedToken(path, true);
+    throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
+  fsyncDirectory(root);
   return token;
 }
 
 export function readToken(): string | null {
   try {
-    const t = readFileSync(join(daemonDir(), "token"), "utf8").trim();
-    return t || null;
+    const root = validateDaemonRuntimeRootReadOnly();
+    return readValidatedToken(join(root, "token"), false);
   } catch {
     return null;
   }
 }
 
-/** Rotate the local auth token: a fresh random token replaces the
- * old one (0600). Existing daemon sessions keep their in-memory token, so
- * rotation takes effect on the next daemon start — the CLI surface says so. */
-export function rotateToken(): string {
-  const dir = daemonDir();
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "token");
-  const token = randomUUID();
-  writeFileSync(path, token + "\n", { mode: 0o600 });
-  try {
-    chmodSync(path, 0o600);
-  } catch {
-    /* best-effort */
+function validateDaemonRuntimeRootReadOnly(): string {
+  const root = resolve(daemonDir());
+  const stat = lstatSync(root);
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isDirectory() ||
+    realpathSync.native(root) !== root ||
+    (stat.mode & 0o077) !== 0 ||
+    (typeof process.getuid === "function" && stat.uid !== process.getuid())
+  ) {
+    throw new Error(`daemon runtime root is not canonical and private: ${root}`);
   }
-  return token;
+  return root;
+}
+
+/**
+ * Rotate only a proven owner-controlled token inode. The caller already fences
+ * a live daemon; this writer adds no compatibility path that would chmod or
+ * overwrite a symlink/hardlink/foreign file.
+ */
+export function rotateToken(): string {
+  const root = ensureDaemonRuntimeRoot();
+  const path = join(root, "token");
+  if (existsSync(path)) void readValidatedToken(path, false);
+  const token = randomUUID();
+  const temp = join(root, `.token-${process.pid}-${randomUUID()}.tmp`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(
+      temp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const bytes = Buffer.from(`${token}\n`, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    fchmodSync(fd, 0o600);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    if (existsSync(path)) void readValidatedToken(path, false);
+    renameSync(temp, path);
+    fsyncDirectory(root);
+    return token;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch {
+      /* renamed or never created */
+    }
+  }
+}
+
+function readValidatedToken(path: string, repairMode: boolean): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd);
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      opened.size > 4 * 1024 ||
+      (typeof process.getuid === "function" && opened.uid !== process.getuid())
+    )
+      throw new Error("daemon token is not an owner-controlled singly-linked regular file");
+    if ((opened.mode & 0o077) !== 0) {
+      if (!repairMode) throw new Error("daemon token permissions are not private");
+      // The inode/path identity was fully proven above; only now may startup
+      // repair permissions inherited from an older Claudexor version.
+      fchmodSync(fd, 0o600);
+      fsyncSync(fd);
+    }
+    const token = readFileSync(fd, "utf8").trim();
+    if (!token || token.includes("\n") || token.includes("\r")) {
+      throw new Error("daemon token is empty or malformed");
+    }
+    return token;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }

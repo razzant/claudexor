@@ -1,8 +1,7 @@
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
-import { claudexorArtifactPredicate, trackedArtifactDirPaths } from "./artifact-paths.js";
 
 /** BYTE-FAITHFUL git capture: raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
@@ -22,8 +21,13 @@ async function gitEnv(
   repo: string,
   args: string[],
   env: Record<string, string>,
+  input?: string,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const r = await runCaptureRaw("git", ["-C", repo, ...args], { timeoutMs: 60_000, env });
+  const r = await runCaptureRaw("git", ["-C", repo, ...args], {
+    timeoutMs: 60_000,
+    env,
+    input,
+  });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -43,13 +47,11 @@ export interface EnsureGitRepositoryResult {
   initialized: boolean;
   /** True when a baseline commit was created (fresh repo or unborn HEAD). */
   baselineCommitted: boolean;
-  /** True when `.claudexor/` was added to (or created in) .gitignore. */
+  /** Always false in v2: Claudexor never changes a project's `.gitignore`. */
   gitignoreSeeded: boolean;
   /** HEAD sha after the call. */
   headSha: string;
 }
-
-const GITIGNORE_SEED = ".claudexor/";
 
 /**
  * Make a project folder usable as a git boundary for write-mode runs.
@@ -58,8 +60,8 @@ const GITIGNORE_SEED = ".claudexor/";
  * quick start is `mkdir && git init && codex`); Claudexor goes one step
  * further and creates the boundary itself, announced via the
  * `project.git.initialized` run event. The baseline commit makes worktree
- * diffs honest from the very first run; `.claudexor/` is seeded into
- * .gitignore FIRST so run artifacts never enter the baseline.
+ * diffs honest from the first run. Runtime is external, so project ignore
+ * files are never created or edited as a side effect.
  *
  * The baseline commit is authored as "Claudexor" deterministically — it is a
  * tool-created commit and must not depend on (or pollute) user git identity.
@@ -68,25 +70,12 @@ export async function ensureGitRepository(repo: string): Promise<EnsureGitReposi
   const isRepo = await isGitRepo(repo);
   const hasHead = isRepo && (await git(repo, ["rev-parse", "--verify", "HEAD"])).code === 0;
   if (isRepo && hasHead) {
-    return { initialized: false, baselineCommitted: false, gitignoreSeeded: false, headSha: await revParse(repo, "HEAD") };
-  }
-
-  let gitignoreSeeded = false;
-  const gitignorePath = join(repo, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, `${GITIGNORE_SEED}\n`, "utf8");
-    gitignoreSeeded = true;
-  } else {
-    const raw = readFileSync(gitignorePath, "utf8");
-    const lines = raw.split("\n").map((l) => l.trim());
-    if (!lines.includes(GITIGNORE_SEED) && !lines.includes(".claudexor")) {
-      // A missing trailing newline would concatenate the seed onto the last
-      // pattern (e.g. "node_modules.claudexor/"), silently un-ignoring run
-      // artifacts right before the baseline `git add -A`.
-      const separator = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
-      appendFileSync(gitignorePath, `${separator}${GITIGNORE_SEED}\n`, "utf8");
-      gitignoreSeeded = true;
-    }
+    return {
+      initialized: false,
+      baselineCommitted: false,
+      gitignoreSeeded: false,
+      headSha: await revParse(repo, "HEAD"),
+    };
   }
 
   let initialized = false;
@@ -97,7 +86,10 @@ export async function ensureGitRepository(repo: string): Promise<EnsureGitReposi
   }
 
   const add = await git(repo, ["add", "-A"]);
-  if (add.code !== 0) throw new WorkspaceError(`git add failed during repository initialization: ${add.stderr.trim()}`);
+  if (add.code !== 0)
+    throw new WorkspaceError(
+      `git add failed during repository initialization: ${add.stderr.trim()}`,
+    );
   const commit = await git(repo, [
     "-c",
     "user.name=Claudexor",
@@ -109,8 +101,16 @@ export async function ensureGitRepository(repo: string): Promise<EnsureGitReposi
     "-m",
     "claudexor: initialize repository baseline",
   ]);
-  if (commit.code !== 0) throw new WorkspaceError(`baseline commit failed during repository initialization: ${commit.stderr.trim()}`);
-  return { initialized, baselineCommitted: true, gitignoreSeeded, headSha: await revParse(repo, "HEAD") };
+  if (commit.code !== 0)
+    throw new WorkspaceError(
+      `baseline commit failed during repository initialization: ${commit.stderr.trim()}`,
+    );
+  return {
+    initialized,
+    baselineCommitted: true,
+    gitignoreSeeded: false,
+    headSha: await revParse(repo, "HEAD"),
+  };
 }
 
 export async function statusPorcelain(repo: string): Promise<string> {
@@ -125,24 +125,22 @@ export async function statusPorcelain(repo: string): Promise<string> {
  * respects .gitignore, so run artifacts stay out), and commit-tree the result.
  */
 export async function stashCreate(repo: string): Promise<string | null> {
-  const status = await statusPorcelain(repo);
-  // Claudexor's own run/workspace artifacts are never part of the user's dirty
-  // state (concurrent envelope creation materializes `.claudexor/workspaces/...`
-  // inside the repo); snapshotting them would bake run artifacts into the base.
-  const isArtifact = await claudexorArtifactPredicate(repo);
-  const meaningful = status
-    .split("\n")
-    .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
-    .filter((p) => p.length > 0 && !isArtifact(p));
-  if (meaningful.length === 0) return null;
+  // NUL form is filename-faithful (newlines, quotes and whitespace are legal
+  // path bytes). Runtime is external, so every reported path is user state.
+  const status = await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (status.code !== 0)
+    throw new WorkspaceError(`snapshot status failed: ${status.stderr.trim()}`);
+  if (status.stdout.length === 0) return null;
   const head = await git(repo, ["rev-parse", "HEAD"]);
-  if (head.code !== 0) throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
+  if (head.code !== 0)
+    throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
   const headSha = head.stdout.trim();
   // Unique per call: concurrent envelope creates (a best_of_n wave) must never
   // collide on the scratch index (same pid + same millisecond is real). It lives
   // in the OS temp dir, NOT under `<repo>/.git` — in a linked worktree `.git` is
   // a FILE (gitdir pointer), so a scratch path there fails (review #8).
-  const tmpIndex = join(tmpdir(), `claudexor-snapshot-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-snapshot-index-"));
+  const tmpIndex = join(scratchDir, "index");
   const env: Record<string, string> = {
     GIT_INDEX_FILE: tmpIndex,
     GIT_AUTHOR_NAME: "Claudexor",
@@ -152,49 +150,36 @@ export async function stashCreate(repo: string): Promise<string | null> {
   };
   try {
     const read = await gitEnv(repo, ["read-tree", "HEAD"], env);
-    if (read.code !== 0) throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
-    // Bare `git add -A` with NO pathspec. A pathspec — positive OR `:(exclude)` —
-    // that *names* an ignored path makes git hard-error ("paths are ignored ...
-    // use -f") when the project's own .gitignore lists `.claudexor` (the in-place
-    // bug the user hit). Bare `add -A` honors .gitignore and silently skips ignored
-    // paths instead. We then unstage `.claudexor` from the SCRATCH index so run
-    // artifacts never enter the snapshot even when `.claudexor` is NOT gitignored
-    // (concurrent envelope materialization); `--ignore-unmatch` makes the already-
-    // ignored case a clean no-op rather than an error.
+    if (read.code !== 0)
+      throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
+    // Bare add runs only against the scratch index. It respects the project's
+    // own ignore policy without changing the live index. `.claudexor/` is not a
+    // runtime exception in v2: tracked or untracked project config is user state.
     const add = await gitEnv(repo, ["add", "-A"], env);
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
-    // TRACKED files under the artifact dirs are USER STATE (versioned config)
-    // — capture them (INDEX ∪ HEAD via the shared owner: index alone misses a
-    // user-STAGED deletion, HEAD alone misses a user-staged new config) and
-    // restore the still-present ones after the bulk unstage, so a tracked
-    // .claudexor/config.yaml edit survives into the snapshot TREE while a
-    // staged deletion stays deleted. Reads the REAL index (no scratch env):
-    // the scratch index just add -A'd runtime artifacts, which must not
-    // masquerade as tracked.
-    const trackedKeep = [...(await trackedArtifactDirPaths(repo))];
-    const unstage = await gitEnv(repo, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".claudexor", ".claudexor-review-evidence"], env);
-    if (unstage.code !== 0) throw new WorkspaceError(`snapshot exclude .claudexor failed: ${unstage.stderr.trim()}`);
-    // Only re-add paths still PRESENT in the worktree: a deleted tracked
-    // file stays absent from the scratch index — that IS the deletion.
-    const keepPresent = trackedKeep.filter((p) => existsSync(join(repo, p)));
-    if (keepPresent.length > 0) {
-      const readd = await gitEnv(repo, ["add", "-f", "--", ...keepPresent], env);
-      if (readd.code !== 0) throw new WorkspaceError(`snapshot re-add of tracked artifact-dir files failed: ${readd.stderr.trim()}`);
-    }
     const writeTree = await gitEnv(repo, ["write-tree"], env);
-    if (writeTree.code !== 0) throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
+    if (writeTree.code !== 0)
+      throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
     const tree = writeTree.stdout.trim();
     const commit = await gitEnv(
       repo,
-      ["commit-tree", tree, "-p", headSha, "-m", "claudexor: dirty worktree snapshot (incl. untracked)"],
+      [
+        "commit-tree",
+        tree,
+        "-p",
+        headSha,
+        "-m",
+        "claudexor: dirty worktree snapshot (incl. untracked)",
+      ],
       env,
     );
-    if (commit.code !== 0) throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
+    if (commit.code !== 0)
+      throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
     const sha = commit.stdout.trim();
     return sha.length > 0 ? sha : null;
   } finally {
     try {
-      rmSync(tmpIndex, { force: true });
+      rmSync(scratchDir, { recursive: true, force: true });
     } catch {
       /* scratch index cleanup is best-effort */
     }
@@ -226,6 +211,54 @@ export async function diffTrees(repo: string, baseSha: string, endSha: string): 
   return r.stdout;
 }
 
+/**
+ * Materialize a patch against an exact base in a scratch index and return the
+ * resulting tree id. The live index and worktree are never consulted or
+ * changed. Commit-class delivery uses this as its expected candidate tree so a
+ * concurrently staged user path can never be swept into a Claudexor commit.
+ */
+export async function materializePatchTree(
+  repo: string,
+  baseSha: string,
+  diff: string,
+): Promise<string> {
+  const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-patch-index-"));
+  const indexPath = join(scratchDir, "index");
+  const env = { GIT_INDEX_FILE: indexPath, GIT_OPTIONAL_LOCKS: "0" };
+  try {
+    const read = await gitEnv(repo, ["read-tree", baseSha], env);
+    if (read.code !== 0) {
+      throw new WorkspaceError(
+        `git read-tree ${baseSha} failed during patch materialization: ${read.stderr.trim()}`,
+      );
+    }
+    if (diff.trim()) {
+      const applied = await gitEnv(
+        repo,
+        ["apply", "--cached", "--whitespace=nowarn", "-"],
+        env,
+        diff,
+      );
+      if (applied.code !== 0) {
+        throw new WorkspaceError(
+          `scratch git apply failed during patch materialization: ${applied.stderr.trim()}`,
+        );
+      }
+    }
+    const written = await gitEnv(repo, ["write-tree"], env);
+    if (written.code !== 0) {
+      throw new WorkspaceError(`scratch git write-tree failed: ${written.stderr.trim()}`);
+    }
+    return written.stdout.trim();
+  } finally {
+    try {
+      rmSync(scratchDir, { recursive: true, force: true });
+    } catch {
+      /* scratch index cleanup is best-effort */
+    }
+  }
+}
+
 /** Capture-time honesty: with --binary a payload-less "Binary files differ"
  * stub should be impossible; if one appears anyway, fail AT CAPTURE with a
  * typed error instead of shipping a patch that cannot apply. */
@@ -237,15 +270,6 @@ function assertNoBinaryStubs(diff: string, label: string): void {
       `${label} produced undeliverable binary stub(s) for: ${names}; the work product cannot be applied`,
     );
   }
-}
-
-/** Resolve the TREE object sha for a commit-ish. snapshotTree returns COMMIT
- * shas whose ids vary by timestamp even for identical content; comparing the
- * underlying tree shas is the content-stable equality test. */
-async function treeOf(repo: string, sha: string): Promise<string> {
-  const r = await git(repo, ["rev-parse", `${sha}^{tree}`]);
-  if (r.code !== 0) throw new WorkspaceError(`rev-parse ${sha}^{tree} failed: ${r.stderr.trim()}`);
-  return r.stdout.trim();
 }
 
 export interface RevertResult {
@@ -267,67 +291,65 @@ export async function revertWorkingTreeTo(
   preTurnSha: string,
   expectedPostSha: string,
 ): Promise<RevertResult> {
-  // Divergence fence (compare content-stable tree shas, never commit shas).
-  const current = await snapshotTree(repo);
-  const [currentTree, expectedTree] = await Promise.all([treeOf(repo, current), treeOf(repo, expectedPostSha)]);
-  if (currentTree !== expectedTree) {
-    return { reverted: false, removed: [], reason: "working tree diverged from the recorded post-turn state; refusing to revert" };
-  }
-  // Files the turn ADDED (in post, absent in pre) must be removed; restore alone
-  // only reverts tracked modifications/deletions, never deletes extra files.
-  // `--no-renames` forces a turn rename to surface as delete-old + ADD-new so the
-  // new path is caught here (rename detection would hide it under an R status).
-  // `-z`: NUL-separated RAW paths — git C-quotes special names on the
-  // newline format, and the quoted literal never exists on disk, so rmSync
-  // "removed" nothing while the old code still reported reverted:true.
-  const added = await git(repo, ["diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", preTurnSha, expectedPostSha]);
-  if (added.code !== 0) throw new WorkspaceError(`revert diff failed: ${added.stderr.trim()}`);
-  const isArtifact = await claudexorArtifactPredicate(repo);
-  const toRemove = added.stdout
-    .split("\0")
-    .map((l) => l.replace(/\n$/, ""))
-    .filter((p) => p.length > 0 && !isArtifact(p));
-  // Restore every path present in the pre-turn snapshot (mods + deletions).
-  const restore = await git(repo, ["checkout", preTurnSha, "--", "."]);
-  if (restore.code !== 0) throw new WorkspaceError(`revert checkout failed: ${restore.stderr.trim()}`);
-  const removed: string[] = [];
-  const survivors: string[] = [];
-  for (const rel of toRemove) {
-    try {
-      rmSync(join(repo, rel), { force: true });
-    } catch {
-      /* verified below: existence decides, not the rm call */
-    }
-    if (existsSync(join(repo, rel))) survivors.push(rel);
-    else removed.push(rel);
-  }
-  // Re-sync the index so `git status` reflects the restored tree (checkout left
-  // turn-added paths staged-for-delete handling to us).
-  await git(repo, ["add", "-A", "--", "."]);
-  await git(repo, ["reset", "--quiet"]);
-  if (survivors.length > 0) {
-    // A survivor means the tree does NOT match the pre-turn state: refusing
-    // to claim reverted:true is the honesty contract (INV-114 family).
+  // Git itself produces the exact binary/mode/symlink-aware forward patch.
+  // Reverse-applying it touches only turn-owned hunks. A later edit that
+  // overlaps those hunks makes --check fail; unrelated user edits, staged state,
+  // and untracked files remain outside the mutation surface.
+  const patch = await diffTrees(repo, preTurnSha, expectedPostSha);
+  if (!patch.trim()) return { reverted: true, removed: [] };
+  const removed = parseUnifiedDiff(patch)
+    .files.filter((file) => file.added && file.newPath)
+    .map((file) => file.newPath as string);
+  const check = await git(
+    repo,
+    ["apply", "--check", "--reverse", "--whitespace=nowarn", "-"],
+    patch,
+  );
+  if (check.code !== 0) {
     return {
       reverted: false,
-      removed,
-      reason: `failed to remove turn-added file(s): ${survivors.join(", ")}`,
+      removed: [],
+      reason: `turn-owned postimage no longer matches; refusing to overwrite later user edits: ${check.stderr.trim()}`,
+    };
+  }
+  const before = await statusPorcelain(repo);
+  const apply = await git(repo, ["apply", "--reverse", "--whitespace=nowarn", "-"], patch);
+  if (apply.code !== 0) {
+    const after = await statusPorcelain(repo);
+    return {
+      reverted: false,
+      removed: [],
+      reason:
+        `reverse apply failed after preflight: ${apply.stderr.trim()}; ` +
+        (after === before
+          ? "tree remains at the observed pre-revert state"
+          : "target changed during revert; no destructive rollback was attempted"),
     };
   }
   return { reverted: true, removed };
 }
 
-export async function worktreeAdd(repo: string, path: string, branch: string, baseSha: string): Promise<void> {
+export async function worktreeAdd(
+  repo: string,
+  path: string,
+  branch: string,
+  baseSha: string,
+): Promise<void> {
   const r = await git(repo, ["worktree", "add", "-b", branch, path, baseSha]);
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
 }
 
 /** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived). */
-export async function worktreeAddExisting(repo: string, path: string, branch: string): Promise<void> {
+export async function worktreeAddExisting(
+  repo: string,
+  path: string,
+  branch: string,
+): Promise<void> {
   // A stale registration for the lost directory would fail the add; prune first.
   await git(repo, ["worktree", "prune"]);
   const r = await git(repo, ["worktree", "add", path, branch]);
-  if (r.code !== 0) throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
+  if (r.code !== 0)
+    throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
 }
 
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
@@ -347,45 +369,88 @@ export interface ProtectedApplyResult {
   detail?: string;
 }
 
-/**
- * The PROTECTED apply path: `git apply --check` first (clean typed
- * refusal, tree untouched), then `--3way`; if 3way still fails (race with a
- * concurrent edit), RESTORE — `checkout -- .` for tracked content plus
- * removal of files the partial apply CREATED (from the shared diff parser's
- * added-paths) — and verify with `status --porcelain`. `ok:false,
- * treeMutated:false` is a GUARANTEE the tree is byte-identical (INV-114);
- * a failed restoration reports `treeMutated:true` honestly instead.
- */
-export async function applyPatchProtected(repo: string, diff: string): Promise<ProtectedApplyResult> {
+async function runProtectedApply(
+  repo: string,
+  diff: string,
+  options: { index: boolean; reverse: boolean },
+): Promise<ProtectedApplyResult> {
   if (!diff.trim()) return { ok: true, treeMutated: false, detail: "empty patch; no-op" };
-  const check = await git(repo, ["apply", "--check", "--whitespace=nowarn", "-"], diff);
+  const flags = [
+    "apply",
+    ...(options.index ? ["--index"] : []),
+    ...(options.reverse ? ["--reverse"] : []),
+    "--whitespace=nowarn",
+  ];
+  const check = await git(repo, [...flags, "--check", "-"], diff);
   if (check.code !== 0) {
-    return { ok: false, treeMutated: false, detail: `apply --check refused: ${check.stderr.trim()}` };
+    return {
+      ok: false,
+      // A refused forward apply has not touched the tree. A refused reverse
+      // means the Claudexor-written postimage could not be removed exactly and
+      // therefore remains a mutation that must be surfaced to the operator.
+      treeMutated: options.reverse,
+      detail: `${options.reverse ? "reverse " : ""}apply --check refused: ${check.stderr.trim()}`,
+    };
   }
   const before = await statusPorcelain(repo);
-  const ap = await git(repo, ["apply", "--3way", "--whitespace=nowarn", "-"], diff);
-  if (ap.code === 0) return { ok: true, treeMutated: true };
-  // 3way failed after a passing --check (concurrent mutation): restore.
-  const added = parseUnifiedDiff(diff)
-    .files.filter((f) => f.added && f.newPath)
-    .map((f) => f.newPath as string);
-  for (const rel of added) {
-    try {
-      rmSync(join(repo, rel), { force: true });
-    } catch {
-      /* verified below via the status fingerprint */
-    }
+  const applied = await git(repo, [...flags, "-"], diff);
+  if (applied.code === 0) {
+    return {
+      ok: true,
+      // Forward apply introduces the patch; reverse apply removes it.
+      treeMutated: !options.reverse,
+    };
   }
-  await git(repo, ["checkout", "--", "."]);
   const after = await statusPorcelain(repo);
-  const restored = after === before;
+  const unchanged = after === before;
   return {
     ok: false,
-    treeMutated: !restored,
+    treeMutated: options.reverse ? true : !unchanged,
     detail:
-      `apply --3way failed: ${ap.stderr.trim()}` +
-      (restored ? "; tree restored to its pre-apply state" : "; RESTORE FAILED — tree left mutated, inspect manually"),
+      `${options.reverse ? "reverse " : ""}apply failed after preflight: ${applied.stderr.trim()}` +
+      (unchanged
+        ? "; tree and index remain at the observed pre-operation state"
+        : "; target changed during apply; no destructive rollback was attempted"),
   };
+}
+
+/**
+ * The protected apply path deliberately does not use `--3way`: 3-way failures
+ * may leave conflict stages and historically triggered a destructive
+ * `checkout -- .` rollback. Plain `git apply` is all-or-nothing unless
+ * `--reject` is requested (we never request it). A stale/concurrent target is
+ * refused; no automatic rollback ever overwrites user state.
+ */
+export async function applyPatchProtected(
+  repo: string,
+  diff: string,
+): Promise<ProtectedApplyResult> {
+  return runProtectedApply(repo, diff, { index: false, reverse: false });
+}
+
+/**
+ * Commit-class delivery updates the worktree and index as one Git operation.
+ * `git apply --index` refuses when either preimage diverged and does not sweep
+ * unrelated paths into the index.
+ */
+export async function applyPatchAndIndexProtected(
+  repo: string,
+  diff: string,
+): Promise<ProtectedApplyResult> {
+  return runProtectedApply(repo, diff, { index: true, reverse: false });
+}
+
+/**
+ * Remove only an exact Claudexor-written patch postimage from worktree+index.
+ * This is the sole post-apply compensation path: no reset, checkout, or
+ * path-blind deletion is permitted. Concurrent overlapping edits make the
+ * reverse check fail and are preserved for an explicit recovery decision.
+ */
+export async function reversePatchAndIndexProtected(
+  repo: string,
+  diff: string,
+): Promise<ProtectedApplyResult> {
+  return runProtectedApply(repo, diff, { index: true, reverse: true });
 }
 
 export async function worktreePrune(repo: string): Promise<void> {
@@ -407,16 +472,32 @@ export async function branchDelete(repo: string, branch: string): Promise<void> 
  * commits. Git op failures throw loudly instead of masquerading as "no changes".
  */
 export async function diffStaged(worktreePath: string, baseSha?: string): Promise<string> {
-  await runCaptureRaw("rm", ["-rf", ".claudexor-review-evidence"], { cwd: worktreePath, timeoutMs: 10_000 }).catch(() => null);
-  const add = await git(worktreePath, ["add", "-A"]);
-  if (add.code !== 0) {
-    throw new WorkspaceError(`git add -A failed during diff capture: ${add.stderr.trim()}`);
-  }
   const target = baseSha && baseSha.length > 0 ? baseSha : "HEAD";
-  const diff = await git(worktreePath, ["diff", "--binary", "--cached", target]);
-  if (diff.code !== 0) {
-    throw new WorkspaceError(`git diff --cached ${target} failed during diff capture: ${diff.stderr.trim()}`);
+  const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-diff-index-"));
+  const indexPath = join(scratchDir, "index");
+  const env = { GIT_INDEX_FILE: indexPath, GIT_OPTIONAL_LOCKS: "0" };
+  try {
+    const read = await gitEnv(worktreePath, ["read-tree", target], env);
+    if (read.code !== 0) {
+      throw new WorkspaceError(
+        `git read-tree ${target} failed during diff capture: ${read.stderr.trim()}`,
+      );
+    }
+    const add = await gitEnv(worktreePath, ["add", "-A"], env);
+    if (add.code !== 0) {
+      throw new WorkspaceError(
+        `scratch git add -A failed during diff capture: ${add.stderr.trim()}`,
+      );
+    }
+    const diff = await gitEnv(worktreePath, ["diff", "--binary", "--cached", target], env);
+    if (diff.code !== 0) {
+      throw new WorkspaceError(
+        `git diff --cached ${target} failed during diff capture: ${diff.stderr.trim()}`,
+      );
+    }
+    assertNoBinaryStubs(diff.stdout, `git diff --cached ${target}`);
+    return diff.stdout;
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
   }
-  assertNoBinaryStubs(diff.stdout, `git diff --cached ${target}`);
-  return diff.stdout;
 }

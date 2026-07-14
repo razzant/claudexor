@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { containsSecretLikeToken, hashJson, newId, redactSecrets, sha256, stableStringify, userConfigDir } from "./index.js";
+import {
+  containsSecretLikeToken,
+  hashJson,
+  newId,
+  redactSecrets,
+  sha256,
+  stableStringify,
+  userConfigDir,
+} from "./index.js";
 
 describe("util", () => {
   it("hashes JSON stably regardless of key order", () => {

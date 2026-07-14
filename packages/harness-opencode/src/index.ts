@@ -37,7 +37,7 @@ async function detectVersion(): Promise<string | null> {
 
 const PROVIDER_KEY_ENV = ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
 
-function providerKey(env: Record<string, string | undefined> = process.env): { envVar: (typeof PROVIDER_KEY_ENV)[number]; value: string } | null {
+function providerKey(env: Record<string, string | null | undefined> = process.env): { envVar: (typeof PROVIDER_KEY_ENV)[number]; value: string } | null {
   for (const envVar of PROVIDER_KEY_ENV) {
     if (env[envVar]) return { envVar, value: env[envVar] as string };
   }
@@ -54,9 +54,26 @@ function providerKey(env: Record<string, string | undefined> = process.env): { e
   return null;
 }
 
-function providerKeyAvailable(): boolean {
-  return providerKey() !== null;
+function providerKeyAvailable(env: Record<string, string | null | undefined> = process.env): boolean {
+  return providerKey(env) !== null;
 }
+
+const OPENCODE_ENABLED_INTENTS = [
+  "implement",
+  "repair",
+  "create_from_scratch",
+  "verify",
+  "synthesize",
+] as const;
+const OPENCODE_DISABLED_INTENTS = [
+  "explain",
+  "audit",
+  "plan",
+  "spec",
+  "review",
+  "orchestrate",
+] as const;
+const ALL_OPENCODE_INTENTS = [...OPENCODE_ENABLED_INTENTS, ...OPENCODE_DISABLED_INTENTS] as const;
 
 export function createOpenCodeAdapter(): HarnessAdapter {
   return {
@@ -111,17 +128,68 @@ export function createOpenCodeAdapter(): HarnessAdapter {
       });
     },
 
-    async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
+    async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await detectVersion();
+      const requestedSource = spec.authSource;
+      if (requestedSource !== undefined && requestedSource !== "api_key_env") {
+        return ConformanceReportSchema.parse({
+          harness_id: "opencode",
+          status: "unavailable",
+          checks: [
+            version === null
+              ? { id: "installed", status: "fail", detail: "opencode not found" }
+              : { id: "installed", status: "pass", detail: redactSecrets(version) },
+            {
+              id: "auth_source",
+              status: "fail",
+              detail: `opencode does not support ${requestedSource}`,
+            },
+          ],
+          enabled_intents: [],
+          disabled_intents: ALL_OPENCODE_INTENTS,
+          reasons: [
+            ...(version === null
+              ? ["opencode not found (install OpenCode or set CLAUDEXOR_OPENCODE_BIN)"]
+              : []),
+            `opencode does not support auth source ${requestedSource}`,
+          ],
+          auth_sources: [
+            {
+              source: requestedSource,
+              availability: "unavailable",
+              verification: "not_run",
+              detail: `opencode does not support ${requestedSource}`,
+            },
+          ],
+        });
+      }
+
+      const authReady = providerKeyAvailable({ ...process.env, ...spec.env });
+      const readiness = {
+        source: "api_key_env" as const,
+        availability: authReady ? ("available" as const) : ("unavailable" as const),
+        verification: "not_run" as const,
+        detail: authReady
+          ? "credential source is present; verification requires an isolated capability smoke"
+          : "no provider API key is configured",
+      };
       if (version === null) {
         return ConformanceReportSchema.parse({
           harness_id: "opencode",
           status: "unavailable",
-          checks: [{ id: "installed", status: "fail", detail: "opencode not found" }],
-          reasons: ["opencode not found (install OpenCode or set CLAUDEXOR_OPENCODE_BIN)"],
+          checks: [
+            { id: "installed", status: "fail", detail: "opencode not found" },
+            { id: "provider_auth", status: authReady ? "pass" : "fail", detail: readiness.detail },
+          ],
+          enabled_intents: [],
+          disabled_intents: ALL_OPENCODE_INTENTS,
+          reasons: [
+            "opencode not found (install OpenCode or set CLAUDEXOR_OPENCODE_BIN)",
+            ...(authReady ? [] : ["opencode provider auth not configured"]),
+          ],
+          auth_sources: [readiness],
         });
       }
-      const authReady = providerKeyAvailable();
       // A key STRING is source availability, not readiness: without an isolated
       // smoke proving the route, the honest status is degraded (cursor parity).
       return ConformanceReportSchema.parse({
@@ -129,7 +197,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         // No auth source at all = unavailable; key-present-but-unproven = degraded.
         status: authReady ? "degraded" : "unavailable",
         checks: [
-          { id: "installed", status: "pass", detail: version },
+          { id: "installed", status: "pass", detail: redactSecrets(version) },
           { id: "provider_auth", status: authReady ? "pass" : "fail", detail: authReady ? "provider key available (unproven without isolated smoke)" : undefined },
           { id: "isolated_smoke", status: "skip", detail: "no isolated smoke implemented for opencode yet" },
           { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
@@ -138,13 +206,12 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         // exactly one list, so routing can never lose an intent to a gap
         // (review/plan/spec stay gated until an isolated smoke proves the
         // route — the same conformance bar explain/audit wait on).
-        enabled_intents: authReady ? ["implement", "repair", "create_from_scratch", "verify", "synthesize"] : [],
-        disabled_intents: authReady
-          ? ["explain", "audit", "plan", "spec", "review", "orchestrate"]
-          : ["implement", "repair", "create_from_scratch", "verify", "synthesize", "explain", "audit", "plan", "spec", "review", "orchestrate"],
+        enabled_intents: authReady ? OPENCODE_ENABLED_INTENTS : [],
+        disabled_intents: authReady ? OPENCODE_DISABLED_INTENTS : ALL_OPENCODE_INTENTS,
         reasons: authReady
           ? ["key present but route unproven (no isolated smoke); read-only and reviewer intents stay disabled until conformance-proven"]
           : ["opencode provider auth not configured"],
+        auth_sources: [readiness],
       });
     },
 

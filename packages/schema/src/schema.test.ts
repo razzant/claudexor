@@ -3,13 +3,15 @@ import {
   ControlRunDecisionRequest,
   ControlRunStartRequest,
   ControlSetupJob,
-  ControlSetupJobConfirmRequest,
   ControlSetupJobCreateRequest,
+  ControlSetupJobEvent,
   ControlSettingsSnapshot,
   ControlSpecFreezeRequest,
   ControlSpecQuestionsRequest,
   ControlThread,
+  ConformanceReport,
   HarnessManifest,
+  HarnessStatusDto,
   HarnessRunSpec,
   OrchestrateContract,
   OrchestratePlan,
@@ -26,6 +28,43 @@ import {
   ThreadTurn,
   isBlocking,
 } from "./index.js";
+
+describe("AuthSourceReadiness compatibility", () => {
+  it("defaults missing conformance and control readiness arrays", () => {
+    const report = ConformanceReport.parse({ harness_id: "codex", status: "ok" });
+    expect(report.auth_sources).toEqual([]);
+    const status = HarnessStatusDto.parse({ id: "codex", status: "ok" });
+    expect(status.authSources).toEqual([]);
+  });
+
+  it("keeps availability and verification as independent typed axes", () => {
+    const report = ConformanceReport.parse({
+      harness_id: "codex",
+      status: "degraded",
+      auth_sources: [
+        {
+          source: "native_session",
+          availability: "unknown",
+          verification: "not_run",
+          detail: "probe failed",
+        },
+      ],
+    });
+    expect(report.auth_sources[0]).toMatchObject({
+      availability: "unknown",
+      verification: "not_run",
+    });
+    expect(() =>
+      ConformanceReport.parse({
+        harness_id: "codex",
+        status: "ok",
+        auth_sources: [
+          { source: "native_session", availability: "present", verification: "passed" },
+        ],
+      }),
+    ).toThrow();
+  });
+});
 
 describe("TaskContract", () => {
   it("applies defaults from minimal input", () => {
@@ -318,25 +357,89 @@ describe("Control API schemas", () => {
   });
 
   it("parses setup-job + spec contracts", () => {
-    const jobReq = ControlSetupJobCreateRequest.parse({ harness: "cursor", action: "install" });
-    expect(jobReq).toEqual({ harness: "cursor", action: "install" });
-    expect(ControlSetupJobCreateRequest.parse({ harness: "codex", action: "store_key" })).toEqual({
-      harness: "codex",
-      action: "store_key",
+    const jobReq = ControlSetupJobCreateRequest.parse({
+      harness: "cursor",
+      action: "login",
+      authRequest: "subscription",
     });
+    expect(jobReq).toEqual({ harness: "cursor", action: "login", authRequest: "subscription" });
+    expect(() =>
+      ControlSetupJobCreateRequest.parse({ harness: "codex", action: "login" }),
+    ).toThrow();
+    expect(() =>
+      ControlSetupJobCreateRequest.parse({
+        harness: "codex",
+        action: "install",
+        authRequest: "subscription",
+      }),
+    ).toThrow();
+    expect(() =>
+      ControlSetupJobCreateRequest.parse({
+        harness: "raw-api",
+        action: "login",
+        authRequest: "subscription",
+      }),
+    ).toThrow();
+    const timestamp = new Date().toISOString();
     const job = ControlSetupJob.parse({
       jobId: "setup-1",
       harness: "cursor",
-      action: "install",
+      action: "login",
       state: "waiting_for_input",
-      message: "confirm",
-      riskFlags: ["network_download"],
-      requiresConfirmation: true,
-      createdAt: new Date().toISOString(),
+      phase: "launching",
+      command: "cursor-agent login",
+      guideUrl: "https://docs.cursor.com/account/agent-security",
+      message: "Complete native login in the opened browser.",
+      createdAt: timestamp,
+      startedAt: timestamp,
+      finishedAt: null,
+      authCapability: {
+        attemptId: "attempt-1",
+        challengeDigest: "a".repeat(64),
+        requestDigest: "b".repeat(64),
+        disclosure: {
+          schemaVersion: 1,
+          protocolVersion: 1,
+          harness: "cursor",
+          requested: "subscription",
+          requiredRoute: "vendor_native",
+          requiredSource: "native_session",
+          networkScope: "selected_harness_only",
+          billingKnowledge: "unknown",
+          incrementalCostKnowledge: "unknown",
+          mayConsumeQuota: true,
+          generatedAt: timestamp,
+        },
+        state: "disclosed",
+      },
     });
-    expect(job.command).toBeNull();
+    expect(job.command).toBe("cursor-agent login");
     expect(job.finishedAt).toBeNull();
-    expect(ControlSetupJobConfirmRequest.parse({}).confirmed).toBe(true);
+
+    const eventBase = {
+      jobId: job.jobId,
+      cursor: "journal-cursor-2",
+      sequence: 2,
+      time: new Date().toISOString(),
+      kind: "status" as const,
+      state: job.state,
+      message: job.message,
+      job,
+    };
+    expect(
+      ControlSetupJobEvent.parse({ ...eventBase, previousCursor: null }).previousCursor,
+    ).toBeNull();
+    expect(
+      ControlSetupJobEvent.parse({ ...eventBase, previousCursor: "journal-cursor-1" })
+        .previousCursor,
+    ).toBe("journal-cursor-1");
+    expect(() => ControlSetupJobEvent.parse(eventBase)).toThrow();
+    expect(() =>
+      ControlSetupJobEvent.parse({ ...eventBase, previousCursor: eventBase.cursor }),
+    ).toThrow();
+    expect(() =>
+      ControlSetupJobEvent.parse({ ...eventBase, previousCursor: null, sequence: 0 }),
+    ).toThrow();
 
     const specReq = ControlSpecQuestionsRequest.parse({
       prompt: "scope it",

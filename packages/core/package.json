@@ -16,11 +16,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-darwin-process-identity.mjs",
+    "build:darwin-helper": "node scripts/build-darwin-process-identity.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudexor/schema": "workspace:*"
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   },
   "repository": {
     "type": "git",

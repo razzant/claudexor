@@ -319,7 +319,7 @@ struct SettingsScreen: View {
                 }
                 .buttonStyle(.bordered).tint(Theme.accent)
                 .help(health == .ok ? "Open \(family.label) auth details and fallback key management." : "Open setup/auth actions for \(family.label).")
-                Button { Task { await model.refreshHarnesses() } } label: {
+                Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
                     Label("Recheck", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)

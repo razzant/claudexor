@@ -1,11 +1,30 @@
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
-import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { appendRunEvent } from "@claudexor/event-log";
-import { assertNoInlineSecretValues, errorCode, newId, nowIso, pathExists, readJsonSafe, redactSecrets } from "@claudexor/util";
+import {
+  assertNoInlineSecretValues,
+  errorCode,
+  newId,
+  nowIso,
+  pathExists,
+  readJsonSafe,
+  redactSecrets,
+} from "@claudexor/util";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -36,6 +55,14 @@ export interface DaemonOptions {
    * The observer persists the reason on the turn so it is never a silent
    * orphan bubble. `code` is the typed throw's machine code (null if none). */
   onTurnEnqueueFailed?: (turnId: string, error: string, code: string | null) => void;
+  /** Composition-root shutdown hook. When present, RPC shutdown must drain
+   * every daemon-owned subsystem, not only this socket queue. */
+  onShutdownRequested?: () => Promise<void>;
+  /** Test-only deterministic barriers around registry authority acquisition.
+   * Production callers leave this unset. */
+  startupBarrier?: (
+    barrier: "before_registry_load" | "after_registry_load",
+  ) => void | Promise<void>;
 }
 
 export const JOB_STATES = [
@@ -66,7 +93,8 @@ function salvageJobRecord(raw: unknown): JobRecord | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
   if (typeof rec["id"] !== "string" || rec["id"].length === 0) return null;
-  if (typeof rec["state"] !== "string" || !(JOB_STATES as readonly string[]).includes(rec["state"])) return null;
+  if (typeof rec["state"] !== "string" || !(JOB_STATES as readonly string[]).includes(rec["state"]))
+    return null;
   if (typeof rec["createdAt"] !== "string") return null;
   const optionalString = (key: string): string | undefined =>
     typeof rec[key] === "string" ? (rec[key] as string) : undefined;
@@ -104,7 +132,6 @@ export interface JobRecord {
   finishedAt?: string;
 }
 
-
 /**
  * Local daemon: Unix-socket JSON-RPC with token auth + a bounded-concurrency
  * worker pool (up to maxConcurrent jobs in parallel) backed by an optional
@@ -113,28 +140,63 @@ export interface JobRecord {
  */
 export class DaemonServer {
   private server?: Server;
+  private readonly sockets = new Set<Socket>();
   private readonly queue: string[] = [];
   private readonly records = new Map<string, JobRecord>();
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly activeTasks = new Set<Promise<void>>();
+  private readonly taskFailures: unknown[] = [];
+  private registryState: "unloaded" | "loaded" = "unloaded";
   private active = 0;
   private readonly startedAt = Date.now();
-  private onClosed?: () => void;
+  private stopping = false;
+  private startPromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
+  private resolveShutdown!: () => void;
+  private readonly shutdownPromise = new Promise<void>((resolve) => {
+    this.resolveShutdown = resolve;
+  });
 
   constructor(private readonly opts: DaemonOptions) {}
 
   async start(): Promise<void> {
+    if (this.stopping) {
+      throw Object.assign(new Error("daemon is stopping and cannot be started"), {
+        code: "daemon_stopping",
+        status: 503,
+      });
+    }
+    this.startPromise ??= this.startOnce();
+    await this.startPromise;
+    if (this.stopping) {
+      await this.stop();
+      throw Object.assign(new Error("daemon startup was cancelled by shutdown"), {
+        code: "daemon_stopping",
+        status: 503,
+      });
+    }
+  }
+
+  private async startOnce(): Promise<void> {
     // Refuse to clobber a LIVE daemon: deleting its socket would orphan it and
     // turn jobs.json into a last-writer-wins race between two processes.
     if (pathExists(this.opts.socketPath) && (await socketAlive(this.opts.socketPath))) {
-      throw new Error(`a claudexor daemon is already listening on ${this.opts.socketPath}; stop it first`);
+      throw new Error(
+        `a claudexor daemon is already listening on ${this.opts.socketPath}; stop it first`,
+      );
     }
+    await this.opts.startupBarrier?.("before_registry_load");
+    if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
     this.load();
+    await this.opts.startupBarrier?.("after_registry_load");
+    if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
     try {
       rmSync(this.opts.socketPath, { force: true });
     } catch {
       /* nothing to clean */
     }
+    if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
     await new Promise<void>((resolve, reject) => {
       this.server = createServer((sock) => this.onConnection(sock));
       this.server.once("error", reject);
@@ -154,44 +216,94 @@ export class DaemonServer {
     void this.drain();
   }
 
-  async stop(): Promise<void> {
-    // Graceful shutdown: abort in-flight runs so the runner cancels their harness
-    // children and settles each job (no orphaned processes / "running" zombies in
-    // jobs.json), then WAIT (bounded) for the cancellations to settle. Without
-    // the wait, the process could exit before the SIGKILL escalation timers
-    // fire, leaving a SIGTERM-ignoring harness child alive in its group.
+  stop(): Promise<void> {
+    // The admission fence is synchronous even when a caller does not await.
+    this.stopping = true;
+    this.stopPromise ??= this.stopOnce();
+    return this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
+    // Stop admission and scheduling before aborting anything. Queued jobs remain
+    // durable for the successor daemon; a completion racing shutdown must never
+    // start another runner after this writer begins draining.
+    // Graceful shutdown: abort in-flight runs so each runner performs its own
+    // bounded child-process teardown, then wait for the exact tracked promises.
+    // A wall-clock escape hatch here would release the single-writer ownership
+    // while a late runner can still persist or mutate user state.
     for (const controller of this.controllers.values()) {
       try {
-        controller.abort();
+        controller.abort(new Error("daemon shutdown"));
       } catch {
         /* already gone */
       }
     }
-    const deadline = Date.now() + 5_000;
-    while (this.active > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const settled = await Promise.allSettled([...this.activeTasks]);
+    const rejected = settled.filter(
+      (entry): entry is PromiseRejectedResult => entry.status === "rejected",
+    );
+    if (rejected.length > 0 || this.taskFailures.length > 0 || this.active !== 0) {
+      const first =
+        rejected[0]?.reason ??
+        this.taskFailures[0] ??
+        new Error(`daemon still owns ${this.active} active runner(s)`);
+      throw Object.assign(
+        new Error(
+          `daemon shutdown drain failed: ${first instanceof Error ? first.message : String(first)}`,
+        ),
+        {
+          code: "daemon_shutdown_unconfirmed",
+          status: 503,
+          cause: first,
+        },
+      );
     }
-    this.persist();
-    await new Promise<void>((resolve) => {
+    // An instance stopped before acquiring registry authority must not write an
+    // empty in-memory view over a preexisting jobs.json. Once load completed,
+    // this writer owns the in-memory registry and final persistence is required.
+    if (this.registryState === "loaded") this.persist(true);
+
+    // A signal may have fenced shutdown while listen() was still resolving.
+    // Wait for that raw startup attempt, then close whatever listener exists;
+    // start() observes `stopping` and refuses to advertise readiness.
+    if (this.startPromise) {
+      try {
+        await this.startPromise;
+      } catch {
+        /* a failed startup has no usable listener to preserve */
+      }
+    }
+    const serverClosed = new Promise<void>((resolve, reject) => {
       if (!this.server) return resolve();
-      this.server.close(() => resolve());
+      try {
+        this.server.close((error) => (error ? reject(error) : resolve()));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else reject(error);
+      }
     });
-    this.onClosed?.();
+
+    // Existing local RPC sockets can otherwise keep server.close() pending
+    // forever. They are destroyed only after every accepted command settled.
+    for (const socket of this.sockets) socket.destroy();
+    await serverClosed;
+    this.resolveShutdown();
   }
 
   /** Resolves when the daemon is shut down via RPC. */
   waitForShutdown(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.onClosed = resolve;
-    });
+    return this.shutdownPromise;
   }
 
   private onConnection(sock: Socket): void {
+    this.sockets.add(sock);
     const rl = createInterface({ input: sock });
     rl.on("line", (line) => {
       void this.handle(line, sock);
     });
     sock.on("error", () => rl.close());
+    sock.on("close", () => this.sockets.delete(sock));
   }
 
   private send(sock: Socket, obj: unknown): void {
@@ -222,7 +334,13 @@ export class DaemonServer {
       // Carry the machine-readable error code (e.g. inline_secret_rejected)
       // alongside the redacted message so socket clients get the typed class.
       const code = errorCode(err);
-      this.send(sock, { id, error: { message: redactSecrets(err instanceof Error ? err.message : String(err)), ...(code ? { code } : {}) } });
+      this.send(sock, {
+        id,
+        error: {
+          message: redactSecrets(err instanceof Error ? err.message : String(err)),
+          ...(code ? { code } : {}),
+        },
+      });
     }
   }
 
@@ -236,8 +354,15 @@ export class DaemonServer {
           running: this.active > 0,
           active: this.active,
           jobs: this.records.size,
+          stopping: this.stopping,
         };
       case "claudexor.enqueue": {
+        if (this.stopping) {
+          throw Object.assign(new Error("daemon is stopping; retry after reconnect"), {
+            code: "daemon_stopping",
+            status: 503,
+          });
+        }
         assertNoInlineSecretValues(params, "$", "daemon job params");
         const id = newId("job");
         this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
@@ -268,7 +393,13 @@ export class DaemonServer {
         return { id: jid, cancelled: true };
       }
       case "claudexor.shutdown":
-        setTimeout(() => void this.stop(), 10);
+        setTimeout(() => {
+          const operation = this.opts.onShutdownRequested?.() ?? this.stop();
+          void operation.catch(() => {
+            // Fail closed: the process and ownership lease remain alive. The
+            // composition root records the detailed failure in its private log.
+          });
+        }, 10);
         return { ok: true };
       default:
         throw new Error(`unknown method: ${method}`);
@@ -279,6 +410,10 @@ export class DaemonServer {
     return this.opts.maxConcurrent ?? 4;
   }
 
+  private stoppingError(message: string): Error & { code: string; status: number } {
+    return Object.assign(new Error(message), { code: "daemon_stopping", status: 503 });
+  }
+
   /**
    * Best-effort durable persistence of the job registry. Writes atomically
    * (temp file + rename) so a crash mid-write cannot corrupt/drop the registry.
@@ -286,19 +421,37 @@ export class DaemonServer {
    * in .claudexor/runs (redacted), and result.summary can contain raw model text —
    * keeping it out of jobs.json upholds the redaction-at-persistence invariant.
    */
-  private persist(): void {
+  private persist(strict = false): void {
+    if (this.registryState === "unloaded") return;
     const path = this.opts.persistPath;
     if (!path) return;
+    const tmp = `${path}.tmp-${process.pid}`;
     try {
       const view = [...this.records.values()].map(persistedJobRecord);
       mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.tmp`;
       writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n", { mode: 0o600 });
       chmodSync(tmp, 0o600);
+      fsyncFile(tmp);
       renameSync(tmp, path);
       chmodSync(path, 0o600);
-    } catch {
-      /* best-effort; never break a run on a persistence failure */
+      fsyncFile(path);
+      fsyncDirectory(dirname(path));
+    } catch (error) {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        /* preserve primary error */
+      }
+      if (strict) {
+        throw Object.assign(
+          new Error(
+            `daemon registry final persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+          { code: "daemon_persistence_failed", status: 503, cause: error },
+        );
+      }
+      // Runtime persistence remains best-effort until the command journal owns
+      // run state in Phase 1. Shutdown is the fail-closed durability boundary.
     }
   }
 
@@ -320,6 +473,12 @@ export class DaemonServer {
 
   /** Reload the registry on startup; a fresh process cannot resume in-memory runs. */
   private load(): void {
+    if (this.registryState === "loaded") throw new Error("daemon registry is already loaded");
+    this.loadRegistryContents();
+    this.registryState = "loaded";
+  }
+
+  private loadRegistryContents(): void {
     const path = this.opts.persistPath;
     if (!path || !pathExists(path)) return;
     const saved = readJsonSafe<unknown>(path);
@@ -347,10 +506,16 @@ export class DaemonServer {
         // `follow` wait forever on a log that will never terminate.
         if (rec.runDir && rec.runId) {
           try {
-            appendRunEvent(join(rec.runDir, "events.jsonl"), rec.runId, rec.taskId ?? "", "run.failed", {
-              status: "interrupted",
-              error: "daemon restarted while the run was in flight",
-            });
+            appendRunEvent(
+              join(rec.runDir, "events.jsonl"),
+              rec.runId,
+              rec.taskId ?? "",
+              "run.failed",
+              {
+                status: "interrupted",
+                error: "daemon restarted while the run was in flight",
+              },
+            );
           } catch {
             /* best-effort: a missing/corrupt log must not block startup */
           }
@@ -393,6 +558,7 @@ export class DaemonServer {
    * turn starts as soon as its previous one settles.
    */
   private drain(): void {
+    if (this.stopping) return;
     while (this.active < this.maxConcurrent && this.queue.length > 0) {
       const busyThreads = new Set(
         [...this.records.values()]
@@ -418,7 +584,15 @@ export class DaemonServer {
         continue;
       }
       this.active += 1;
-      void this.runJob(id, rec);
+      const task = this.runJob(id, rec);
+      this.activeTasks.add(task);
+      void task.then(
+        () => this.activeTasks.delete(task),
+        (error) => {
+          this.activeTasks.delete(task);
+          this.taskFailures.push(error);
+        },
+      );
     }
   }
 
@@ -444,7 +618,12 @@ export class DaemonServer {
       // Only failure-shaped terminals carry an error string. no_op / ungated /
       // review_not_run / blocked are HONEST terminals: fabricating an error here
       // would make the control facade render a failure that never happened.
-      if (rec.state === "failed" || rec.state === "exhausted" || rec.state === "not_converged" || rec.state === "stuck_no_progress") {
+      if (
+        rec.state === "failed" ||
+        rec.state === "exhausted" ||
+        rec.state === "not_converged" ||
+        rec.state === "stuck_no_progress"
+      ) {
         rec.error = resultSummary(rec.result) ?? `run ended with status ${rec.state}`;
       }
     } catch (err) {
@@ -452,7 +631,10 @@ export class DaemonServer {
       rec.error = redactSecrets(err instanceof Error ? err.message : String(err));
       // Preserve a typed throw's machine code (e.g. the trust gate) so
       // consumers can key remedies on it instead of parsing the message.
-      const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined;
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? (err as { code: unknown }).code
+          : undefined;
       if (typeof code === "string" && code) rec.errorCode = code;
     } finally {
       rec.finishedAt = nowIso();
@@ -479,7 +661,7 @@ export class DaemonServer {
       }
       this.pruneHistory();
       this.persist();
-      this.drain();
+      if (!this.stopping) this.drain();
     }
   }
 }
@@ -521,6 +703,24 @@ function tokenMatches(candidate: string, expected: string): boolean {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+function fsyncFile(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** True when something is actively accepting connections on the socket path. */
@@ -582,7 +782,8 @@ function redactParams(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = key === "prompt" && typeof child === "string" ? redactSecrets(child) : redactParams(child);
+    out[key] =
+      key === "prompt" && typeof child === "string" ? redactSecrets(child) : redactParams(child);
   }
   return out;
 }

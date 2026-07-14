@@ -213,6 +213,27 @@
           "type": "string",
           "description": "Model the harness actually reported using."
         },
+        "credential_route": {
+          "type": "string",
+          "enum": [
+            "vendor_native",
+            "managed_api_key",
+            "local"
+          ],
+          "description": "Concrete credential route selected before spawn; first-class route evidence, never inferred from free-form payload text."
+        },
+        "credential_source": {
+          "type": "string",
+          "enum": [
+            "native_session",
+            "oauth_token_env",
+            "api_key_env",
+            "api_key_flag",
+            "provider_auth_file",
+            "none"
+          ],
+          "description": "Concrete credential source selected before spawn; exact native subscription requires native_session, never an OAuth token or API key."
+        },
         "quota": {
           "type": "object",
           "properties": {
@@ -340,6 +361,10 @@
         "error": {
           "type": "string",
           "description": "Error text for error events."
+        },
+        "aborted": {
+          "type": "boolean",
+          "description": "Typed terminal cancellation marker, set on completed events when the run was aborted."
         },
         "payload": {
           "type": "object",

@@ -10,7 +10,7 @@ fixtures:
     source: synthetic
   recorded-real-cli.jsonl:
     source: recorded
-    cli_version: "0.137.0"
-    recorded_at: "2026-06-10"
+    cli_version: "0.144.1"
+    recorded_at: "2026-07-13"
   session-resume-rate-limit.jsonl:
     source: synthetic

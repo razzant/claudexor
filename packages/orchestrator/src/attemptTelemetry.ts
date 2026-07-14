@@ -101,11 +101,11 @@ export function createAttemptTelemetry(
 export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   // Route evidence: remember the model identity the stream itself disclosed.
   if (ev.observed_model && !t.observedModel) t.observedModel = ev.observed_model;
-  // Route evidence: the adapter's typed auth-route disclosure (first-wins;
-  // the route is decided once before spawn). Unknown values stay undisclosed.
+  // Route evidence: the adapter's first-class credential-route disclosure
+  // (first-wins; the route is decided once before spawn).
   if (!t.authMode) {
-    const route = ev.payload?.["auth_route"];
-    if (route === "local_session" || route === "api_key") t.authMode = route;
+    if (ev.credential_route === "vendor_native") t.authMode = "local_session";
+    else if (ev.credential_route === "managed_api_key") t.authMode = "api_key";
   }
   if (ev.transient) {
     t.transientFailures.push({
@@ -386,4 +386,3 @@ export function webUnsatisfied(t: AttemptTelemetry): boolean {
   if (t.web.required) return true;
   return t.web.attempted && t.web.failed;
 }
-

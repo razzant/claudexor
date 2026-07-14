@@ -100,3 +100,78 @@ describe("raw-api models() — enumeration producer", () => {
     expect(error?.transient?.kind).toBe("service_unavailable");
   });
 });
+
+describe("raw-api doctor exact auth-source readiness", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.CLAUDEXOR_RAWAPI_KEY;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("reports a present exact api_key_env source as available but unverified without a paid smoke", async () => {
+    const secret = `sk-${"s".repeat(48)}`;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createRawApiAdapter();
+
+    const report = await adapter.doctor({
+      cwd: "/repo",
+      authSource: "api_key_env",
+      env: { OPENAI_API_KEY: secret },
+    });
+
+    expect(report.status).toBe("degraded");
+    expect(report.auth_sources).toEqual([
+      {
+        source: "api_key_env",
+        availability: "available",
+        verification: "not_run",
+        detail: "credential source is present; verification requires an isolated capability smoke",
+      },
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
+  it("reports a missing exact api_key_env source as unavailable but unverified", async () => {
+    const report = await createRawApiAdapter().doctor({ cwd: "/repo", authSource: "api_key_env" });
+
+    expect(report.status).toBe("unavailable");
+    expect(report.auth_sources).toEqual([
+      {
+        source: "api_key_env",
+        availability: "unavailable",
+        verification: "not_run",
+        detail: "OPENAI_API_KEY is not configured",
+      },
+    ]);
+  });
+
+  it("returns explicit unavailable evidence for an unsupported source without exposing another source", async () => {
+    const secret = `sk-${"u".repeat(48)}`;
+    process.env.OPENAI_API_KEY = secret;
+
+    const report = await createRawApiAdapter().doctor({
+      cwd: "/repo",
+      authSource: "native_session",
+    });
+
+    expect(report.enabled_intents).toEqual([]);
+    expect(report.auth_sources).toEqual([
+      {
+        source: "native_session",
+        availability: "unavailable",
+        verification: "not_run",
+        detail: "raw-api does not support native_session",
+      },
+    ]);
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(JSON.stringify(report)).not.toContain("api_key_env");
+  });
+});

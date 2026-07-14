@@ -366,7 +366,7 @@ describe("commit-review panel lib", () => {
   it("requires exact OpenRouter route proof before a response can count", async () => {
     const { exactObservedModelMatch } = await import("../../../scripts/lib/openrouter-panel.mjs");
     expect(exactObservedModelMatch("openai/gpt-5.6-sol", "openai/gpt-5.6-sol")).toBe(true);
-    for (const observed of ["openai/gpt-5.6", "anthropic/gpt-5.6-sol", "", null, undefined, 56]) {
+    for (const observed of ["openai/gpt-5.6", "anthropic/gpt-5.6-sol", "", "   ", null, undefined, 56]) {
       expect(exactObservedModelMatch("openai/gpt-5.6-sol", observed)).toBe(false);
     }
     expect(exactObservedModelMatch("", "")).toBe(false);

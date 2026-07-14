@@ -11,14 +11,16 @@ function isAbortError(err) {
   return typeof err === "object" && err !== null && (err.name === "AbortError" || String(err).includes("AbortError"));
 }
 
-/** OpenRouter must prove that it actually executed the exact pinned route.
- * A missing or substituted response model is infrastructure failure, never a
- * quorum vote. */
+/** Untrusted provider response values stay `unknown` at this boundary. A
+ * provider must prove that it actually executed the exact pinned route; a
+ * missing, blank, non-string, or substituted model is infrastructure failure,
+ * never a quorum vote. */
 export function exactObservedModelMatch(requestedModel, observedModel) {
   return (
     typeof requestedModel === "string" &&
-    requestedModel.length > 0 &&
+    requestedModel.trim().length > 0 &&
     typeof observedModel === "string" &&
+    observedModel.trim().length > 0 &&
     observedModel === requestedModel
   );
 }

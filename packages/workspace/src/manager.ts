@@ -5,7 +5,7 @@ import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { runCaptureRaw, WorkspaceError } from "@claudexor/core";
-import { ensureDir, newId, nowIso } from "@claudexor/util";
+import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
 import {
   branchDelete,
   diffStaged,
@@ -19,7 +19,6 @@ import {
   worktreePrune,
   worktreeRemove,
 } from "./git.js";
-import { ensureSelfIgnore } from "./self-ignore.js";
 
 export interface CreateEnvelopeOptions {
   taskId: string;
@@ -55,10 +54,17 @@ export function processStartTime(pid: number): string | null {
 }
 
 export class WorkspaceManager {
-  constructor(private readonly repoRoot: string) {}
+  private readonly runtimeRoot: string;
+
+  constructor(
+    private readonly repoRoot: string,
+    options: { runtimeRoot?: string } = {},
+  ) {
+    this.runtimeRoot = options.runtimeRoot ?? projectRuntimeDir(repoRoot);
+  }
 
   private workspacesDir(): string {
-    return join(this.repoRoot, ".claudexor", "workspaces");
+    return join(this.runtimeRoot, "workspaces");
   }
 
   /**
@@ -83,17 +89,12 @@ export class WorkspaceManager {
 
   async create(opts: CreateEnvelopeOptions): Promise<WorkspaceEnvelope> {
     // Envelope base holds scoped dirs (HOME + per-harness config) and, for git
-    // mode, the worktree as a subdir — so harness-written HOME state (auth tokens,
-    // caches, plugins, session logs) lives outside the work tree and never lands
-    // in a diff.
+    // mode, the worktree as a subdir — so harness-written caches, plugins,
+    // transcripts, and route-scoped API auth state live outside the work tree
+    // and never land in a diff. Native Codex/Claude credentials remain in their
+    // vendor-owned host-user stores and are never copied into this envelope.
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     ensureDir(base);
-    // Self-ignoring runtime dir: a `.gitignore` with `*` INSIDE .claudexor makes
-    // the whole dir invisible to git in PRE-EXISTING repos too (v0.9 widened the
-    // seeded credentials from API keys to subscription OAuth copies; a user's
-    // `git add -A` in their own repo must never capture them). Content-checked
-    // repair lives in the shared ensureSelfIgnore owner.
-    ensureSelfIgnore(join(this.repoRoot, ".claudexor"));
     const homeDir = join(base, "home");
     const codexHome = join(homeDir, ".codex");
     const claudeConfig = join(homeDir, ".claude");
@@ -192,15 +193,14 @@ export class WorkspaceManager {
 
   /**
    * Best-effort baseline copy of the live tree for in-place diff(). Copies each
-   * top-level entry individually (skipping heavy/ephemeral dirs, notably `.claudexor`
-   * which holds this base) — this both prunes noise and avoids Node's "cannot copy
-   * a directory into its own subdirectory" guard, since the baseline lives under
-   * `.claudexor`. On any failure the baseline is simply absent and diff() returns
-   * empty; reviewers still read the live tree directly.
+   * top-level entry individually while skipping only VCS/heavy ephemeral dirs.
+   * The baseline is external, so project `.claudexor/` content is ordinary user
+   * state and is copied like every other project path. On any failure the
+   * baseline is absent and diff() returns empty; reviewers still read the tree.
    */
   private snapshotBaseline(base: string): void {
     const baseline = join(base, "baseline");
-    const skip = new Set([".git", ".claudexor", "node_modules", "__pycache__", ".venv", "venv"]);
+    const skip = new Set([".git", "node_modules", "__pycache__", ".venv", "venv"]);
     try {
       ensureDir(baseline);
       for (const entry of readdirSync(this.repoRoot)) {
@@ -231,10 +231,11 @@ export class WorkspaceManager {
    * but a harness still writes native state — claude-code plan files, codex
    * session rollouts, transcripts — into `$HOME/.claude`, `$CODEX_HOME`, etc.
    * Without this, those land in the operator's REAL home (a live-caught leak: a
-   * read-only `plan` wrote into `~/.claude/plans`). Same env shape as `envFor`,
-   * so the adapters seed auth (subscription creds / api key) into these scoped
-   * dirs exactly as they do for a write envelope (CLAUDEXOR_BIBLE §6). Caller
-   * disposes when the run ends.
+   * read-only `plan` wrote into `~/.claude/plans`). Same env shape as `envFor`:
+   * non-native state and injected API-key routes stay scoped, while native
+   * Codex/Claude auth keeps using its vendor-owned host-user store and Cursor
+   * may bridge the OS keychain without copying credentials. Caller disposes
+   * the scoped state when the run ends.
    */
   readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => void } {
     // A throwaway temp base — never under the project / synthetic repo root, so a
@@ -335,7 +336,7 @@ export class WorkspaceManager {
       try {
         const r = await runCaptureRaw(
           "diff",
-          ["-ruN", "-x", ".git", "-x", ".claudexor", "-x", ".claudexor-review-evidence", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
+          ["-ruN", "-x", ".git", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
           { timeoutMs: 120_000 },
         );
         // Relativize the header paths to the git-style a/<rel> b/<rel> shape.
@@ -375,9 +376,9 @@ export class WorkspaceManager {
       }
     }
     // Remove only the scoped envelope base (worktree + scoped home/env/logs/artifacts/
-    // baseline, including any seeded credentials), derived from task/attempt ids.
+    // baseline, including any route-scoped API auth material), derived from task/attempt ids.
     // For git mode this equals dirname(worktree_path); for in-place it is a sibling
-    // under `.claudexor/workspaces`, so deriving from ids is exactly what prevents
+    // under the external runtime workspaces root, so deriving from ids prevents
     // dispose() from ever deleting the live tree.
     try {
       rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });

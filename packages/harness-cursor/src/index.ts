@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   AuthPreference,
+  AuthSourceReadiness,
   ConformanceReport,
   HarnessCapabilityProfile,
   HarnessEvent,
@@ -19,6 +20,7 @@ import {
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
+  abortSignalFromSpec,
   HarnessUnavailableError,
   needsScopedHomeKeychainBridge,
   providerScrubEnv,
@@ -28,6 +30,15 @@ import {
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createCursorParser } from "./parse.js";
+import {
+  probeCursorNativeAuth,
+  selectCursorAuthRoute,
+  shouldDiscloseCursorAutoApiRoute,
+  shouldSmokeCursorApiKey,
+  type CursorAuthRoute,
+  type CursorNativeAuthProbe,
+} from "./auth.js";
+export { cursorStatusAuthenticated, cursorStatusLoggedOut, selectCursorAuthRoute, shouldDiscloseCursorAutoApiRoute } from "./auth.js";
 
 const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
 // Long enough for one sequential reviewer panel pass; still bounded so revoked
@@ -68,34 +79,18 @@ function accessArgs(access: AccessProfile): string[] {
   }
 }
 
-async function detectVersion(): Promise<string | null> {
+async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> {
   try {
-    const r = await runCapture(BIN, ["--version"], { timeoutMs: 10_000 });
+    const r = await runCapture(BIN, ["--version"], {
+      timeoutMs: 10_000,
+      abortSignal,
+      cancelSignal: "SIGTERM",
+      cancelKillDelayMs: 0,
+    });
     return r.stdout.trim() || `${BIN} (version unknown)`;
   } catch {
     return null;
   }
-}
-
-async function nativeAuthOk(env?: Record<string, string | null | undefined>): Promise<boolean> {
-  try {
-    const r = await runCapture(BIN, ["status"], { env, timeoutMs: 10_000 });
-    return cursorStatusAuthenticated(r.code, `${r.stdout}\n${r.stderr}`);
-  } catch {
-    return false;
-  }
-}
-
-export function cursorStatusAuthenticated(code: number | null, text: string): boolean {
-  if (code !== 0) return false;
-  const normalized = text.toLowerCase();
-  if (normalized.includes("not logged in") || normalized.includes("authentication required"))
-    return false;
-  return (
-    normalized.includes("logged in") ||
-    normalized.includes("authenticated") ||
-    normalized.includes("account")
-  );
 }
 
 function cursorApiKey(env?: Record<string, string | null | undefined>): string | null {
@@ -111,7 +106,6 @@ function cursorApiKey(env?: Record<string, string | null | undefined>): string |
   );
 }
 
-type CursorAuthRoute = "api_key" | "local_session" | "unavailable";
 type CursorApiSmokeResult = { ok: boolean; detail: string };
 type CursorApiSmokeCacheEntry = { result: CursorApiSmokeResult; expiresAtMs: number };
 type CursorApiSmokeOptions = {
@@ -121,7 +115,7 @@ type CursorApiSmokeOptions = {
 };
 type CursorRuntimeDeps = {
   detectVersion: typeof detectVersion;
-  nativeAuthOk: typeof nativeAuthOk;
+  nativeAuthOk: typeof probeCursorNativeAuth;
   cursorApiKey: typeof cursorApiKey;
   listCursorModels: typeof listCursorModels;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
@@ -131,49 +125,6 @@ type CursorRuntimeDeps = {
   nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
 };
-
-export function selectCursorAuthRoute(input: {
-  authPreference: AuthPreference;
-  hasKey: boolean;
-  apiKeyReady: boolean;
-  nativeAuthed: boolean;
-  scopedHome: boolean;
-}): CursorAuthRoute {
-  const keyRouteReady = input.hasKey && input.apiKeyReady;
-  if (input.authPreference === "api_key") {
-    if (keyRouteReady) return "api_key";
-    if (input.nativeAuthed) return "local_session";
-    return "unavailable";
-  }
-  if (input.authPreference === "subscription") {
-    if (input.nativeAuthed) return "local_session";
-    return "unavailable";
-  }
-  if (input.scopedHome && keyRouteReady) return "api_key";
-  if (input.nativeAuthed) return "local_session";
-  if (keyRouteReady) return "api_key";
-  return "unavailable";
-}
-
-export function shouldDiscloseCursorAutoApiRoute(input: {
-  authPreference: AuthPreference;
-  route: CursorAuthRoute;
-  nativeAuthed: boolean;
-}): boolean {
-  return input.authPreference === "auto" && input.route === "api_key" && input.nativeAuthed;
-}
-
-function shouldSmokeCursorApiKey(input: {
-  hasKey: boolean;
-  authPreference: AuthPreference;
-  nativeAuthed: boolean;
-  scopedHome: boolean;
-}): boolean {
-  if (!input.hasKey) return false;
-  if (input.authPreference === "subscription") return false;
-  if (input.authPreference === "api_key") return true;
-  return !input.nativeAuthed || input.scopedHome;
-}
 
 function isCursorModelId(id: string): boolean {
   if (!id) return false;
@@ -354,15 +305,16 @@ function cursorApiSmokeCacheKey(key: string): string {
 async function smokeCursorApiKey(
   deps: CursorRuntimeDeps,
   key: string,
+  fresh = false,
 ): Promise<CursorApiSmokeResult> {
   const cacheKey = cursorApiSmokeCacheKey(key);
   const now = deps.nowMs();
-  const cached = deps.apiSmokeCache.get(cacheKey);
+  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
   if (cached && cached.expiresAtMs > now) return cached.result;
   if (cached) deps.apiSmokeCache.delete(cacheKey);
   const result = await deps.smokeIsolatedApiKey(key);
   const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
-  if (ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
+  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
   return result;
 }
 
@@ -404,30 +356,34 @@ function maybeBridgeScopedHome(env: Record<string, string | null | undefined>): 
 
 async function resolveCursorAuthRoute(
   deps: CursorRuntimeDeps,
-  input: { env?: Record<string, string | null | undefined>; authPreference?: AuthPreference },
+  input: { env?: Record<string, string | null | undefined>; authPreference?: AuthPreference; fresh?: boolean; abortSignal?: AbortSignal },
 ): Promise<{
   route: CursorAuthRoute;
   env: Record<string, string | null | undefined>;
   key: string | null;
   nativeAuthed: boolean;
+  nativeProbeError: string | null;
   apiSmoke: CursorApiSmokeResult;
   scopedHome: boolean;
 }> {
   const env = cursorBaseEnv(input.env);
   const scopedHome = Boolean(input.env?.["HOME"]);
   if (scopedHome) maybeBridgeScopedHome(env);
-  const key = deps.cursorApiKey(input.env);
   const authPreference = input.authPreference ?? "auto";
-  const nativeAuthed = await deps.nativeAuthOk(env);
+  const key = authPreference === "subscription" ? null : deps.cursorApiKey(input.env);
+  const nativeProbe = authPreference === "api_key"
+    ? { authed: false, probeError: null }
+    : await deps.nativeAuthOk(env, input.abortSignal);
+  const nativeAuthed = nativeProbe.authed;
   const shouldSmokeApiKey = shouldSmokeCursorApiKey({
     hasKey: Boolean(key),
     authPreference,
     nativeAuthed,
-    scopedHome,
+    nativeProbeError: nativeProbe.probeError,
   });
   const apiSmoke =
     shouldSmokeApiKey && key
-      ? await smokeCursorApiKey(deps, key)
+      ? await smokeCursorApiKey(deps, key, input.fresh === true)
       : {
           ok: false,
           detail: key
@@ -441,7 +397,7 @@ async function resolveCursorAuthRoute(
     nativeAuthed,
     scopedHome,
   });
-  return { route, env, key, nativeAuthed, apiSmoke, scopedHome };
+  return { route, env, key, nativeAuthed, nativeProbeError: nativeProbe.probeError, apiSmoke, scopedHome };
 }
 
 async function listCursorModelsFromReadyRoute(
@@ -455,11 +411,13 @@ async function listCursorModelsFromReadyRoute(
       CURSOR_API_KEY: key ?? null,
     });
   };
-  if (spec?.env || spec?.authPreference) {
+  if (spec?.env || spec?.authPreference || spec?.fresh) {
     const authPreference = spec.authPreference ?? "auto";
     const resolved = await resolveCursorAuthRoute(deps, {
       env: spec.env,
       authPreference,
+      fresh: spec?.fresh,
+      abortSignal: spec?.abortSignal,
     });
     if (resolved.route === "local_session") {
       const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null });
@@ -473,13 +431,15 @@ async function listCursorModelsFromReadyRoute(
     return [];
   }
   const nativeEnv = cursorNativeEnv();
-  if (await deps.nativeAuthOk(nativeEnv)) {
+  const nativeProbe = await deps.nativeAuthOk(nativeEnv, spec?.abortSignal);
+  if (nativeProbe.authed) {
     const nativeModels = await deps.listCursorModels(nativeEnv);
     if (nativeModels.length > 0) return nativeModels;
   }
+  if (nativeProbe.probeError) return [];
   const key = deps.cursorApiKey();
   if (!key) return catalogOnly();
-  const apiSmoke = await smokeCursorApiKey(deps, key);
+  const apiSmoke = await smokeCursorApiKey(deps, key, spec?.fresh === true);
   if (apiSmoke.ok) {
     const models = await deps.listCursorModels({ ...providerScrubEnv(), CURSOR_API_KEY: key });
     if (models.length > 0) return models;
@@ -490,7 +450,7 @@ async function listCursorModelsFromReadyRoute(
 export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): HarnessAdapter {
   const runtime: CursorRuntimeDeps = {
     detectVersion,
-    nativeAuthOk,
+    nativeAuthOk: probeCursorNativeAuth,
     cursorApiKey,
     listCursorModels,
     smokeIsolatedApiKey,
@@ -511,7 +471,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           "cursor-agent not found on PATH (set CLAUDEXOR_CURSOR_BIN)",
         );
       }
-      const nativeAuthed = await runtime.nativeAuthOk(cursorNativeEnv());
+      const nativeProbe = await runtime.nativeAuthOk(cursorNativeEnv());
+      const nativeAuthed = nativeProbe.authed;
       const apiKey = runtime.cursorApiKey() !== null;
       return HarnessManifestSchema.parse({
         id: "cursor",
@@ -539,9 +500,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           ...CURSOR_CAPABILITY_PROFILE,
           auth: {
             ...CURSOR_CAPABILITY_PROFILE.auth,
-            // Static source preference mirrors the normal non-scoped route.
-            // Scoped/envelope runs may still choose a smoke-proven API key at
-            // runtime because that decision depends on the run environment.
+            // Native-first is invariant across host and scoped environments;
+            // a key becomes auto fallback only after native is unavailable.
             preferred_source: nativeAuthed ? "native_session" : apiKey ? "api_key_env" : null,
           },
         },
@@ -556,7 +516,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     },
 
     async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
-      const version = await runtime.detectVersion();
+      const version = await runtime.detectVersion(_spec.abortSignal);
       if (version === null) {
         return ConformanceReportSchema.parse({
           harness_id: "cursor",
@@ -565,22 +525,32 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           reasons: ["cursor-agent not found (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)"],
         });
       }
+      const requestedSource = _spec.authSource;
+      const probeNative = requestedSource === undefined || requestedSource === "native_session";
+      const probeApi = requestedSource === undefined || requestedSource === "api_key_env";
       const env = cursorNativeEnv(_spec.env);
       const scopedHome = Boolean(_spec.env?.["HOME"]);
-      const authPreference = _spec.authPreference ?? "auto";
-      if (scopedHome) maybeBridgeScopedHome(env);
-      const nativeAuthed = await runtime.nativeAuthOk(env);
-      const key = runtime.cursorApiKey(_spec.env);
+      const authPreference = requestedSource === "native_session"
+        ? "subscription"
+        : requestedSource === "api_key_env"
+          ? "api_key"
+          : _spec.authPreference ?? "auto";
+      if (probeNative && scopedHome) maybeBridgeScopedHome(env);
+      const nativeProbe: CursorNativeAuthProbe = probeNative
+        ? await runtime.nativeAuthOk(env, _spec.abortSignal)
+        : { authed: false, probeError: null };
+      const nativeAuthed = nativeProbe.authed;
+      const key = probeApi ? runtime.cursorApiKey(_spec.env) : null;
       const apiKey = key !== null;
       const shouldSmokeApiKey = shouldSmokeCursorApiKey({
         hasKey: apiKey,
         authPreference,
         nativeAuthed,
-        scopedHome,
+        nativeProbeError: nativeProbe.probeError,
       });
       const apiSmoke =
         key && shouldSmokeApiKey
-          ? await smokeCursorApiKey(runtime, key)
+          ? await smokeCursorApiKey(runtime, key, _spec.fresh === true)
           : {
               ok: false,
               detail: key
@@ -588,8 +558,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
                 : "no Cursor API key",
             };
       // Readiness doctrine: a key string alone is source availability, not
-      // proven readiness. Native auth proves read-only/session reuse; an isolated
-      // API-key smoke proves envelope/write routes.
+      // proven readiness. A bridged native status probe proves the exact scoped
+      // environment; API fallback still requires its isolated smoke.
       const routeableIntents = [
         "plan",
         "spec",
@@ -606,20 +576,6 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         ...routeableIntents,
         "orchestrate",
       ];
-      // Write-class intents run in isolated envelopes with a scoped HOME where
-      // the native cursor session is unreachable — they REQUIRE the key
-      // fallback. Native-only auth honestly enables only the non-envelope
-      // (read-only) intents so doctor-ok can never precede a guaranteed run
-      // failure (readiness/routing contract).
-      const readOnlyIntents = [
-        "plan",
-        "spec",
-        "review",
-        "verify",
-        "synthesize",
-        "explain",
-        "audit",
-      ];
       const route = selectCursorAuthRoute({
         authPreference,
         hasKey: apiKey,
@@ -627,39 +583,84 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         nativeAuthed,
         scopedHome,
       });
-      const enabled =
-        route === "api_key" ? routeableIntents : route === "local_session" ? readOnlyIntents : [];
+      const enabled = route === "unavailable" ? [] : routeableIntents;
       const ok = route !== "unavailable";
+      const selectedAvailable = authPreference === "subscription"
+        ? nativeAuthed
+        : authPreference === "api_key"
+          ? apiKey
+          : nativeAuthed || apiKey;
+      const probeUnknown = authPreference !== "api_key" && nativeProbe.probeError !== null;
+      const nativeSource: AuthSourceReadiness = nativeProbe.probeError
+        ? {
+            source: "native_session",
+            availability: "unknown",
+            verification: "not_run",
+            detail: `Cursor status probe failed: ${nativeProbe.probeError}`,
+          }
+        : nativeAuthed
+          ? {
+              source: "native_session",
+              availability: "available",
+              verification: "passed",
+              detail: "native Cursor session passed the status probe in the exact run environment",
+            }
+          : {
+              source: "native_session",
+              availability: "unavailable",
+              verification: "not_run",
+              detail: "native Cursor session is not authenticated",
+            };
+      const apiSource: AuthSourceReadiness = {
+        source: "api_key_env",
+        availability: apiKey ? "available" : "unavailable",
+        verification: apiSmoke.ok ? "passed" : shouldSmokeApiKey ? "failed" : "not_run",
+        detail: apiSmoke.detail,
+      };
+      const authSources: AuthSourceReadiness[] = requestedSource === "native_session"
+        ? [nativeSource]
+        : requestedSource === "api_key_env"
+          ? [apiSource]
+          : requestedSource !== undefined
+            ? [{ source: requestedSource, availability: "unavailable", verification: "not_run", detail: `Cursor does not support ${requestedSource}` }]
+            : [nativeSource, apiSource];
       return ConformanceReportSchema.parse({
         harness_id: "cursor",
-        status: ok ? "ok" : apiKey ? "degraded" : "unavailable",
+        status: ok ? "ok" : selectedAvailable || probeUnknown ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: version },
-          { id: "auth", status: nativeAuthed ? "pass" : "fail" },
-          {
+          ...(probeNative ? [{
+            id: "auth",
+            status: nativeAuthed ? "pass" : "fail",
+            detail: nativeProbe.probeError ?? nativeSource.detail,
+          }] : []),
+          ...(probeApi ? [{
             id: "stored_key",
             status: apiKey ? "pass" : "fail",
             detail: apiKey
               ? "cursor secret/env available"
-              : "no cursor key fallback (write/envelope intents disabled)",
+              : "no Cursor API-key fallback",
           },
           {
             id: "isolated_api_smoke",
-            status: apiSmoke.ok ? "pass" : apiKey ? "fail" : "skip",
+            status: apiSmoke.ok ? "pass" : shouldSmokeApiKey ? "fail" : "skip",
             detail: apiSmoke.detail,
-          },
+          }] : []),
         ],
+        auth_sources: authSources,
         enabled_intents: enabled,
         disabled_intents: allIntents.filter((i) => !enabled.includes(i)),
         reasons: ok
-          ? apiSmoke.ok
-            ? []
-            : [
-                "native session only: isolated envelope (write) intents need a passing Cursor API-key smoke",
-              ]
-          : apiKey
-            ? [`cursor key present but route unproven: ${apiSmoke.detail}`]
-            : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],
+          ? []
+          : nativeProbe.probeError && authPreference !== "api_key"
+            ? [`Cursor native-session probe failed: ${nativeProbe.probeError}`]
+          : authPreference === "subscription"
+            ? ["Cursor subscription route is not ready (run `cursor-agent login`)"]
+            : authPreference === "api_key"
+              ? [apiKey ? `cursor key present but route unproven: ${apiSmoke.detail}` : "Cursor API-key route is not configured"]
+              : apiKey
+                ? [`cursor key present but route unproven: ${apiSmoke.detail}`]
+                : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],
       });
     },
 
@@ -699,8 +700,8 @@ async function* runCursor(
   const { route, env, key, nativeAuthed, scopedHome } = await resolveCursorAuthRoute(deps, {
     env: spec.env,
     authPreference: spec.auth_preference,
+    abortSignal: abortSignalFromSpec(spec),
   });
-  const preferApi = spec.auth_preference === "api_key";
   if (route === "api_key" && key) {
     env.CURSOR_API_KEY = key;
     if (
@@ -724,19 +725,6 @@ async function* runCursor(
     }
   } else if (route === "local_session") {
     env.CURSOR_API_KEY = null;
-    if (preferApi) {
-      yield {
-        type: "message",
-        session_id: spec.session_id,
-        ts: nowIso(),
-        payload: {
-          auth_switched: true,
-          from_auth_mode: "api_key",
-          to_auth_mode: "local_session",
-          reason: "auth_unavailable",
-        },
-      };
-    }
   } else {
     yield {
       type: "error",
@@ -757,6 +745,9 @@ async function* runCursor(
     env,
     label: "cursor-agent",
     redact: redactSecrets,
-    parseEvent: createCursorParser(),
+    parseEvent: createCursorParser(
+      route === "local_session" ? "vendor_native" : "managed_api_key",
+      route === "local_session" ? "native_session" : "api_key_env",
+    ),
   });
 }

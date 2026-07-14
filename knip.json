@@ -11,6 +11,10 @@
       "entry": ["src/**/*.story.ts"],
       "project": ["src/**/*.ts"]
     },
+    "packages/claudexor": {
+      "entry": ["bin/*.js"],
+      "project": ["bin/*.js"]
+    },
     "packages/*": {
       "project": ["src/**/*.ts"]
     },

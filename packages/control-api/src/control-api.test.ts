@@ -18,7 +18,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect } from "node:net";
 import { sha256 } from "@claudexor/util";
+import type { ControlSetupJob } from "@claudexor/schema";
 
 describe("normalizeRunStart prompt validation", () => {
   const projectScope = () => ({ scope: { kind: "project" as const, root: tmpdir() } });
@@ -77,8 +79,72 @@ describe("normalizeRunStart prompt validation", () => {
 
 describe("DaemonControlApiServer", () => {
   const token = "daemon-token-123";
+  const readyIdentity = {};
   const startAgentBody = () =>
     JSON.stringify({ prompt: "hello", mode: "agent", scope: { kind: "project", root: tmpdir() } });
+
+  const setupJobFixture = (overrides: Partial<ControlSetupJob> = {}): ControlSetupJob => {
+    const state = overrides.state ?? "running";
+    const harness = overrides.harness ?? "codex";
+    const binding = {
+      attemptId: "attempt-setup-stream",
+      challengeDigest: "a".repeat(64),
+      requestDigest: "b".repeat(64),
+      disclosure: {
+        schemaVersion: 1 as const,
+        protocolVersion: 1 as const,
+        harness,
+        requested: "subscription" as const,
+        requiredRoute: "vendor_native" as const,
+        requiredSource: "native_session" as const,
+        networkScope: "selected_harness_only" as const,
+        billingKnowledge: "unknown" as const,
+        incrementalCostKnowledge: "unknown" as const,
+        mayConsumeQuota: true,
+        generatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    return {
+      jobId: "setup-stream",
+      harness,
+      action: "login",
+      state,
+      phase: "verifying",
+      command: `${harness} login`,
+      guideUrl: null,
+      message: "running",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:01.000Z",
+      finishedAt: null,
+      authCapability:
+        state === "interrupted_unknown"
+          ? {
+              ...binding,
+              state: "interrupted_unknown",
+              startedAt: "2026-01-01T00:00:01.000Z",
+              interruptedAt: "2026-01-01T00:00:02.000Z",
+            }
+          : { ...binding, state: "running", startedAt: "2026-01-01T00:00:01.000Z" },
+      ...overrides,
+    };
+  };
+
+  const setupEventFixture = (
+    job: ControlSetupJob,
+    cursor: string,
+    previousCursor: string | null,
+    sequence: number,
+  ) => ({
+    jobId: job.jobId,
+    cursor,
+    previousCursor,
+    sequence,
+    time: "2026-01-01T00:00:02.000Z",
+    kind: "status" as const,
+    state: job.state,
+    message: job.message,
+    job,
+  });
 
   function fakeDaemon(): {
     daemon: DaemonFacadeClient;
@@ -298,6 +364,141 @@ describe("DaemonControlApiServer", () => {
     return { daemon, record, cancelled };
   }
 
+  it("does not leave an HTTP listener when shutdown races startup", async () => {
+    const { daemon } = fakeDaemon();
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
+    const starting = server.start();
+    const stopping = server.stop();
+    await stopping;
+    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
+    await expect(server.start()).rejects.toMatchObject({ code: "daemon_stopping" });
+  });
+
+  it("serves a simple loopback health probe", async () => {
+    const { daemon } = fakeDaemon();
+    const server = new DaemonControlApiServer({ token, daemon });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    try {
+      const healthy = await fetch(`${base}/healthz`);
+      expect(healthy.status).toBe(200);
+      expect(await healthy.json()).toEqual({ ok: true });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("refuses a mutation delivered on a preconnected socket after stop is marked", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueueCalls = 0;
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon: {
+        ...daemon,
+        enqueue: async (params) => {
+          enqueueCalls += 1;
+          return daemon.enqueue(params);
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const socket = connect({ host, port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    let responseText = "";
+    const response = new Promise<string>((resolve, reject) => {
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        responseText += chunk;
+      });
+      socket.once("end", () => resolve(responseText));
+      socket.once("error", reject);
+      socket.setTimeout(5_000, () => socket.destroy(new Error("raw HTTP response timed out")));
+    });
+    const body = startAgentBody();
+    await new Promise<void>((resolve, reject) => {
+      socket.write(`POST /runs HTTP/1.1\r\nHost: ${host}:${port}\r\n`, (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
+    // Let the server observe an incomplete request on this connection. No
+    // request handler exists yet because the terminating header line is absent.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const stopping = server.stop();
+    expect(server.stop()).toBe(stopping);
+    try {
+      socket.write(
+        `Authorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+      const raw = await response;
+      expect(raw).toMatch(/^HTTP\/1\.1 503 /);
+      expect(raw.toLowerCase()).toContain("content-type: application/problem+json");
+      const separator = raw.indexOf("\r\n\r\n");
+      expect(separator).toBeGreaterThan(0);
+      expect(JSON.parse(raw.slice(separator + 4))).toMatchObject({
+        code: "daemon_stopping",
+        retryable: true,
+      });
+      expect(enqueueCalls).toBe(0);
+    } finally {
+      socket.destroy();
+      await stopping;
+    }
+  });
+
+  it("waits for a disconnected client's pending handler before stop resolves", async () => {
+    const { daemon } = fakeDaemon();
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let releaseService!: () => void;
+    const serviceResult = new Promise<unknown>((resolve) => {
+      releaseService = () => resolve({ ok: true });
+    });
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      services: {
+        updateSettings: async () => {
+          markEntered();
+          return serviceResult;
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const controller = new AbortController();
+    const request = fetch(`http://${host}:${port}/settings`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ clearMaxUsdPerRun: true }),
+      signal: controller.signal,
+    }).then(
+      () => "responded",
+      () => "disconnected",
+    );
+    await entered;
+    controller.abort();
+    expect(await request).toBe("disconnected");
+
+    const stopping = server.stop();
+    try {
+      const early = await Promise.race([
+        stopping.then(() => "stopped" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+      ]);
+      expect(early).toBe("pending");
+    } finally {
+      releaseService();
+      await stopping;
+    }
+  });
+
   async function withDaemonServer(
     daemon: DaemonFacadeClient,
     fn: (base: string) => Promise<void>,
@@ -306,6 +507,7 @@ describe("DaemonControlApiServer", () => {
     bus?: DaemonControlApiOptions["bus"],
   ): Promise<void> {
     const server = new DaemonControlApiServer({
+      ...readyIdentity,
       token,
       daemon,
       pollMs: 5,
@@ -531,7 +733,8 @@ describe("DaemonControlApiServer", () => {
       // The daemon ThreadStore contract: persist the refusal on the turn.
       setTurnEnqueueError: (turnId, message, code, retryable) => {
         const turn = turns.find((t) => t["id"] === turnId);
-        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
+        if (turn && !turn["run_id"])
+          turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
       },
     };
     await withDaemonServer(
@@ -553,7 +756,17 @@ describe("DaemonControlApiServer", () => {
         // The projection renders the refusal so a reloading client sees it.
         const detail = (await (
           await fetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
-        ).json()) as { turns: { id: string; enqueueError: { message: string; code: string | null; retryable: boolean; failedAt: string } | null }[] };
+        ).json()) as {
+          turns: {
+            id: string;
+            enqueueError: {
+              message: string;
+              code: string | null;
+              retryable: boolean;
+              failedAt: string;
+            } | null;
+          }[];
+        };
         expect(detail.turns[0]?.enqueueError?.message).toContain("daemon socket is gone");
         expect(detail.turns[0]?.enqueueError?.code).toBeNull(); // untyped throw
         expect(detail.turns[0]?.enqueueError?.retryable).toBe(false); // nothing to replay
@@ -592,10 +805,20 @@ describe("DaemonControlApiServer", () => {
         return { id: "job-t", state: "queued" };
       },
       async status() {
-        return { id: "job-t", state: "failed", error: "access profile 'full' requires allow_full_access: true" };
+        return {
+          id: "job-t",
+          state: "failed",
+          error: "access profile 'full' requires allow_full_access: true",
+        };
       },
       async list() {
-        return [{ id: "job-t", state: "failed", error: "access profile 'full' requires allow_full_access: true" }];
+        return [
+          {
+            id: "job-t",
+            state: "failed",
+            error: "access profile 'full' requires allow_full_access: true",
+          },
+        ];
       },
       async cancel() {
         return { ok: true };
@@ -656,7 +879,12 @@ describe("DaemonControlApiServer", () => {
         thread_id: "th-n",
         run_id: null,
         prompt: "never enqueued",
-        enqueue_error: { message: "daemon socket is gone", code: null, retryable: false, failed_at: now },
+        enqueue_error: {
+          message: "daemon socket is gone",
+          code: null,
+          retryable: false,
+          failed_at: now,
+        },
         created_at: now,
       },
     ];
@@ -740,7 +968,8 @@ describe("DaemonControlApiServer", () => {
       },
       setTurnEnqueueError: (turnId, message, code, retryable) => {
         const turn = turns.find((t) => t["id"] === turnId);
-        if (turn && !turn["run_id"]) turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
+        if (turn && !turn["run_id"])
+          turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
       },
     };
     await withDaemonServer(
@@ -749,7 +978,12 @@ describe("DaemonControlApiServer", () => {
         const res = await fetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ prompt: "direct work", mode: "agent", scope: { kind: "project", root: repo }, threadId: "th-d" }),
+          body: JSON.stringify({
+            prompt: "direct work",
+            mode: "agent",
+            scope: { kind: "project", root: repo },
+            threadId: "th-d",
+          }),
         });
         expect(res.status).toBe(500);
         // The body mirrors the recorded refusal: clients keep the draft for a
@@ -822,13 +1056,26 @@ describe("DaemonControlApiServer", () => {
         plan_run_id: null,
         kind: "followup",
         prompt: "risky work",
-        enqueue_error: { message: "access profile 'full' requires allow_full_access: true", code: "trust_full_access_required", failed_at: now },
+        enqueue_error: {
+          message: "access profile 'full' requires allow_full_access: true",
+          code: "trust_full_access_required",
+          failed_at: now,
+        },
         created_at: now,
       },
     ];
     // Job registry double: the failed original + a retry that starts a run.
     const jobs = new Map<string, DaemonRunRecord>([
-      ["job-fail", { id: "job-fail", state: "failed", error: "access profile 'full' requires allow_full_access: true", params: refusedParams, createdAt: now }],
+      [
+        "job-fail",
+        {
+          id: "job-fail",
+          state: "failed",
+          error: "access profile 'full' requires allow_full_access: true",
+          params: refusedParams,
+          createdAt: now,
+        },
+      ],
     ]);
     const enqueued: unknown[] = [];
     // The FIRST replay is refused again (trust still missing — a typed
@@ -839,9 +1086,12 @@ describe("DaemonControlApiServer", () => {
       async enqueue(params: unknown) {
         if (refuseNextEnqueue) {
           refuseNextEnqueue = false;
-          throw Object.assign(new Error("access profile 'full' requires allow_full_access: true (still)"), {
-            code: "trust_full_access_required",
-          });
+          throw Object.assign(
+            new Error("access profile 'full' requires allow_full_access: true (still)"),
+            {
+              code: "trust_full_access_required",
+            },
+          );
         }
         enqueued.push(params);
         const rec: DaemonRunRecord = {
@@ -932,7 +1182,9 @@ describe("DaemonControlApiServer", () => {
         });
         const pending = await retry("tn-queued");
         expect(pending.status).toBe(409);
-        expect(((await pending.json()) as { error: string }).error).toContain("no recorded refusal");
+        expect(((await pending.json()) as { error: string }).error).toContain(
+          "no recorded refusal",
+        );
       },
       undefined,
       services,
@@ -946,23 +1198,42 @@ describe("DaemonControlApiServer", () => {
     const services: DaemonControlApiOptions["services"] = {
       listTrust: async () => ({
         entries: [
-          { repoRoot: "/Users/x/proj", path: "/Users/x/.claudexor/trust/abc.yaml", allowFullAccess: allow, accessDefault: "workspace_write" },
+          {
+            repoRoot: "/Users/x/proj",
+            path: "/Users/x/.claudexor/trust/abc.yaml",
+            allowFullAccess: allow,
+            accessDefault: "workspace_write",
+          },
           // Legacy pre-provenance file: enumerable with a null root.
-          { repoRoot: null, path: "/Users/x/.claudexor/trust/old.yaml", allowFullAccess: true, accessDefault: "workspace_write" },
+          {
+            repoRoot: null,
+            path: "/Users/x/.claudexor/trust/old.yaml",
+            allowFullAccess: true,
+            accessDefault: "workspace_write",
+          },
         ],
       }),
       updateTrust: async (input) => {
         calls.push(input);
         allow = input.allowFullAccess;
-        return { repoRoot: input.repoRoot, path: "/Users/x/.claudexor/trust/abc.yaml", allowFullAccess: allow, accessDefault: "workspace_write" };
+        return {
+          repoRoot: input.repoRoot,
+          path: "/Users/x/.claudexor/trust/abc.yaml",
+          allowFullAccess: allow,
+          accessDefault: "workspace_write",
+        };
       },
     };
     await withDaemonServer(
       daemon,
       async (base) => {
-        const list = await fetch(`${base}/trust`, { headers: { authorization: `Bearer ${token}` } });
+        const list = await fetch(`${base}/trust`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
         expect(list.status).toBe(200);
-        const listBody = (await list.json()) as { entries: { repoRoot: string | null; allowFullAccess: boolean }[] };
+        const listBody = (await list.json()) as {
+          entries: { repoRoot: string | null; allowFullAccess: boolean }[];
+        };
         expect(listBody.entries).toHaveLength(2);
         expect(listBody.entries[1]?.repoRoot).toBeNull();
 
@@ -971,7 +1242,11 @@ describe("DaemonControlApiServer", () => {
         const widened = await fetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ repoRoot: "/Users/x/proj", allowFullAccess: true, accessDefault: "readonly" }),
+          body: JSON.stringify({
+            repoRoot: "/Users/x/proj",
+            allowFullAccess: true,
+            accessDefault: "readonly",
+          }),
         });
         expect(widened.status).toBe(400);
         expect(calls).toHaveLength(0);
@@ -1416,7 +1691,9 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued?.["attachments"]).toEqual([
         expect.objectContaining({ kind: "file", mime: "text/plain", name: "note.txt", path: file }),
       ]);
-      expect((enqueued?.["attachments"] as Array<Record<string, unknown>> | undefined)?.[0]?.["data"]).toBeUndefined();
+      expect(
+        (enqueued?.["attachments"] as Array<Record<string, unknown>> | undefined)?.[0]?.["data"],
+      ).toBeUndefined();
     });
   });
 
@@ -1860,6 +2137,7 @@ describe("DaemonControlApiServer", () => {
 
   it("serves harness readiness checks and intent gating through the typed control-api service", async () => {
     const { daemon } = fakeDaemon();
+    const harnessInputs: unknown[] = [];
     await withDaemonServer(
       daemon,
       async (base) => {
@@ -1889,22 +2167,34 @@ describe("DaemonControlApiServer", () => {
           status: "fail",
           detail: "401",
         });
+        const fresh = await fetch(`${base}/harnesses?fresh=true`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(fresh.status).toBe(200);
+        const invalid = await fetch(`${base}/harnesses?fresh=1`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(invalid.status).toBe(400);
+        expect(harnessInputs).toEqual([undefined, { fresh: true }]);
       },
       undefined,
       {
-        harnesses: async () => ({
-          harnesses: [
-            {
-              id: "codex",
-              status: "degraded",
-              manifest: null,
-              enabledIntents: [],
-              disabledIntents: ["review"],
-              checks: [{ id: "isolated_api_smoke", status: "fail", detail: "401" }],
-              reasons: ["isolated smoke failed"],
-            },
-          ],
-        }),
+        harnesses: async (input) => {
+          harnessInputs.push(input);
+          return {
+            harnesses: [
+              {
+                id: "codex",
+                status: "degraded",
+                manifest: null,
+                enabledIntents: [],
+                disabledIntents: ["review"],
+                checks: [{ id: "isolated_api_smoke", status: "fail", detail: "401" }],
+                reasons: ["isolated smoke failed"],
+              },
+            ],
+          };
+        },
       },
     );
   });
@@ -1949,48 +2239,67 @@ describe("DaemonControlApiServer", () => {
 
   it("validates and forwards setup job lifecycle through typed control-api services", async () => {
     const { daemon } = fakeDaemon();
-    const job = {
+    let job = setupJobFixture({
       jobId: "setup-1",
       harness: "cursor",
-      action: "install",
       state: "waiting_for_input",
-      command: "curl https://cursor.com/install -fsS | bash",
-      guideUrl: "https://docs.cursor.com/cli",
-      logPath: "/tmp/claudexor-setup-1.log",
-      message: "confirm installer",
-      riskFlags: ["network_download", "shell_pipe"],
-      requiresConfirmation: true,
-      createdAt: new Date().toISOString(),
-      startedAt: null,
-      finishedAt: null,
-    };
+      phase: "awaiting_user",
+      message: "complete native login",
+    });
     const seen: unknown[] = [];
+    const listFilters: unknown[] = [];
     await withDaemonServer(
       daemon,
       async (base) => {
         const created = await fetch(`${base}/setup/jobs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ harness: "cursor", action: "install" }),
+          body: JSON.stringify({
+            harness: "cursor",
+            action: "login",
+            authRequest: "subscription",
+          }),
         });
         expect(created.status).toBe(200);
-        expect(await created.json()).toMatchObject({
-          jobId: "setup-1",
-          requiresConfirmation: true,
-        });
-        expect(seen).toEqual([{ harness: "cursor", action: "install" }]);
+        expect(await created.json()).toMatchObject({ jobId: "setup-1", action: "login" });
+        expect(seen).toEqual([
+          { harness: "cursor", action: "login", authRequest: "subscription" },
+        ]);
 
-        const listed = await fetch(`${base}/setup/jobs`, {
-          headers: { authorization: `Bearer ${token}` },
-        });
+        const listed = await fetch(
+          `${base}/setup/jobs?harness=cursor&action=login&active=true&limit=1`,
+          {
+            headers: { authorization: `Bearer ${token}` },
+          },
+        );
         expect(listed.status).toBe(200);
         expect((await listed.json()) as unknown).toMatchObject({ jobs: [{ jobId: "setup-1" }] });
+        expect(listFilters).toEqual([
+          { harness: "cursor", action: "login", active: true, limit: 1 },
+        ]);
+        const invalidList = await fetch(`${base}/setup/jobs?state=running`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(invalidList.status).toBe(400);
+        const invalidHarness = await fetch(`${base}/setup/jobs?harness=unknown`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(invalidHarness.status).toBe(400);
 
         const status = await fetch(`${base}/setup/jobs/setup-1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(status.status).toBe(200);
         expect(await status.json()).toMatchObject({ jobId: "setup-1", state: "waiting_for_input" });
+        const snapshot = await fetch(`${base}/setup/jobs/setup-1/snapshot`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(snapshot.status).toBe(200);
+        expect(await snapshot.json()).toMatchObject({
+          job: { jobId: "setup-1" },
+          cursor: "cursor-41",
+          sequence: 41,
+        });
 
         // The lifecycle stream STAYS OPEN for a non-terminal job (it is a real
         // stream now, not a one-shot snapshot): read the first frame and abort.
@@ -2008,17 +2317,21 @@ describe("DaemonControlApiServer", () => {
           sseText += new TextDecoder().decode(value);
         }
         expect(sseText).toContain("event: setup");
+        expect(sseText).toContain("id: cursor-41");
         expect(sseText).toContain("waiting_for_input");
+        expect(sseText).toContain('"job":{"jobId":"setup-1"');
         expect(sseText).not.toContain("event: end");
         sseAbort.abort();
 
-        const confirmed = await fetch(`${base}/setup/jobs/setup-1/confirm`, {
+        const extended = await fetch(`${base}/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: "{}",
         });
-        expect(confirmed.status).toBe(200);
-        expect(await confirmed.json()).toMatchObject({ jobId: "setup-1", state: "running" });
+        expect(extended.status).toBe(200);
+        expect(await extended.json()).toMatchObject({
+          jobId: "setup-1",
+          deadlineAt: "2026-01-01T00:15:00.000Z",
+        });
 
         const cancelled = await fetch(`${base}/setup/jobs/setup-1/cancel`, {
           method: "POST",
@@ -2029,15 +2342,21 @@ describe("DaemonControlApiServer", () => {
 
         // After cancel the job is terminal: the lifecycle stream must emit the
         // terminal status and CLOSE with an end frame.
-        job.state = "cancelled";
-        job.finishedAt = new Date().toISOString() as never;
+        job = {
+          ...job,
+          state: "timed_out",
+          phase: "completed",
+          message: "timed out",
+          outcome: { reason: "timed_out" },
+          finishedAt: new Date().toISOString(),
+        };
         const ended = await fetch(`${base}/setup/jobs/setup-1/events`, {
-          headers: { authorization: `Bearer ${token}` },
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-41" },
         });
         expect(ended.status).toBe(200);
         const endedText = await ended.text();
         expect(endedText).toContain("event: setup");
-        expect(endedText).toContain("cancelled");
+        expect(endedText).toContain("timed_out");
         expect(endedText).toContain("event: end");
       },
       undefined,
@@ -2046,21 +2365,522 @@ describe("DaemonControlApiServer", () => {
           seen.push(input);
           return job;
         },
-        listSetupJobs: async () => ({ jobs: [job] }),
+        listSetupJobs: async (filter) => {
+          listFilters.push(filter);
+          return { jobs: [job] };
+        },
         setupJobStatus: async () => job,
-        confirmSetupJob: async () => ({
-          ...job,
-          state: "running",
-          requiresConfirmation: false,
-          startedAt: new Date().toISOString(),
-          message: "running",
+        setupJobSnapshot: async () => ({
+          job,
+          cursor: job.state === "timed_out" ? "cursor-42" : "cursor-41",
+          sequence: job.state === "timed_out" ? 42 : 41,
         }),
+        setupJobEvents: async (input) => {
+          const afterCursor = (input as { afterCursor?: unknown }).afterCursor;
+          const cursor = job.state === "timed_out" ? "cursor-42" : "cursor-41";
+          return cursor === afterCursor
+            ? []
+            : [
+                {
+                  jobId: job.jobId,
+                  cursor,
+                  previousCursor: typeof afterCursor === "string" ? afterCursor : null,
+                  sequence: job.state === "timed_out" ? 42 : 41,
+                  time: new Date().toISOString(),
+                  kind: "status",
+                  state: job.state,
+                  message: job.message,
+                  job,
+                },
+              ];
+        },
         cancelSetupJob: async () => ({
           ...job,
           state: "cancelled",
+          phase: "completed",
           finishedAt: new Date().toISOString(),
           message: "cancelled",
+          outcome: { reason: "cancelled_by_user" },
         }),
+        extendSetupJob: async () => ({ ...job, deadlineAt: "2026-01-01T00:15:00.000Z" }),
+      },
+    );
+  });
+
+  it("reuses the validated resume batch and streams sparse sequences through an exact cursor chain", async () => {
+    const { daemon } = fakeDaemon();
+    const running = setupJobFixture({ phase: "verifying", message: "verifying" });
+    const terminal = setupJobFixture({
+      state: "timed_out",
+      phase: "completed",
+      message: "timed out",
+      outcome: { reason: "timed_out" },
+      finishedAt: "2026-01-01T00:00:03.000Z",
+    });
+    let eventReads = 0;
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/setup/jobs/${terminal.jobId}/events`, {
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-base" },
+        });
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        expect(text).toContain(": connected");
+        expect(text).toContain("id: cursor-41");
+        expect(text).toContain("id: cursor-97");
+        expect(text).toContain('"previousCursor":"cursor-base"');
+        expect(text).toContain('"previousCursor":"cursor-41"');
+        expect(text).toContain("event: end");
+        expect(eventReads).toBe(1);
+      },
+      undefined,
+      {
+        setupJobStatus: async () => terminal,
+        setupJobEvents: async (input) => {
+          eventReads += 1;
+          expect(input).toEqual({ jobId: terminal.jobId, afterCursor: "cursor-base" });
+          return [
+            setupEventFixture(running, "cursor-41", "cursor-base", 41),
+            setupEventFixture(terminal, "cursor-97", "cursor-41", 97),
+          ];
+        },
+      },
+    );
+  });
+
+  it("treats interrupted_unknown as a terminal setup state", async () => {
+    const { daemon } = fakeDaemon();
+    const terminal = setupJobFixture({
+      state: "interrupted_unknown",
+      phase: "completed",
+      message: "outcome unknown after restart",
+      outcome: { reason: "interrupted_unknown" },
+      finishedAt: "2026-01-01T00:00:03.000Z",
+    });
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/setup/jobs/${terminal.jobId}/events`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        expect(text).toContain("interrupted_unknown");
+        expect(text).toContain("event: end");
+      },
+      undefined,
+      {
+        setupJobStatus: async () => terminal,
+        setupJobEvents: async () => [setupEventFixture(terminal, "cursor-terminal", null, 3)],
+      },
+    );
+  });
+
+  it("returns a typed HTTP 409 for a stale setup journal cursor before SSE headers", async () => {
+    const { daemon } = fakeDaemon();
+    const current = setupJobFixture();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/setup/jobs/${current.jobId}/events`, {
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "stale-cursor" },
+        });
+        expect(response.status).toBe(409);
+        expect(response.headers.get("content-type")).toBe("application/problem+json");
+        expect(await response.json()).toEqual({
+          code: "journal_cursor_invalid",
+          message: "stale epoch",
+          retryable: false,
+          fieldErrors: {},
+          requiredActions: ["resnapshot"],
+          evidenceRefs: [],
+        });
+      },
+      undefined,
+      {
+        setupJobStatus: async () => current,
+        setupJobEvents: async () => {
+          throw Object.assign(new Error("stale epoch"), {
+            status: 409,
+            code: "journal_cursor_invalid",
+            requiredActions: ["resnapshot"],
+          });
+        },
+      },
+    );
+  });
+
+  it("exposes recovery inspection, validation, export, and idempotent quarantine through v2-only routes", async () => {
+    const { daemon } = fakeDaemon();
+    const fingerprint = "a".repeat(64);
+    const inspection = {
+      schemaVersion: 1 as const,
+      partition: "global" as const,
+      generation: 1,
+      status: "recovery_required" as const,
+      recovery: {
+        status: "recovery_required" as const,
+        location: { kind: "byte" as const, byteOffset: 42 },
+        reason: "checksum mismatch",
+        discardedTailBytes: 0,
+      },
+      fingerprint,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      evidenceRefs: [`recovery:global:${fingerprint}`],
+    };
+    const quarantineInputs: unknown[] = [];
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const headers = { authorization: `Bearer ${token}` };
+        const inspect = await fetch(`${base}/v2/recovery/partitions/global`, { headers });
+        expect(inspect.status).toBe(200);
+        expect(await inspect.json()).toEqual(inspection);
+
+        const validate = await fetch(`${base}/v2/recovery/partitions/global/validate`, {
+          method: "POST",
+          headers,
+        });
+        expect(validate.status).toBe(200);
+        expect(await validate.json()).toMatchObject({
+          projectionStatus: [{ name: "setup", status: "invalid" }],
+        });
+
+        const exported = await fetch(`${base}/v2/recovery/partitions/global/export`, {
+          method: "POST",
+          headers,
+        });
+        expect(exported.status).toBe(200);
+        expect(await exported.json()).toMatchObject({ exportId: "export-1", fingerprint });
+
+        const missingKey = await fetch(`${base}/v2/recovery/partitions/global/quarantine`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            expectedFingerprint: fingerprint,
+            confirmation: "quarantine_and_start_fresh",
+          }),
+        });
+        expect(missingKey.status).toBe(400);
+        expect(missingKey.headers.get("content-type")).toBe("application/problem+json");
+        expect(await missingKey.json()).toMatchObject({
+          code: "idempotency_key_required",
+          fieldErrors: { "Idempotency-Key": ["required for quarantine"] },
+        });
+
+        const quarantine = await fetch(`${base}/v2/recovery/partitions/global/quarantine`, {
+          method: "POST",
+          headers: { ...headers, "Idempotency-Key": "quarantine-1" },
+          body: JSON.stringify({
+            expectedFingerprint: fingerprint,
+            confirmation: "quarantine_and_start_fresh",
+          }),
+        });
+        expect(quarantine.status).toBe(200);
+        expect(await quarantine.json()).toMatchObject({
+          operationId: "00000000-0000-4000-8000-000000000001",
+          newEpoch: "epoch-2",
+        });
+        expect(quarantineInputs).toEqual([
+          {
+            expectedFingerprint: fingerprint,
+            confirmation: "quarantine_and_start_fresh",
+            idempotencyKey: "quarantine-1",
+          },
+        ]);
+      },
+      undefined,
+      {
+        recoveryInspectGlobal: async () => inspection,
+        recoveryValidateGlobal: async () => ({
+          ...inspection,
+          projectionStatus: [
+            { name: "setup", status: "invalid", detail: "semantic replay failed" },
+          ],
+        }),
+        recoveryExportGlobal: async () => ({
+          schemaVersion: 1,
+          exportId: "export-1",
+          partition: "global",
+          fingerprint,
+          bundlePath: "/daemon-owned/recovery/export-1",
+          manifestSha256: "b".repeat(64),
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+        recoveryQuarantineGlobal: async (input) => {
+          quarantineInputs.push(input);
+          return {
+            schemaVersion: 1,
+            operationId: "00000000-0000-4000-8000-000000000001",
+            partition: "global",
+            previousFingerprint: fingerprint,
+            quarantineArtifactId: "quarantine-1",
+            quarantinePath: "/daemon-owned/quarantine/quarantine-1",
+            newEpoch: "epoch-2",
+            completedAt: "2026-01-01T00:00:02.000Z",
+          };
+        },
+      },
+    );
+  });
+
+  it("preserves typed service problems and treats invalid service output as an internal fault", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const headers = { authorization: `Bearer ${token}` };
+        const typed = await fetch(`${base}/setup/jobs/job-corrupt`, { headers });
+        expect(typed.status).toBe(503);
+        expect(typed.headers.get("content-type")).toBe("application/problem+json");
+        expect(await typed.json()).toEqual({
+          code: "journal_recovery_required",
+          message: "global journal requires recovery",
+          retryable: false,
+          fieldErrors: {},
+          requiredActions: ["inspect_recovery", "export_recovery", "quarantine_partition"],
+          evidenceRefs: ["recovery:global:abc"],
+        });
+
+        const invalidOutput = await fetch(`${base}/harnesses`, { headers });
+        expect(invalidOutput.status).toBe(500);
+        expect(invalidOutput.headers.get("content-type")).toBe("application/problem+json");
+        expect(await invalidOutput.json()).toEqual({
+          code: "invalid_service_response",
+          message: "harnesses returned a response that violates its schema",
+          retryable: false,
+          fieldErrors: {},
+          requiredActions: [],
+          evidenceRefs: [],
+        });
+      },
+      undefined,
+      {
+        setupJobStatus: async () => {
+          throw Object.assign(new Error("global journal requires recovery"), {
+            status: 503,
+            code: "journal_recovery_required",
+            retryable: false,
+            requiredActions: ["inspect_recovery", "export_recovery", "quarantine_partition"],
+            evidenceRefs: ["recovery:global:abc"],
+          });
+        },
+        harnesses: async () => ({ harnesses: "wrong" }),
+      },
+    );
+  });
+
+  it("forwards an exact auth-readiness request without invoking the aggregate harness service", async () => {
+    const { daemon } = fakeDaemon();
+    const seen: unknown[] = [];
+    let aggregateCalls = 0;
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ authRequest: "subscription", source: "native_session" }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          harnessId: "claude",
+          authRequest: "subscription",
+          requestedSource: "native_session",
+          observedAt: "2026-01-01T00:00:00.000Z",
+          readiness: {
+            source: "native_session",
+            availability: "available",
+            verification: "passed",
+          },
+        });
+        expect(seen).toEqual([
+          {
+            harnessId: "claude",
+            request: { authRequest: "subscription", source: "native_session" },
+          },
+        ]);
+        expect(aggregateCalls).toBe(0);
+      },
+      undefined,
+      {
+        harnesses: async () => {
+          aggregateCalls += 1;
+          return { harnesses: [] };
+        },
+        authReadiness: async (input) => {
+          seen.push(input);
+          return {
+            harnessId: "claude",
+            authRequest: "subscription",
+            requestedSource: "native_session",
+            observedAt: "2026-01-01T00:00:00.000Z",
+            readiness: {
+              source: "native_session",
+              availability: "available",
+              verification: "passed",
+            },
+          };
+        },
+      },
+    );
+  });
+
+  it("rejects auth-readiness query knobs, extra body fields, and the unversioned alias", async () => {
+    const { daemon } = fakeDaemon();
+    let serviceCalls = 0;
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const headers = {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        };
+        const validBody = JSON.stringify({ authRequest: "subscription", source: "native_session" });
+
+        const query = await fetch(`${base}/v2/harnesses/claude/auth-readiness?fresh=true`, {
+          method: "POST",
+          headers,
+          body: validBody,
+        });
+        expect(query.status).toBe(400);
+        expect(query.headers.get("content-type")).toBe("application/problem+json");
+        expect(await query.json()).toMatchObject({ code: "invalid_request" });
+
+        const extraBody = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            authRequest: "subscription",
+            source: "native_session",
+            fresh: true,
+          }),
+        });
+        expect(extraBody.status).toBe(400);
+        expect(extraBody.headers.get("content-type")).toBe("application/problem+json");
+        expect(await extraBody.json()).toMatchObject({ code: "invalid_request" });
+
+        const alias = await fetch(`${base}/harnesses/claude/auth-readiness`, {
+          method: "POST",
+          headers,
+          body: validBody,
+        });
+        expect(alias.status).toBe(404);
+        expect(await alias.json()).toEqual({ error: "not found" });
+        expect(serviceCalls).toBe(0);
+      },
+      undefined,
+      {
+        authReadiness: async () => {
+          serviceCalls += 1;
+          throw new Error("boundary validation did not run");
+        },
+      },
+    );
+  });
+
+  it("preserves typed auth-readiness service problems", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ authRequest: "subscription", source: "native_session" }),
+        });
+        expect(response.status).toBe(503);
+        expect(response.headers.get("content-type")).toBe("application/problem+json");
+        expect(await response.json()).toEqual({
+          code: "auth_readiness_probe_failed",
+          message: "native status transport unavailable",
+          retryable: true,
+          fieldErrors: {},
+          requiredActions: ["retry_auth_readiness_refresh"],
+          evidenceRefs: ["doctor:claude:native_session"],
+        });
+      },
+      undefined,
+      {
+        authReadiness: async () => {
+          throw Object.assign(new Error("native status transport unavailable"), {
+            status: 503,
+            code: "auth_readiness_probe_failed",
+            retryable: true,
+            requiredActions: ["retry_auth_readiness_refresh"],
+            evidenceRefs: ["doctor:claude:native_session"],
+          });
+        },
+      },
+    );
+  });
+
+  it("fails closed when auth-readiness service output violates the response schema", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ authRequest: "subscription", source: "native_session" }),
+        });
+        expect(response.status).toBe(500);
+        expect(response.headers.get("content-type")).toBe("application/problem+json");
+        expect(await response.json()).toEqual({
+          code: "invalid_service_response",
+          message: "authReadiness returned a response that violates its schema",
+          retryable: false,
+          fieldErrors: {},
+          requiredActions: [],
+          evidenceRefs: [],
+        });
+      },
+      undefined,
+      {
+        authReadiness: async () => ({
+          harnessId: "claude",
+          authRequest: "subscription",
+          requestedSource: "native_session",
+          observedAt: "2026-01-01T00:00:00.000Z",
+          readiness: {
+            source: "api_key_env",
+            availability: "available",
+            verification: "passed",
+          },
+        }),
+      },
+    );
+  });
+
+  it("flushes an immediate connected frame while an active setup stream is quiet", async () => {
+    const { daemon } = fakeDaemon();
+    const current = setupJobFixture();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const abort = new AbortController();
+        const response = await fetch(`${base}/setup/jobs/${current.jobId}/events`, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: abort.signal,
+        });
+        expect(response.status).toBe(200);
+        const reader = response.body!.getReader();
+        const first = await reader.read();
+        expect(new TextDecoder().decode(first.value)).toContain(": connected");
+        abort.abort();
+      },
+      undefined,
+      {
+        setupJobStatus: async () => current,
+        setupJobEvents: async () => [],
       },
     );
   });
@@ -2191,11 +3011,10 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ prompt: `use ${secret} to auth`, mode: "agent" }),
       });
       expect(start.status).toBe(400);
-      const body = (await start.json()) as { error: string; code?: string };
-      expect(body.error).toContain("durable run artifacts");
+      const body = (await start.json()) as { message: string; code?: string };
+      expect(body.message).toContain("durable run artifacts");
       // The machine-readable class rides the envelope, not just prose.
       expect(body.code).toBe("inline_secret_rejected");
-
     });
 
     // The thread-turn ingress (REPL/app path): the fence runs BEFORE thread
@@ -2211,8 +3030,8 @@ describe("DaemonControlApiServer", () => {
           body: JSON.stringify({ prompt: `retry with ${secret}` }),
         });
         expect(turn.status).toBe(400);
-        const turnBody = (await turn.json()) as { error: string; code?: string };
-        expect(turnBody.error).toContain("durable run artifacts");
+        const turnBody = (await turn.json()) as { message: string; code?: string };
+        expect(turnBody.message).toContain("durable run artifacts");
         expect(turnBody.code).toBe("inline_secret_rejected");
         expect(turnCreated).toBe(0);
       },
@@ -2329,7 +3148,13 @@ describe("DaemonControlApiServer", () => {
         return { ok: true };
       },
     };
-    const server = new DaemonControlApiServer({ token, daemon, pollMs: 1, runStartTimeoutMs: 5 });
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      pollMs: 1,
+      runStartTimeoutMs: 5,
+    });
     const { host, port } = await server.start();
     try {
       const res = await fetch(`http://${host}:${port}/runs`, {
@@ -2384,6 +3209,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     const server = new DaemonControlApiServer({
+      ...readyIdentity,
       token,
       daemon,
       services: {
@@ -2403,7 +3229,9 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(blockedRes.status).toBe(409);
-      expect(((await blockedRes.json()) as { error: string }).error).toContain("typed operator decision");
+      expect(((await blockedRes.json()) as { error: string }).error).toContain(
+        "typed operator decision",
+      );
       expect(applied).toBe(0);
 
       // A typed operator decision unblocks the gate (hash-bound to the patch).
@@ -2464,6 +3292,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     const server = new DaemonControlApiServer({
+      ...readyIdentity,
       token,
       daemon,
       services: {
@@ -2483,7 +3312,9 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(res.status).toBe(409);
-      expect(((await res.json()) as { error: string }).error).toContain("no longer in the daemon history");
+      expect(((await res.json()) as { error: string }).error).toContain(
+        "no longer in the daemon history",
+      );
       expect(applied).toBe(0);
     } finally {
       await server.stop();
@@ -2515,7 +3346,7 @@ describe("DaemonControlApiServer", () => {
         return { ok: true };
       },
     };
-    const server = new DaemonControlApiServer({ token, daemon, pollMs: 5 });
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon, pollMs: 5 });
     const { host, port } = await server.start();
     try {
       const res = await fetch(`http://${host}:${port}/runs/job-q1/events`, {
@@ -2726,7 +3557,9 @@ describe("DaemonControlApiServer", () => {
         turns: [],
       }),
       createThreadTurn: async () => {
-        throw Object.assign(new Error("attachment 0 path must be absolute: relative.txt"), { status: 400 });
+        throw Object.assign(new Error("attachment 0 path must be absolute: relative.txt"), {
+          status: 400,
+        });
       },
     };
     await withDaemonServer(
@@ -2740,7 +3573,9 @@ describe("DaemonControlApiServer", () => {
             mode: "agent",
             scope: { kind: "project", root: repo },
             threadId: "th-attachment",
-            attachments: [{ kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" }],
+            attachments: [
+              { kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" },
+            ],
           }),
         });
         expect(res.status).toBe(400);
@@ -2792,21 +3627,35 @@ describe("DaemonControlApiServer", () => {
     // Two plan.progress events: the projection must be LAST-WINS.
     const evPath = join(record.runDir!, "events.jsonl");
     const mk = (items: unknown, seq: number) =>
-      JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", seq, type: "plan.progress", payload: { items } });
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        run_id: "run-d1",
+        task_id: "task-d1",
+        seq,
+        type: "plan.progress",
+        payload: { items },
+      });
     appendFileSync(
       evPath,
-      "\n" + mk([{ id: "claude-0", title: "old", status: "pending" }], 90) + "\n" +
+      "\n" +
+        mk([{ id: "claude-0", title: "old", status: "pending" }], 90) +
+        "\n" +
         mk(
           [
             { id: "claude-0", title: "write tests", status: "completed" },
             { id: "claude-1", title: "ship", status: "in_progress" },
           ],
           91,
-        ) + "\n",
+        ) +
+        "\n",
     );
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } });
-      const body = (await detail.json()) as { planProgress: { items: Array<{ id: string; title: string; status: string }> } | null };
+      const detail = await fetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        planProgress: { items: Array<{ id: string; title: string; status: string }> } | null;
+      };
       expect(body.planProgress).not.toBeNull();
       expect(body.planProgress!.items).toEqual([
         { id: "claude-0", title: "write tests", status: "completed" },
@@ -2905,8 +3754,15 @@ describe("DaemonControlApiServer", () => {
       expect(body.artifacts.some((a) => a.path === "final/summary.md")).toBe(true);
       // Derived apply-gate verdict rides the detail (single producer): this
       // fixture run has a patch, so the verdict is non-null and typed.
-      const eligibility = (body as unknown as { applyEligibility: { eligible: boolean; reason: string | null; requiredAction: string | null } | null })
-        .applyEligibility;
+      const eligibility = (
+        body as unknown as {
+          applyEligibility: {
+            eligible: boolean;
+            reason: string | null;
+            requiredAction: string | null;
+          } | null;
+        }
+      ).applyEligibility;
       expect(eligibility).not.toBeNull();
       expect(typeof eligibility?.eligible).toBe("boolean");
       if (eligibility && !eligibility.eligible) {
@@ -3333,7 +4189,8 @@ describe("DaemonControlApiServer", () => {
         const res = await fetch(`${base}/settings`, {
           headers: { authorization: `Bearer ${token}` },
         });
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(500);
+        expect(res.headers.get("content-type")).toBe("application/problem+json");
         const text = await res.text();
         expect(text).toContain("[redacted]");
         expect(text).not.toContain(secret);
@@ -3350,6 +4207,7 @@ describe("DaemonControlApiServer", () => {
   it("validates settings patches and managed secret names", async () => {
     const { daemon } = fakeDaemon();
     const server = new DaemonControlApiServer({
+      ...readyIdentity,
       token,
       daemon,
       services: {
@@ -3653,9 +4511,19 @@ describe("DaemonControlApiServer", () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-mtc-"));
     try {
       expect(() =>
-        normalizeRunStartRequest({ prompt: "x", mode: "agent", scope: { kind: "project", root }, maxToolCalls: 3 }),
+        normalizeRunStartRequest({
+          prompt: "x",
+          mode: "agent",
+          scope: { kind: "project", root },
+          maxToolCalls: 3,
+        }),
       ).toThrow(/only applies to mode=orchestrate/);
-      const ok = normalizeRunStartRequest({ prompt: "x", mode: "orchestrate", scope: { kind: "project", root }, maxToolCalls: 3 });
+      const ok = normalizeRunStartRequest({
+        prompt: "x",
+        mode: "orchestrate",
+        scope: { kind: "project", root },
+        maxToolCalls: 3,
+      });
       expect(ok.maxToolCalls).toBe(3);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -3664,7 +4532,7 @@ describe("DaemonControlApiServer", () => {
 
   it("rejects client-supplied turnId and thread-less planRunId on POST /runs", async () => {
     const { daemon } = fakeDaemon();
-    const server = new DaemonControlApiServer({ token, daemon });
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     const repo = mkdtempSync(join(tmpdir(), "claudexor-turnid-"));
@@ -3672,22 +4540,35 @@ describe("DaemonControlApiServer", () => {
       const withTurn = await fetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: "x", mode: "agent", scope: { kind: "project", root: repo }, turnId: "tn-foreign" }),
+        body: JSON.stringify({
+          prompt: "x",
+          mode: "agent",
+          scope: { kind: "project", root: repo },
+          turnId: "tn-foreign",
+        }),
       });
       expect(withTurn.status).toBe(400);
-      expect(((await withTurn.json()) as { error: string }).error).toContain("turnId is not accepted");
+      expect(((await withTurn.json()) as { error: string }).error).toContain(
+        "turnId is not accepted",
+      );
 
       const withPlan = await fetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: "x", mode: "agent", scope: { kind: "project", root: repo }, planRunId: "run-plan" }),
+        body: JSON.stringify({
+          prompt: "x",
+          mode: "agent",
+          scope: { kind: "project", root: repo },
+          planRunId: "run-plan",
+        }),
       });
       expect(withPlan.status).toBe(400);
-      expect(((await withPlan.json()) as { error: string }).error).toContain("planRunId is not accepted on POST /runs");
+      expect(((await withPlan.json()) as { error: string }).error).toContain(
+        "planRunId is not accepted on POST /runs",
+      );
     } finally {
       await server.stop();
       rmSync(repo, { recursive: true, force: true });
     }
   });
-
 });

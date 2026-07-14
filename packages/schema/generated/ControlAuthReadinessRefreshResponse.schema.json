@@ -1,0 +1,85 @@
+{
+  "$ref": "#/definitions/ControlAuthReadinessRefreshResponse",
+  "definitions": {
+    "ControlAuthReadinessRefreshResponse": {
+      "type": "object",
+      "properties": {
+        "harnessId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "authRequest": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ],
+          "description": "Requested credential behavior: exact subscription, exact managed API key, or policy-governed auto selection."
+        },
+        "requestedSource": {
+          "type": "string",
+          "enum": [
+            "native_session",
+            "oauth_token_env",
+            "api_key_env",
+            "api_key_flag",
+            "provider_auth_file",
+            "none"
+          ],
+          "description": "Concrete credential source used or probed by a harness."
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "readiness": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "$ref": "#/definitions/ControlAuthReadinessRefreshResponse/properties/requestedSource"
+            },
+            "availability": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable",
+                "unknown"
+              ]
+            },
+            "verification": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "failed",
+                "not_run"
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "description": "Redacted human-readable source evidence."
+            }
+          },
+          "required": [
+            "source",
+            "availability",
+            "verification"
+          ],
+          "additionalProperties": false,
+          "description": "Doctor-backed readiness for one exact credential source."
+        }
+      },
+      "required": [
+        "harnessId",
+        "authRequest",
+        "requestedSource",
+        "observedAt",
+        "readiness"
+      ],
+      "additionalProperties": false,
+      "description": "Point-in-time readiness evidence for one exact harness credential source."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

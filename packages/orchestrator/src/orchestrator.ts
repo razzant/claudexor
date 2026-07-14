@@ -1,4 +1,4 @@
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AccessProfile,
@@ -407,7 +407,6 @@ interface RoutedAdapter {
 
 const LABELS = "ABCDEFGHIJ".split("");
 const NO_PROJECT_ROOT = noProjectRepoRoot();
-const REVIEW_EVIDENCE_DIRNAME = ".claudexor-review-evidence";
 /** Concurrency cap for parallel candidates/explorers (locked decision: min(n, 4)). */
 const MAX_PARALLEL_CANDIDATES = 4;
 /** Default wait for one interactive answer before a benign decline. */
@@ -3226,12 +3225,12 @@ export class Orchestrator {
 
   /**
    * SINGLE funnel for every reviewer-panel invocation: run it inside a per-review
-   * scoped harness HOME (Bible §6) so reviewer children (codex session rollouts,
-   * claude config) never write native state into the operator's real ~/.codex /
-   * ~/.claude. The codex route-proof transcript is read from this same scoped
-   * CODEX_HOME, so cross-family verification is unaffected. Every call site
-   * MUST go through here so the scoping cannot drift. Disposed once the panel
-   * settles (resolve OR reject).
+   * scoped harness HOME (Bible §6) so reviewer scratch state and injected auth
+   * routes do not enter the project or ordinary operator HOME. Native
+   * Codex/Claude routes deliberately keep their vendor-owned host-user stores;
+   * no credential file is copied into the scoped home. Every call site MUST go
+   * through here so the non-native scoping cannot drift. Disposed once the
+   * panel settles (resolve OR reject).
    */
   private reviewScoped(
     input: Omit<Parameters<typeof reviewCandidate>[0], "env">,
@@ -3383,22 +3382,15 @@ export class Orchestrator {
     return evidences;
   }
 
-  private prepareReviewEvidenceDir(sourceDir: string, candidateCwd: string): string {
-    const targetDir = join(candidateCwd, REVIEW_EVIDENCE_DIRNAME);
-    if (sourceDir === targetDir) {
-      return this.requireReviewEvidence(targetDir);
-    }
+  private prepareReviewEvidenceDir(sourceDir: string, _candidateCwd: string): string {
+    // Evidence is an external runtime artifact. ReviewEngine builds a separate
+    // reviewer workspace and copies the packet there; writing/copying it into
+    // the candidate tree would contaminate the Git diff and, worse, overwrite a
+    // user-owned path with the same name.
     if (!existsSync(sourceDir)) {
       throw new Error(`review evidence preflight failed for ${sourceDir}: source packet missing`);
     }
-    try {
-      rmSync(targetDir, { recursive: true, force: true });
-      cpSync(sourceDir, targetDir, { recursive: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`review evidence copy into candidate tree failed: ${message}`);
-    }
-    return this.requireReviewEvidence(targetDir);
+    return this.requireReviewEvidence(sourceDir);
   }
 
   private requireReviewEvidence(dir: string): string {
@@ -3412,21 +3404,11 @@ export class Orchestrator {
   }
 
   private cleanupReviewEvidenceDir(
-    candidateEvidenceDir: string,
-    candidateCwd: string,
+    _candidateEvidenceDir: string,
+    _candidateCwd: string,
   ): Record<string, string> | null {
-    if (candidateEvidenceDir === join(candidateCwd, REVIEW_EVIDENCE_DIRNAME)) {
-      try {
-        rmSync(candidateEvidenceDir, { recursive: true, force: true });
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        return {
-          review_evidence_cleanup: "failed",
-          candidate_evidence_dir: candidateEvidenceDir,
-          error: redactSecrets(detail),
-        };
-      }
-    }
+    // No candidate-tree packet exists in v2; external runtime retention is
+    // governed by the artifact/journal lifecycle rather than best-effort rm.
     return null;
   }
 
@@ -4368,9 +4350,10 @@ export class Orchestrator {
       harnessId: string;
       telemetry: AttemptTelemetry;
     }[] = [];
-    // scope the planners' HOME/config dirs so claude-code plan files (and any
-    // native session state) stay inside the run's scoped home, never the
-    // operator's real ~/.claude/plans. Disposed after the planners finish.
+    // Scope planner scratch HOME/config dirs so non-auth state and injected
+    // routes stay outside the project. Native Codex/Claude auth still uses the
+    // vendor-owned host-user store and is never copied here. Disposed after the
+    // planners finish.
     const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     try {
       for (const [idx, routed] of adapters.entries()) {
@@ -4465,11 +4448,10 @@ export class Orchestrator {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
-              // NOT observed for resume: this read-only/plan attempt runs in a
-              // DISPOSABLE roHome (disposed below), so its native session id is
-              // unreachable afterwards. Recording it would poison the thread resume
-              // map with dead ids — the read-side mirror of the agent path's
-              // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
+              // NOT observed for resume: a read-only planner is not a chat turn,
+              // and attaching its session id would poison thread continuity (and
+              // race parallel planner/reviewer sessions), regardless of whether
+              // the vendor stored that session in the scoped or native store.
               observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
@@ -4549,7 +4531,7 @@ export class Orchestrator {
         store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
       }
     } finally {
-      // Planners done (or threw) — always reclaim the scoped home (it may hold seeded creds).
+      // Planners done (or threw) — reclaim scoped scratch/API-route state.
       roHome.dispose();
     }
 
@@ -5047,10 +5029,10 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    // read-only routes still spawn harness processes that write native
-    // state (plan files, session rollouts). Scope their HOME/config dirs so they
-    // cannot escape into the operator's real ~/.claude, ~/.codex, etc. — the
-    // adapters seed auth into these scoped dirs (§6). Disposed at run end.
+    // Read-only routes still write plan files, caches, and session rollouts.
+    // Scope non-native state and injected API routes outside the project;
+    // vendor-owned native Codex/Claude credential stores are referenced in
+    // place and never copied. Disposed at run end.
     const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     interface ReadonlyAttempt {
       attemptId: string;
@@ -5214,11 +5196,9 @@ export class Orchestrator {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
-              // NOT observed for resume: this read-only/plan attempt runs in a
-              // DISPOSABLE roHome (disposed below), so its native session id is
-              // unreachable afterwards. Recording it would poison the thread resume
-              // map with dead ids — the read-side mirror of the agent path's
-              // `if (inPlaceEnvelope)` guard. Codex-review-confirmed.
+              // NOT observed for resume: this read-only attempt is not a chat
+              // turn. Recording its id would poison thread continuity and can
+              // race parallel read-only sessions, regardless of storage route.
               observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
@@ -5449,8 +5429,8 @@ export class Orchestrator {
         }
       }
     } finally {
-      // All read-only attempts done (or threw) — reclaim the scoped harness home
-      // (it contained every native write for this run and may hold seeded creds).
+      // All read-only attempts done (or threw) — reclaim scoped scratch and
+      // injected API-route state. Vendor-owned native credentials were not copied.
       roHome.dispose();
     }
 
@@ -6259,4 +6239,3 @@ function assertNoSecretLikeTokens(label: string, text: string): void {
 function safeErrorMessage(err: unknown): string {
   return redactSecrets(err instanceof Error ? err.message : String(err));
 }
-

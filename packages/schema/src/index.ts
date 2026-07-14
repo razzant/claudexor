@@ -6,6 +6,9 @@
  * (see scripts/gen-jsonschema.ts).
  */
 export * from "./primitives.js";
+export * from "./auth.js";
+export * from "./problem.js";
+export * from "./recovery.js";
 export * from "./surface-run-controls.js";
 export * from "./attachment.js";
 export * from "./task.js";
@@ -26,6 +29,7 @@ export * from "./workspace.js";
 export * from "./thread.js";
 export * from "./orchestrate.js";
 export * from "./control.js";
+export * from "./setup.js";
 export * from "./control-trust.js";
 export * from "./agent-capabilities.js";
 export * from "./apply-eligibility.js";

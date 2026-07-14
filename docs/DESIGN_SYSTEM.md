@@ -468,12 +468,27 @@ views in the shared design-system files; screens compose them.
   primary output appears in
   Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
   stay in Diagnostics/artifact lists and must not be transformed into Plan rows.
-- **Setup job states.** Auth/setup sheets show queued/running/waiting/succeeded/
-  failed/cancelled, command preview, risk flags, started time, first output,
-  latest output, terminal result, retry count, doctor result, and log path.
-  Sheets POLL the job to its terminal state (or consume the job SSE stream) and
-  then re-run the harness doctor; a job stuck on "running" forever in the UI is
-  a defect, not a state.
+- **Setup job lifecycle.** Auth/setup sheets show compatible coarse state plus
+  the login-only typed phase (`preparing`, `launching`, `awaiting_user`,
+  `verifying`, `cancelling`, `completed`), native source
+  availability/verification, deadline/countdown, outcome/exit/signal, command
+  preview, and official guide. Actions are contextual: Extend 15 min, Cancel
+  Login, Retry, Reconnect, and Guide. SSE reconnect begins with GET resnapshot and has five bounded
+  retries. The client validates the exact predecessor cursor while allowing
+  sparse global journal sequence numbers; malformed, duplicate, regressive,
+  dropped, unknown, or prematurely ended streams visibly resnapshot. Exhausted
+  transport keeps the honest active job and exposes
+  Reconnect instead of inventing failure. Every terminal result triggers a
+  fresh harness refresh. A job stuck active after process exit/cancel/timeout/
+  restart is a defect, not a state. A filtered active lookup (`harness`,
+  `active=true`, `limit=1`) runs when the sheet/app reopens before new actions are enabled,
+  so a background login cannot create a duplicate Terminal. Cancel remains in
+  progress until the server proves termination; `interrupted_unknown` is a
+  terminal unknown outcome rather than success, and `termination_unconfirmed`
+  blocks Login/Retry and exposes recovery instead of opening a replacement
+  process. API-key storage is an independent secret-store operation and is not
+  blocked by a native-login replacement fence. Launch/manual-command failures
+  keep the selectable command, official guide, and actionable Retry/Reconnect state.
 - **Best-of / candidates.** Per-family candidate lanes; the best-of-N
   "attempts/re-roll" primitive. (See the Candidate cards contract above — the
   Candidates tab renders live server-projected evidence.)
@@ -603,10 +618,18 @@ views in the shared design-system files; screens compose them.
   harness that is not installed, not authenticated, degraded without the required
   intent, or unable to enforce read-only is visible but disabled, with a hover
   reason and a path to Harness Doctor/Auth setup.
-- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor/OpenCode native auth
-  and expose setup jobs for official install/login/doctor flows, then offer API-key fallback
+- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor native auth
+  and expose daemon-owned native-login jobs, then offer API-key fallback
   that writes only to the local secret store. Claudexor does not broker SaaS OAuth itself; it
-  reuses each CLI's native login/session when available. The wizard may store secret refs, mark
+  launches each official CLI in Terminal and verifies its native session when available without
+  receiving/copying/storing vendor session tokens or credential files. Native
+  readiness is distinct from overall/API-key readiness: absent means unavailable/not-run,
+  an indeterminate probe remains unknown/not-run, and present-but-unusable is available/failed.
+  Login/Manage Login is driven by that native source, never aggregate harness health. The
+  sheet never closes/cancels an active login ambiguously: closing offers Keep Running, Cancel
+  Login, or Stay, and a background login is recovered when the sheet/app reopens. Terminal is
+  not auto-closed; it remains available with the vendor result until the user presses Return.
+  The wizard may store secret refs, mark
   setup complete, or skip, but it must not invent app-only auth state. Offline or unimplemented
   surfaces show honest empty states; sample data is opt-in from Settings.
 

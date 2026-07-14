@@ -1,0 +1,54 @@
+{
+  "$ref": "#/definitions/ControlJournalQuarantineReceipt",
+  "definitions": {
+    "ControlJournalQuarantineReceipt": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "partition": {
+          "type": "string",
+          "const": "global"
+        },
+        "previousFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "quarantineArtifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quarantinePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "newEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "partition",
+        "previousFingerprint",
+        "quarantineArtifactId",
+        "quarantinePath",
+        "newEpoch",
+        "completedAt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

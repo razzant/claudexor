@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartTime } from "@claudexor/workspace";
+import { projectRuntimeDir } from "@claudexor/util";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
 
 function initRepo(): string {
@@ -18,7 +19,7 @@ function initRepo(): string {
 }
 
 function envelope(root: string, taskId: string, attemptId: string, owner?: { pid: number; started: string | null }): string {
-  const base = join(root, ".claudexor", "workspaces", taskId, attemptId);
+  const base = join(projectRuntimeDir(root), "workspaces", taskId, attemptId);
   mkdirSync(join(base, "tree"), { recursive: true });
   mkdirSync(join(base, "home"), { recursive: true });
   writeFileSync(join(base, "tree", "work.txt"), "in flight\n");
@@ -72,7 +73,7 @@ describe("crash-GC live-owner guard", () => {
       // must not pin a seeded-credential home forever).
       const stale = envelope(root, "task-stale", "a01", { pid: process.pid, started: null });
       const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
-      const staleBase = join(root, ".claudexor", "workspaces", "task-stale", "a01");
+      const staleBase = join(projectRuntimeDir(root), "workspaces", "task-stale", "a01");
       // Freshness = newest mtime across base + working dirs; age them ALL.
       for (const path of [join(staleBase, "tree", "work.txt"), join(staleBase, "tree"), join(staleBase, "home"), join(staleBase, "owner.json"), staleBase]) {
         utimesSync(path, old, old);

@@ -1,20 +1,53 @@
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { basename, extname, join, relative, sep } from "node:path";
-import { type ApplyGateInput, checkPatch, deliver, deriveApplyEligibility, revertInPlace, validateApplyGate } from "@claudexor/delivery";
+import {
+  type ApplyGateInput,
+  checkPatch,
+  deliver,
+  deriveApplyEligibility,
+  revertInPlace,
+  validateApplyGate,
+} from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES, redactedSseLine } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
-import { handleThreadTurnCreate, handleThreadTurnRetry, recordTurnEnqueueFailure, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
-import { normalizeRunStart, validateAbsoluteRepoRoot, validateDirectRunAttachments } from "./run-start.js";
+import {
+  handleThreadTurnCreate,
+  handleThreadTurnRetry,
+  recordTurnEnqueueFailure,
+  type ThreadTurnRouteCtx,
+} from "./thread-turn-routes.js";
+import {
+  normalizeRunStart,
+  validateAbsoluteRepoRoot,
+  validateDirectRunAttachments,
+} from "./run-start.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import {
   type ApplyEligibility,
+  ControlAuthReadinessRefreshRequest,
+  ControlAuthReadinessRefreshResponse,
+  ControlProblem,
+  ControlJournalInspection,
+  ControlJournalValidation,
+  ControlJournalExportReceipt,
+  ControlJournalQuarantineRequest,
+  ControlJournalQuarantineReceipt,
   AccessProfile,
   AttachmentInput,
   ControlWebEvidence,
@@ -24,9 +57,11 @@ import {
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlSetupJob,
-  ControlSetupJobConfirmRequest,
   ControlSetupJobCreateRequest,
   ControlSetupJobEvent,
+  ControlSetupJobSnapshot,
+  isTerminalControlSetupJobState,
+  ControlSetupJobListFilter,
   ControlSetupJobListResponse,
   ControlSpecFreezeRequest,
   ControlSpecQuestionsRequest,
@@ -73,7 +108,15 @@ import {
   ProtectedPathApproval,
   WorkProduct,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, containsSecretLikeToken, errorCode, noProjectRepoRoot, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import {
+  assertNoInlineSecretValues,
+  containsSecretLikeToken,
+  errorCode,
+  noProjectRepoRoot,
+  nowIso,
+  redactSecrets,
+  sha256,
+} from "@claudexor/util";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
@@ -113,16 +156,27 @@ export interface DaemonControlApiOptions {
    */
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
-    harnesses?: () => Promise<unknown>;
+    harnesses?: (input?: { fresh?: boolean }) => Promise<unknown>;
     /** Derived AgentCapabilityCatalog (GET /agent-capabilities). */
     agentCapabilities?: () => Promise<unknown>;
     /** Enumerable models for one harness (ADP4); thin projection over the adapter's optional models(). */
     harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
+    /** Exact point-in-time readiness for one harness credential source. */
+    authReadiness?: (input: {
+      harnessId: string;
+      request: ControlAuthReadinessRefreshRequest;
+    }) => Promise<unknown>;
     createSetupJob?: (input: unknown) => Promise<unknown>;
-    listSetupJobs?: () => Promise<unknown>;
+    listSetupJobs?: (input?: unknown) => Promise<unknown>;
     setupJobStatus?: (input: unknown) => Promise<unknown>;
+    setupJobSnapshot?: (input: unknown) => Promise<unknown>;
+    setupJobEvents?: (input: unknown) => Promise<unknown>;
     cancelSetupJob?: (input: unknown) => Promise<unknown>;
-    confirmSetupJob?: (input: unknown) => Promise<unknown>;
+    extendSetupJob?: (input: unknown) => Promise<unknown>;
+    recoveryInspectGlobal?: () => Promise<unknown>;
+    recoveryValidateGlobal?: () => Promise<unknown>;
+    recoveryExportGlobal?: () => Promise<unknown>;
+    recoveryQuarantineGlobal?: (input: unknown) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
     listSecrets?: () => Promise<unknown>;
@@ -132,21 +186,52 @@ export interface DaemonControlApiOptions {
     specFreeze?: (input: unknown) => Promise<unknown>;
     /** Live waiting_on_user state (daemon InteractionRegistry projections). */
     pendingInteractions?: (runId: string) => ControlPendingInteraction[];
-    answerInteraction?: (runId: string, interactionId: string, answers: unknown) => { status: string; message?: string };
+    answerInteraction?: (
+      runId: string,
+      interactionId: string,
+      answers: unknown,
+    ) => { status: string; message?: string };
     /** Thread/session SSOT (chat/session-first). */
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
-    threadDetail?: (id: string) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
+    threadDetail?: (
+      id: string,
+    ) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
     /** Single-writer turn creation (run_id bound later by the daemon runner). */
-    createThreadTurn?: (id: string, prompt: string, opts: { kind?: unknown; parentRunId?: string | null; planRunId?: string | null; attachments?: AttachmentInput[] }) => Promise<unknown>;
+    createThreadTurn?: (
+      id: string,
+      prompt: string,
+      opts: {
+        kind?: unknown;
+        parentRunId?: string | null;
+        planRunId?: string | null;
+        attachments?: AttachmentInput[];
+      },
+    ) => Promise<unknown>;
     /** Rename / archive a thread or switch its sticky primary/pool. */
-    updateThread?: (id: string, patch: { title?: string; state?: string; primaryHarness?: string | null; eligibleHarnesses?: string[] }) => Promise<unknown>;
+    updateThread?: (
+      id: string,
+      patch: {
+        title?: string;
+        state?: string;
+        primaryHarness?: string | null;
+        eligibleHarnesses?: string[];
+      },
+    ) => Promise<unknown>;
     /** Deliver an isolated thread's accumulated worktree diff to the project. */
-    applyThread?: (id: string, opts: { mode: string; branch?: string; message?: string }) => Promise<unknown>;
+    applyThread?: (
+      id: string,
+      opts: { mode: string; branch?: string; message?: string },
+    ) => Promise<unknown>;
     /** Persist why a turn's run could not be enqueued (runless-turn honesty).
      * `code` is the typed throw's machine code (null if none); `retryable`
      * false marks refusals with no recorded job to replay. */
-    setTurnEnqueueError?: (turnId: string, message: string, code: string | null, retryable?: boolean) => void;
+    setTurnEnqueueError?: (
+      turnId: string,
+      message: string,
+      code: string | null,
+      retryable?: boolean,
+    ) => void;
     /** User-level trust: enumerate per-repo trust files (Settings projection). */
     listTrust?: () => Promise<unknown>;
     /** NARROW trust write: grant/revoke full access for ONE repo — the same
@@ -165,6 +250,114 @@ const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
  * the small cap exists to protect the event loop from multi-MB text logs, not binaries. */
 const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 const NO_PROJECT_ROOT = noProjectRepoRoot();
+
+interface ValidatedSetupEventBatch {
+  events: ControlSetupJobEvent[];
+}
+
+function setupEventProtocolError(
+  message: string,
+): Error & { code: string; requiredActions: string[] } {
+  return Object.assign(new Error(message), {
+    code: "setup_event_protocol_error",
+    requiredActions: ["resnapshot"],
+  });
+}
+
+function finiteHttpStatus(error: unknown, fallback: number): number {
+  if (!error || typeof error !== "object" || !("status" in error)) return fallback;
+  const value = Number((error as { status: unknown }).status);
+  return Number.isInteger(value) && value >= 400 && value <= 599 ? value : fallback;
+}
+
+function stringArrayProperty(error: unknown, key: "requiredActions" | "evidenceRefs"): string[] {
+  if (!error || typeof error !== "object" || !(key in error)) return [];
+  const value = (error as Record<string, unknown>)[key];
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string" && item.length > 0)
+        .map(redactSecrets)
+    : [];
+}
+
+function fieldErrorsProperty(error: unknown): Record<string, string[]> {
+  if (!error || typeof error !== "object" || !("fieldErrors" in error)) return {};
+  const value = (error as { fieldErrors: unknown }).fieldErrors;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string[]> = {};
+  for (const [field, messages] of Object.entries(value)) {
+    if (!Array.isArray(messages)) continue;
+    const safeMessages = messages
+      .filter((item): item is string => typeof item === "string")
+      .map(redactSecrets);
+    if (safeMessages.length > 0) result[field] = safeMessages;
+  }
+  return result;
+}
+
+function problemBody(
+  error: unknown,
+  fallbackCode: string,
+  fallbackRetryable: boolean,
+  fallbackMessage?: string,
+): ControlProblem {
+  const retryable =
+    error && typeof error === "object" && "retryable" in error
+      ? (error as { retryable: unknown }).retryable === true
+      : fallbackRetryable;
+  const message = redactSecrets(
+    error instanceof Error ? error.message : (fallbackMessage ?? String(error ?? "request failed")),
+  );
+  return ControlProblem.parse({
+    code: errorCode(error) ?? fallbackCode,
+    message,
+    retryable,
+    fieldErrors: fieldErrorsProperty(error),
+    requiredActions: stringArrayProperty(error, "requiredActions"),
+    evidenceRefs: stringArrayProperty(error, "evidenceRefs"),
+  });
+}
+
+/** Validate one whole service batch before exposing any of it on the wire. */
+function validateSetupEventBatch(
+  raw: unknown,
+  input: {
+    jobId: string;
+    cursor: string | null;
+    lastSequence: number;
+  },
+): ValidatedSetupEventBatch {
+  if (!Array.isArray(raw))
+    throw setupEventProtocolError("setupJobEvents returned a non-array projection");
+  let cursor = input.cursor;
+  let sequence = input.lastSequence;
+  let terminalObserved = false;
+  const events: ControlSetupJobEvent[] = [];
+  for (const value of raw) {
+    if (terminalObserved)
+      throw setupEventProtocolError("setup event batch contains data after a terminal event");
+    const parsed = ControlSetupJobEvent.safeParse(value);
+    if (!parsed.success)
+      throw setupEventProtocolError(
+        `setup event failed schema validation: ${parsed.error.message}`,
+      );
+    const event = parsed.data;
+    if (event.jobId !== input.jobId)
+      throw setupEventProtocolError("setup event belongs to a different job");
+    if (event.previousCursor !== cursor)
+      throw setupEventProtocolError(
+        "setup event predecessor does not match the acknowledged cursor",
+      );
+    if (event.cursor === cursor) throw setupEventProtocolError("setup event cursor is duplicated");
+    if (event.sequence <= sequence)
+      throw setupEventProtocolError("setup event sequence is duplicate or regressive");
+    events.push(event);
+    cursor = event.cursor;
+    sequence = event.sequence;
+    terminalObserved = isTerminalControlSetupJobState(event.state);
+  }
+  return { events };
+}
 
 function hostIsLoopback(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
@@ -191,13 +384,37 @@ function originIsLoopback(origin: string | undefined): boolean {
  */
 export class DaemonControlApiServer {
   private server?: Server;
+  private startPromise: Promise<{ host: string; port: number }> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private stopping = false;
   private readonly sseClients = new Set<ServerResponse>();
+  /** Exact request-handler promises. Client disconnect never removes a handler. */
+  private readonly activeHandlers = new Set<Promise<void>>();
   /** Per-thread turn submission chains (serialize head_run_id lineage updates). */
   private readonly threadTurnChains = new Map<string, Promise<void>>();
 
   constructor(private readonly opts: DaemonControlApiOptions) {}
 
   async start(): Promise<{ host: string; port: number }> {
+    if (this.stopping) {
+      throw Object.assign(new Error("control API is stopping and cannot be started"), {
+        status: 503,
+        code: "daemon_stopping",
+      });
+    }
+    this.startPromise ??= this.startOnce();
+    const address = await this.startPromise;
+    if (this.stopping) {
+      await this.stop();
+      throw Object.assign(new Error("control API startup was cancelled by shutdown"), {
+        status: 503,
+        code: "daemon_stopping",
+      });
+    }
+    return address;
+  }
+
+  private async startOnce(): Promise<{ host: string; port: number }> {
     const host = this.opts.host ?? "127.0.0.1";
     const port = this.opts.port ?? 0;
     await new Promise<void>((resolve, reject) => {
@@ -209,7 +426,20 @@ export class DaemonControlApiServer {
     return { host, port: typeof addr === "object" && addr ? addr.port : port };
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    this.stopping = true;
+    this.stopPromise ??= this.stopOnce();
+    return this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
+    const listenerClosed = this.closeListener();
+    this.closeSseClients();
+    await Promise.all([listenerClosed, this.drainActiveHandlers()]);
+    this.closeSseClients();
+  }
+
+  private closeSseClients(): void {
     for (const res of this.sseClients) {
       try {
         res.end();
@@ -218,10 +448,31 @@ export class DaemonControlApiServer {
       }
     }
     this.sseClients.clear();
+  }
+
+  private async closeListener(): Promise<void> {
+    if (this.startPromise) {
+      try {
+        await this.startPromise;
+      } catch {
+        return;
+      }
+    }
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
-      this.server.close(() => resolve());
+      try {
+        this.server.close(() => resolve());
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else throw error;
+      }
     });
+  }
+
+  private async drainActiveHandlers(): Promise<void> {
+    while (this.activeHandlers.size > 0) {
+      await Promise.allSettled([...this.activeHandlers]);
+    }
   }
 
   private tokenMatches(provided: string | undefined): boolean {
@@ -232,26 +483,47 @@ export class DaemonControlApiServer {
   }
 
   private authorized(req: IncomingMessage): boolean {
-    if (!hostIsLoopback(req.headers.host) || !originIsLoopback(req.headers.origin as string | undefined)) return false;
+    if (
+      !hostIsLoopback(req.headers.host) ||
+      !originIsLoopback(req.headers.origin as string | undefined)
+    )
+      return false;
     const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
     return this.tokenMatches(m?.[1]?.trim());
   }
 
-  /**
-   * ONE owner of the bad-request envelope: status from the typed error,
-   * message text, and the machine-readable `code` (e.g.
-   * inline_secret_rejected) when the error carries one.
-   */
   private requestError(res: ServerResponse, err: unknown): void {
-    const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 400;
-    const code = errorCode(err);
-    this.json(res, status, { error: err instanceof Error ? err.message : "bad request", ...(code ? { code } : {}) });
+    this.problem(res, finiteHttpStatus(err, 400), err, "invalid_request", false, "bad request");
   }
 
-  private json(res: ServerResponse, status: number, body: unknown): void {
+  private json(
+    res: ServerResponse,
+    status: number,
+    body: unknown,
+    contentType = "application/json",
+  ): void {
     const text = JSON.stringify(body);
-    res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text) });
+    res.writeHead(status, {
+      "content-type": contentType,
+      "content-length": Buffer.byteLength(text),
+    });
     res.end(text);
+  }
+
+  private problem(
+    res: ServerResponse,
+    status: number,
+    error: unknown,
+    fallbackCode: string,
+    fallbackRetryable: boolean,
+    fallbackMessage?: string,
+  ): void {
+    this.json(
+      res,
+      status,
+      problemBody(error, fallbackCode, fallbackRetryable, fallbackMessage),
+      "application/problem+json",
+    );
   }
 
   private async readBody(req: IncomingMessage): Promise<unknown> {
@@ -259,7 +531,8 @@ export class DaemonControlApiServer {
     let size = 0;
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > 10 * 1024 * 1024) throw Object.assign(new Error("request body too large"), { status: 413 });
+      if (size > 10 * 1024 * 1024)
+        throw Object.assign(new Error("request body too large"), { status: 413 });
       chunks.push(chunk as Buffer);
     }
     if (chunks.length === 0) return {};
@@ -273,14 +546,29 @@ export class DaemonControlApiServer {
   }
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
-    void this.handle(req, res).catch((err) => {
-      if (!res.headersSent) {
-        const status = typeof (err as { status?: unknown }).status === "number" ? Number((err as { status: number }).status) : 500;
-        const message = err instanceof Error ? err.message : String(err);
-        this.json(res, status, { error: redactSecrets(message) });
-      }
-      else res.end();
-    });
+    let tracked: Promise<void>;
+    tracked = this.handle(req, res)
+      .catch((err) => {
+        try {
+          if (!res.headersSent) {
+            this.problem(
+              res,
+              finiteHttpStatus(err, 500),
+              err,
+              "internal_error",
+              false,
+              "internal server error",
+            );
+          } else res.end();
+        } catch {
+          res.destroy();
+        }
+      })
+      .finally(() => {
+        this.activeHandlers.delete(tracked);
+      });
+    this.activeHandlers.add(tracked);
+    void tracked;
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -290,9 +578,23 @@ export class DaemonControlApiServer {
 
     if (method === "GET" && path === "/healthz") {
       if (!hostIsLoopback(req.headers.host)) return this.json(res, 403, { error: "forbidden" });
-      return this.json(res, 200, { ok: true });
+      return this.json(res, this.stopping ? 503 : 200, { ok: !this.stopping });
     }
     if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
+    if (this.stopping) {
+      return this.problem(
+        res,
+        503,
+        Object.assign(new Error("daemon is stopping; no new product request was admitted"), {
+          status: 503,
+          code: "daemon_stopping",
+          retryable: true,
+          requiredActions: ["reconnect"],
+        }),
+        "daemon_stopping",
+        true,
+      );
+    }
 
     if (method === "POST" && path === "/runs") {
       let params: ControlRunStartRequest;
@@ -313,7 +615,8 @@ export class DaemonControlApiServer {
       // and pass its id, so the queued run is recorded on its thread deterministically
       // before it can be seen. A pre-created turnId (the /threads/:id/turns path)
       // already did this, so we only fill the gap for a bare threadId.
-      const directThreadId = typeof params.threadId === "string" && params.threadId ? params.threadId : null;
+      const directThreadId =
+        typeof params.threadId === "string" && params.threadId ? params.threadId : null;
       // turnId is the INTERNAL single-writer handoff (control-api pre-creates
       // the turn, the daemon runner binds the run to it). A client-supplied
       // turnId could rebind any thread's turn lineage to an unrelated run
@@ -321,7 +624,8 @@ export class DaemonControlApiServer {
       // the public way to create a turn.
       if (params.turnId) {
         return this.json(res, 400, {
-          error: "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
+          error:
+            "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
         });
       }
       // planRunId only has an owner on thread turns: POST /threads/:id/turns
@@ -331,7 +635,8 @@ export class DaemonControlApiServer {
       // consumed. Reject unconditionally.
       if (params.planRunId) {
         return this.json(res, 400, {
-          error: "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
+          error:
+            "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
         });
       }
       let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
@@ -346,8 +651,13 @@ export class DaemonControlApiServer {
             try {
               await detailSvc(directThreadId);
             } catch (err) {
-              const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 404;
-              return this.json(res, status, { error: err instanceof Error ? err.message : `no such thread: ${directThreadId}` });
+              const status =
+                err && typeof err === "object" && "status" in err
+                  ? Number((err as { status: number }).status)
+                  : 404;
+              return this.json(res, status, {
+                error: err instanceof Error ? err.message : `no such thread: ${directThreadId}`,
+              });
             }
           }
           const turn = (await createTurnSvc(directThreadId, String(params.prompt ?? ""), {
@@ -376,7 +686,10 @@ export class DaemonControlApiServer {
         // Untyped throws here are INFRA failures (daemon socket down mid-
         // enqueue) — 500, not a client "bad request". Validation paths attach
         // their own typed 400 status.
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 500;
+        const status =
+          err && typeof err === "object" && "status" in err
+            ? Number((err as { status: number }).status)
+            : 500;
         return this.json(res, status, {
           error: err instanceof Error ? err.message : "enqueue failed",
           ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
@@ -396,12 +709,25 @@ export class DaemonControlApiServer {
         });
       }
       if (rec.runId && rec.runDir) {
-        return this.json(res, 200, ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }));
+        return this.json(
+          res,
+          200,
+          ControlRunStartInfo.parse({
+            jobId: rec.id,
+            runId: rec.runId,
+            taskId: rec.taskId,
+            runDir: rec.runDir,
+          }),
+        );
       }
       // Long-queued jobs remain canonical in the daemon. Don't fail the request
       // while leaving an orphaned queued job behind; return the job id for polling.
       const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-      return this.json(res, status, ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }));
+      return this.json(
+        res,
+        status,
+        ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
+      );
     }
 
     if (method === "GET" && path === "/runs") {
@@ -424,7 +750,10 @@ export class DaemonControlApiServer {
       const rec = await this.findRun(decodeURIComponent(interactionAnswerMatch[1] as string));
       if (!rec) return this.json(res, 404, { error: "no such run" });
       const answerService = this.opts.services?.answerInteraction;
-      if (!answerService) return this.json(res, 501, { error: "interaction answers are not supported by this engine build" });
+      if (!answerService)
+        return this.json(res, 501, {
+          error: "interaction answers are not supported by this engine build",
+        });
       let body: ControlInteractionAnswerRequest;
       try {
         const raw = await this.readBody(req);
@@ -447,7 +776,11 @@ export class DaemonControlApiServer {
       return this.json(
         res,
         accepted ? 200 : result.status === "not_found" ? 404 : 409,
-        ControlInteractionAnswerResponse.parse({ accepted, status: result.status, message: result.message }),
+        ControlInteractionAnswerResponse.parse({
+          accepted,
+          status: result.status,
+          message: result.message,
+        }),
       );
     }
 
@@ -459,7 +792,8 @@ export class DaemonControlApiServer {
     // runs are turns inside it; native CLI sessions resume across turns. ----
     if (method === "POST" && path === "/threads") {
       const svc = this.opts.services?.createThread;
-      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!svc)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         const body = await this.readBody(req);
         assertNoInlineSecretValues(body);
@@ -472,7 +806,10 @@ export class DaemonControlApiServer {
           const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
           if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
           if (!existsSync(repoRoot) || !lstatSync(repoRoot).isDirectory()) {
-            throw Object.assign(new Error(`project root does not exist or is not a directory: ${repoRoot}`), { status: 400 });
+            throw Object.assign(
+              new Error(`project root does not exist or is not a directory: ${repoRoot}`),
+              { status: 400 },
+            );
           }
         }
         const thread = await svc({
@@ -492,23 +829,33 @@ export class DaemonControlApiServer {
 
     if (method === "GET" && path === "/threads") {
       const svc = this.opts.services?.listThreads;
-      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!svc)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       const { threads } = await svc();
       const runs = await this.opts.daemon.list();
       // needs-human clears once the operator has decided: a blocked run with a
       // persisted operator_decision is no longer in the "needs me" inbox.
       const blocked = new Set(
-        runs.filter((r) => r.state === "blocked" && readValidOperatorDecision(r) === null).map((r) => r.runId ?? r.id),
+        runs
+          .filter((r) => r.state === "blocked" && readValidOperatorDecision(r) === null)
+          .map((r) => r.runId ?? r.id),
       );
-      return this.json(res, 200, ControlThreadListResponse.parse({
-        threads: threads.map((t) => projectThread(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? ""))),
-      }));
+      return this.json(
+        res,
+        200,
+        ControlThreadListResponse.parse({
+          threads: threads.map((t) =>
+            projectThread(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? "")),
+          ),
+        }),
+      );
     }
 
     const threadDetailMatch = /^\/threads\/([^/]+)$/.exec(path);
     if (method === "GET" && threadDetailMatch) {
       const svc = this.opts.services?.threadDetail;
-      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!svc)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         const detail = await svc(decodeURIComponent(threadDetailMatch[1] as string));
         const runs = await this.opts.daemon.list();
@@ -525,12 +872,17 @@ export class DaemonControlApiServer {
           }
         }
         const headRec = byRun.get(thread.head_run_id ?? "");
-        const headNeedsHuman = headRec?.state === "blocked" && readValidOperatorDecision(headRec) === null;
-        return this.json(res, 200, ControlThreadDetail.parse({
-          thread: projectThread(detail.thread, headNeedsHuman),
-          sessions: detail.sessions.map(projectSession),
-          turns: detail.turns.map((t) => projectTurn(t, cards)),
-        }));
+        const headNeedsHuman =
+          headRec?.state === "blocked" && readValidOperatorDecision(headRec) === null;
+        return this.json(
+          res,
+          200,
+          ControlThreadDetail.parse({
+            thread: projectThread(detail.thread, headNeedsHuman),
+            sessions: detail.sessions.map(projectSession),
+            turns: detail.turns.map((t) => projectTurn(t, cards)),
+          }),
+        );
       } catch (err) {
         return this.requestError(res, err);
       }
@@ -539,7 +891,8 @@ export class DaemonControlApiServer {
     // PATCH /threads/:id — rename / archive; ThreadState is active|closed.
     if (method === "PATCH" && threadDetailMatch) {
       const svc = this.opts.services?.updateThread;
-      if (!svc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!svc)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
@@ -563,7 +916,8 @@ export class DaemonControlApiServer {
     if (method === "POST" && threadApplyMatch) {
       const detailSvc = this.opts.services?.threadDetail;
       const applySvc = this.opts.services?.applyThread;
-      if (!detailSvc || !applySvc) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!detailSvc || !applySvc)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
@@ -577,7 +931,9 @@ export class DaemonControlApiServer {
         const detail = await detailSvc(threadId);
         const headRunId = (detail.thread as { head_run_id?: string | null }).head_run_id ?? null;
         if (headRunId) {
-          const headRec = (await this.opts.daemon.list()).find((r) => (r.runId ?? r.id) === headRunId);
+          const headRec = (await this.opts.daemon.list()).find(
+            (r) => (r.runId ?? r.id) === headRunId,
+          );
           // A recorded head run whose record was PRUNED from jobs.json
           // (maxHistory) has an unknowable state — the gate must fail closed,
           // not silently wave the apply through.
@@ -605,7 +961,11 @@ export class DaemonControlApiServer {
             }
           }
         }
-        const result = await applySvc(threadId, { mode: body.mode, branch: body.branch, message: body.message });
+        const result = await applySvc(threadId, {
+          mode: body.mode,
+          branch: body.branch,
+          message: body.message,
+        });
         return this.json(res, 200, ControlThreadApplyResponse.parse(result));
       } catch (err) {
         return this.requestError(res, err);
@@ -633,7 +993,8 @@ export class DaemonControlApiServer {
 
     const turnRetryMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/retry$/.exec(path);
     if (method === "POST" && turnRetryMatch) {
-      if (!this.opts.services?.threadDetail) return this.json(res, 501, { error: "threads are not supported by this engine build" });
+      if (!this.opts.services?.threadDetail)
+        return this.json(res, 501, { error: "threads are not supported by this engine build" });
       return handleThreadTurnRetry(
         this.threadTurnRouteCtx(),
         res,
@@ -646,15 +1007,22 @@ export class DaemonControlApiServer {
     if (method === "GET" && artifactsRootMatch) {
       const rec = await this.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      return this.json(res, 200, { runId: rec.runId ?? rec.id, artifacts: listArtifacts(rec.runDir) });
+      return this.json(res, 200, {
+        runId: rec.runId ?? rec.id,
+        artifacts: listArtifacts(rec.runDir),
+      });
     }
 
     const artifactFetchMatch = /^\/runs\/([^/]+)\/artifacts\/(.+)$/.exec(path);
     if (method === "GET" && artifactFetchMatch) {
       const rec = await this.findRun(decodeURIComponent(artifactFetchMatch[1] as string));
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      const target = safeArtifactPath(rec.runDir, decodeURIComponent(artifactFetchMatch[2] as string));
-      if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      const target = safeArtifactPath(
+        rec.runDir,
+        decodeURIComponent(artifactFetchMatch[2] as string),
+      );
+      if (!target || !existsSync(target) || lstatSync(target).isDirectory())
+        return this.json(res, 404, { error: "no such artifact" });
       // Size cap: a multi-MB events.jsonl must not block the event loop or the
       // client; refuse loudly with the real size so callers can range/tail it.
       // Binary artifacts (images) are naturally bounded and get a larger cap —
@@ -670,7 +1038,9 @@ export class DaemonControlApiServer {
       }
       let data = readFileSync(target);
       if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
-        return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
+        return this.json(res, 409, {
+          error: "artifact contains secret-like token; refusing to serve patch",
+        });
       }
       if (isTextArtifact(target)) {
         data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
@@ -701,13 +1071,26 @@ export class DaemonControlApiServer {
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       const repoRoot = producedRepoRoot(rec);
       if (!repoRoot) return this.json(res, 404, { error: "no project root for run" });
-      const target = safeArtifactPath(join(repoRoot, "artifacts"), decodeURIComponent(producedFetchMatch[2] as string));
-      if (!target || !existsSync(target) || lstatSync(target).isDirectory()) return this.json(res, 404, { error: "no such artifact" });
+      const target = safeArtifactPath(
+        join(repoRoot, "artifacts"),
+        decodeURIComponent(producedFetchMatch[2] as string),
+      );
+      if (!target || !existsSync(target) || lstatSync(target).isDirectory())
+        return this.json(res, 404, { error: "no such artifact" });
       const stats = lstatSync(target);
-      const cap = isTextArtifact(target) ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
-      if (stats.size > cap) return this.json(res, 413, { error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`, bytes: stats.size });
+      const cap = isTextArtifact(target)
+        ? MAX_ARTIFACT_FETCH_BYTES
+        : MAX_ARTIFACT_BINARY_FETCH_BYTES;
+      if (stats.size > cap)
+        return this.json(res, 413, {
+          error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`,
+          bytes: stats.size,
+        });
       let data = readFileSync(target);
-      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) return this.json(res, 409, { error: "artifact contains secret-like token; refusing to serve patch" });
+      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8")))
+        return this.json(res, 409, {
+          error: "artifact contains secret-like token; refusing to serve patch",
+        });
       if (isTextArtifact(target)) data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
       res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
       res.end(data);
@@ -728,9 +1111,13 @@ export class DaemonControlApiServer {
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
-      if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply check" });
+      if (containsSecretLikeToken(patch))
+        return this.json(res, 409, {
+          error: "patch contains secret-like token; refusing apply check",
+        });
       const repoRoot = applyTargetRoot(body.target, rec);
-      if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply check" });
+      if (!repoRoot)
+        return this.json(res, 400, { error: "project root is required for apply check" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const gateError = applyGateError(rec, patch, repoRoot);
@@ -752,14 +1139,23 @@ export class DaemonControlApiServer {
       }
       const patch = readPatch(rec);
       if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
-      if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
+      if (containsSecretLikeToken(patch))
+        return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
       const repoRoot = applyTargetRoot(body.target, rec);
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
       const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const gateError = applyGateError(rec, patch, repoRoot);
       if (gateError) return this.json(res, 409, { error: gateError });
-      return this.json(res, 200, await deliver(repoRoot, patch, { mode: body.mode, branch: body.branch, message: body.message }));
+      return this.json(
+        res,
+        200,
+        await deliver(repoRoot, patch, {
+          mode: body.mode,
+          branch: body.branch,
+          message: body.message,
+        }),
+      );
     }
 
     // Operator decision on a NEEDS_HUMAN-blocked run (review queue actions):
@@ -783,13 +1179,17 @@ export class DaemonControlApiServer {
         // apply permission that does not exist.
         if (rec.state !== "blocked") {
           return this.json(res, 409, {
-            error: rec.state === "succeeded"
-              ? "run already succeeded; apply it directly (no risk override needed)"
-              : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
+            error:
+              rec.state === "succeeded"
+                ? "run already succeeded; apply it directly (no risk override needed)"
+                : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
           });
         }
         const patch = readPatch(rec);
-        if (patch === null) return this.json(res, 409, { error: "no patch artifact; there is nothing to unblock for apply" });
+        if (patch === null)
+          return this.json(res, 409, {
+            error: "no patch artifact; there is nothing to unblock for apply",
+          });
         const written = writeOperatorDecision(rec, {
           action: body.action,
           finding_ids: body.findingIds,
@@ -798,8 +1198,20 @@ export class DaemonControlApiServer {
           decided_at: nowIso(),
         });
         if (!written) return this.json(res, 500, { error: "cannot resolve run artifact root" });
-        appendRunAuditEvent(rec, "control.applied", { decision: body.action, finding_ids: body.findingIds, accepted_risks: body.acceptedRisks });
-        return this.json(res, 200, ControlRunDecisionResponse.parse({ accepted: true, status: "applied", message: `${body.action} recorded; apply is now permitted for this exact patch` }));
+        appendRunAuditEvent(rec, "control.applied", {
+          decision: body.action,
+          finding_ids: body.findingIds,
+          accepted_risks: body.acceptedRisks,
+        });
+        return this.json(
+          res,
+          200,
+          ControlRunDecisionResponse.parse({
+            accepted: true,
+            status: "applied",
+            message: `${body.action} recorded; apply is now permitted for this exact patch`,
+          }),
+        );
       }
 
       if (body.action === "revert_run") {
@@ -811,32 +1223,56 @@ export class DaemonControlApiServer {
           return this.json(res, 409, { error: "this run produced no revertable in-place change" });
         }
         const repoRoot = applyTargetRoot({ kind: "original_project" }, rec);
-        if (!repoRoot) return this.json(res, 400, { error: "cannot resolve the in-place project root to revert" });
+        if (!repoRoot)
+          return this.json(res, 400, {
+            error: "cannot resolve the in-place project root to revert",
+          });
         const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
         let revert;
         try {
           revert = await revertInPlace(repoRoot, result.preTurnSha, result.postTurnSha);
         } catch (err) {
-          return this.json(res, 500, { error: `revert failed: ${err instanceof Error ? err.message : String(err)}` });
+          return this.json(res, 500, {
+            error: `revert failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
         }
         if (!revert.reverted) {
-          appendRunAuditEvent(rec, "control.rejected", { decision: "revert_run", reason: revert.reason ?? "revert refused" });
-          return this.json(res, 409, ControlRunDecisionResponse.parse({ accepted: false, status: "rejected", message: revert.reason ?? "revert refused" }));
+          appendRunAuditEvent(rec, "control.rejected", {
+            decision: "revert_run",
+            reason: revert.reason ?? "revert refused",
+          });
+          return this.json(
+            res,
+            409,
+            ControlRunDecisionResponse.parse({
+              accepted: false,
+              status: "rejected",
+              message: revert.reason ?? "revert refused",
+            }),
+          );
         }
         markRunReverted(rec);
-        appendRunAuditEvent(rec, "control.applied", { decision: "revert_run", removed: revert.removed });
-        return this.json(res, 200, ControlRunDecisionResponse.parse({
-          accepted: true,
-          status: "applied",
-          message: `reverted to the pre-turn state${revert.removed.length ? ` (removed ${revert.removed.length} turn-added file(s))` : ""}`,
-        }));
+        appendRunAuditEvent(rec, "control.applied", {
+          decision: "revert_run",
+          removed: revert.removed,
+        });
+        return this.json(
+          res,
+          200,
+          ControlRunDecisionResponse.parse({
+            accepted: true,
+            status: "applied",
+            message: `reverted to the pre-turn state${revert.removed.length ? ` (removed ${revert.removed.length} turn-added file(s))` : ""}`,
+          }),
+        );
       }
 
       if (body.action === "accept_clean_patch") {
         const patch = readPatch(rec);
         if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
-        if (containsSecretLikeToken(patch)) return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
+        if (containsSecretLikeToken(patch))
+          return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
         const repoRoot = applyTargetRoot(body.target ?? { kind: "original_project" }, rec);
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
         const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
@@ -844,8 +1280,20 @@ export class DaemonControlApiServer {
         const gateError = applyGateError(rec, patch, repoRoot);
         if (gateError) return this.json(res, 409, { error: gateError });
         const delivered = await deliver(repoRoot, patch, { mode: body.applyMode ?? "apply" });
-        appendRunAuditEvent(rec, "control.applied", { decision: body.action, mode: body.applyMode ?? "apply", applied: delivered.applied });
-        return this.json(res, 200, ControlRunDecisionResponse.parse({ accepted: delivered.applied, status: delivered.applied ? "applied" : "rejected", message: delivered.detail ?? undefined }));
+        appendRunAuditEvent(rec, "control.applied", {
+          decision: body.action,
+          mode: body.applyMode ?? "apply",
+          applied: delivered.applied,
+        });
+        return this.json(
+          res,
+          200,
+          ControlRunDecisionResponse.parse({
+            accepted: delivered.applied,
+            status: delivered.applied ? "applied" : "rejected",
+            message: delivered.detail ?? undefined,
+          }),
+        );
       }
 
       // rerun_with_feedback: enqueue a follow-up run seeded with the reviewer feedback.
@@ -868,7 +1316,9 @@ export class DaemonControlApiServer {
           }),
         );
       } catch (err) {
-        return this.json(res, 400, { error: `cannot rebuild run params for rerun: ${err instanceof Error ? err.message : String(err)}` });
+        return this.json(res, 400, {
+          error: `cannot rebuild run params for rerun: ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
       // A thread-anchored rerun is a TURN of that conversation. Single-writer:
       // create the decision turn (run_id=null) BEFORE enqueue and pass its id, so
@@ -886,13 +1336,19 @@ export class DaemonControlApiServer {
       }
       let rerunJob: { id: string };
       try {
-        rerunJob = await this.opts.daemon.enqueue({ ...params, ...(rerunTurnId ? { turnId: rerunTurnId } : {}) });
+        rerunJob = await this.opts.daemon.enqueue({
+          ...params,
+          ...(rerunTurnId ? { turnId: rerunTurnId } : {}),
+        });
       } catch (err) {
         // The decision turn was pre-created: a failed rerun ENQUEUE must be
         // an inline refusal on that turn, not a silent orphan bubble.
         // retryable=false mirrors the recorded refusal (no job to replay).
         recordTurnEnqueueFailure(this.opts.services?.setTurnEnqueueError, rerunTurnId, err);
-        const status = err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : 500;
+        const status =
+          err && typeof err === "object" && "status" in err
+            ? Number((err as { status: number }).status)
+            : 500;
         return this.json(res, status, {
           error: err instanceof Error ? err.message : "rerun enqueue failed",
           ...(rerunTurnId ? { turnId: rerunTurnId, retryable: false } : {}),
@@ -909,22 +1365,94 @@ export class DaemonControlApiServer {
           ...(rerunTurnId ? { turnId: rerunTurnId } : {}),
         });
       }
-      appendRunAuditEvent(rec, "control.applied", { decision: body.action, new_run_id: newRec.runId ?? newRec.id });
-      return this.json(res, 200, ControlRunDecisionResponse.parse({
-        accepted: true,
-        status: "requeued",
-        newRunId: newRec.runId ?? newRec.id,
-        message: "follow-up run enqueued with reviewer feedback",
-      }));
+      appendRunAuditEvent(rec, "control.applied", {
+        decision: body.action,
+        new_run_id: newRec.runId ?? newRec.id,
+      });
+      return this.json(
+        res,
+        200,
+        ControlRunDecisionResponse.parse({
+          accepted: true,
+          status: "requeued",
+          newRunId: newRec.runId ?? newRec.id,
+          message: "follow-up run enqueued with reviewer feedback",
+        }),
+      );
     }
 
-    if (method === "GET" && path === "/harnesses") return this.service(res, "harnesses", undefined, ControlHarnessListResponse);
-    if (method === "GET" && path === "/agent-capabilities") return this.service(res, "agentCapabilities", undefined, AgentCapabilityCatalog);
+    if (method === "GET" && path === "/harnesses") {
+      try {
+        assertOnlyQueryParams(url, ["fresh"]);
+        const values = url.searchParams.getAll("fresh");
+        if (
+          values.length > 1 ||
+          (values[0] !== undefined && values[0] !== "true" && values[0] !== "false")
+        ) {
+          throw new Error("fresh must be exactly true or false");
+        }
+        return this.service(
+          res,
+          "harnesses",
+          values[0] === undefined ? undefined : { fresh: values[0] === "true" },
+          ControlHarnessListResponse,
+        );
+      } catch (err) {
+        return this.requestError(res, err);
+      }
+    }
+    if (method === "GET" && path === "/agent-capabilities")
+      return this.service(res, "agentCapabilities", undefined, AgentCapabilityCatalog);
     const harnessModelsMatch = /^\/harnesses\/([^/]+)\/models$/.exec(path);
     if (method === "GET" && harnessModelsMatch) {
-      return this.service(res, "harnessModels", { harnessId: decodeURIComponent(harnessModelsMatch[1] as string) }, ControlHarnessModelsResponse);
+      return this.service(
+        res,
+        "harnessModels",
+        { harnessId: decodeURIComponent(harnessModelsMatch[1] as string) },
+        ControlHarnessModelsResponse,
+      );
     }
-    if (method === "GET" && path === "/setup/jobs") return this.service(res, "listSetupJobs", undefined, ControlSetupJobListResponse);
+    const authReadinessMatch = /^\/v2\/harnesses\/([^/]+)\/auth-readiness$/.exec(path);
+    if (method === "POST" && authReadinessMatch) {
+      try {
+        assertOnlyQueryParams(url, []);
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const request = ControlAuthReadinessRefreshRequest.parse(raw);
+        return this.service(
+          res,
+          "authReadiness",
+          { harnessId: decodeURIComponent(authReadinessMatch[1] as string), request },
+          ControlAuthReadinessRefreshResponse,
+        );
+      } catch (error) {
+        return this.requestError(res, error);
+      }
+    }
+    if (method === "GET" && path === "/setup/jobs") {
+      try {
+        assertOnlyQueryParams(url, ["harness", "action", "active", "limit"]);
+        for (const key of ["harness", "action", "active", "limit"]) {
+          if (url.searchParams.getAll(key).length > 1)
+            throw new Error(`${key} may be specified only once`);
+        }
+        const active = url.searchParams.get("active");
+        if (active !== null && active !== "true" && active !== "false")
+          throw new Error("active must be exactly true or false");
+        const limit = url.searchParams.get("limit");
+        if (limit !== null && !/^[1-9][0-9]*$/.test(limit))
+          throw new Error("limit must be a positive integer");
+        const filter = ControlSetupJobListFilter.parse({
+          ...(url.searchParams.has("harness") ? { harness: url.searchParams.get("harness") } : {}),
+          ...(url.searchParams.has("action") ? { action: url.searchParams.get("action") } : {}),
+          ...(active !== null ? { active: active === "true" } : {}),
+          ...(limit !== null ? { limit: Number(limit) } : {}),
+        });
+        return this.service(res, "listSetupJobs", filter, ControlSetupJobListResponse);
+      } catch (err) {
+        return this.requestError(res, err);
+      }
+    }
     if (method === "POST" && path === "/setup/jobs") {
       let body: ControlSetupJobCreateRequest;
       try {
@@ -938,31 +1466,85 @@ export class DaemonControlApiServer {
     }
     const setupJobMatch = /^\/setup\/jobs\/([^/]+)$/.exec(path);
     if (method === "GET" && setupJobMatch) {
-      return this.service(res, "setupJobStatus", { jobId: decodeURIComponent(setupJobMatch[1] as string) }, ControlSetupJob);
+      return this.service(
+        res,
+        "setupJobStatus",
+        { jobId: decodeURIComponent(setupJobMatch[1] as string) },
+        ControlSetupJob,
+      );
+    }
+    const setupJobSnapshotMatch = /^\/setup\/jobs\/([^/]+)\/snapshot$/.exec(path);
+    if (method === "GET" && setupJobSnapshotMatch) {
+      return this.service(
+        res,
+        "setupJobSnapshot",
+        { jobId: decodeURIComponent(setupJobSnapshotMatch[1] as string) },
+        ControlSetupJobSnapshot,
+      );
     }
     const setupJobCancelMatch = /^\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && setupJobCancelMatch) {
-      return this.service(res, "cancelSetupJob", { jobId: decodeURIComponent(setupJobCancelMatch[1] as string) }, ControlSetupJob);
+      return this.service(
+        res,
+        "cancelSetupJob",
+        { jobId: decodeURIComponent(setupJobCancelMatch[1] as string) },
+        ControlSetupJob,
+      );
     }
-    const setupJobConfirmMatch = /^\/setup\/jobs\/([^/]+)\/confirm$/.exec(path);
-    if (method === "POST" && setupJobConfirmMatch) {
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        const body = ControlSetupJobConfirmRequest.parse(raw);
-        return this.service(res, "confirmSetupJob", { jobId: decodeURIComponent(setupJobConfirmMatch[1] as string), confirmed: body.confirmed }, ControlSetupJob);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
+    const setupJobExtendMatch = /^\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
+    if (method === "POST" && setupJobExtendMatch) {
+      return this.service(
+        res,
+        "extendSetupJob",
+        { jobId: decodeURIComponent(setupJobExtendMatch[1] as string) },
+        ControlSetupJob,
+      );
     }
     const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && setupJobEventsMatch) {
-      return this.streamSetupJobEvents(decodeURIComponent(setupJobEventsMatch[1] as string), req, res);
+      return this.streamSetupJobEvents(
+        decodeURIComponent(setupJobEventsMatch[1] as string),
+        req,
+        res,
+      );
+    }
+    if (method === "GET" && path === "/v2/recovery/partitions/global") {
+      return this.service(res, "recoveryInspectGlobal", undefined, ControlJournalInspection);
+    }
+    if (method === "POST" && path === "/v2/recovery/partitions/global/validate") {
+      return this.service(res, "recoveryValidateGlobal", undefined, ControlJournalValidation);
+    }
+    if (method === "POST" && path === "/v2/recovery/partitions/global/export") {
+      return this.service(res, "recoveryExportGlobal", undefined, ControlJournalExportReceipt);
+    }
+    if (method === "POST" && path === "/v2/recovery/partitions/global/quarantine") {
+      try {
+        const header = req.headers["idempotency-key"];
+        if (Array.isArray(header)) throw new Error("Idempotency-Key may appear only once");
+        if (!header || header.trim().length === 0) {
+          throw Object.assign(new Error("Idempotency-Key is required"), {
+            code: "idempotency_key_required",
+            fieldErrors: { "Idempotency-Key": ["required for quarantine"] },
+          });
+        }
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        const body = ControlJournalQuarantineRequest.parse(raw);
+        return this.service(
+          res,
+          "recoveryQuarantineGlobal",
+          { ...body, idempotencyKey: header.trim() },
+          ControlJournalQuarantineReceipt,
+        );
+      } catch (error) {
+        return this.requestError(res, error);
+      }
     }
     // User-level trust (INV-122: sensitive powers live OUTSIDE versioned repo
     // config). GET lists per-repo trust files; POST is deliberately NARROW —
     // exactly {repoRoot, allowFullAccess} (strict), everything else CLI-only.
-    if (method === "GET" && path === "/trust") return this.service(res, "listTrust", undefined, ControlTrustListResponse);
+    if (method === "GET" && path === "/trust")
+      return this.service(res, "listTrust", undefined, ControlTrustListResponse);
     if (method === "POST" && path === "/trust") {
       let body: ControlTrustUpdateRequest;
       try {
@@ -974,7 +1556,8 @@ export class DaemonControlApiServer {
       }
       return this.service(res, "updateTrust", body, ControlTrustState);
     }
-    if (method === "GET" && path === "/settings") return this.service(res, "settings", undefined, ControlSettingsSnapshot);
+    if (method === "GET" && path === "/settings")
+      return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
       let body: ControlSettingsUpdateRequest;
       try {
@@ -987,16 +1570,23 @@ export class DaemonControlApiServer {
       return this.service(res, "updateSettings", body);
     }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
-    if (method === "GET" && path === "/secrets") return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
+    if (method === "GET" && path === "/secrets")
+      return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
     if (method === "POST" && path === "/secrets") {
       const body = await this.readBody(req);
-      if (!validSecretSetBody(body)) return this.json(res, 400, { error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}` });
+      if (!validSecretSetBody(body))
+        return this.json(res, 400, {
+          error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+        });
       return this.service(res, "setSecret", body);
     }
     const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
     if (method === "DELETE" && secretDeleteMatch) {
       const name = decodeURIComponent(secretDeleteMatch[1] as string);
-      if (!isAllowedSecretName(name)) return this.json(res, 400, { error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}` });
+      if (!isAllowedSecretName(name))
+        return this.json(res, 400, {
+          error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+        });
       return this.service(res, "deleteSecret", name);
     }
     if (method === "POST" && path === "/spec/questions") {
@@ -1036,17 +1626,26 @@ export class DaemonControlApiServer {
       // Honesty: a control action on a TERMINAL job has no process to stop;
       // claiming "applied" would fabricate an effect that never happened.
       if (rec.state !== "queued" && rec.state !== "running") {
-        appendRunAuditEvent(rec, "control.rejected", { control: body.control, reason: `run is terminal (${rec.state})` });
-        return this.json(res, 409, { error: `run is ${rec.state}; ${body.control.kind} has nothing to stop` });
+        appendRunAuditEvent(rec, "control.rejected", {
+          control: body.control,
+          reason: `run is terminal (${rec.state})`,
+        });
+        return this.json(res, 409, {
+          error: `run is ${rec.state}; ${body.control.kind} has nothing to stop`,
+        });
       }
       await this.opts.daemon.cancel(rec.id);
       appendRunAuditEvent(rec, "control.applied", { control: body.control });
-      return this.json(res, 200, ControlRunControlResponse.parse({
-        accepted: true,
-        status: "applied",
-        runId: rec.runId ?? rec.id,
-        message: `${body.control.kind} requested`,
-      }));
+      return this.json(
+        res,
+        200,
+        ControlRunControlResponse.parse({
+          accepted: true,
+          status: "applied",
+          runId: rec.runId ?? rec.id,
+          message: `${body.control.kind} requested`,
+        }),
+      );
     }
 
     const eventsMatch = /^\/runs\/([^/]+)\/events$/.exec(path);
@@ -1066,36 +1665,107 @@ export class DaemonControlApiServer {
     schema?: { parse(value: unknown): unknown },
   ): Promise<void> {
     const fn = this.opts.services?.[name] as ((arg?: unknown) => Promise<unknown>) | undefined;
-    if (!fn) return this.json(res, 501, { error: `${name} service is not configured` });
+    if (!fn) {
+      return this.problem(
+        res,
+        501,
+        new Error(`${name} service is not configured`),
+        "service_not_configured",
+        false,
+      );
+    }
+    let value: unknown;
     try {
-      const value = await fn(arg);
-      return this.json(res, 200, schema ? schema.parse(value) : value);
+      value = await fn(arg);
     } catch (err) {
-      // Honest status codes: services attach a typed `status` (e.g. 404 for a
-      // missing setup job); a schema-invalid service RESULT is an internal 500.
-      // Flattening everything to 400 made client-side error handling guesswork.
-      const message = redactSecrets(err instanceof Error ? err.message : String(err));
-      const typedStatus = err && typeof err === "object" && "status" in err ? Number((err as { status: unknown }).status) : Number.NaN;
-      // A schema-invalid service RESULT is a server bug (500), cross-realm-safe via the error name.
-      const status = Number.isFinite(typedStatus) ? typedStatus : err instanceof Error && err.name === "ZodError" ? 500 : 400;
-      return this.json(res, status, { error: message });
+      return this.problem(
+        res,
+        finiteHttpStatus(err, 500),
+        err,
+        "internal_error",
+        false,
+        "service failed",
+      );
+    }
+    try {
+      return this.json(res, 200, schema ? schema.parse(value) : value);
+    } catch {
+      return this.problem(
+        res,
+        500,
+        new Error(`${String(name)} returned a response that violates its schema`),
+        "invalid_service_response",
+        false,
+      );
     }
   }
 
-  /**
-   * Live setup-job lifecycle stream: emits a `status` event on every state or
-   * message transition until the job reaches a terminal state. Backed by
-   * polling the job service (the manager has no event bus), which is exactly
-   * what the previous one-shot stub forced every client to reimplement.
-   */
-  private async streamSetupJobEvents(jobId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const fn = this.opts.services?.setupJobStatus as ((arg?: unknown) => Promise<unknown>) | undefined;
-    if (!fn) return this.json(res, 501, { error: "setupJobStatus service is not configured" });
+  /** Replay and tail setup lifecycle from the durable global-journal cursor. */
+  private async streamSetupJobEvents(
+    jobId: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const statusFn = this.opts.services?.setupJobStatus as
+      | ((arg?: unknown) => Promise<unknown>)
+      | undefined;
+    const eventsFn = this.opts.services?.setupJobEvents as
+      | ((arg?: unknown) => Promise<unknown>)
+      | undefined;
+    if (!statusFn || !eventsFn) {
+      return this.problem(
+        res,
+        501,
+        new Error("durable setup-job event services are not configured"),
+        "service_not_configured",
+        false,
+      );
+    }
     let job: ControlSetupJob;
     try {
-      job = ControlSetupJob.parse(await fn({ jobId }));
+      job = ControlSetupJob.parse(await statusFn({ jobId }));
     } catch (err) {
-      return this.json(res, 404, { error: redactSecrets(err instanceof Error ? err.message : String(err)) });
+      const status = finiteHttpStatus(err, 404);
+      return this.problem(
+        res,
+        status,
+        err,
+        status === 404 ? "setup_job_not_found" : "setup_event_stream_unavailable",
+        false,
+      );
+    }
+    let headerCursor: string | undefined;
+    try {
+      assertOnlyQueryParams(new URL(req.url ?? "/", "http://127.0.0.1"), []);
+      const rawHeaderCursor = req.headers["last-event-id"];
+      if (Array.isArray(rawHeaderCursor)) throw new Error("Last-Event-ID may appear only once");
+      headerCursor = rawHeaderCursor;
+      if (headerCursor !== undefined && headerCursor.length === 0)
+        throw new Error("Last-Event-ID must not be empty");
+    } catch (error) {
+      return this.requestError(res, error);
+    }
+    let cursor = headerCursor ?? null;
+    let lastSequence = 0;
+    let initialBatch: ValidatedSetupEventBatch | null = null;
+    // Validate a supplied cursor before committing SSE headers so stale epochs
+    // receive a typed HTTP problem and the client can resnapshot deterministically.
+    if (cursor) {
+      try {
+        initialBatch = validateSetupEventBatch(await eventsFn({ jobId, afterCursor: cursor }), {
+          jobId,
+          cursor,
+          lastSequence,
+        });
+      } catch (err) {
+        return this.problem(
+          res,
+          finiteHttpStatus(err, 500),
+          err,
+          "setup_event_projection_invalid",
+          false,
+        );
+      }
     }
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -1104,59 +1774,126 @@ export class DaemonControlApiServer {
     });
     this.sseClients.add(res);
 
-    const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "cancelled", "not_supported"]);
-    let seq = 0;
     let closed = false;
-    let lastSnapshot = "";
+    let terminalizing = false;
+    let timer: NodeJS.Timeout | null = null;
+    let heartbeat: NodeJS.Timeout | null = null;
     const cleanup = () => {
+      if (closed) return;
       closed = true;
-      clearInterval(timer);
-      clearInterval(heartbeat);
+      if (timer) clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
       this.sseClients.delete(res);
     };
-    const emit = (current: ControlSetupJob): boolean => {
-      const snapshot = JSON.stringify([current.state, current.message, current.firstOutputAt, current.lastOutputAt, current.finishedAt]);
-      if (snapshot === lastSnapshot) return false;
-      lastSnapshot = snapshot;
-      seq += 1;
-      const event = ControlSetupJobEvent.parse({
-        jobId: current.jobId,
-        seq,
-        time: nowIso(),
-        kind: "status",
-        state: current.state,
-        message: current.message,
+    const writeFrame = async (frame: string): Promise<void> => {
+      if (closed || res.destroyed || res.writableEnded)
+        throw new Error("setup event transport is closed");
+      if (res.write(frame)) return;
+      await new Promise<void>((resolveDrain, rejectDrain) => {
+        const cleanupWaiters = () => {
+          res.off("drain", onDrain);
+          res.off("close", onClose);
+          res.off("error", onError);
+        };
+        const onDrain = () => {
+          cleanupWaiters();
+          resolveDrain();
+        };
+        const onClose = () => {
+          cleanupWaiters();
+          rejectDrain(new Error("setup event client closed during backpressure"));
+        };
+        const onError = (error: Error) => {
+          cleanupWaiters();
+          rejectDrain(error);
+        };
+        res.once("drain", onDrain);
+        res.once("close", onClose);
+        res.once("error", onError);
       });
-      res.write(`id: ${seq}\nevent: setup\ndata: ${JSON.stringify(event)}\n\n`);
-      return true;
     };
-    const finish = () => {
-      if (closed) return;
-      res.write("event: end\ndata: {}\n\n");
-      res.end();
-      cleanup();
+    const finish = async () => {
+      if (closed || terminalizing) return;
+      terminalizing = true;
+      try {
+        await writeFrame("event: end\ndata: {}\n\n");
+        res.end();
+      } catch {
+        res.destroy();
+      } finally {
+        cleanup();
+      }
     };
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
+    const failStream = async (error: unknown) => {
+      if (closed || terminalizing) return;
+      terminalizing = true;
+      try {
+        const body = problemBody(
+          error,
+          "setup_event_stream_failed",
+          true,
+          "setup event stream failed",
+        );
+        if (body.requiredActions.length === 0) body.requiredActions.push("resnapshot");
+        await writeFrame(`event: error\ndata: ${JSON.stringify(body)}\n\n`);
+        res.end();
+      } catch {
+        res.destroy();
+      } finally {
+        cleanup();
+      }
+    };
+    heartbeat = setInterval(() => {
+      if (!closed && !terminalizing)
+        void writeFrame(`: ping ${Date.now()}\n\n`).catch(() => {
+          res.destroy();
+          cleanup();
+        });
     }, this.opts.heartbeatMs ?? 15_000);
     heartbeat.unref?.();
+
     const tick = async () => {
-      if (closed) return;
+      if (closed || terminalizing) return;
       try {
-        job = ControlSetupJob.parse(await fn({ jobId }));
-      } catch {
-        finish();
-        return;
+        const batch =
+          initialBatch ??
+          validateSetupEventBatch(await eventsFn({ jobId, afterCursor: cursor }), {
+            jobId,
+            cursor,
+            lastSequence,
+          });
+        initialBatch = null;
+        for (const event of batch.events) {
+          await writeFrame(`id: ${event.cursor}\nevent: setup\ndata: ${JSON.stringify(event)}\n\n`);
+          cursor = event.cursor;
+          lastSequence = event.sequence;
+          job = event.job;
+        }
+        if (isTerminalControlSetupJobState(job.state)) await finish();
+      } catch (err) {
+        await failStream(err);
       }
-      emit(job);
-      if (TERMINAL_JOB_STATES.has(job.state)) finish();
     };
-    const timer = setInterval(() => void tick(), this.opts.pollMs ?? 250);
-    timer.unref?.();
     req.on("close", cleanup);
     res.on("close", cleanup);
-    emit(job);
-    if (TERMINAL_JOB_STATES.has(job.state)) finish();
+    try {
+      await writeFrame(": connected\n\n");
+    } catch {
+      res.destroy();
+      cleanup();
+      return;
+    }
+    await tick();
+    if (!closed) {
+      const schedule = () => {
+        if (closed) return;
+        timer = setTimeout(() => {
+          void tick().finally(schedule);
+        }, this.opts.pollMs ?? 250);
+        timer.unref?.();
+      };
+      schedule();
+    }
   }
 
   private async waitForRunStart(jobId: string): Promise<DaemonRunRecord> {
@@ -1177,7 +1914,6 @@ export class DaemonControlApiServer {
     const runs = await this.opts.daemon.list();
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
-
 
   /** Bound helper context for the extracted thread-turn write routes.
    * Callers guard the required services (threadDetail/createThreadTurn)
@@ -1209,7 +1945,10 @@ export class DaemonControlApiServer {
     }
   }
 
-  private readonly summaryCache = new Map<string, { fingerprint: string; summary: ControlRunSummary }>();
+  private readonly summaryCache = new Map<
+    string,
+    { fingerprint: string; summary: ControlRunSummary }
+  >();
 
   /**
    * GET /runs is the app's main screen and used to re-read every artifact for
@@ -1264,9 +2003,19 @@ export class DaemonControlApiServer {
     return Number.isFinite(headerId) ? headerId : Number.isFinite(queryId) ? queryId : 0;
   }
 
-  private async streamEvents(id: string, lastEventId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async streamEvents(
+    id: string,
+    lastEventId: number,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     return streamRunEvents(
-      { findRun: (runId) => this.findRun(runId), json: (r, code, v) => this.json(r, code, v), opts: this.opts as never, sseClients: this.sseClients },
+      {
+        findRun: (runId) => this.findRun(runId),
+        json: (r, code, v) => this.json(r, code, v),
+        opts: this.opts as never,
+        sseClients: this.sseClients,
+      },
       id,
       lastEventId,
       req,
@@ -1303,7 +2052,9 @@ export class DaemonControlApiServer {
         const raw = JSON.stringify(event);
         const type = String((event as { type?: string }).type ?? "run");
         const seq = (event as { seq?: number }).seq;
-        res.write(`${typeof seq === "number" ? `id: ${seq}\n` : ""}event: ${type}\ndata: ${redactedSseLine(raw)}\n\n`);
+        res.write(
+          `${typeof seq === "number" ? `id: ${seq}\n` : ""}event: ${type}\ndata: ${redactedSseLine(raw)}\n\n`,
+        );
       } catch {
         /* one bad event must not kill the stream */
       }
@@ -1330,17 +2081,30 @@ export class DaemonControlApiServer {
 /* ---- Thread projections (engine snake_case -> control camelCase) ---- */
 
 function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
-  return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params) ? (rec.params as Record<string, unknown>) : {};
+  return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params)
+    ? (rec.params as Record<string, unknown>)
+    : {};
 }
 
-function projectMetadata(rec: DaemonRunRecord): { kind: "project" | "none"; root: string | null; projectName: string | null; context: "off" | "auto" } {
+function projectMetadata(rec: DaemonRunRecord): {
+  kind: "project" | "none";
+  root: string | null;
+  projectName: string | null;
+  context: "off" | "auto";
+} {
   const p = paramsRecord(rec);
   const scope = p["scope"];
   if (scope && typeof scope === "object" && !Array.isArray(scope)) {
     const s = scope as Record<string, unknown>;
-    if (s["kind"] === "none") return { kind: "none", root: null, projectName: null, context: "off" };
+    if (s["kind"] === "none")
+      return { kind: "none", root: null, projectName: null, context: "off" };
     if (s["kind"] === "project" && typeof s["root"] === "string") {
-      return { kind: "project", root: s["root"], projectName: basename(s["root"]), context: "auto" };
+      return {
+        kind: "project",
+        root: s["root"],
+        projectName: basename(s["root"]),
+        context: "auto",
+      };
     }
   }
   const repoRoot = runRepoRoot(rec);
@@ -1364,14 +2128,24 @@ function readFailure(rec: DaemonRunRecord): RunFailure | null {
   });
 }
 
-function appendRunAuditEvent(rec: DaemonRunRecord, type: RunEventType, payload: Record<string, unknown>): void {
+function appendRunAuditEvent(
+  rec: DaemonRunRecord,
+  type: RunEventType,
+  payload: Record<string, unknown>,
+): void {
   if (!rec.runDir) return;
   try {
     // Single-counter invariant: while the run is active its EventLog owns the
     // seq space, so audit records MUST route through it (appendRunEvent does;
     // file-tail stamping only applies once the run is terminal). A tail-read
     // here would duplicate ids and break SSE Last-Event-ID resume.
-    appendRunEvent(join(rec.runDir, "events.jsonl"), rec.runId ?? rec.id, rec.taskId ?? "unknown", type, payload);
+    appendRunEvent(
+      join(rec.runDir, "events.jsonl"),
+      rec.runId ?? rec.id,
+      rec.taskId ?? "unknown",
+      type,
+      payload,
+    );
   } catch {
     /* audit append must not change control behavior */
   }
@@ -1428,7 +2202,9 @@ function paramsFingerprint(rec: DaemonRunRecord): string {
 }
 
 /** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
-function strategyFromParams(p: Record<string, unknown>): "race" | "attempts" | "until_clean" | "swarm" | "create" | null {
+function strategyFromParams(
+  p: Record<string, unknown>,
+): "race" | "attempts" | "until_clean" | "swarm" | "create" | null {
   if (p["untilClean"] === true) return "until_clean";
   if (typeof p["attempts"] === "number" && p["attempts"] > 0) return "attempts";
   if (p["create"] === true) return "create";
@@ -1448,15 +2224,26 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
   const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
   const meta = (wp?.meta ?? {}) as Record<string, unknown>;
   const kindRaw = meta["result_kind"];
-  const kind = kindRaw === "patch" || kindRaw === "answer" || kindRaw === "plan" || kindRaw === "report" ? kindRaw : "none";
-  const ds = meta["diffstat"] as { files?: unknown; additions?: unknown; deletions?: unknown } | undefined;
+  const kind =
+    kindRaw === "patch" || kindRaw === "answer" || kindRaw === "plan" || kindRaw === "report"
+      ? kindRaw
+      : "none";
+  const ds = meta["diffstat"] as
+    | { files?: unknown; additions?: unknown; deletions?: unknown }
+    | undefined;
   const diffStat =
     ds && typeof ds.files === "number"
-      ? { files: ds.files, additions: typeof ds.additions === "number" ? ds.additions : 0, deletions: typeof ds.deletions === "number" ? ds.deletions : 0 }
+      ? {
+          files: ds.files,
+          additions: typeof ds.additions === "number" ? ds.additions : 0,
+          deletions: typeof ds.deletions === "number" ? ds.deletions : 0,
+        }
       : null;
   const applyStateRaw = meta["apply_state"];
   const applyState =
-    applyStateRaw === "applied" || applyStateRaw === "applied_review_blocked" || applyStateRaw === "reverted"
+    applyStateRaw === "applied" ||
+    applyStateRaw === "applied_review_blocked" ||
+    applyStateRaw === "reverted"
       ? applyStateRaw
       : "not_applied";
   const preTurnSha = typeof meta["pre_turn_sha"] === "string" ? meta["pre_turn_sha"] : null;
@@ -1465,7 +2252,9 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
   // pre/post snapshots needed for a safe restore exist. The daemon revert handler
   // still re-checks the tree hasn't diverged from post_turn_sha before acting.
   const revertable =
-    (applyState === "applied" || applyState === "applied_review_blocked") && preTurnSha !== null && postTurnSha !== null;
+    (applyState === "applied" || applyState === "applied_review_blocked") &&
+    preTurnSha !== null &&
+    postTurnSha !== null;
   return ControlRunResult.parse({
     kind,
     diffStat,
@@ -1490,7 +2279,10 @@ function markRunReverted(rec: DaemonRunRecord): void {
     const wpPath = join(root, "final", "work_product.yaml");
     if (!existsSync(wpPath)) return;
     const doc = (parseYaml(readFileSync(wpPath, "utf8")) ?? {}) as Record<string, unknown>;
-    const meta = (doc["meta"] && typeof doc["meta"] === "object" ? doc["meta"] : {}) as Record<string, unknown>;
+    const meta = (doc["meta"] && typeof doc["meta"] === "object" ? doc["meta"] : {}) as Record<
+      string,
+      unknown
+    >;
     meta["apply_state"] = "reverted";
     doc["meta"] = meta;
     // Atomic tmp+rename: a crash mid-write must never leave work_product.yaml
@@ -1514,7 +2306,8 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
   // Access truth comes from engine artifacts ONLY (contract/telemetry); client
   // params can request but never assert what was effectively enforced.
-  const requestedAccess = telemetry?.requested_access ?? task?.access.requested_profile ?? parsedAccess;
+  const requestedAccess =
+    telemetry?.requested_access ?? task?.access.requested_profile ?? parsedAccess;
   const effectiveAccess = telemetry?.effective_access ?? task?.access.effective_profile;
   const externalContextPolicy = telemetry?.external_context_policy ?? task?.external_context.policy;
   const webEvidence = controlWebEvidence(telemetry, task);
@@ -1544,7 +2337,9 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     mode: parsedMode.success ? parsedMode.data : undefined,
     strategy: strategyFromParams(p),
     prompt: typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined,
-    harnesses: Array.isArray(p["harnesses"]) ? p["harnesses"].filter((x): x is string => typeof x === "string") : undefined,
+    harnesses: Array.isArray(p["harnesses"])
+      ? p["harnesses"].filter((x): x is string => typeof x === "string")
+      : undefined,
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
     portfolio: parsedPortfolio.success ? parsedPortfolio.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
@@ -1555,7 +2350,10 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     n: typeof p["n"] === "number" ? p["n"] : undefined,
     // Engine-effective cap: the contract carries config-defaulted caps that
     // request params never knew about.
-    maxUsd: typeof p["maxUsd"] === "number" ? p["maxUsd"] : task?.budget.max_usd ?? (p["maxUsd"] === null ? null : undefined),
+    maxUsd:
+      typeof p["maxUsd"] === "number"
+        ? p["maxUsd"]
+        : (task?.budget.max_usd ?? (p["maxUsd"] === null ? null : undefined)),
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
     access: effectiveAccess ?? parsedAccess,
@@ -1585,12 +2383,16 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
  * `final/telemetry.yaml` (legacy or still running) renders `available: false`
  * so surfaces show "telemetry unavailable" instead of a recomputed guess.
  */
-function controlWebEvidence(telemetry: RunTelemetry | null, task: TaskContract | null): ControlWebEvidence {
+function controlWebEvidence(
+  telemetry: RunTelemetry | null,
+  task: TaskContract | null,
+): ControlWebEvidence {
   if (!telemetry) {
     return ControlWebEvidence.parse({
       required: task?.external_context.web_required ?? false,
       mode: task?.external_context.policy ?? "auto",
-      effectiveMode: task?.external_context.effective_mode ?? task?.external_context.policy ?? "auto",
+      effectiveMode:
+        task?.external_context.effective_mode ?? task?.external_context.policy ?? "auto",
       available: false,
     });
   }
@@ -1614,13 +2416,22 @@ function controlWebEvidence(telemetry: RunTelemetry | null, task: TaskContract |
  * harness stream's own disclosure); the requested model from run params.
  * `verified` is never inferred from the request alone.
  */
-function controlRoute(telemetry: RunTelemetry | null, p: Record<string, unknown>): ControlRouteInfo | null {
+function controlRoute(
+  telemetry: RunTelemetry | null,
+  p: Record<string, unknown>,
+): ControlRouteInfo | null {
   if (!telemetry) return null;
   const finalAttempt = telemetry.final_attempt_id
     ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
     : undefined;
-  const observed = finalAttempt?.observed_model ?? telemetry.attempts.find((a) => a.observed_model)?.observed_model ?? null;
-  const harnessId = finalAttempt?.harness_id ?? telemetry.attempts.find((a) => a.observed_model)?.harness_id ?? null;
+  const observed =
+    finalAttempt?.observed_model ??
+    telemetry.attempts.find((a) => a.observed_model)?.observed_model ??
+    null;
+  const harnessId =
+    finalAttempt?.harness_id ??
+    telemetry.attempts.find((a) => a.observed_model)?.harness_id ??
+    null;
   return {
     // Scalar-only by design until per-candidate route evidence lands:
     // map-only pool members show requestedModel null here, honestly.
@@ -1631,7 +2442,11 @@ function controlRoute(telemetry: RunTelemetry | null, p: Record<string, unknown>
   };
 }
 
-function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInteraction[] = [], cursor?: number): ControlRunDetail {
+function detailFor(
+  rec: DaemonRunRecord,
+  pendingInteractions: ControlPendingInteraction[] = [],
+  cursor?: number,
+): ControlRunDetail {
   // Snapshot fence: capture the event cursor BEFORE building any projection.
   // The fence promise is "every event with seq <= lastSeq is reflected" — a
   // cursor read AFTER the projections could skip an event that landed in
@@ -1650,8 +2465,13 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
   const operatorDecisionRaw = operator
     ? (() => {
         try {
-          const doc = parseYaml(readTextArtifact(rec, "arbitration/operator_decision.yaml") ?? "") as Record<string, unknown> | null;
-          return { action: operator.action, decidedAt: typeof doc?.["decided_at"] === "string" ? doc["decided_at"] : null };
+          const doc = parseYaml(
+            readTextArtifact(rec, "arbitration/operator_decision.yaml") ?? "",
+          ) as Record<string, unknown> | null;
+          return {
+            action: operator.action,
+            decidedAt: typeof doc?.["decided_at"] === "string" ? doc["decided_at"] : null,
+          };
         } catch {
           return { action: operator.action, decidedAt: null };
         }
@@ -1676,7 +2496,11 @@ function detailFor(rec: DaemonRunRecord, pendingInteractions: ControlPendingInte
     pendingInteractions,
     // Typed executor progress for an orchestrate auto_safe/auto_full run; null
     // for suggest / non-orchestrate runs. Thin projection of the engine artifact.
-    orchestrate: safeReadStructuredArtifact(rec, "final/orchestration_progress.yaml", OrchestratePlanProgress),
+    orchestrate: safeReadStructuredArtifact(
+      rec,
+      "final/orchestration_progress.yaml",
+      OrchestratePlanProgress,
+    ),
     // Per-candidate evidence cards: projected from the run's attempt/
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
@@ -1715,7 +2539,10 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
               { kind: "summary" as const, path: "final/summary.md" },
             ]
           : mode === "orchestrate"
-            ? [{ kind: "report" as const, path: "final/orchestration.md" }, { kind: "summary" as const, path: "final/summary.md" }]
+            ? [
+                { kind: "report" as const, path: "final/orchestration.md" },
+                { kind: "summary" as const, path: "final/summary.md" },
+              ]
             : [
                 // An agent answer-only turn (empty diff + prose) writes final/answer.md;
                 // it must win over the arbitration summary so the chat shows the answer,
@@ -1758,16 +2585,21 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
 }
 
 /** Typed severity per event type — no string matching over event names. */
-function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): ControlBudgetSnapshot {
+function budgetSnapshot(
+  rec: DaemonRunRecord,
+  decision: DecisionRecord | null,
+): ControlBudgetSnapshot {
   const p = paramsRecord(rec);
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
   // surface default, or the configured global per-run default); request params
   // alone under-report a config-defaulted cap as "no cap".
-  const contractCap = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract)?.budget.max_usd ?? null;
+  const contractCap =
+    safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract)?.budget.max_usd ?? null;
   const maxUsd = typeof p["maxUsd"] === "number" ? p["maxUsd"] : contractCap;
   let spendUsd = decision?.budget_summary?.spend_usd ?? null;
   let estimated = decision?.budget_summary?.estimated ?? false;
-  let source: "decision" | "events" | "settings" | "unknown" = spendUsd === null ? "unknown" : "decision";
+  let source: "decision" | "events" | "settings" | "unknown" =
+    spendUsd === null ? "unknown" : "decision";
   if (spendUsd === null) {
     // budget.observation is the engine's authoritative spend stream (it covers
     // harness AND reviewer-panel spend, e.g. plan review which never writes a
@@ -1816,11 +2648,11 @@ function budgetSnapshot(rec: DaemonRunRecord, decision: DecisionRecord | null): 
   return ControlBudgetSnapshot.parse({ maxUsd, spendUsd, remainingUsd, estimated, source });
 }
 
-
-
-
-
-function readStructured<T>(text: string | null, ext: string, schema: { parse(value: unknown): T }): T | null {
+function readStructured<T>(
+  text: string | null,
+  ext: string,
+  schema: { parse(value: unknown): T },
+): T | null {
   if (text === null) return null;
   if (ext === ".json") {
     return schema.parse(JSON.parse(text));
@@ -1841,7 +2673,12 @@ function listArtifacts(root: string): ControlArtifactInfo[] {
       const st = lstatSync(abs);
       if (st.isSymbolicLink()) continue;
       const rel = relative(safeRoot, abs).split(sep).join("/");
-      out.push({ path: rel, kind: st.isDirectory() ? "directory" : "file", bytes: st.isDirectory() ? undefined : st.size, mime: st.isDirectory() ? undefined : artifactMime(rel) });
+      out.push({
+        path: rel,
+        kind: st.isDirectory() ? "directory" : "file",
+        bytes: st.isDirectory() ? undefined : st.size,
+        mime: st.isDirectory() ? undefined : artifactMime(rel),
+      });
       if (st.isDirectory()) walk(abs);
     }
   };
@@ -1849,16 +2686,16 @@ function listArtifacts(root: string): ControlArtifactInfo[] {
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
  *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
  *  is `~/.claudexor/runs/<id>`) to the user's HOME and let /produced list
  *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
 export function producedRepoRoot(rec: DaemonRunRecord): string | null {
   const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;
-  return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim() ? scope.root : null;
+  return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim()
+    ? scope.root
+    : null;
 }
-
 
 function readPatch(rec: DaemonRunRecord): string | null {
   return readRawTextArtifact(rec, "final/patch.diff");
@@ -1874,7 +2711,9 @@ function runRepoRoot(rec: DaemonRunRecord): string | null {
   }
   let task: unknown = null;
   try {
-    task = readStructured(readRawTextArtifact(rec, "context/task.yaml"), ".yaml", { parse: (value: unknown) => value });
+    task = readStructured(readRawTextArtifact(rec, "context/task.yaml"), ".yaml", {
+      parse: (value: unknown) => value,
+    });
   } catch {
     task = null;
   }
@@ -1888,17 +2727,28 @@ function runRepoRoot(rec: DaemonRunRecord): string | null {
   return null;
 }
 
-function applyTargetRoot(target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"], rec: DaemonRunRecord): string | null {
+function applyTargetRoot(
+  target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"],
+  rec: DaemonRunRecord,
+): string | null {
   if (target.kind === "project") return target.root;
   return runRepoRoot(rec);
 }
 
 /** Project the run record into the delivery package's single-owner apply gate. */
-function applyGateError(rec: DaemonRunRecord, patch: string, targetRepoRoot: string): string | null {
+function applyGateError(
+  rec: DaemonRunRecord,
+  patch: string,
+  targetRepoRoot: string,
+): string | null {
   return validateApplyGate(applyGateInputFor(rec, patch, targetRepoRoot));
 }
 
-function applyGateInputFor(rec: DaemonRunRecord, patch: string, targetRepoRoot: string): ApplyGateInput {
+function applyGateInputFor(
+  rec: DaemonRunRecord,
+  patch: string,
+  targetRepoRoot: string,
+): ApplyGateInput {
   return {
     state: rec.state,
     decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
@@ -1931,7 +2781,13 @@ function applyEligibilityFor(rec: DaemonRunRecord): ApplyEligibility | null {
  * artifact root cannot be resolved (caller fails loudly). */
 function writeOperatorDecision(
   rec: DaemonRunRecord,
-  record: { action: string; finding_ids: string[]; accepted_risks: string[]; patch_sha256: string; decided_at: string },
+  record: {
+    action: string;
+    finding_ids: string[];
+    accepted_risks: string[];
+    patch_sha256: string;
+    decided_at: string;
+  },
 ): boolean {
   // The artifact name is server-fixed (no client path input); only the run dir
   // root needs validating before the write.
@@ -1943,13 +2799,18 @@ function writeOperatorDecision(
 }
 
 /** The persisted operator unblock decision (accept_risk / override), if any. */
-function readOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha256?: string } | null {
+function readOperatorDecision(
+  rec: DaemonRunRecord,
+): { action: string; patch_sha256?: string } | null {
   try {
     const raw = readTextArtifact(rec, "arbitration/operator_decision.yaml");
     if (!raw) return null;
     const doc = parseYaml(raw) as Record<string, unknown> | null;
     if (!doc || typeof doc["action"] !== "string") return null;
-    return { action: doc["action"], patch_sha256: typeof doc["patch_sha256"] === "string" ? doc["patch_sha256"] : undefined };
+    return {
+      action: doc["action"],
+      patch_sha256: typeof doc["patch_sha256"] === "string" ? doc["patch_sha256"] : undefined,
+    };
   } catch {
     return null;
   }
@@ -1963,7 +2824,9 @@ function readOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha
  * artifact or a mutated patch can NEVER silently hide a blocked run from the
  * operator. Returns null when the decision is absent, the wrong action, or stale.
  */
-function readValidOperatorDecision(rec: DaemonRunRecord): { action: string; patch_sha256?: string } | null {
+function readValidOperatorDecision(
+  rec: DaemonRunRecord,
+): { action: string; patch_sha256?: string } | null {
   const decision = readOperatorDecision(rec);
   if (!decision) return null;
   if (decision.action !== "accept_risk" && decision.action !== "override_needs_human") return null;
@@ -1973,7 +2836,11 @@ function readValidOperatorDecision(rec: DaemonRunRecord): { action: string; patc
   return decision;
 }
 
-function safeReadStructuredArtifact<T>(rec: DaemonRunRecord, relPath: string, schema: { parse(value: unknown): T }): T | null {
+function safeReadStructuredArtifact<T>(
+  rec: DaemonRunRecord,
+  relPath: string,
+  schema: { parse(value: unknown): T },
+): T | null {
   try {
     return readStructured(readTextArtifact(rec, relPath), extname(relPath), schema);
   } catch {
@@ -1994,7 +2861,10 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
       const raw = readTextArtifact(rec, rel);
       if (!raw) continue;
       const doc = ext === ".json" ? JSON.parse(raw) : parseYaml(raw);
-      const findings = doc && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>)["findings"] : [];
+      const findings =
+        doc && typeof doc === "object" && !Array.isArray(doc)
+          ? (doc as Record<string, unknown>)["findings"]
+          : [];
       if (!Array.isArray(findings)) continue;
       for (const finding of findings) out.push(ReviewFinding.parse(finding));
     } catch {
@@ -2004,9 +2874,17 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
   return out;
 }
 
+function assertOnlyQueryParams(url: URL, allowed: readonly string[]): void {
+  const allow = new Set(allowed);
+  for (const key of url.searchParams.keys()) {
+    if (!allow.has(key)) throw new Error(`unsupported query parameter: ${key}`);
+  }
+}
+
 function contentType(path: string): string {
   switch (extname(path).toLowerCase()) {
-    case ".json": return "application/json; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
     case ".md":
     case ".txt":
     case ".jsonl":
@@ -2014,17 +2892,26 @@ function contentType(path: string): string {
     case ".diff":
     case ".patch":
     case ".yaml":
-    case ".yml": return "text/plain; charset=utf-8";
+    case ".yml":
+      return "text/plain; charset=utf-8";
     case ".html":
-    case ".htm": return "text/html; charset=utf-8";
-    case ".png": return "image/png";
+    case ".htm":
+      return "text/html; charset=utf-8";
+    case ".png":
+      return "image/png";
     case ".jpg":
-    case ".jpeg": return "image/jpeg";
-    case ".gif": return "image/gif";
-    case ".webp": return "image/webp";
-    case ".svg": return "image/svg+xml";
-    case ".pdf": return "application/pdf";
-    default: return "application/octet-stream";
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".svg":
+      return "image/svg+xml";
+    case ".pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
   }
 }
 
@@ -2052,10 +2939,10 @@ function isAllowedSecretName(name: string): boolean {
 function validSecretSetBody(body: unknown): boolean {
   return Boolean(
     body &&
-      typeof body === "object" &&
-      !Array.isArray(body) &&
-      typeof (body as Record<string, unknown>)["name"] === "string" &&
-      isAllowedSecretName(String((body as Record<string, unknown>)["name"])),
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    typeof (body as Record<string, unknown>)["name"] === "string" &&
+    isAllowedSecretName(String((body as Record<string, unknown>)["name"])),
   );
 }
 
@@ -2063,7 +2950,12 @@ function assertNoSpecBodySecrets(body: unknown): void {
   assertNoInlineSecretValues(body, "$", "spec body");
   const serialized = JSON.stringify(body ?? null);
   if (containsSecretLikeToken(serialized)) {
-    throw Object.assign(new Error("secret-like value is not accepted in spec body; store secrets by ref and keep specs durable/sanitized"), { status: 400 });
+    throw Object.assign(
+      new Error(
+        "secret-like value is not accepted in spec body; store secrets by ref and keep specs durable/sanitized",
+      ),
+      { status: 400 },
+    );
   }
 }
 

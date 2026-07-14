@@ -213,17 +213,52 @@ describe("parseClaudeEvent", () => {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--permission-mode",
+      "plan",
+      "--setting-sources",
+      "",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--no-chrome",
       "--model",
       "opus",
       "--effort",
       "max",
       "--max-turns",
       "12",
+      "--tools",
+      "Read,Glob,Grep,WebSearch,WebFetch",
       "--allowedTools",
-      "Read,Glob,Grep,LS,WebSearch,WebFetch",
+      "Read,Glob,Grep,WebSearch,WebFetch",
       "--disallowedTools",
-      "Write,Edit,MultiEdit,NotebookEdit",
+      "Bash,Write,Edit,MultiEdit,NotebookEdit,Agent,Skill",
     ]);
+  });
+
+  it("never lets a request widen the readonly built-in tool surface", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-readonly-widen",
+      intent: "review",
+      prompt: "review",
+      cwd: "/tmp",
+      access: "readonly",
+      external_context_policy: "off",
+      tool_permission_policy: {
+        web: "off",
+        allow: ["Bash", "Write", "Agent", "Read"],
+        deny: ["Glob"],
+      },
+    });
+    const args = claudeArgsForSpec(spec);
+    const tools = args[args.indexOf("--tools") + 1];
+    const allowed = args[args.indexOf("--allowedTools") + 1];
+    const denied = args[args.indexOf("--disallowedTools") + 1];
+    expect(tools).toBe("Read,Grep");
+    expect(allowed).toBe("Read,Grep");
+    expect(denied).toContain("Bash");
+    expect(denied).toContain("Write");
+    expect(denied).toContain("Agent");
+    expect(denied).toContain("Glob");
   });
 
   it("maps web policy off to comma-form disallowed tools and merges user deny lists", () => {

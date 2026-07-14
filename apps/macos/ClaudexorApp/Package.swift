@@ -20,5 +20,12 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .testTarget(
+            name: "ClaudexorAppTests",
+            dependencies: ["ClaudexorApp", .product(name: "ClaudexorKit", package: "ClaudexorKit")],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
     ]
 )

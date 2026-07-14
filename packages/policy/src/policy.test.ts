@@ -5,6 +5,9 @@ import { classifyRisk, reviewDepthForRisk } from "./risk.js";
 describe("classifyRisk", () => {
   it("flags credentials/secrets as critical", () => {
     expect(classifyRisk({ changedPaths: ["config/secrets/db.json"] }).level).toBe("critical");
+    expect(classifyRisk({ changedPaths: ["certs/signing.key"] }).level).toBe("critical");
+    expect(classifyRisk({ changedPaths: ["home/.ssh/id_ed25519"] }).level).toBe("critical");
+    expect(classifyRisk({ changedPaths: [".env.example"], additions: 1 }).level).toBe("low");
   });
   it("flags auth/migrations as high", () => {
     expect(classifyRisk({ changedPaths: ["src/auth/login.ts"] }).level).toBe("high");
@@ -14,14 +17,20 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ changedPaths: ["package.json"], additions: 600 }).level).toBe("high");
   });
   it("small isolated change is low", () => {
-    expect(classifyRisk({ changedPaths: ["src/util.ts"], additions: 3, deletions: 1 }).level).toBe("low");
+    expect(classifyRisk({ changedPaths: ["src/util.ts"], additions: 3, deletions: 1 }).level).toBe(
+      "low",
+    );
   });
   it("normal multi-file change is medium", () => {
     const r = classifyRisk({ changedPaths: ["a.ts", "b.ts", "c.ts"], additions: 120 });
     expect(r.level).toBe("medium");
   });
   it("review depth scales with risk", () => {
-    expect(reviewDepthForRisk("critical")).toEqual({ reviewers: 2, crossFamily: true, humanApproval: true });
+    expect(reviewDepthForRisk("critical")).toEqual({
+      reviewers: 2,
+      crossFamily: true,
+      humanApproval: true,
+    });
     expect(reviewDepthForRisk("low").crossFamily).toBe(false);
   });
 });

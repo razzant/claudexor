@@ -4,3 +4,4 @@ export * from "./client.js";
 export * from "./events.js";
 export * from "./interactions.js";
 export * from "./threads.js";
+export * from "./journal-manager.js";

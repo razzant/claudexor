@@ -7,14 +7,33 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DaemonClient, defaultSocketPath, logPath, readToken, rotateToken } from "@claudexor/daemon";
+import {
+  DaemonClient,
+  defaultSocketPath,
+  ensureDaemonRuntimeRoot,
+  logPath,
+  readToken,
+  rotateToken,
+} from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
-import { MANAGED_SECRET_NAMES, SecretStore, type SecretBackend, isManagedSecretName } from "@claudexor/secrets";
+import { ControlHarnessSetupHarness, ControlSetupJob } from "@claudexor/schema";
+import {
+  MANAGED_SECRET_NAMES,
+  SecretStore,
+  type SecretBackend,
+  isManagedSecretName,
+} from "@claudexor/secrets";
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
-import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
+import {
+  authSourceAvailability,
+  checksSummary,
+  print,
+  printJson,
+  printUsageError,
+  statusGlyph,
+} from "./cli-io.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
-import { nativeLoginCommand } from "./setup-jobs.js";
-import { waitForDaemonReady } from "./daemon-run.js";
+import { ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
@@ -28,17 +47,15 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     if (existingToken) {
       try {
         await new DaemonClient(defaultSocketPath(), existingToken).health();
-        // Same bar as a fresh start; shorter window is fine — an ALREADY
-        // healthy daemon answers immediately (a fresh start waits out boot).
         const existingReady = await waitForDaemonReady(5_000);
         if (existingReady) {
-          if (json) printJson({ pid: null, socket: defaultSocketPath(), ready: true, alreadyRunning: true });
+          if (json)
+            printJson({ pid: null, socket: defaultSocketPath(), ready: true, alreadyRunning: true });
           else print(`claudexord already running; socket ${defaultSocketPath()}`);
           return 0;
         }
-        // Socket answers but the control API never came up — fall through and
-        // report the honest failure the same way a fresh start would.
-        if (json) printJson({ pid: null, socket: defaultSocketPath(), ready: false, alreadyRunning: true });
+        if (json)
+          printJson({ pid: null, socket: defaultSocketPath(), ready: false, alreadyRunning: true });
         else print("claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`");
         return 1;
       } catch {
@@ -49,6 +66,7 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     // Startup stderr goes to the daemon log (append), not the void — a crash
     // before the daemon's own logging starts must leave evidence for
     // `claudexor daemon logs`.
+    ensureDaemonRuntimeRoot();
     mkdirSync(dirname(logPath()), { recursive: true });
     const stderrFd = openSync(logPath(), "a");
     const child = spawn(process.execPath, [daemonScript], {
@@ -73,11 +91,26 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     }
     return ready ? 0 : 1;
   }
+  if (sub === "logs") {
+    let tail: string;
+    try {
+      tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
+    } catch (err) {
+      const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
+      if (json) printJson({ ok: false, error: message });
+      else process.stderr.write(`${message}\n`);
+      return 1;
+    }
+    if (json) printJson({ ok: true, log_tail: tail });
+    else print(tail);
+    return 0;
+  }
+
   const token = readToken();
   if (!token) {
-    // --json purity: exactly one JSON object on stdout in json mode.
-    if (json) printJson({ ok: false, error: "daemon not initialized — run: claudexor daemon start" });
-    else print("daemon not initialized — run: claudexor daemon start");
+    const message = "daemon not initialized — run: claudexor daemon start";
+    if (json) printJson({ ok: false, error: message });
+    else print(message);
     return 1;
   }
   const client = new DaemonClient(defaultSocketPath(), token);
@@ -92,22 +125,6 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       await client.shutdown();
       if (json) printJson({ ok: true, stopping: true });
       else print("claudexord shutting down");
-      return 0;
-    }
-    if (sub === "logs") {
-      // A missing/unreadable log FILE is not a daemon-reachability problem —
-      // report it as what it is instead of the catch-all "not reachable".
-      let tail: string;
-      try {
-        tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
-      } catch (err) {
-        const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
-        if (json) printJson({ ok: false, error: message });
-        else process.stderr.write(`${message}\n`);
-        return 1;
-      }
-      if (json) printJson({ ok: true, log_tail: tail });
-      else print(tail);
       return 0;
     }
     if (sub === "rotate-token") {
@@ -128,7 +145,12 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       else print(note);
       return 0;
     }
-    if (json) printJson({ ok: false, exitCode: 2, error: "usage: claudexor daemon start|status|stop|logs|rotate-token" });
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 2,
+        error: "usage: claudexor daemon start|status|stop|logs|rotate-token",
+      });
     else print("usage: claudexor daemon start|status|stop|logs|rotate-token");
     return 2;
   } catch (err) {
@@ -138,7 +160,6 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     return 1;
   }
 }
-
 
 /**
  * The real CONSUMER (ADP4) of the adapter models() producer: list a harness's
@@ -200,7 +221,7 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
     const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
     // Scope discovery to the requested harness (P14) instead of probe-all-then-filter.
     const statuses = await gateway.statusAll(
-      { cwd: process.cwd() },
+      { cwd: process.cwd(), fresh: true },
       harness ? [harness] : undefined,
     );
     // An explicit unknown harness must FAIL LOUDLY, not silently succeed over empty.
@@ -226,39 +247,45 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
   }
   if (sub === "login") {
     if (!harness) {
-      return printUsageError(json, "usage: claudexor auth login <codex|claude|cursor|opencode>");
+      return printUsageError(json, "usage: claudexor auth login <codex|claude|cursor>");
     }
-    // On a real terminal, RUN the native login flow instead of only hinting at
-    // it: inherited stdio hands the TTY to the vendor CLI (device-code /
-    // browser prompts work), and its exit code is the verb's exit code.
-    // Non-TTY and --json callers keep the hint (no interactive flow to run).
-    const native = nativeLoginCommand(harness);
-    if (!json && process.stdin.isTTY && native) {
-      print(`launching native login: ${native}`);
-      return await new Promise<number>((resolve) => {
-        const child = spawn("sh", ["-c", native], { stdio: "inherit", env: harnessRuntimeEnv() });
-        child.on("error", (err) => {
-          print(`could not launch native login (${err.message}); run it yourself: ${native}`);
-          resolve(1);
-        });
-        child.on("exit", (code) => resolve(code ?? 1));
-      });
+    if (!isKnownAuthLoginHarness(harness)) {
+      return printUsageError(
+        json,
+        `claudexor: unknown auth-login harness '${harness}' (expected codex|claude|cursor)`,
+      );
     }
-    const hints: Record<string, string> = {
-      codex:
-        "Run the native Codex login flow, or store an API key ref with: claudexor secrets set openai --from-env OPENAI_API_KEY",
-      claude:
-        "Run the native Claude Code login flow, or store an API key ref with: claudexor secrets set anthropic --from-env ANTHROPIC_API_KEY",
-      cursor: "Sign in through Cursor, then let Claudexor mirror the native session.",
-      opencode: "Run the native OpenCode auth flow, or store the provider key as a secret ref.",
-    };
-    const hint =
-      hints[harness] ?? `Run the native ${harness} auth flow, then retry: claudexor auth status ${harness}`;
-    if (json) printJson({ ok: true, harness, hint });
-    else print(hint);
-    return 0;
+    const { addr } = await ensureDaemon();
+    const response = await fetch(`${addr.baseUrl}/setup/jobs`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${addr.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ harness, action: "login", authRequest: "subscription" }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      if (json) printJson({ ok: false, harness, status: response.status, error: detail });
+      else print(`could not create durable ${harness} login job (${response.status}): ${detail}`);
+      return 1;
+    }
+    const job = ControlSetupJob.parse(await response.json());
+    const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);
+    if (json) printJson({ ok: accepted, job });
+    else
+      print(
+        accepted
+          ? `${harness} login is managed by claudexord as ${job.jobId}; follow the opened Terminal and setup status.`
+          : `${harness} login was not started: ${job.message}`,
+      );
+    return accepted ? 0 : 1;
   }
   return printUsageError(json, "usage: claudexor auth status|login");
+}
+
+export function isKnownAuthLoginHarness(harness: string): boolean {
+  return ControlHarnessSetupHarness.safeParse(harness).success;
 }
 
 async function stdinText(): Promise<string> {
@@ -304,10 +331,16 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
   if (sub === "set") {
     const name = args._[2];
     if (!name) {
-      return printUsageError(json, "usage: claudexor secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin");
+      return printUsageError(
+        json,
+        "usage: claudexor secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin",
+      );
     }
     if (!isManagedSecretName(name)) {
-      return printUsageError(json, `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
+      return printUsageError(
+        json,
+        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+      );
     }
     const envVar = flagStr(args, "from-env");
     const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
@@ -332,7 +365,10 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
       return printUsageError(json, "usage: claudexor secrets delete <name>");
     }
     if (!isManagedSecretName(name)) {
-      return printUsageError(json, `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`);
+      return printUsageError(
+        json,
+        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+      );
     }
     store.delete(name);
     if (json) printJson({ name, deleted: true });

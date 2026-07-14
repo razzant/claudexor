@@ -73,11 +73,30 @@ pnpm test
 - Update `docs/WHITEPAPER.md` when behavior changes affect the public rationale,
   trust model, orchestration semantics, observability, setup/auth, budget, or
   harness policy model.
-- Harness setup/login actions must be owned by the Control API. UI code may
-  bridge returned allowlisted commands to Terminal/clipboard, but must not
-  construct harness login/install commands locally.
-- Cancel must stop the underlying harness process, not only mark the job as
-  cancelled in UI/daemon state.
+- Harness setup/login actions, including the Terminal launch, must be owned by
+  the daemon/Control API. UI code may display or copy the returned allowlisted
+  command and guide, but must not construct or execute harness login/install
+  commands locally.
+- Native login must use the shared absolute binary + argv spec and a
+  provider-secret-scrubbed environment; no `sh -c`, OAuth callback broker, or
+  copied Terminal output.
+- Cancel/timeout/restart must stop only an identity-proven process group (TERM,
+  bounded KILL fallback) and reach terminal state only after death proof. Test
+  PID reuse, missing/corrupt sidecars, and `termination_unconfirmed`.
+- Native-login success requires a journaled runner receipt plus a fresh exact-
+  route same-harness capability smoke. Prove wrong route/source/challenge,
+  tools, external context, mutation, timeout, crash, and restart all fail closed;
+  an in-flight smoke after restart is `interrupted_unknown` and is not replayed.
+- Setup lifecycle authority is the checksummed global journal. Prove v1 bytes
+  remain byte/mode-identical, per-job lifecycle snapshots are absent, corrupt
+  state blocks mutation, and operational sidecars cannot override the journal.
+- Verify duplicate create returns the same active action, conflicting mutating
+  actions refuse, cancellation is asynchronous until death proof, and the
+  vendor Terminal remains open on its result until Return.
+- Setup SSE must preserve request-relative predecessor cursors across sparse
+  global sequences. Missing/duplicate/regressive/malformed/dropped frames and
+  EOF without terminal evidence require resnapshot; `interrupted_unknown` is
+  terminal.
 - Run success/no-op semantics must be evidence-based: auth/API/harness failures
   are failed diagnostics, not empty-diff `no_op`.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:
@@ -121,6 +140,9 @@ pnpm test
   blocks on `surface/code`.
 - Check web/tool evidence badges, output-ready state, fallback events, setup job
   states, and budget source match CLI/Control API projections.
+- In AuthSheet, exercise background close/reopen, Cancel Login/Stay, countdown
+  and unlimited fixed extensions, Retry, Reconnect exhaustion, Open Log, and
+  native readiness distinct from overall/API-key readiness.
 - Block on clipped text, hidden terminal state, glass behind dense output,
   hardcoded colors, weak dark-card contrast, fixed-width overflow, or technical
   artifacts shown as user plans/outcomes.
@@ -131,9 +153,19 @@ pnpm test
   artifacts, patches, PR text, docs, or logs.
 - Native/subscription routes should not inherit provider API-key env vars unless
   an API-key source is explicit.
-- Scoped harness homes/config dirs stay outside mutation worktrees; when a route
-  declares an OS-keychain credential transport, verify the bridge does not let
-  harness state leak into the real home.
+- A native login may pass only after fresh `native_session = available + passed`;
+  prove that a present/passing API key cannot satisfy subscription verification.
+- Verify the three readiness edges: absent/logged-out =
+  `unavailable + not_run`, indeterminate probe = `unknown + not_run`, and
+  present-but-wrong/unusable = `available + failed`.
+- Native login must use vendor-owned config/Keychain state without reading,
+  copying, or persisting vendor session tokens/credential files. Keep stored API
+  keys and the Claude setup-token as distinct routes; prove they cannot satisfy
+  a targeted `native_session` probe.
+- Scoped harness homes/config dirs stay outside mutation worktrees. When a
+  native route requires host-user or OS-keychain access, verify only the
+  declared bridge/context is exposed and temporary harness state cannot leak
+  into the real home.
 - Versioned repo config must never self-grant sensitive powers.
 - Run a targeted search for token-like values when touching auth, secrets,
   artifact writing, or logging.
@@ -154,6 +186,11 @@ pnpm test
 - New terminal states, retry events, or telemetry fields are documented in
   architecture/development docs and have generated schema updates.
 - Swift tests/build pass.
+- Live native-login acceptance passes for Codex, Claude, and Cursor: observe
+  awaiting_user -> verifying -> succeeded, typed auth status, background
+  recovery, and duplicate-create suppression without logout or credential reads.
+- Packaged app/ZIP/DMG and the npm CLI package contain the setup-login runner;
+  the bundle boot smoke starts both the daemon and helper with bundled Node.
 - Triad + scope review gate: before a release tag, run
   `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each
   finding against the code, and record the decision table. Unresolved accepted

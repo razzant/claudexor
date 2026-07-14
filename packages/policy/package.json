@@ -21,7 +21,8 @@
   },
   "dependencies": {
     "@claudexor/context": "workspace:*",
-    "@claudexor/schema": "workspace:*"
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
   },
   "repository": {
     "type": "git",

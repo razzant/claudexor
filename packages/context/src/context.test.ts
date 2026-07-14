@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -29,6 +37,26 @@ describe("ScopeAtlas", () => {
     expect(byPath["pnpm-lock.yaml"]).toBe("manifest_only");
     expect(res.atlas.length).toBe(5); // every file accounted for
     expect(res.omitted.length).toBeGreaterThanOrEqual(1); // budget forced omission
+  });
+
+  it("uses the shared sensitive-resource corpus even for mandatory context", async () => {
+    const repo = tmp();
+    mkdirSync(join(repo, ".ssh"), { recursive: true });
+    writeFileSync(join(repo, ".env"), "SECRET=1\n");
+    writeFileSync(join(repo, ".env.example"), "SECRET=\n");
+    writeFileSync(join(repo, "signing.key"), "not-real-key\n");
+    writeFileSync(join(repo, ".ssh", "id_ed25519"), "not-real-private-key\n");
+    const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(20)}.${"c".repeat(20)}`;
+    writeFileSync(join(repo, "notes.txt"), `embedded ${jwt}\n`);
+
+    const res = await buildScopeAtlas(repo, { mandatory: [".env"], tokenLimit: 100_000 });
+    const byPath = Object.fromEntries(res.atlas.map((entry) => [entry.path, entry.disposition]));
+    expect(byPath[".env"]).toBe("sensitive");
+    expect(byPath[".env.example"]).toBe("full");
+    expect(byPath["signing.key"]).toBe("sensitive");
+    expect(byPath[".ssh/id_ed25519"]).toBe("sensitive");
+    expect(byPath["notes.txt"]).toBe("sensitive");
+    expect(res.missingMandatory).toContain(".env");
   });
 });
 
@@ -106,6 +134,20 @@ describe("assertMandatoryContext (uniform preflight)", () => {
     const repo = tmp();
     expect(() => assertMandatoryContext(repo, ["../escape.md"])).toThrow(/escapes the repo/);
     expect(() => assertMandatoryContext(repo, ["/etc/hosts"])).toThrow(/escapes the repo/);
+  });
+
+  it("refuses path, content, and symlink sensitive mandatory context", () => {
+    const repo = tmp();
+    const outside = tmp();
+    writeFileSync(join(repo, ".env"), "SECRET=1\n");
+    const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(20)}.${"c".repeat(20)}`;
+    writeFileSync(join(repo, "notes.txt"), jwt);
+    writeFileSync(join(outside, "outside.txt"), "outside\n");
+    symlinkSync(join(outside, "outside.txt"), join(repo, "link.txt"));
+
+    expect(() => assertMandatoryContext(repo, [".env"])).toThrow(/sensitive/);
+    expect(() => assertMandatoryContext(repo, ["notes.txt"])).toThrow(/sensitive/);
+    expect(() => assertMandatoryContext(repo, ["link.txt"])).toThrow(/trust boundary/);
   });
 });
 
@@ -236,8 +278,10 @@ describe("atlas symlink containment (R33 gate finding)", () => {
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
     writeFileSync(join(repo, "real.txt"), "in-tree content\n");
+    writeFileSync(join(repo, ".env"), "SECRET=1\n");
     symlinkSync(join(outside, "host-secret.txt"), join(repo, "leak.txt"));
     symlinkSync(join(repo, "real.txt"), join(repo, "alias.txt")); // in-tree symlink: fine
+    symlinkSync(".env", join(repo, "env-alias"));
     g(["add", "-A"]);
     g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "with symlinks"]);
     const res = await buildScopeAtlas(repo);
@@ -248,7 +292,12 @@ describe("atlas symlink containment (R33 gate finding)", () => {
     expect(JSON.stringify(res).includes("HOST SECRET CONTENT")).toBe(false);
     // The in-tree symlink still maps normally.
     const alias = res.atlas.find((e) => e.path === "alias.txt");
-    expect(alias?.disposition === "excluded" ? alias?.reason ?? "" : "").not.toContain("outside");
+    expect(alias?.disposition === "excluded" ? (alias?.reason ?? "") : "").not.toContain("outside");
+    expect(res.atlas.find((e) => e.path === ".env")?.disposition).toBe("sensitive");
+    expect(res.atlas.find((e) => e.path === "env-alias")).toMatchObject({
+      disposition: "excluded",
+      reason: expect.stringContaining("environment secret file"),
+    });
   });
 });
 

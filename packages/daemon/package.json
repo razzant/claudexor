@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@claudexor/event-log": "workspace:*",
+    "@claudexor/journal": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   },

@@ -93,6 +93,55 @@
           },
           "default": [],
           "description": "Human-readable reasons for degraded/unavailable status or disabled intents."
+        },
+        "auth_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "native_session",
+                  "oauth_token_env",
+                  "api_key_env",
+                  "api_key_flag",
+                  "provider_auth_file",
+                  "none"
+                ],
+                "description": "Concrete credential source used or probed by a harness."
+              },
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "unknown"
+                ]
+              },
+              "verification": {
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "failed",
+                  "not_run"
+                ]
+              },
+              "detail": {
+                "type": "string",
+                "description": "Redacted human-readable source evidence."
+              }
+            },
+            "required": [
+              "source",
+              "availability",
+              "verification"
+            ],
+            "additionalProperties": false,
+            "description": "Doctor-backed readiness for one exact credential source."
+          },
+          "default": [],
+          "description": "Doctor-backed readiness by authentication source; an empty array means the adapter did not report source readiness."
         }
       },
       "required": [

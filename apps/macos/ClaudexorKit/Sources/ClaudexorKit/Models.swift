@@ -643,6 +643,10 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let disabledIntents: [String]
     public let checks: [HarnessCheck]
     public let reasons: [String]?
+    /// Doctor-backed readiness for each concrete authentication source. An
+    /// empty array means a legacy daemon (or a probe that reported no source
+    /// detail), never "ready".
+    public let authSources: [HarnessAuthSource]
     /// The user's configured per-harness default model, if any.
     public let configuredModel: String?
     /// Strict truth-source verdict for `configuredModel` ("ok"/"rejected" +
@@ -650,7 +654,7 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let configuredModelCheck: HarnessModelCheck?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons, configuredModel, configuredModelCheck
+        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons, authSources, configuredModel, configuredModelCheck
     }
 
     public init(from decoder: Decoder) throws {
@@ -662,8 +666,29 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
         disabledIntents = try c.decodeIfPresent([String].self, forKey: .disabledIntents) ?? []
         checks = try c.decodeIfPresent([HarnessCheck].self, forKey: .checks) ?? []
         reasons = try c.decodeIfPresent([String].self, forKey: .reasons)
+        authSources = try c.decodeIfPresent([HarnessAuthSource].self, forKey: .authSources) ?? []
         configuredModel = try c.decodeIfPresent(String.self, forKey: .configuredModel)
         configuredModelCheck = try c.decodeIfPresent(HarnessModelCheck.self, forKey: .configuredModelCheck)
+    }
+}
+
+public struct HarnessAuthSource: Codable, Sendable, Equatable, Hashable {
+    public let source: String
+    public let availability: String
+    public let verification: String
+    public let detail: String?
+
+    public init(source: String, availability: String, verification: String, detail: String? = nil) {
+        self.source = source
+        self.availability = availability
+        self.verification = verification
+        self.detail = detail
+    }
+
+    /// Native session readiness is proven only by the typed doctor verdict.
+    /// Credential presence alone is deliberately insufficient.
+    public var isVerifiedNativeSession: Bool {
+        source == "native_session" && availability == "available" && verification == "passed"
     }
 }
 
@@ -742,43 +767,6 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
     /// True when a truth source exists (strict model-truth validation: no truth source = the
     /// harness runs its default only; there is no free-text model entry).
     public var canEnumerate: Bool { source != "none" && !models.isEmpty }
-}
-
-public struct SetupJobCreateRequest: Codable, Sendable, Equatable {
-    public let harness: String
-    public let action: String
-
-    public init(harness: String, action: String) {
-        self.harness = harness
-        self.action = action
-    }
-}
-
-public struct SetupJob: Codable, Sendable, Equatable {
-    public let jobId: String
-    public let harness: String
-    public let action: String
-    public let state: String
-    public let command: String?
-    public let guideUrl: String?
-    public let logPath: String?
-    public let message: String
-    public let riskFlags: [String]
-    public let requiresConfirmation: Bool
-    public let createdAt: String
-    public let startedAt: String?
-    public let firstOutputAt: String?
-    public let lastOutputAt: String?
-    public let finishedAt: String?
-    public let retryCount: Int?
-}
-
-public struct SetupJobConfirmRequest: Codable, Sendable, Equatable {
-    public let confirmed: Bool
-
-    public init(confirmed: Bool = true) {
-        self.confirmed = confirmed
-    }
 }
 
 public struct SettingsSnapshot: Codable, Sendable, Equatable {
@@ -1004,4 +992,11 @@ public enum GatewayError: Error, Sendable, Equatable {
     case http(status: Int, body: String)
     case decoding(String)
     case transport(String)
+
+    /// Shared typed decoder for every RFC-9457-style control-plane failure.
+    /// Legacy endpoints may still return older shapes, in which case this is nil.
+    public var controlProblem: ControlProblem? {
+        guard case .http(_, let body) = self, let data = body.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ControlProblem.self, from: data)
+    }
 }

@@ -54,15 +54,42 @@ document does not duplicate it.
 The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
 unauthenticated, loopback-host-guarded liveness route). Artifact files remain
 the source of truth; API responses are projections over daemon state and run
-files. Harness setup commands are server allowlisted. Install/login execution
-uses setup jobs with risk flags, redacted logs, persistence across daemon
-restarts, watchdog timeouts, and a polling-backed SSE lifecycle stream
-(`/setup/jobs/:id/events`) that heartbeats and closes on terminal states.
-Doctor verification (the `doctor` and `store_key` jobs, and the post-install
-phase) runs IN-PROCESS through the same gateway code as the Harness Doctor
-screen — never as a `claudexor ...` shell command, which does not exist on
-PATH inside the bundled app. API-key fallback goes through `/secrets`, not
-inline setup payloads.
+files. Native login commands are server allowlisted and use setup jobs with
+typed phase/deadline/outcome,
+restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
+stream (`/setup/jobs/:id/events`) that carries the complete job snapshot,
+heartbeats, and closes on every terminal state including `timed_out` and
+`interrupted_unknown`. A client that reconnects first GET-resnapshots the job;
+every event names its exact request-relative predecessor cursor. Missing,
+duplicate, regressive, dropped, unknown, malformed, or EOF-without-terminal
+frames require a scoped resnapshot. Network loss never changes the server-owned
+outcome.
+Native login is executed by the bundled Node runner with an absolute vendor
+binary and argv (never `sh -c`), inherited Terminal TTY, and a provider-secret-
+scrubbed environment. Stdout/stderr stay in Terminal. The global journal records
+the immutable command authorization and fsynced one-use permit before the runner
+may spawn; operational sidecars record only process identity and the hash-bound
+result, which is journaled before readiness verification. The native-login path
+neither receives nor copies/persists vendor session tokens or credential files.
+Cancellation or
+restart signals a process group only after PID + kernel-start proof. Missing
+identity fails closed as `termination_unconfirmed`, not a claimed cancellation.
+Terminal presents the final exit result and remains open until Return.
+The exact native-source probe runs in process through the same gateway code as
+Harness Doctor, never as a shell command. API-key fallback goes through
+`/secrets` as a separate operation, not through setup jobs or inline setup
+payloads. Native login then runs an isolated same-harness
+capability smoke on the exact native route; status-probe success, another
+provider, or an API key cannot satisfy it. The receipt proves credential
+transport only, not plan tier, entitlement, quota, or zero cost.
+`GET /setup/jobs` optionally filters by `harness`, `action`, `active`, and
+`limit`; no-query behavior returns the v2 journal projection. `POST /setup/jobs/:id/extend`
+adds the fixed 15-minute login extension without a cumulative limit. Cancel is
+asynchronous and resolves only after termination is proved. Duplicate create
+returns the same active login instead of opening another Terminal. The checksummed global journal is the only
+lifecycle authority. Private per-job directories hold runner handshake
+artifacts only; v1 registries and per-job snapshots are neither read nor
+imported.
 
 `GET /runs/:id` includes `lastSeq` (the snapshot's event cursor for
 gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
@@ -202,18 +229,27 @@ modes) run `node scripts/cursor-itest.mjs`; the real-harness battery covers
 (phases 10-12, filterable via `CLAUDEXOR_BATTERY_PHASES=10,11,12`). Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
-Harness readiness is route/context-specific: doctor output distinguishes static
-auth source availability from smoke-proven routes, and manifests declare the
-credential transport plus containment strategy. A key string alone is degraded
-until the adapter proves the exact CLI/auth/isolation path it will use. Cursor
-keeps normal non-scoped `auto` runs on the native session when available, while
-scoped/envelope `auto` may prefer the API-key route only after that key is
-smoke-proven. Explicit `subscription` keeps native-session routing and fails
-closed when native Cursor auth is unavailable rather than falling back to an API
-key. When both
-Cursor sources exist and scoped `auto` selects the API-key route, the adapter
-also emits a typed `readiness_preferred` disclosure so clients can show the
-billing/readiness tradeoff.
+Harness readiness is route/context-specific. `auth_sources` / `authSources`
+separates credential availability (`available | unavailable | unknown`) from
+verification (`passed | failed | not_run`); manifests still declare only
+possible source/transport/containment. Absence or a logged-out native session is
+`unavailable + not_run`; an indeterminate probe is `unknown + not_run`; present
+but wrong or unusable source material is `available + failed`. A key string
+alone is degraded until the adapter proves the exact CLI/auth/isolation path it
+will use. Explicit `subscription` never probes or accepts API-key readiness;
+explicit `api_key`
+never falls back to a native session; `auto` remains native-first for Codex,
+Claude, and Cursor in host and scoped/envelope runs. It reaches a smoke-proven
+API-key route only when native readiness fails (and, for Claude, its verified
+setup-token source is also unavailable), and emits a typed `readiness_preferred`
+disclosure so clients can show the billing/readiness tradeoff.
+
+Native sessions remain in vendor-owned stores rather than being copied into
+Claudexor state or envelopes. Codex points native runs at the vendor-owned
+`CODEX_HOME` and its file/keyring/auto storage; Claude points at the vendor
+config and uses the macOS login Keychain; Cursor uses its Keychain-backed native
+state. Claudexor's API-key store and Claude setup-token source are separate
+routes with their own typed readiness and route-specific injection.
 
 ## ACP
 
@@ -351,4 +387,3 @@ always preferred.
 | `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS` | config | Inactivity window before a silent harness stream is failed (not a wall-clock cap). |
 | `CLAUDEXOR_TRANSIENT_RETRY_MAX` / `CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS` / `CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS` | config | Transient-error retry budget and backoff for harness launches. |
 | `CLAUDEXOR_CODEX_PRICE_INPUT` / `CLAUDEXOR_CODEX_PRICE_OUTPUT` / `CLAUDEXOR_CODEX_PRICE_CACHED` | codex adapter | Cost-estimator price overrides (USD per 1M tokens) when vendor pricing changes. |
-

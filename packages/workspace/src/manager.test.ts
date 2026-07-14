@@ -1,10 +1,27 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { summarizeDiffPaths } from "@claudexor/core";
-import { applyPatchProtected, ensureGitRepository, git, isGitRepo, revertWorkingTreeTo, snapshotTree } from "./git.js";
+import { projectRuntimeDir } from "@claudexor/util";
+import {
+  applyPatchProtected,
+  ensureGitRepository,
+  git,
+  isGitRepo,
+  revertWorkingTreeTo,
+  snapshotTree,
+} from "./git.js";
 import { WorkspaceManager } from "./manager.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
 
@@ -13,6 +30,7 @@ describe("revertWorkingTreeTo", () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-"));
     await git(repo, ["init", "-b", "main"]);
     writeFileSync(join(repo, "keep.ts"), "original\n");
+    writeFileSync(join(repo, "other.ts"), "other original\n");
     await git(repo, ["add", "-A"]);
     await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
 
@@ -22,18 +40,28 @@ describe("revertWorkingTreeTo", () => {
     writeFileSync(join(repo, "added.ts"), "new file from the turn\n");
     const postTurn = await snapshotTree(repo);
 
-    // Happy path: tree still equals postTurn -> restore.
+    // A later user edit outside the turn-owned patch (including staged index
+    // state) must survive the scoped reverse apply byte-for-byte.
+    writeFileSync(join(repo, "other.ts"), "later user edit\n");
+    await git(repo, ["add", "--", "other.ts"]);
+    const indexRel = (await git(repo, ["rev-parse", "--git-path", "index"])).stdout.trim();
+    const indexPath = isAbsolute(indexRel) ? indexRel : resolve(repo, indexRel);
+    const indexBefore = readFileSync(indexPath);
+
+    // Happy path: turn-owned hunks still equal postTurn -> restore only them.
     const r1 = await revertWorkingTreeTo(repo, preTurn, postTurn);
     expect(r1.reverted).toBe(true);
     expect(r1.removed).toContain("added.ts");
     expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("original\n");
     expect(existsSync(join(repo, "added.ts"))).toBe(false);
+    expect(readFileSync(join(repo, "other.ts"), "utf8")).toBe("later user edit\n");
+    expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
 
     // Divergence fence: re-mutate then ask to revert against the STALE postTurn.
     writeFileSync(join(repo, "keep.ts"), "edited again after the turn\n");
     const r2 = await revertWorkingTreeTo(repo, preTurn, postTurn);
     expect(r2.reverted).toBe(false);
-    expect(r2.reason).toMatch(/diverged/);
+    expect(r2.reason).toMatch(/postimage no longer matches|user edits/);
     // The refused revert touched nothing.
     expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("edited again after the turn\n");
   });
@@ -86,6 +114,44 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.worktree_path)).toBe(false);
     // Dispose also removes the scoped dirs (no lingering credentials).
     expect(existsSync(env.home_dir)).toBe(false);
+  });
+
+  it("capture/create/diff/dispose preserves the live index and arbitrary project .claudexor bytes", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    const ignorePath = join(repo, ".claudexor", ".gitignore");
+    const ignoreBytes = Buffer.from("# user-owned\r\n!keep-this\r\n", "utf8");
+    writeFileSync(ignorePath, ignoreBytes);
+    chmodSync(ignorePath, 0o640);
+    await git(repo, ["add", "--", ".claudexor/.gitignore"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "user config"]);
+
+    // Preserve a pre-existing staged change, an unstaged edit, and a legal
+    // newline-bearing untracked filename through every capture path.
+    writeFileSync(join(repo, "staged.txt"), "already staged\n");
+    await git(repo, ["add", "--", "staged.txt"]);
+    writeFileSync(join(repo, "README.md"), "# unstaged user edit\n");
+    writeFileSync(join(repo, "line\nbreak.txt"), "untracked\n");
+
+    const indexRel = (await git(repo, ["rev-parse", "--git-path", "index"])).stdout.trim();
+    const indexPath = isAbsolute(indexRel) ? indexRel : resolve(repo, indexRel);
+    const indexBefore = readFileSync(indexPath);
+    const statusBefore = (await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout;
+    const ignoreModeBefore = statSync(ignorePath).mode & 0o777;
+
+    const manager = new WorkspaceManager(repo);
+    const env = await manager.create({ taskId: "safe-state", attemptId: "a01", dirtyPolicy: "snapshot" });
+    writeFileSync(join(env.worktree_path, "candidate.txt"), "candidate\n");
+    const diff = await manager.diff(env);
+    expect(diff).toContain("candidate.txt");
+    await manager.dispose(env);
+
+    expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
+    expect((await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout).toBe(statusBefore);
+    expect(readFileSync(ignorePath).equals(ignoreBytes)).toBe(true);
+    expect(statSync(ignorePath).mode & 0o777).toBe(ignoreModeBefore);
+    expect(existsSync(join(repo, ".claudexor", "workspaces"))).toBe(false);
+    expect(existsSync(join(repo, ".claudexor-review-evidence"))).toBe(false);
   });
 
   it("snapshotTree succeeds in-place when the project gitignores .claudexor (the v0.10 bug)", async () => {
@@ -162,7 +228,7 @@ describe("WorkspaceManager", () => {
     expect(existsSync(join(dir, "b.txt"))).toBe(true);
     // ...but the scoped envelope base (home + baseline) is removed.
     expect(existsSync(env.home_dir)).toBe(false);
-    expect(existsSync(join(dir, ".claudexor", "workspaces", "t-ip", "converge"))).toBe(false);
+    expect(existsSync(join(projectRuntimeDir(dir), "workspaces", "t-ip", "converge"))).toBe(false);
   });
 
   it("in-place non-git: header relativization never rewrites hunk CONTENT that looks like a header (INV-041)", async () => {
@@ -261,8 +327,9 @@ describe("WorkspaceManager", () => {
     expect(second.created).toBe(false);
     expect(second.path).toBe(first.path);
     expect(second.baseSha).toBe(first.baseSha);
-    // Self-ignore seeded so the user's own `git add -A` never captures it.
-    expect(readFileSync(join(repo, ".claudexor", ".gitignore"), "utf8")).toBe("*\n");
+    // Runtime is external: no project `.claudexor` or ignore file is created.
+    expect(first.path.startsWith(projectRuntimeDir(repo))).toBe(true);
+    expect(existsSync(join(repo, ".claudexor"))).toBe(false);
   });
 
   it("snapshotTree + applyPatch work INSIDE a linked worktree (.git is a file there)", async () => {
@@ -320,7 +387,7 @@ describe("WorkspaceManager", () => {
     // Branch is gone (no permanent claudexor/* leak)...
     expect((await git(repo, ["rev-parse", "--verify", branch])).code).not.toBe(0);
     // ...the empty per-task dir was pruned...
-    expect(existsSync(join(repo, ".claudexor", "workspaces", "task-gc"))).toBe(false);
+    expect(existsSync(join(projectRuntimeDir(repo), "workspaces", "task-gc"))).toBe(false);
     // ...and a re-attempt with the SAME ids succeeds (previously collided on worktree add -b).
     const env2 = await mgr.create({ taskId: "task-gc", attemptId: "a01", baseRef: "HEAD" });
     expect(existsSync(env2.worktree_path)).toBe(true);
@@ -341,19 +408,19 @@ describe("WorkspaceManager", () => {
 });
 
 describe("ensureGitRepository", () => {
-  it("initializes a non-git folder with a seeded .gitignore and a baseline commit", async () => {
+  it("initializes a non-git folder without creating .gitignore and makes a baseline commit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
     writeFileSync(join(dir, "data.txt"), "hello\n");
     const result = await ensureGitRepository(dir);
     expect(result.initialized).toBe(true);
     expect(result.baselineCommitted).toBe(true);
-    expect(result.gitignoreSeeded).toBe(true);
+    expect(result.gitignoreSeeded).toBe(false);
     expect(result.headSha).toMatch(/^[0-9a-f]{40}$/);
     expect(await isGitRepo(dir)).toBe(true);
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".claudexor/");
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
     const tracked = await git(dir, ["ls-files"]);
     expect(tracked.stdout).toContain("data.txt");
-    expect(tracked.stdout).toContain(".gitignore");
+    expect(tracked.stdout).not.toContain(".gitignore");
     const author = await git(dir, ["log", "-1", "--format=%an"]);
     expect(author.stdout.trim()).toBe("Claudexor");
   });
@@ -384,21 +451,20 @@ describe("ensureGitRepository", () => {
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(".claudexor/\nnode_modules/\n");
   });
 
-  it("seeds .claudexor/ on its own line when .gitignore lacks a trailing newline (artifacts stay out of the baseline)", async () => {
+  it("preserves an existing .gitignore byte-for-byte and treats repo .claudexor as user state", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
-    // Run artifacts already exist BEFORE init (the artifact store creates the
-    // run dir before the git boundary is ensured), and the user's .gitignore
-    // ends without a newline — naive append would produce "node_modules.claudexor/".
+    // A user may version any shape below `.claudexor`; Claudexor neither
+    // classifies it as runtime nor repairs the user's no-newline ignore file.
     mkdirSync(join(dir, ".claudexor", "runs", "run-x"), { recursive: true });
     writeFileSync(join(dir, ".claudexor", "runs", "run-x", "events.jsonl"), "{}\n");
     writeFileSync(join(dir, ".gitignore"), "node_modules");
     writeFileSync(join(dir, "data.txt"), "hello\n");
     const result = await ensureGitRepository(dir);
-    expect(result.gitignoreSeeded).toBe(true);
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules\n.claudexor/\n");
+    expect(result.gitignoreSeeded).toBe(false);
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules");
     const tracked = await git(dir, ["ls-files"]);
     expect(tracked.stdout).toContain("data.txt");
-    expect(tracked.stdout).not.toContain(".claudexor/");
+    expect(tracked.stdout).toContain(".claudexor/runs/run-x/events.jsonl");
   });
 });
 
@@ -415,7 +481,7 @@ describe("disposeOrphan (crash GC)", () => {
     expect(existsSync(env.worktree_path)).toBe(true);
     const wsm2 = new WorkspaceManager(repo);
     await wsm2.disposeOrphan("task-orph", "a01");
-    expect(existsSync(join(repo, ".claudexor", "workspaces", "task-orph"))).toBe(false);
+    expect(existsSync(join(projectRuntimeDir(repo), "workspaces", "task-orph"))).toBe(false);
     const branches = execFileSync("git", ["branch", "--list", "claudexor/*"], { cwd: repo, encoding: "utf8" });
     expect(branches.trim()).toBe("");
     rmSync(repo, { recursive: true, force: true });
@@ -485,13 +551,13 @@ describe("revert with quoted/special filenames", () => {
   });
 });
 
-describe("tracked artifact-dir files are USER STATE (R33 hardening)", () => {
-  it("a tracked .claudexor/config.yaml edit survives into the staged diff; runtime artifacts stay out", async () => {
+describe("repo .claudexor is entirely USER STATE", () => {
+  it("counts both tracked config and untracked similarly-named files as user changes", async () => {
     const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
-    const { stageAllExcludingArtifacts, statusPorcelainMeaningful } = await import("./artifact-paths.js");
+    const { statusPorcelainMeaningful } = await import("./artifact-paths.js");
     const repo = mkdtempSync(join(tmpdir(), "cx-tracked-art-"));
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
@@ -500,24 +566,19 @@ describe("tracked artifact-dir files are USER STATE (R33 hardening)", () => {
     writeFileSync(join(repo, ".claudexor", "config.yaml"), "tests: []\n");
     g(["add", ".claudexor/config.yaml"]);
     g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "versioned config"]);
-    // The candidate edits the TRACKED config AND produces runtime artifacts.
+    // Both paths are user-owned. Real runtime never appears below the repo.
     writeFileSync(join(repo, ".claudexor", "config.yaml"), 'tests: ["node --test"]\n');
     mkdirSync(join(repo, ".claudexor", "runs", "run-x"), { recursive: true });
     writeFileSync(join(repo, ".claudexor", "runs", "run-x", "events.jsonl"), "{}\n");
-    // Dirty check counts the tracked edit, not the runtime artifact.
+    // Dirty check must not hide either path based on its name.
     const dirty = await statusPorcelainMeaningful(repo);
     expect(dirty.some((l) => l.includes(".claudexor/config.yaml"))).toBe(true);
-    expect(dirty.some((l) => l.includes("runs"))).toBe(false);
-    // Staging keeps the tracked edit and drops the runtime artifact.
-    await stageAllExcludingArtifacts(repo);
-    const staged = g(["diff", "--cached", "--name-only"]);
-    expect(staged).toContain(".claudexor/config.yaml");
-    expect(staged).not.toContain("runs/run-x");
+    expect(dirty.some((l) => l.includes("runs"))).toBe(true);
   });
 });
 
-describe("snapshot keeps tracked artifact-dir edits (R33 gate finding)", () => {
-  it("a tracked .claudexor/config.yaml edit lands in the snapshot TREE; runtime artifacts stay out", async () => {
+describe("snapshot keeps every repo .claudexor change", () => {
+  it("captures tracked config edits and untracked similarly-named files", async () => {
     const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -531,14 +592,14 @@ describe("snapshot keeps tracked artifact-dir edits (R33 gate finding)", () => {
     writeFileSync(join(repo, "src.txt"), "hello\n");
     g(["add", "-A"]);
     g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"]);
-    // The turn edits the TRACKED config and produces runtime artifacts.
+    // The turn edits tracked config and adds another user-owned project file.
     writeFileSync(join(repo, ".claudexor", "config.yaml"), 'tests: ["node --test"]\n');
     mkdirSync(join(repo, ".claudexor", "runs", "run-y"), { recursive: true });
     writeFileSync(join(repo, ".claudexor", "runs", "run-y", "events.jsonl"), "{}\n");
     const sha = await snapshotTree(repo);
     const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], { encoding: "utf8" });
     expect(files).toContain(".claudexor/config.yaml");
-    expect(files).not.toContain("runs/run-y");
+    expect(files).toContain(".claudexor/runs/run-y/events.jsonl");
     const content = execFileSync("git", ["-C", repo, "show", `${sha}:.claudexor/config.yaml`], { encoding: "utf8" });
     expect(content).toContain("node --test"); // the EDIT, not the base version
   });

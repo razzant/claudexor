@@ -238,6 +238,7 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
         enabled_intents: enabledIntents,
         disabled_intents: degraded ? ["review", "explain", "audit"] : [],
         reasons: degraded ? ["structured_output_parse_failed"] : [],
+        auth_sources: [],
       };
     },
     run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {

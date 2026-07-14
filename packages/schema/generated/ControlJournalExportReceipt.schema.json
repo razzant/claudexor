@@ -1,0 +1,48 @@
+{
+  "$ref": "#/definitions/ControlJournalExportReceipt",
+  "definitions": {
+    "ControlJournalExportReceipt": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "exportId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "partition": {
+          "type": "string",
+          "const": "global"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bundlePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestSha256": {
+          "$ref": "#/definitions/ControlJournalExportReceipt/properties/fingerprint"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "exportId",
+        "partition",
+        "fingerprint",
+        "bundlePath",
+        "manifestSha256",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

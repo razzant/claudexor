@@ -10,11 +10,15 @@ import {
   cursorApiSmokeFinalText,
   cursorApiSmokePassed,
   cursorStatusAuthenticated,
+  cursorStatusLoggedOut,
   parseCursorModelList,
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
   smokeIsolatedApiKey,
 } from "./index.js";
+import { probeCursorNativeAuth } from "./auth.js";
+
+const nativeProbe = (authed: boolean, probeError: string | null = null) => ({ authed, probeError });
 
 describe("cursor auth status parsing", () => {
   it("does not treat exit 0 Not logged in as authenticated", () => {
@@ -23,11 +27,41 @@ describe("cursor auth status parsing", () => {
 
   it("recognizes authenticated status text", () => {
     expect(cursorStatusAuthenticated(0, "Logged in as user@example.com\n")).toBe(true);
+    expect(cursorStatusAuthenticated(0, "✓ Logged in as user@example.com\n")).toBe(true);
     expect(cursorStatusAuthenticated(0, "Authenticated\n")).toBe(true);
+    expect(cursorStatusAuthenticated(0, "Account: user@example.com\n")).toBe(true);
+  });
+
+  it("rejects bare or explicitly empty account text and unknown exit-0 output", () => {
+    expect(cursorStatusAuthenticated(0, "No account configured\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Account: none\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Unauthenticated account\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Authenticated: false\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Authenticated: no\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Logged in: false\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Account settings are available\n")).toBe(false);
+    expect(cursorStatusAuthenticated(0, "Status OK\n")).toBe(false);
+    expect(cursorStatusLoggedOut("No account configured\n")).toBe(true);
+    expect(cursorStatusLoggedOut("Account: none\n")).toBe(true);
+    expect(cursorStatusLoggedOut("Status OK\n")).toBe(false);
   });
 
   it("fails closed on non-zero status probes", () => {
     expect(cursorStatusAuthenticated(1, "Logged in as user@example.com\n")).toBe(false);
+  });
+
+  it("does not persist an account principal from unrecognized status output", async () => {
+    const result = await probeCursorNativeAuth(undefined, undefined, async () => ({
+      code: 0,
+      signal: null,
+      stdout: "Account owner private@example.com is connected\n",
+      stderr: "",
+    }));
+    expect(result).toEqual({
+      authed: false,
+      probeError: "cursor-agent status returned unrecognized output (0)",
+    });
+    expect(result.probeError).not.toContain("private@example.com");
   });
 });
 
@@ -209,7 +243,7 @@ describe("selectCursorAuthRoute", () => {
     ).toBe("local_session");
   });
 
-  it("prefers the smoke-proven API key route for scoped auto when both auth sources exist", () => {
+  it("keeps scoped auto native-first when both auth sources exist", () => {
     expect(
       selectCursorAuthRoute({
         authPreference: "auto",
@@ -218,7 +252,7 @@ describe("selectCursorAuthRoute", () => {
         nativeAuthed: true,
         scopedHome: true,
       }),
-    ).toBe("api_key");
+    ).toBe("local_session");
   });
 
   it("does not route through a key string that was not smoke-proven", () => {
@@ -266,7 +300,7 @@ describe("selectCursorAuthRoute", () => {
     ).toBe("unavailable");
   });
 
-  it("falls back explicit api_key to native auth when the key route is unavailable", () => {
+  it("fails closed for explicit api_key when only native auth is available", () => {
     expect(
       selectCursorAuthRoute({
         authPreference: "api_key",
@@ -275,7 +309,7 @@ describe("selectCursorAuthRoute", () => {
         nativeAuthed: true,
         scopedHome: true,
       }),
-    ).toBe("local_session");
+    ).toBe("unavailable");
   });
 
   it("fails closed when no auth source exists", () => {
@@ -290,7 +324,7 @@ describe("selectCursorAuthRoute", () => {
     ).toBe("unavailable");
   });
 
-  it("discloses auto API-key selection when native auth was also available", () => {
+  it("discloses every auto API-key fallback", () => {
     expect(
       shouldDiscloseCursorAutoApiRoute({
         authPreference: "auto",
@@ -311,7 +345,7 @@ describe("selectCursorAuthRoute", () => {
         route: "api_key",
         nativeAuthed: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -325,14 +359,14 @@ describe("cursor adapter auth route wiring", () => {
       ...overrides,
     });
 
-  it("emits readiness-preferred disclosure and runs with the prepared API-key env", async () => {
+  it("emits fallback disclosure and runs with the prepared API-key env when native is unavailable", async () => {
     let probedEnv: Record<string, string | null | undefined> | undefined;
     let cliOpts: CliRunLoopOptions | undefined;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
       nativeAuthOk: async (env) => {
         probedEnv = env;
-        return true;
+        return nativeProbe(false);
       },
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
@@ -386,7 +420,7 @@ describe("cursor adapter auth route wiring", () => {
     let cliOpts: CliRunLoopOptions | undefined;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -424,7 +458,7 @@ describe("cursor adapter auth route wiring", () => {
   it("advertises native session as the static preferred source when both sources exist", async () => {
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => ({ ok: true, detail: "ok" }),
@@ -447,7 +481,7 @@ describe("cursor adapter auth route wiring", () => {
     let smokeCalls = 0;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -488,7 +522,7 @@ describe("cursor adapter auth route wiring", () => {
     let smokeCalls = 0;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -525,7 +559,7 @@ describe("cursor adapter auth route wiring", () => {
     let smokeCalls = 0;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -565,7 +599,7 @@ describe("cursor adapter auth route wiring", () => {
     let smokeCalls = 0;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => false,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "stale-cursor-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -593,13 +627,41 @@ describe("cursor adapter auth route wiring", () => {
     expect(smokeCalls).toBe(2);
   });
 
+  it("fresh doctor bypasses the inner API smoke cache without replacing it", async () => {
+    let smokeCalls = 0;
+    const adapter = createCursorAdapter({
+      detectVersion: async () => "cursor-test",
+      nativeAuthOk: async () => nativeProbe(false),
+      cursorApiKey: () => "cursor-key",
+      listCursorModels: async () => [],
+      smokeIsolatedApiKey: async () => {
+        smokeCalls += 1;
+        return { ok: smokeCalls !== 2, detail: `smoke-${smokeCalls}` };
+      },
+      apiSmokeCacheTtlMs: 60_000,
+      apiSmokeFailureCacheTtlMs: 60_000,
+      runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        yield { type: "completed", session_id: opts.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+      },
+    });
+
+    const cached = await adapter.doctor({ cwd: "/repo", authPreference: "api_key" });
+    const fresh = await adapter.doctor({ cwd: "/repo", authPreference: "api_key", fresh: true });
+    const cachedAgain = await adapter.doctor({ cwd: "/repo", authPreference: "api_key" });
+
+    expect(cached.status).toBe("ok");
+    expect(fresh.status).toBe("degraded");
+    expect(cachedAgain.status).toBe("ok");
+    expect(smokeCalls).toBe(2);
+  });
+
   it("scrubs Cursor API-key env from discover and doctor native auth probes", async () => {
     const probedEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
       nativeAuthOk: async (env) => {
         probedEnvs.push(env);
-        return false;
+        return nativeProbe(false);
       },
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [],
@@ -630,7 +692,7 @@ describe("cursor adapter auth route wiring", () => {
       detectVersion: async () => "cursor-test",
       nativeAuthOk: async (env) => {
         probedEnvs.push(env);
-        return false;
+        return nativeProbe(false);
       },
       cursorApiKey: (env) => env?.["CURSOR_API_KEY"] ?? null,
       listCursorModels: async () => [],
@@ -671,7 +733,7 @@ describe("cursor adapter auth route wiring", () => {
     let smokeCalls = 0;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "available-but-forbidden-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => {
@@ -698,6 +760,9 @@ describe("cursor adapter auth route wiring", () => {
     expect(report.enabled_intents).toEqual([
       "plan",
       "spec",
+      "implement",
+      "repair",
+      "create_from_scratch",
       "review",
       "verify",
       "synthesize",
@@ -707,11 +772,64 @@ describe("cursor adapter auth route wiring", () => {
     expect(report.disabled_intents).toContain("orchestrate");
   });
 
+  it.each([
+    {
+      name: "authenticated",
+      probe: nativeProbe(true),
+      availability: "available",
+      verification: "passed",
+      status: "ok",
+    },
+    {
+      name: "logged out",
+      probe: nativeProbe(false),
+      availability: "unavailable",
+      verification: "not_run",
+      status: "unavailable",
+    },
+    {
+      name: "probe error",
+      probe: nativeProbe(false, "status transport failed"),
+      availability: "unknown",
+      verification: "not_run",
+      status: "degraded",
+    },
+  ])("normalizes native readiness for $name", async ({ probe, availability, verification, status }) => {
+    let keyReads = 0;
+    let observedSignal: AbortSignal | undefined;
+    const adapter = createCursorAdapter({
+      detectVersion: async () => "cursor-test",
+      nativeAuthOk: async (_env, signal) => {
+        observedSignal = signal;
+        return probe;
+      },
+      cursorApiKey: () => { keyReads += 1; return "must-not-read"; },
+      listCursorModels: async () => [],
+      smokeIsolatedApiKey: async () => ({ ok: true, detail: "must not run" }),
+      runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        yield { type: "completed", session_id: opts.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+      },
+    });
+    const controller = new AbortController();
+    const report = await adapter.doctor({
+      cwd: "/repo",
+      authPreference: "subscription",
+      authSource: "native_session",
+      abortSignal: controller.signal,
+    });
+    expect(keyReads).toBe(0);
+    expect(observedSignal).toBe(controller.signal);
+    expect(report.status).toBe(status);
+    expect(report.auth_sources).toEqual([
+      expect.objectContaining({ source: "native_session", availability, verification }),
+    ]);
+  });
+
   it("does not spawn cursor-agent when only an unproven API key route exists", async () => {
     let spawned = false;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => false,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "stale-key",
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => ({ ok: false, detail: "smoke failed" }),
@@ -740,7 +858,7 @@ describe("cursor adapter auth route wiring", () => {
     let spawned = false;
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => false,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => null,
       listCursorModels: async () => [],
       smokeIsolatedApiKey: async () => ({ ok: false, detail: "no key" }),
@@ -769,7 +887,7 @@ describe("cursor adapter auth route wiring", () => {
   it("exposes the cursor model inventory producer", async () => {
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [
         { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null },
@@ -794,7 +912,7 @@ describe("cursor adapter auth route wiring", () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "stale-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -825,7 +943,7 @@ describe("cursor adapter auth route wiring", () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => false,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -852,7 +970,7 @@ describe("cursor adapter auth route wiring", () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => false,
+      nativeAuthOk: async () => nativeProbe(false),
       cursorApiKey: () => "stale-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -881,7 +999,7 @@ describe("cursor adapter auth route wiring", () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -911,7 +1029,7 @@ describe("cursor adapter auth route wiring", () => {
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "available-but-forbidden-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -939,12 +1057,12 @@ describe("cursor adapter auth route wiring", () => {
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
   });
 
-  it("uses scoped auto API-key model inventory for reviewer route validation", async () => {
+  it("uses scoped native model inventory before an available API key", async () => {
     let smokeCalls = 0;
     const modelEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
-      nativeAuthOk: async () => true,
+      nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
@@ -968,10 +1086,10 @@ describe("cursor adapter auth route wiring", () => {
     await expect(
       adapter.models?.({ cwd: "/repo", env: { HOME: "/tmp/scoped-home" }, authPreference: "auto" }),
     ).resolves.toEqual([
-      { id: "api-review-model", label: "API Review Model", context_window: null },
+      { id: "native-review-model", label: "Native Review Model", context_window: null },
     ]);
-    expect(smokeCalls).toBe(1);
+    expect(smokeCalls).toBe(0);
     expect(modelEnvs).toHaveLength(1);
-    expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBe("cursor-key");
+    expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
   });
 });

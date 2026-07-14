@@ -19,7 +19,6 @@ export function replModeIsMutating(mode: ModeKind): boolean {
   return MUTATING_REPL_MODES.has(mode);
 }
 
-
 // Rendered from the command registry (REPL_COMMANDS) — the same one owner
 // as the main CLI help.
 const REPL_HELP = renderReplHelp();
@@ -30,7 +29,9 @@ interface ReplTurnSpec {
   race?: boolean;
 }
 
-function parseReplLine(line: string): ReplTurnSpec | { command: "thread" | "new" | "help" | "quit"; arg?: string } | null {
+function parseReplLine(
+  line: string,
+): ReplTurnSpec | { command: "thread" | "new" | "help" | "quit"; arg?: string } | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   if (!trimmed.startsWith("/")) return { mode: "agent", prompt: trimmed };
@@ -64,9 +65,7 @@ function parseReplLine(line: string): ReplTurnSpec | { command: "thread" | "new"
 /** Daemon control-api reachable right now? (threads SSOT lives there). */
 async function daemonAddress(): Promise<ControlApiAddress | null> {
   try {
-    const addr = controlApiAddress();
-    const res = await fetch(`${addr.baseUrl}/healthz`, { signal: AbortSignal.timeout(1500) });
-    return res.ok ? addr : null;
+    return await controlApiAddress();
   } catch {
     return null;
   }
@@ -102,10 +101,15 @@ export async function runRepl(repoRoot: string): Promise<number> {
 async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise<number> {
   const headers = { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" };
   const api = async (method: string, path: string, body?: unknown): Promise<any> => {
-    const res = await fetch(`${addr.baseUrl}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const res = await fetch(`${addr.baseUrl}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
     const text = await res.text();
     const json = text ? JSON.parse(text) : {};
-    if (!res.ok) throw new Error(typeof json?.error === "string" ? json.error : `HTTP ${res.status}`);
+    if (!res.ok)
+      throw new Error(typeof json?.error === "string" ? json.error : `HTTP ${res.status}`);
     return json;
   };
 
@@ -119,13 +123,22 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
   const ensureThread = async (title?: string): Promise<any> => {
     if (!thread) {
       const effectiveTitle = title ?? pendingTitle;
-      thread = await api("POST", "/threads", { ...(effectiveTitle ? { title: effectiveTitle } : {}), scope: { kind: "project", root: repoRoot } });
+      thread = await api("POST", "/threads", {
+        ...(effectiveTitle ? { title: effectiveTitle } : {}),
+        scope: { kind: "project", root: repoRoot },
+      });
       pendingTitle = undefined;
     }
     return thread;
   };
-  process.stdout.write(`claudexor REPL on ${repoRoot} (daemon-backed; the thread appears in the app on your first message)\nType /help for commands.\n`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
+  process.stdout.write(
+    `claudexor REPL on ${repoRoot} (daemon-backed; the thread appears in the app on your first message)\nType /help for commands.\n`,
+  );
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "claudexor> ",
+  });
   rl.prompt();
 
   for await (const line of rl) {
@@ -143,7 +156,11 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
         // the empty-thread litter `/new` then quit was meant to avoid.
         thread = null;
         pendingTitle = parsed.arg || undefined;
-        process.stdout.write(pendingTitle ? `new thread (will be titled on your first message)\n` : "new thread (starts on your next message)\n");
+        process.stdout.write(
+          pendingTitle
+            ? `new thread (will be titled on your first message)\n`
+            : "new thread (starts on your next message)\n",
+        );
       }
       if (parsed.command === "thread") {
         if (!thread) {
@@ -153,11 +170,21 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
         }
         try {
           const detail = await api("GET", `/threads/${encodeURIComponent(thread.id)}`);
-          process.stdout.write(`thread ${detail.thread.id} (${detail.thread.title ?? "untitled"})\n`);
-          for (const t of detail.turns ?? []) process.stdout.write(`  turn ${t.id} run=${t.runId ?? "-"} [${t.run?.state ?? "?"}] :: ${String(t.prompt).slice(0, 80)}\n`);
-          for (const s of detail.sessions ?? []) process.stdout.write(`  session ${s.harnessId} native=${s.nativeSessionId ?? "-"} state=${s.state ?? "?"}\n`);
+          process.stdout.write(
+            `thread ${detail.thread.id} (${detail.thread.title ?? "untitled"})\n`,
+          );
+          for (const t of detail.turns ?? [])
+            process.stdout.write(
+              `  turn ${t.id} run=${t.runId ?? "-"} [${t.run?.state ?? "?"}] :: ${String(t.prompt).slice(0, 80)}\n`,
+            );
+          for (const s of detail.sessions ?? [])
+            process.stdout.write(
+              `  session ${s.harnessId} native=${s.nativeSessionId ?? "-"} state=${s.state ?? "?"}\n`,
+            );
         } catch (err) {
-          process.stdout.write(`thread fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          process.stdout.write(
+            `thread fetch failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
         }
       }
       rl.prompt();
@@ -212,7 +239,11 @@ async function runLocalRepl(repoRoot: string): Promise<number> {
   process.stdout.write(
     `claudexor REPL on ${repoRoot} (local engine; READ-ONLY ephemeral thread — start the daemon for write turns and to persist/share with the app)\nType /help for commands.\n`,
   );
-  const rl: Interface = createInterface({ input: process.stdin, output: process.stdout, prompt: "claudexor> " });
+  const rl: Interface = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "claudexor> ",
+  });
   rl.prompt();
 
   for await (const line of rl) {
@@ -231,8 +262,12 @@ async function runLocalRepl(repoRoot: string): Promise<number> {
       }
       if (parsed.command === "thread") {
         process.stdout.write(`ephemeral thread — ${localTurns.length} turn(s)\n`);
-        for (const t of localTurns) process.stdout.write(`  run=${t.runId ?? "-"} [${t.status}] :: ${t.prompt.slice(0, 80)}\n`);
-        for (const [harnessId, nativeId] of sessions) process.stdout.write(`  session ${harnessId} native=${nativeId}\n`);
+        for (const t of localTurns)
+          process.stdout.write(
+            `  run=${t.runId ?? "-"} [${t.status}] :: ${t.prompt.slice(0, 80)}\n`,
+          );
+        for (const [harnessId, nativeId] of sessions)
+          process.stdout.write(`  session ${harnessId} native=${nativeId}\n`);
       }
       rl.prompt();
       continue;
@@ -261,13 +296,19 @@ async function runLocalRepl(repoRoot: string): Promise<number> {
         resumeSessions: Object.fromEntries(sessions),
         onSessionObserved: (harnessId, nativeSessionId) => sessions.set(harnessId, nativeSessionId),
         onHarnessEvent: (ev) => {
-          if (ev.type === "message" && ev.text) process.stdout.write(ev.text.endsWith("\n") ? ev.text : ev.text + "\n");
-          else if (ev.type === "tool_call" && ev.tool) process.stdout.write(`  [tool] ${ev.tool.name}${ev.tool.target ? `: ${ev.tool.target}` : ""}\n`);
+          if (ev.type === "message" && ev.text)
+            process.stdout.write(ev.text.endsWith("\n") ? ev.text : ev.text + "\n");
+          else if (ev.type === "tool_call" && ev.tool)
+            process.stdout.write(
+              `  [tool] ${ev.tool.name}${ev.tool.target ? `: ${ev.tool.target}` : ""}\n`,
+            );
           else if (ev.type === "error" && ev.error) process.stdout.write(`  [error] ${ev.error}\n`);
         },
       });
       localTurns.push({ runId: res.runId, status: res.status, prompt: parsed.prompt });
-      process.stdout.write(`\n[turn done] status=${res.status} run=${res.runId}\n${res.summary ? res.summary.split("\n").slice(0, 6).join("\n") + "\n" : ""}`);
+      process.stdout.write(
+        `\n[turn done] status=${res.status} run=${res.runId}\n${res.summary ? res.summary.split("\n").slice(0, 6).join("\n") + "\n" : ""}`,
+      );
     } catch (err) {
       process.stdout.write(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }

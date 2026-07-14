@@ -86,6 +86,11 @@ generated `Bundle.module` accessor checks `Bundle.main.resourceURL` first
 "unsealed contents present in the bundle root"). The release workflow unzips
 the release ZIP and fails if that resource bundle is missing, so an artifact
 cannot pass merely because it launches inside the original repo checkout.
+The self-contained app also places `setup-login-runner.cjs` beside
+`claudexord.bundle.cjs` and the bundled Node in `Contents/Resources`. Packaging
+executes that runner with the bundled Node before the daemon boot smoke, so a
+missing runner or broken direct-entry guard fails the build instead of shipping
+a subscription login flow that can open Terminal and then hang.
 
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not
@@ -96,6 +101,13 @@ enabled for that local control-plane model.
 The app connects to the loopback control API for health, threads/turns, run
 list/detail, primary output, timeline, budget snapshot, artifacts, harness
 doctor, settings, secrets metadata, start/cancel, apply check, and SSE events.
+AuthSheet delegates setup state to the ClaudexorKit lifecycle controller: it
+GET-resnapshots before observing SSE, retries the stream up to five times,
+recovers a background job with the filtered active-job lookup, and keeps native
+source readiness separate from aggregate/API-key readiness. Closing an active
+login offers Keep Running, Cancel Login, or Stay; cancellation stays visible
+until the daemon proves the process ended. The vendor Terminal is intentionally
+left open with its final result until the user presses Return.
 Ask can run without a project and writes user-level artifacts; project-aware
 modes are gated until a project is picked in the composer's `ProjectChip` (the
 only place project selection lives — there is no Current Project setting).

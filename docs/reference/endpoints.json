@@ -48,7 +48,7 @@
       "path": "/runs",
       "mutating": true,
       "request_schema": "ControlRunStartRequest",
-      "response_schema": "ControlRunStartInfo"
+      "response_schema": null
     },
     {
       "method": "GET",
@@ -90,14 +90,14 @@
       "path": "/runs/:id/control",
       "mutating": true,
       "request_schema": "ControlRunControlRequest",
-      "response_schema": "ControlRunControlResponse"
+      "response_schema": null
     },
     {
       "method": "POST",
       "path": "/runs/:id/decision",
       "mutating": true,
       "request_schema": "ControlRunDecisionRequest",
-      "response_schema": "ControlRunDecisionResponse"
+      "response_schema": null
     },
     {
       "method": "GET",
@@ -191,18 +191,25 @@
       "response_schema": "ControlSetupJob"
     },
     {
-      "method": "POST",
-      "path": "/setup/jobs/:id/confirm",
-      "mutating": true,
-      "request_schema": "ControlSetupJobConfirmRequest",
-      "response_schema": "ControlSetupJob"
-    },
-    {
       "method": "GET",
       "path": "/setup/jobs/:id/events",
       "mutating": false,
       "request_schema": null,
       "response_schema": null
+    },
+    {
+      "method": "POST",
+      "path": "/setup/jobs/:id/extend",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "GET",
+      "path": "/setup/jobs/:id/snapshot",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSetupJobSnapshot"
     },
     {
       "method": "POST",
@@ -223,7 +230,7 @@
       "path": "/threads",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlThreadListResponse"
+      "response_schema": null
     },
     {
       "method": "POST",
@@ -237,7 +244,7 @@
       "path": "/threads/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlThreadDetail"
+      "response_schema": null
     },
     {
       "method": "PATCH",
@@ -280,6 +287,41 @@
       "mutating": true,
       "request_schema": "ControlTrustUpdateRequest",
       "response_schema": "ControlTrustState"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/harnesses/:id/auth-readiness",
+      "mutating": false,
+      "request_schema": "ControlAuthReadinessRefreshRequest",
+      "response_schema": "ControlAuthReadinessRefreshResponse"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/recovery/partitions/global",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlJournalInspection"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/recovery/partitions/global/export",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlJournalExportReceipt"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/recovery/partitions/global/quarantine",
+      "mutating": true,
+      "request_schema": "ControlJournalQuarantineRequest",
+      "response_schema": "ControlJournalQuarantineReceipt"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/recovery/partitions/global/validate",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlJournalValidation"
     }
   ]
 }

@@ -2,11 +2,11 @@ import Foundation
 
 /// One dispatched Server-Sent Event.
 public struct SSEFrame: Sendable, Equatable {
-    public let id: Int?
+    public let id: String?
     public let event: String
     public let data: String
 
-    public init(id: Int?, event: String, data: String) {
+    public init(id: String?, event: String, data: String) {
         self.id = id
         self.event = event
         self.data = data
@@ -25,8 +25,8 @@ public struct SSEParser: Sendable {
     private var buffer: [UInt8] = []
     private var dataLines: [String] = []
     private var eventName = "message"
-    private var frameId: Int?
-    private var lastSeenId: Int?
+    private var frameId: String?
+    private var lastSeenId: String?
 
     public init() {}
 
@@ -60,10 +60,9 @@ public struct SSEParser: Sendable {
         let (field, value) = Self.splitField(line)
         switch field {
         case "id":
-            if let id = Int(value) {
-                frameId = id
-                lastSeenId = id
-            }
+            guard !value.contains("\0") else { return nil }
+            frameId = value
+            lastSeenId = value
         case "event":
             eventName = value
         case "data":
