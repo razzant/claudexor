@@ -443,7 +443,8 @@ Runs one selected compatible harness read-only with `intent: audit` and writes
 
 ## 7. Control API
 
-The daemon is the durable scheduler. The HTTP control API is a live viewport and
+The daemon is the durable scheduler. `DaemonServer` requires an injected durable
+command authority and has no in-memory command-record fallback. The HTTP control API is a live viewport and
 artifact/delivery facade. The canonical endpoint inventory below is generated
 from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
 README and INTEGRATIONS link here instead of maintaining duplicates. The same

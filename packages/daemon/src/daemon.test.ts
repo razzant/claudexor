@@ -313,16 +313,19 @@ describe("DaemonServer", () => {
 
   it("does not leave a listener when shutdown races startup", async () => {
     const dir = tempDir("start-stop");
+    const authority = commandAuthority(dir);
     const socketPath = join(dir, "daemon.sock");
     const server = new DaemonServer({
       socketPath,
       token: "token",
+      commands: authority.slot,
       runner: async () => ({ status: "success" }),
     });
     const starting = server.start();
     await server.stop();
     await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
     expect(existsSync(socketPath)).toBe(false);
+    authority.journal.close();
   });
 });
 

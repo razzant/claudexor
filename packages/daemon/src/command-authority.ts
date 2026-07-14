@@ -7,22 +7,20 @@ export interface CommandAuthority {
   findById?(id: string): CommandStore | undefined;
 }
 
-export function commandStores(authority: CommandAuthority | undefined): CommandStore[] {
-  if (!authority) return [];
+export function commandStores(authority: CommandAuthority): CommandStore[] {
   if (authority.all) return authority.all();
   return authority.current ? [authority.current()] : [];
 }
 
-export function commandStoreForRequest(
-  authority: CommandAuthority | undefined,
-  params: unknown,
-): CommandStore | undefined {
-  return authority?.forRequest?.(params) ?? authority?.current?.();
+export function commandStoreForRequest(authority: CommandAuthority, params: unknown): CommandStore {
+  const store = authority.forRequest?.(params) ?? authority.current?.();
+  if (!store) throw new Error("command authority cannot route the request");
+  return store;
 }
 
 export function commandStoreForId(
-  authority: CommandAuthority | undefined,
+  authority: CommandAuthority,
   id: string,
 ): CommandStore | undefined {
-  return authority?.findById?.(id) ?? commandStores(authority).find((store) => store.get(id));
+  return authority.findById?.(id) ?? commandStores(authority).find((store) => store.get(id));
 }

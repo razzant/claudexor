@@ -14,7 +14,7 @@
   "packages/cli/src/setup-jobs.ts": 1217,
   "packages/control-api/src/daemon-server.ts": 2846,
   "packages/daemon/src/journal-manager.ts": 582,
-  "packages/daemon/src/server.ts": 651,
+  "packages/daemon/src/server.ts": 640,
   "packages/harness-claude/src/index.ts": 1042,
   "packages/harness-codex/src/index.ts": 808,
   "packages/harness-cursor/src/index.ts": 790,

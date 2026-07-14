@@ -32,7 +32,7 @@ export interface DaemonOptions {
   runner: RunnerFn;
   /** Max concurrently-running jobs (parallel projects/runs). Default 4. */
   maxConcurrent?: number;
-  commands?: CommandAuthority;
+  commands: CommandAuthority;
   /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
   /** Called when a job reaches a terminal state (any path) with its runId —
@@ -97,7 +97,6 @@ export class DaemonServer {
   private server?: Server;
   private readonly sockets = new Set<Socket>();
   private readonly queue: string[] = [];
-  private readonly records = new Map<string, JobRecord>();
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly activeTasks = new Set<Promise<void>>();
@@ -334,7 +333,6 @@ export class DaemonServer {
       }
       case "claudexor.findAccepted": {
         const store = commandStoreForRequest(this.opts.commands, params?.request);
-        if (!store) return null;
         const record = store.find({
           params: params?.request,
           idempotencyKey: String(params?.idempotencyKey ?? ""),
@@ -391,7 +389,6 @@ export class DaemonServer {
       store.prune(removed.filter((id) => store.get(id)));
     }
     for (const id of removed) {
-      this.records.delete(id);
       this.cancelled.delete(id);
     }
   }
@@ -404,36 +401,28 @@ export class DaemonServer {
     operation?: string,
   ) {
     const store = commandStoreForRequest(this.opts.commands, params);
-    if (store)
-      return store.accept({
-        id: newId("job"),
-        params,
-        idempotencyKey,
-        clientId,
-        idempotencyParams,
-        operation,
-      });
-    const record: JobRecord = { id: newId("job"), state: "queued", params, createdAt: nowIso() };
-    this.records.set(record.id, record);
-    return { record, reused: false };
+    return store.accept({
+      id: newId("job"),
+      params,
+      idempotencyKey,
+      clientId,
+      idempotencyParams,
+      operation,
+    });
   }
 
   private allRecords(): JobRecord[] {
-    const stores = commandStores(this.opts.commands);
-    return stores.length > 0
-      ? stores.flatMap((store) => store.records())
-      : [...this.records.values()];
+    return commandStores(this.opts.commands).flatMap((store) => store.records());
   }
 
   private getRecord(id: string): JobRecord | undefined {
-    return commandStoreForId(this.opts.commands, id)?.get(id) ?? this.records.get(id);
+    return commandStoreForId(this.opts.commands, id)?.get(id);
   }
 
   private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
     const store = commandStoreForId(this.opts.commands, record.id);
-    if (store) return store.update(record.id, patch);
-    Object.assign(record, patch);
-    return record;
+    if (!store) throw new Error(`command authority lost job ${record.id}`);
+    return store.update(record.id, patch);
   }
 
   private threadIdOf(rec: JobRecord): string | undefined {
