@@ -5,22 +5,25 @@
 import { z } from "zod";
 import { AccessProfile } from "./primitives.js";
 
-/**
- * NARROW trust update (the ONLY trust field the control API exposes): grant or
- * revoke unsandboxed full access for one repo in the USER-LEVEL trust file —
- * the same file `claudexor trust` writes. Everything else about trust stays
- * CLI-only; unknown fields are refused (strict).
- */
+/** User-level trust update; versioned repo config cannot grant either field. */
 export const ControlTrustUpdateRequest = z
   .object({
     repoRoot: z.string().min(1).describe("Absolute repo root the trust change applies to."),
     allowFullAccess: z
       .boolean()
+      .optional()
       .describe("Grant (true) or revoke (false) unsandboxed full access for the repo."),
+    accessDefault: z
+      .enum(["readonly", "workspace_write"])
+      .optional()
+      .describe("Default access profile for runs in the repo."),
   })
   .strict()
+  .refine((value) => value.allowFullAccess !== undefined || value.accessDefault !== undefined, {
+    message: "allowFullAccess or accessDefault is required",
+  })
   .describe(
-    "Narrow trust update — the only trust field the control API exposes: grant or revoke unsandboxed full access for one repo in the user-level trust file.",
+    "User-level trust update: grant/revoke full access and/or set the readonly/workspace-write default.",
   );
 export type ControlTrustUpdateRequest = z.infer<typeof ControlTrustUpdateRequest>;
 

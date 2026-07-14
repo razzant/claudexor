@@ -334,6 +334,8 @@ writer while the mode pipelines below retain their distinct mutability.
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
 requested harness filters reach the producer instead of probing unrelated adapters.
+`claudexor trust` and `secrets` likewise project `/v2/trust` and `/v2/secrets`;
+only the daemon owns user-level trust files and the selected managed-secret backend.
 
 ### Ask
 

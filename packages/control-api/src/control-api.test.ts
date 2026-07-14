@@ -1379,18 +1379,25 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("trust: GET /trust lists entries; POST /trust is strict-narrow and delegates to the service", async () => {
+  it("trust: GET resolves one repo and POST updates only typed user-level trust fields", async () => {
     const { daemon } = fakeDaemon();
-    const calls: Array<{ repoRoot: string; allowFullAccess: boolean }> = [];
+    const calls: Array<{
+      repoRoot: string;
+      allowFullAccess?: boolean;
+      accessDefault?: "readonly" | "workspace_write";
+    }> = [];
+    const listInputs: unknown[] = [];
     let allow = false;
+    let accessDefault: "readonly" | "workspace_write" = "workspace_write";
     const services: DaemonControlApiOptions["services"] = {
-      listTrust: async () => ({
-        entries: [
+      listTrust: async (input) => {
+        listInputs.push(input);
+        const entries = [
           {
             repoRoot: "/Users/x/proj",
             path: "/Users/x/.claudexor/trust/abc.yaml",
             allowFullAccess: allow,
-            accessDefault: "workspace_write",
+            accessDefault,
           },
           // Legacy pre-provenance file: enumerable with a null root.
           {
@@ -1399,16 +1406,18 @@ describe("DaemonControlApiServer", () => {
             allowFullAccess: true,
             accessDefault: "workspace_write",
           },
-        ],
-      }),
+        ];
+        return { entries: input?.repoRoot ? entries.slice(0, 1) : entries };
+      },
       updateTrust: async (input) => {
         calls.push(input);
-        allow = input.allowFullAccess;
+        allow = input.allowFullAccess ?? allow;
+        accessDefault = input.accessDefault ?? accessDefault;
         return {
           repoRoot: input.repoRoot,
           path: "/Users/x/.claudexor/trust/abc.yaml",
           allowFullAccess: allow,
-          accessDefault: "workspace_write",
+          accessDefault,
         };
       },
     };
@@ -1425,18 +1434,22 @@ describe("DaemonControlApiServer", () => {
         expect(listBody.entries).toHaveLength(2);
         expect(listBody.entries[1]?.repoRoot).toBeNull();
 
-        // NARROW by construction: unknown fields are refused, not ignored —
-        // the control surface must never grow trust powers by accident.
-        const widened = await apiFetch(`${base}/trust`, {
+        const scoped = await apiFetch(`${base}/trust?repoRoot=%2FUsers%2Fx%2Fproj`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(scoped.status).toBe(200);
+        expect(listInputs).toEqual([undefined, { repoRoot: "/Users/x/proj" }]);
+
+        const unknown = await apiFetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
             repoRoot: "/Users/x/proj",
             allowFullAccess: true,
-            accessDefault: "readonly",
+            shell: true,
           }),
         });
-        expect(widened.status).toBe(400);
+        expect(unknown.status).toBe(400);
         expect(calls).toHaveLength(0);
 
         const missing = await apiFetch(`${base}/trust`, {
@@ -1449,12 +1462,18 @@ describe("DaemonControlApiServer", () => {
         const ok = await apiFetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ repoRoot: "/Users/x/proj", allowFullAccess: true }),
+          body: JSON.stringify({
+            repoRoot: "/Users/x/proj",
+            allowFullAccess: true,
+            accessDefault: "readonly",
+          }),
         });
         expect(ok.status).toBe(200);
         const okBody = (await ok.json()) as { repoRoot: string; allowFullAccess: boolean };
         expect(okBody.allowFullAccess).toBe(true);
-        expect(calls).toEqual([{ repoRoot: "/Users/x/proj", allowFullAccess: true }]);
+        expect(calls).toEqual([
+          { repoRoot: "/Users/x/proj", allowFullAccess: true, accessDefault: "readonly" },
+        ]);
       },
       undefined,
       services,
@@ -4497,8 +4516,12 @@ describe("DaemonControlApiServer", () => {
         settings: async () => snapshot,
         updateSettings: async () => snapshot,
         listSecrets: async () => ({ backend: "file", secrets: [] }),
-        setSecret: async () => ({ ok: true }),
-        deleteSecret: async () => ({ ok: true }),
+        setSecret: async (input) => ({
+          name: (input as { name: string }).name,
+          backend: "file",
+          stored: true,
+        }),
+        deleteSecret: async (name) => ({ name, deleted: true }),
       },
     });
     const { host, port } = await server.start();
@@ -4532,6 +4555,21 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ name: "github", value: "x" }),
       });
       expect(badSecret.status).toBe(400);
+
+      const goodSecret = await apiFetch(`${base}/secrets`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: "openai", value: "test-only" }),
+      });
+      expect(goodSecret.status).toBe(200);
+      expect(await goodSecret.json()).toEqual({ name: "openai", backend: "file", stored: true });
+
+      const deleted = await apiFetch(`${base}/secrets/openai`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toEqual({ name: "openai", deleted: true });
 
       const okSecretList = await apiFetch(`${base}/secrets`, {
         headers: { authorization: `Bearer ${token}` },

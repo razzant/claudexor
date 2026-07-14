@@ -1559,28 +1559,3 @@ export const ControlSettingsUpdateRequest = z
   })
   .describe("Request body for PATCH /settings; absent fields keep their stored values.");
 export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;
-
-/** Secret list row: exactly what the store's list() can honestly produce
- * (the never-populated harnesses/env/description fields were retired in the
- * v0.15 triage). */
-export const SecretMetadata = z
-  .object({
-    name: z.string().describe("Secret name/label."),
-    backend: z
-      .enum(["keychain", "file"])
-      .describe("Where the secret is stored: the OS keychain or a file store."),
-    present: z.boolean().default(true).describe("Whether a value is actually stored."),
-  })
-  .describe("Secret list row: name, storage backend, and presence — never the value.");
-export type SecretMetadata = z.infer<typeof SecretMetadata>;
-
-export const ControlSecretListResponse = z
-  .object({
-    backend: z.enum(["keychain", "file"]).describe("Active secret store backend."),
-    secrets: z
-      .array(SecretMetadata)
-      .default([])
-      .describe("Stored secrets (metadata only, never values)."),
-  })
-  .describe("Response for listing stored secrets (metadata only).");
-export type ControlSecretListResponse = z.infer<typeof ControlSecretListResponse>;

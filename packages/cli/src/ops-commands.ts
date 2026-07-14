@@ -20,14 +20,12 @@ import {
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlHarnessSetupHarness,
+  ControlSecretListResponse,
+  ControlSecretMutationResponse,
+  ControlSecretSetRequest,
   ControlSetupJob,
 } from "@claudexor/schema";
-import {
-  MANAGED_SECRET_NAMES,
-  SecretStore,
-  type SecretBackend,
-  isManagedSecretName,
-} from "@claudexor/secrets";
+import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
 import {
   authSourceAvailability,
@@ -364,35 +362,12 @@ async function stdinText(): Promise<string> {
 
 export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "list";
-  // `--backend file` (or env CLAUDEXOR_SECRETS_BACKEND=file) keeps secret I/O in
-  // the 0600 file store — sandbox/CI safe (never touches the real login Keychain).
-  const backendFlag = flagStr(args, "backend");
-  if (
-    backendFlag !== undefined &&
-    backendFlag !== "auto" &&
-    backendFlag !== "keychain" &&
-    backendFlag !== "file"
-  ) {
-    return printUsageError(json, "--backend must be auto|keychain|file");
-  }
-  let store: SecretStore;
-  try {
-    store = new SecretStore((backendFlag as SecretBackend | undefined) ?? "auto");
-    // Surface an invalid CLAUDEXOR_SECRETS_BACKEND now, honoring --json, instead of
-    // letting the throw escape to the plain-text top-level catch.
-    store.resolvedBackend();
-  } catch (err) {
-    const msg = `claudexor secrets: ${err instanceof Error ? err.message : String(err)}`;
-    if (json) printJson({ error: msg });
-    else process.stderr.write(`${msg}\n`);
-    return 1;
-  }
   if (sub === "list") {
-    const secrets = store.list();
-    if (json) printJson({ backend: store.resolvedBackend(), secrets });
+    const result = ControlSecretListResponse.parse(await daemonGet("/secrets"));
+    if (json) printJson(result);
     else {
-      if (secrets.length === 0) print(`no stored secrets (${store.resolvedBackend()})`);
-      for (const s of secrets) print(`${s.name} [${s.backend}]`);
+      if (result.secrets.length === 0) print(`no stored secrets (${result.backend})`);
+      for (const secret of result.secrets) print(`${secret.name} [${secret.backend}]`);
     }
     return 0;
   }
@@ -418,12 +393,20 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
         "secret value required via --from-env or stdin; values are not accepted as positional args",
       );
     }
-    const backend = store.set(name, value);
-    const warning = store.lastFallbackReason;
-    if (json) printJson({ name, backend, stored: true, ...(warning ? { warning } : {}) });
+    const body = ControlSecretSetRequest.parse({ name, value });
+    const { addr } = await ensureDaemon();
+    const response = await controlApiFetch(addr, "/secrets", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok)
+      throw new Error(`secret write failed (${response.status}): ${await response.text()}`);
+    const receipt = ControlSecretMutationResponse.parse(await response.json());
+    if (json) printJson(receipt);
     else {
-      print(`stored ${name} in ${backend}`);
-      if (warning) print(`warning: ${warning}`);
+      print(`stored ${name} in ${receipt.backend}`);
+      if (receipt.warning) print(`warning: ${receipt.warning}`);
     }
     return 0;
   }
@@ -438,8 +421,15 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
         `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
       );
     }
-    store.delete(name);
-    if (json) printJson({ name, deleted: true });
+    const { addr } = await ensureDaemon();
+    const response = await controlApiFetch(addr, `/secrets/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${addr.token}` },
+    });
+    if (!response.ok)
+      throw new Error(`secret delete failed (${response.status}): ${await response.text()}`);
+    const receipt = ControlSecretMutationResponse.parse(await response.json());
+    if (json) printJson(receipt);
     else print(`deleted ${name}`);
     return 0;
   }

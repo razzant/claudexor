@@ -1,14 +1,35 @@
-/**
- * User-level trust services for the control API (narrow by design): list the
- * per-repo trust files and grant/revoke ONE flag — the same file/writer
- * `claudexor trust` owns. Every other trust field stays CLI-only. Shapes are
- * the schema-owned ControlTrustState (no local DTO forks).
- */
+/** User-level trust services behind the typed control API. */
 import { isAbsolute } from "node:path";
-import { ControlTrustListResponse, ControlTrustState } from "@claudexor/schema";
-import { listTrustConfigs, updateTrustConfig } from "@claudexor/config";
+import {
+  ControlTrustListResponse,
+  ControlTrustState,
+  type ControlTrustUpdateRequest,
+} from "@claudexor/schema";
+import {
+  listTrustConfigs,
+  loadConfig,
+  trustConfigPath,
+  updateTrustConfig,
+} from "@claudexor/config";
 
-export async function listTrustService(): Promise<ControlTrustListResponse> {
+export async function listTrustService(input?: {
+  repoRoot?: string;
+}): Promise<ControlTrustListResponse> {
+  const repoRoot = input?.repoRoot;
+  if (repoRoot && !isAbsolute(repoRoot)) throw badRoot(repoRoot);
+  if (repoRoot) {
+    const config = loadConfig(repoRoot);
+    return ControlTrustListResponse.parse({
+      entries: [
+        {
+          repoRoot,
+          path: trustConfigPath(repoRoot),
+          allowFullAccess: config.trust.allow_full_access,
+          accessDefault: config.trust.access_default,
+        },
+      ],
+    });
+  }
   return ControlTrustListResponse.parse({
     entries: listTrustConfigs().map(({ path, config }) => ({
       repoRoot: config.repo_root,
@@ -19,23 +40,25 @@ export async function listTrustService(): Promise<ControlTrustListResponse> {
   });
 }
 
-export async function updateTrustService(input: {
-  repoRoot: string;
-  allowFullAccess: boolean;
-}): Promise<ControlTrustState> {
-  if (!isAbsolute(input.repoRoot)) {
-    throw Object.assign(new Error(`repoRoot must be an absolute path (got ${input.repoRoot})`), {
-      status: 400,
-    });
-  }
+export async function updateTrustService(
+  input: ControlTrustUpdateRequest,
+): Promise<ControlTrustState> {
+  if (!isAbsolute(input.repoRoot)) throw badRoot(input.repoRoot);
   const res = updateTrustConfig(input.repoRoot, (cfg) => ({
     ...cfg,
-    allow_full_access: input.allowFullAccess,
+    ...(input.allowFullAccess === undefined ? {} : { allow_full_access: input.allowFullAccess }),
+    ...(input.accessDefault === undefined ? {} : { access_default: input.accessDefault }),
   }));
   return ControlTrustState.parse({
     repoRoot: res.config.repo_root,
     path: res.path,
     allowFullAccess: res.config.allow_full_access,
     accessDefault: res.config.access_default,
+  });
+}
+
+function badRoot(repoRoot: string): Error & { status: number } {
+  return Object.assign(new Error(`repoRoot must be an absolute path (got ${repoRoot})`), {
+    status: 400,
   });
 }

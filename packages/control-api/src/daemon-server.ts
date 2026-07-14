@@ -38,6 +38,7 @@ import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute, streamLiveRunEvents } from "./journal-event-routes.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
+import { handleSecurityRoute } from "./security-routes.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -60,7 +61,6 @@ import {
   ControlSetupJobListResponse,
   ControlSpecFreezeRequest,
   ControlSpecQuestionsRequest,
-  ControlSecretListResponse,
   ControlRunStartRequest,
   ControlRunStartInfo,
   ControlQueuedRunInfo,
@@ -75,8 +75,6 @@ import {
   ControlBudgetSnapshot,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
-  ControlTrustListResponse,
-  ControlTrustState,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
@@ -113,7 +111,6 @@ import {
   redactSecrets,
   sha256,
 } from "@claudexor/util";
-import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 export interface DaemonRunRecord {
   id: string;
@@ -236,8 +233,8 @@ export interface DaemonControlApiOptions {
       code: string | null,
       retryable?: boolean,
     ) => void;
-    listTrust?: () => Promise<unknown>;
-    updateTrust?: (input: { repoRoot: string; allowFullAccess: boolean }) => Promise<unknown>;
+    listTrust?: (input?: { repoRoot?: string }) => Promise<unknown>;
+    updateTrust?: (input: ControlTrustUpdateRequest) => Promise<unknown>;
   };
 }
 
@@ -1458,22 +1455,22 @@ export class DaemonControlApiServer {
       )
     )
       return;
-    // User-level trust (INV-122: sensitive powers live OUTSIDE versioned repo
-    // config). GET lists per-repo trust files; POST is deliberately NARROW —
-    // exactly {repoRoot, allowFullAccess} (strict), everything else CLI-only.
-    if (method === "GET" && path === "/trust")
-      return this.service(res, "listTrust", undefined, ControlTrustListResponse);
-    if (method === "POST" && path === "/trust") {
-      let body: ControlTrustUpdateRequest;
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        body = ControlTrustUpdateRequest.parse(raw);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-      return this.service(res, "updateTrust", body, ControlTrustState);
-    }
+    if (
+      await handleSecurityRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        url,
+        req,
+        res,
+      )
+    )
+      return;
     if (method === "GET" && path === "/settings")
       return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
@@ -1488,25 +1485,6 @@ export class DaemonControlApiServer {
       return this.service(res, "updateSettings", body, ControlSettingsSnapshot);
     }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
-    if (method === "GET" && path === "/secrets")
-      return this.service(res, "listSecrets", undefined, ControlSecretListResponse);
-    if (method === "POST" && path === "/secrets") {
-      const body = await this.readBody(req);
-      if (!validSecretSetBody(body))
-        return this.json(res, 400, {
-          error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
-        });
-      return this.service(res, "setSecret", body);
-    }
-    const secretDeleteMatch = /^\/secrets\/([^/]+)$/.exec(path);
-    if (method === "DELETE" && secretDeleteMatch) {
-      const name = decodeURIComponent(secretDeleteMatch[1] as string);
-      if (!isAllowedSecretName(name))
-        return this.json(res, 400, {
-          error: `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
-        });
-      return this.service(res, "deleteSecret", name);
-    }
     if (method === "POST" && path === "/spec/questions") {
       try {
         const raw = await this.readBody(req);
@@ -2808,22 +2786,6 @@ function isPatchArtifact(path: string): boolean {
 function isTextArtifact(path: string): boolean {
   const type = contentType(path);
   return type.startsWith("text/") || type.startsWith("application/json");
-}
-
-// Single allowlist shared with the CLI — includes claude_oauth, which
-// the claude adapter reads for subscription-route auth.
-function isAllowedSecretName(name: string): boolean {
-  return isManagedSecretName(name);
-}
-
-function validSecretSetBody(body: unknown): boolean {
-  return Boolean(
-    body &&
-    typeof body === "object" &&
-    !Array.isArray(body) &&
-    typeof (body as Record<string, unknown>)["name"] === "string" &&
-    isAllowedSecretName(String((body as Record<string, unknown>)["name"])),
-  );
 }
 
 function assertNoSpecBodySecrets(body: unknown): void {

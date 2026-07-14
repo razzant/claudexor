@@ -220,8 +220,12 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "natural",
   }),
   j("GET", "/v2/secrets", "read_only", null, "ControlSecretListResponse"),
-  j("POST", "/v2/secrets", "mutating", null, null, { idempotency: "natural" }),
-  j("DELETE", "/v2/secrets/:id", "mutating", null, null, { idempotency: "natural" }),
+  j("POST", "/v2/secrets", "mutating", "ControlSecretSetRequest", "ControlSecretMutationResponse", {
+    idempotency: "natural",
+  }),
+  j("DELETE", "/v2/secrets/:id", "mutating", null, "ControlSecretMutationResponse", {
+    idempotency: "natural",
+  }),
   j("POST", "/v2/spec/questions", "mutating", "ControlSpecQuestionsRequest"),
   j("POST", "/v2/spec/freeze", "mutating", "ControlSpecFreezeRequest"),
   j("GET", "/v2/setup/jobs", "read_only", null, "ControlSetupJobListResponse"),

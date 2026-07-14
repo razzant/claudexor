@@ -434,6 +434,33 @@ describe("canary golden stories", () => {
     ).toEqual(["fake-success"]);
   });
 
+  it("[INV-122:trust-daemon-owned] trust reads and writes the disposable user-level store through the daemon", () => {
+    const initial = cli(sb, ["trust", "--json"]);
+    expect(initial.code).toBe(0);
+    expect(initial.json()).toMatchObject({ allowFullAccess: false });
+
+    const changed = cli(sb, ["trust", "--access-default", "readonly", "--json"]);
+    expect(changed.code).toBe(0);
+    expect(changed.json()).toMatchObject({ accessDefault: "readonly" });
+
+    const shown = cli(sb, ["trust", "--json"]);
+    expect(shown.json()).toMatchObject({ accessDefault: "readonly" });
+
+    const stored = cli(sb, ["secrets", "set", "openai", "--from-env", "CX_TEST_SECRET", "--json"], {
+      env: { CX_TEST_SECRET: "disposable-test-value" },
+    });
+    expect(stored.code).toBe(0);
+    expect(stored.json()).toMatchObject({ name: "openai", backend: "file", stored: true });
+    expect(cli(sb, ["secrets", "list", "--json"]).json()).toMatchObject({
+      backend: "file",
+      secrets: [{ name: "openai", present: true }],
+    });
+    expect(cli(sb, ["secrets", "delete", "openai", "--json"]).json()).toMatchObject({
+      name: "openai",
+      deleted: true,
+    });
+  });
+
   it("[INV-104:settings-write-strict] `settings set harness.<id>.default_model` refuses a model outside the truth source and persists nothing", () => {
     // codex's manifest known_models is the offline truth source here.
     const bad = cli(sb, ["settings", "set", "harness.codex.default_model", "ghost-model-9000"]);

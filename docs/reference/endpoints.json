@@ -216,13 +216,13 @@
       "path": "/v2/secrets",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSecretListResponse"
+      "response_schema": null
     },
     {
       "method": "POST",
       "path": "/v2/secrets",
       "mutating": true,
-      "request_schema": null,
+      "request_schema": "ControlSecretSetRequest",
       "response_schema": null
     },
     {
@@ -370,14 +370,14 @@
       "path": "/v2/trust",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlTrustListResponse"
+      "response_schema": null
     },
     {
       "method": "POST",
       "path": "/v2/trust",
       "mutating": true,
       "request_schema": "ControlTrustUpdateRequest",
-      "response_schema": "ControlTrustState"
+      "response_schema": null
     }
   ]
 }

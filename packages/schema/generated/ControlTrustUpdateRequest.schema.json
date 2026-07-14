@@ -12,14 +12,21 @@
         "allowFullAccess": {
           "type": "boolean",
           "description": "Grant (true) or revoke (false) unsandboxed full access for the repo."
+        },
+        "accessDefault": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write"
+          ],
+          "description": "Default access profile for runs in the repo."
         }
       },
       "required": [
-        "repoRoot",
-        "allowFullAccess"
+        "repoRoot"
       ],
       "additionalProperties": false,
-      "description": "Narrow trust update — the only trust field the control API exposes: grant or revoke unsandboxed full access for one repo in the user-level trust file."
+      "description": "User-level trust update: grant/revoke full access and/or set the readonly/workspace-write default."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"
