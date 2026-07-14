@@ -1,23 +1,9 @@
-import { createInterface, type Interface } from "node:readline";
+import { createInterface } from "node:readline";
 import process from "node:process";
-import { Orchestrator } from "@claudexor/orchestrator";
 import type { ModeKind } from "@claudexor/schema";
-import { buildRegistry } from "./registry.js";
 import { renderReplHelp } from "./command-registry.js";
 import { controlApiFetch, type ControlApiAddress, followRun } from "./live.js";
-import { connectDaemonIfRunning, ensureDaemon } from "./daemon-run.js";
-
-/** REPL turn modes that MUTATE the tree. These are ALWAYS daemon-tracked —
- * there is NO in-process fallback for a mutating run (a run no daemon tracks is
- * un-unblockable by the apply gate). Read-only turns (ask/plan/audit, and
- * orchestrate which only plans in the REPL — no --autonomy surface here) may run
- * locally when the daemon cannot be started. */
-const MUTATING_REPL_MODES = new Set<ModeKind>(["agent"]);
-
-/** Does this REPL turn mode mutate the tree? (such turns are daemon-only.) */
-export function replModeIsMutating(mode: ModeKind): boolean {
-  return MUTATING_REPL_MODES.has(mode);
-}
+import { ensureDaemon } from "./daemon-run.js";
 
 // Rendered from the command registry (REPL_COMMANDS) — the same one owner
 // as the main CLI help.
@@ -62,35 +48,23 @@ function parseReplLine(
   }
 }
 
-/** Daemon control-api reachable right now? (threads SSOT lives there). */
-async function daemonAddress(): Promise<ControlApiAddress | null> {
-  return (await connectDaemonIfRunning())?.addr ?? null;
-}
-
 /**
  * Interactive REPL: `claudexor` with no arguments. A thread of turns over the
  * project in the current directory. The REPL is a THIN CLIENT of the control
  * API — threads live in the daemon SSOT and appear in the macOS app; turns
- * stream live through the same follow pipeline. If no daemon is up we AUTO-START
- * one (the same path `claudexor agent` uses) so mutating turns are daemon-tracked.
- * Only when the daemon cannot be started at all do we fall back to an
- * in-process engine — and that fallback serves READ-ONLY turns only; a mutating
- * (agent) turn there FAILS LOUDLY rather than silently running an in-process
- * Orchestrator that mutates the tree but no daemon tracks (un-unblockable).
+ * stream live through the same follow pipeline. If no daemon is up, the CLI
+ * starts the managed daemon; startup failure is surfaced instead of creating a
+ * second in-process thread/run authority.
  */
 export async function runRepl(repoRoot: string): Promise<number> {
-  const reachable = await daemonAddress();
-  if (reachable) return runDaemonRepl(repoRoot, reachable);
-  // No daemon reachable: auto-start it (mutating REPL turns MUST be daemon-tracked).
   try {
     const { addr } = await ensureDaemon();
     return runDaemonRepl(repoRoot, addr);
   } catch (err) {
-    process.stdout.write(
-      `claudexor: could not start the daemon (${err instanceof Error ? err.message : String(err)}).\n` +
-        `Falling back to a local, READ-ONLY REPL — write turns require the daemon and will be refused.\n`,
+    process.stderr.write(
+      `claudexor: could not start the daemon (${err instanceof Error ? err.message : String(err)})\n`,
     );
-    return runLocalRepl(repoRoot);
+    return 1;
   }
 }
 
@@ -211,100 +185,6 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
       } else {
         process.stdout.write(`turn queued: ${JSON.stringify(started)}\n`);
       }
-    } catch (err) {
-      process.stdout.write(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    }
-    rl.prompt();
-  }
-  rl.close();
-  process.stdout.write("bye\n");
-  return 0;
-}
-
-async function runLocalRepl(repoRoot: string): Promise<number> {
-  // No daemon (and it could not be auto-started): in-process engine with
-  // EPHEMERAL, in-memory continuity. There is no durable thread store here (the
-  // daemon owns the thread journal single-writer); native session ids are kept in
-  // memory for this process so plan->continue still resumes within the session,
-  // and nothing is persisted/shared. This path is READ-ONLY — mutating
-  // (agent) turns are refused, never run in-process and left un-unblockable.
-  const orch = new Orchestrator({ registry: buildRegistry() });
-  let sessions = new Map<string, string>();
-  const localTurns: { runId: string | null; status: string; prompt: string }[] = [];
-
-  process.stdout.write(
-    `claudexor REPL on ${repoRoot} (local engine; READ-ONLY ephemeral thread — start the daemon for write turns and to persist/share with the app)\nType /help for commands.\n`,
-  );
-  const rl: Interface = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: "claudexor> ",
-  });
-  rl.prompt();
-
-  for await (const line of rl) {
-    const parsed = parseReplLine(line);
-    if (!parsed) {
-      rl.prompt();
-      continue;
-    }
-    if ("command" in parsed) {
-      if (parsed.command === "quit") break;
-      if (parsed.command === "help") process.stdout.write(REPL_HELP + "\n");
-      if (parsed.command === "new") {
-        sessions = new Map();
-        localTurns.length = 0;
-        process.stdout.write("new ephemeral thread\n");
-      }
-      if (parsed.command === "thread") {
-        process.stdout.write(`ephemeral thread — ${localTurns.length} turn(s)\n`);
-        for (const t of localTurns)
-          process.stdout.write(
-            `  run=${t.runId ?? "-"} [${t.status}] :: ${t.prompt.slice(0, 80)}\n`,
-          );
-        for (const [harnessId, nativeId] of sessions)
-          process.stdout.write(`  session ${harnessId} native=${nativeId}\n`);
-      }
-      rl.prompt();
-      continue;
-    }
-    if (!parsed.prompt) {
-      process.stdout.write("(empty prompt)\n");
-      rl.prompt();
-      continue;
-    }
-    // a mutating turn must be daemon-tracked. The local engine cannot
-    // produce an applicable/unblockable run, so refuse it loudly here instead of
-    // silently mutating the tree with a run no daemon owns.
-    if (replModeIsMutating(parsed.mode)) {
-      process.stdout.write(
-        "write turns require the daemon (start it with `claudexor daemon start`, then retry); this local REPL serves read-only turns (/ask, /plan, /audit, /orchestrate) only\n",
-      );
-      rl.prompt();
-      continue;
-    }
-    try {
-      const res = await orch.run({
-        repoRoot,
-        prompt: parsed.prompt,
-        mode: parsed.mode,
-        n: parsed.race ? 2 : undefined,
-        resumeSessions: Object.fromEntries(sessions),
-        onSessionObserved: (harnessId, nativeSessionId) => sessions.set(harnessId, nativeSessionId),
-        onHarnessEvent: (ev) => {
-          if (ev.type === "message" && ev.text)
-            process.stdout.write(ev.text.endsWith("\n") ? ev.text : ev.text + "\n");
-          else if (ev.type === "tool_call" && ev.tool)
-            process.stdout.write(
-              `  [tool] ${ev.tool.name}${ev.tool.target ? `: ${ev.tool.target}` : ""}\n`,
-            );
-          else if (ev.type === "error" && ev.error) process.stdout.write(`  [error] ${ev.error}\n`);
-        },
-      });
-      localTurns.push({ runId: res.runId, status: res.status, prompt: parsed.prompt });
-      process.stdout.write(
-        `\n[turn done] status=${res.status} run=${res.runId}\n${res.summary ? res.summary.split("\n").slice(0, 6).join("\n") + "\n" : ""}`,
-      );
     } catch (err) {
       process.stdout.write(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }

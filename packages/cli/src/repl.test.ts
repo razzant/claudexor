@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseReplLine, replModeIsMutating } from "./repl.js";
+import { parseReplLine } from "./repl.js";
 
 describe("parseReplLine", () => {
   it("treats bare text and /best-of as agent (write) turns", () => {
@@ -16,16 +16,5 @@ describe("parseReplLine", () => {
     expect(parseReplLine("/plan do x")).toMatchObject({ mode: "plan" });
     expect(parseReplLine("/audit")).toMatchObject({ mode: "audit" });
     expect(parseReplLine("/orchestrate ship it")).toMatchObject({ mode: "orchestrate" });
-  });
-});
-
-describe("replModeIsMutating (mutating turns are daemon-only)", () => {
-  it("classifies agent as mutating and the read-only modes as not", () => {
-    // The only mutating REPL mode is agent (bare text and /best-of). The local,
-    // daemon-less REPL refuses these and serves read-only turns only.
-    expect(replModeIsMutating("agent")).toBe(true);
-    for (const ro of ["ask", "plan", "audit", "orchestrate"] as const) {
-      expect(replModeIsMutating(ro)).toBe(false);
-    }
   });
 });

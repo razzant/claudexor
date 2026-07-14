@@ -127,8 +127,11 @@ process below. Never paper over the conflict.
   and registration is request-idempotent; relink moves the same project id
   instead of creating a second authority. Registered project commands, threads,
   turns, and sessions live in that stable id's isolated journal partition;
-  no-project state remains global. verify: ProjectStore restart, partition
-  routing/idempotency/recovery isolation, relink tests, and `/v2/projects` API tests.
+  no-project state remains global. Every public CLI mode and REPL turn enters
+  through the managed daemon; daemon startup failure never creates a second
+  in-process run/thread authority. verify: ProjectStore restart, partition
+  routing/idempotency/recovery isolation, relink tests, `/v2/projects` API tests,
+  and canary `[INV-035:cli-all-modes-daemon-owned]`.
 
 ## 5. Evidence Beats Summaries
 

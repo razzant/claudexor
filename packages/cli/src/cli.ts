@@ -15,7 +15,6 @@ import {
   CLAUDEXOR_VERSION,
   containsSecretLikeToken,
   ensureDir,
-  newId,
   noProjectRepoRoot,
   readTextSafe,
   userConfigDir,
@@ -32,7 +31,6 @@ import {
   ExternalContextPolicy,
   type ProtectedPathApproval,
   type ControlReviewerPanelEntry,
-  type Attachment,
   ModeKind as ModeKindSchema,
   type OrchestrateAutonomy,
   Portfolio,
@@ -69,7 +67,7 @@ import {
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
-import { controlApiFetch, followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
+import { controlApiFetch, followRun } from "./live.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import {
   connectDaemonIfRunning,
@@ -78,6 +76,7 @@ import {
   enqueueAndAwait,
   exitCodeForState,
   fetchApplyEligibility,
+  runStatusForCli,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
@@ -263,18 +262,6 @@ function attachmentInputs(
   return out.length > 0 ? out : undefined;
 }
 
-function attachmentsFromInputs(
-  inputs: ReturnType<typeof attachmentInputs>,
-): Attachment[] | undefined {
-  return inputs?.map((a) => ({
-    id: newId("att"),
-    kind: a.kind,
-    mime: a.mime,
-    name: a.name,
-    path: a.path,
-  }));
-}
-
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. Fails loudly on malformed input. */
 function reviewerModels(args: ParsedArgs): Partial<Record<ProviderFamily, string>> | undefined {
   return parseReviewerModelFlags(flagValues(args, "reviewer-model"));
@@ -358,7 +345,6 @@ async function orchestrate(
   let resolvedHarnesses: string[] | undefined;
   let resolvedPrimaryHarness: string | undefined;
   let resolvedModel: string | undefined;
-  let attachments: Attachment[] | undefined;
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
   try {
@@ -378,7 +364,6 @@ async function orchestrate(
     autonomy = parseAutonomy(flagStr(args, "autonomy"));
     resolvedSynthesis = synthesisMode(args);
     attachmentRequest = attachmentInputs(args);
-    attachments = attachmentsFromInputs(attachmentRequest);
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
@@ -424,151 +409,41 @@ async function orchestrate(
     );
   }
 
-  // The mutating run paths are DAEMON-TRACKED: they enqueue via the daemon
-  // (auto-started if needed) so the control-api can see/unblock them and a
-  // blocked run is unblockable through `claudexor decision`. This covers `agent`
-  // and an `orchestrate` run that actually ACTS (auto_safe/auto_full execute the
-  // plan against the tree). Read-only routes (ask/plan/audit and orchestrate in
-  // the default `suggest` autonomy, where the plan IS the work product) have
-  // nothing to apply or unblock, so they stay in-process.
-  const orchestrateExecutes =
-    mode === "orchestrate" && autonomy !== undefined && autonomy !== "suggest";
   // --max-tool-calls caps the orchestrate EXECUTOR's plan steps; on any other
   // mode it would be a silent no-op knob (INV-023) — refuse loudly.
   if (maxToolCalls !== undefined && mode !== "orchestrate") {
     return printUsageError(json, "claudexor: --max-tool-calls only applies to orchestrate runs");
   }
-  if (mode === "agent" || orchestrateExecutes) {
-    return daemonAgentRun(args, json, {
-      mode,
-      autonomy,
-      prompt,
-      tests,
-      portfolio: portfolio?.success ? portfolio.data : undefined,
-      maxUsd,
-      maxToolCalls,
-      reviewerPanel: resolvedReviewerPanel,
-      reviewerModels: resolvedReviewerModels,
-      reviewerEfforts: reviewerEffortOverrides,
-      protectedPathApprovals: resolvedProtectedPathApprovals,
-      resolvedWebPolicy,
-      resolvedAccess,
-      resolvedEffort,
-      resolvedSynthesis,
-      nFlag,
-      attemptsFlag,
-      specId: spec?.id,
-      specHash: loadedSpec?.specHash,
-      specPath: loadedSpec?.specPath,
-      attachmentRequest,
-      forced,
-    });
-  }
-
-  const orch = new Orchestrator({
-    registry: buildRegistry(),
+  return daemonRun(args, json, {
+    mode,
+    autonomy,
+    prompt: prompt || "audit this repository",
+    tests,
     portfolio: portfolio?.success ? portfolio.data : undefined,
-    maxUsd: maxUsd ?? null,
+    maxUsd,
+    maxToolCalls,
     reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
+    protectedPathApprovals: resolvedProtectedPathApprovals,
+    resolvedWebPolicy,
+    resolvedAccess,
+    resolvedEffort,
+    resolvedSynthesis,
+    resolvedHarnesses,
+    resolvedPrimaryHarness,
+    resolvedModel,
+    nFlag,
+    attemptsFlag,
+    specId: spec?.id,
+    specHash: loadedSpec?.specHash,
+    specPath: loadedSpec?.specPath,
+    attachmentRequest,
+    forced,
   });
-  // Ctrl-C on a direct (in-process) run cancels GRACEFULLY: abort the run
-  // signal so harness children die via the process-group kill plumbing, gates
-  // are skipped, and the run ends with a typed cancelled terminal — instead
-  // of the node process dying and orphaning children + a terminal-less
-  // events.jsonl. A second Ctrl-C force-exits.
-  const cancelController = new AbortController();
-  let sigints = 0;
-  const onSigint = (): void => {
-    sigints += 1;
-    if (sigints >= 2) process.exit(130);
-    process.stderr.write("\ncancelling run (Ctrl-C again to force-quit)...\n");
-    cancelController.abort();
-  };
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigint);
-  try {
-    const res = await orch.run({
-      repoRoot: process.cwd(),
-      prompt: prompt || "audit this repository",
-      attachments,
-      mode,
-      signal: cancelController.signal,
-      // Only `suggest` (or unset) reaches the in-process path; auto_safe/auto_full
-      // are routed to the daemon above. Forward it so an explicit --autonomy
-      // suggest is honoured rather than silently dropped.
-      ...(autonomy ? { autonomy } : {}),
-      harnesses: resolvedHarnesses,
-      primaryHarness: resolvedPrimaryHarness,
-      portfolio: portfolio?.success ? portfolio.data : undefined,
-      n: forced.race === true ? (nFlag ?? 2) : nFlag,
-      attempts: attemptsFlag ?? null,
-      untilClean: flagBool(args, "until-clean"),
-      swarm: forced.swarm === true || flagBool(args, "swarm"),
-      create: forced.create === true || flagBool(args, "create"),
-      tests,
-      protectedPathApprovals: resolvedProtectedPathApprovals,
-      maxUsd: maxUsd ?? null,
-      maxToolCalls: maxToolCalls ?? null,
-      access: resolvedAccess,
-      web: resolvedWebPolicy,
-      externalContextPolicy: resolvedWebPolicy,
-      model: resolvedModel,
-      effort: resolvedEffort,
-      synthesis: resolvedSynthesis,
-      specId: spec?.id,
-      specHash: loadedSpec?.specHash,
-      specPath: loadedSpec?.specPath,
-      inPlace: flagBool(args, "in-place"),
-      // Live progress + interactive answers on a TTY; --json stays a pure
-      // machine surface (no printer, no prompts — questions decline benignly).
-      ...(json
-        ? {}
-        : {
-            onEvent: (ev) => {
-              const line = formatRunEventLine(ev as unknown as Record<string, unknown>);
-              if (line) print(line);
-            },
-            onInteraction: (ctx) =>
-              promptQuestionsOnTty(
-                ctx.request.interaction_id,
-                ctx.request.questions,
-                ctx.timeoutAt,
-              ),
-          }),
-    });
-    if (json) {
-      // One machine surface: on a non-success terminal, ADD a top-level `error`
-      // (mirroring the daemon path's `error`) so a JSON consumer reads the reason
-      // the same way regardless of which run path produced it. Add-only: the full
-      // result (runId/runDir/status/mode/winner/summary/candidates) is preserved.
-      printJson(res.status === "success" ? res : { ...res, error: res.summary });
-    } else {
-      print(`run ${res.runId} [${res.status}] mode=${res.mode} winner=${res.winner ?? "none"}`);
-      print(`  artifacts: ${res.runDir}`);
-      for (const c of res.candidates) print(`  - ${c.attemptId} ${c.harnessId} [${c.status}]`);
-      print("");
-      print(res.summary);
-    }
-    return res.status === "success" ? 0 : 1;
-  } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
-  } finally {
-    process.removeListener("SIGINT", onSigint);
-    process.removeListener("SIGTERM", onSigint);
-  }
 }
 
 interface DaemonRunParams {
-  /** The daemon-tracked mode: "agent" (write turn) or "orchestrate" (executing plan). */
   mode: ModeKind;
   /** Orchestrate executor autonomy; only meaningful (and only sent) for mode=orchestrate. */
   autonomy: OrchestrateAutonomy | undefined;
@@ -585,6 +460,9 @@ interface DaemonRunParams {
   resolvedAccess: ReturnType<typeof accessProfile>;
   resolvedEffort: EffortHint | undefined;
   resolvedSynthesis: ReturnType<typeof synthesisMode>;
+  resolvedHarnesses: string[] | undefined;
+  resolvedPrimaryHarness: string | undefined;
+  resolvedModel: string | undefined;
   nFlag: number | undefined;
   attemptsFlag: number | undefined;
   specId: string | undefined;
@@ -595,20 +473,10 @@ interface DaemonRunParams {
 }
 
 /**
- * DAEMON-TRACKED mutating run (the unified `agent`/`best-of`/`create` path, and an
- * `orchestrate` run with auto_safe/auto_full autonomy). Auto-starts
- * the daemon if needed, enqueues via the control API (so the run is registered
- * and the control-api can see/unblock it), streams its events to the TTY (text
- * mode) and resolves the runDir from the daemon (the run lives under the daemon
- * dir, not project-local) so apply/decision/inspect can find it. `--json` prints
- * exactly one object `{ runId, runDir, status }` — the SWE/TB benchmark runner
- * parses this to read <runDir>/final/patch.diff.
+ * All five product modes enter through the managed daemon and control API.
+ * `--json` prints one stable `{ runId, runDir, status }` machine envelope.
  */
-async function daemonAgentRun(
-  args: ParsedArgs,
-  json: boolean,
-  p: DaemonRunParams,
-): Promise<number> {
+async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): Promise<number> {
   // The run is always project-scoped (the cwd is its repo); execution is
   // live in-place only under the explicit --in-place convergence path.
   const inPlace = flagBool(args, "in-place");
@@ -620,10 +488,8 @@ async function daemonAgentRun(
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
-    ...(harnessList(args) ? { harnesses: harnessList(args) } : {}),
-    ...(flagStr(args, "primary-harness")
-      ? { primaryHarness: flagStr(args, "primary-harness") }
-      : {}),
+    ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
+    ...(p.resolvedPrimaryHarness ? { primaryHarness: p.resolvedPrimaryHarness } : {}),
     ...(p.portfolio ? { portfolio: p.portfolio } : {}),
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
@@ -639,7 +505,7 @@ async function daemonAgentRun(
       : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
-    ...(flagStr(args, "model") ? { model: flagStr(args, "model") } : {}),
+    ...(p.resolvedModel ? { model: p.resolvedModel } : {}),
     ...(p.resolvedEffort ? { effort: p.resolvedEffort } : {}),
     ...(p.reviewerPanel ? { reviewerPanel: p.reviewerPanel } : {}),
     ...(p.reviewerModels ? { reviewerModels: p.reviewerModels } : {}),
@@ -667,7 +533,7 @@ async function daemonAgentRun(
       printJson({
         runId: out.runId,
         runDir: out.runDir,
-        status: out.status,
+        status: runStatusForCli(out.status),
         jobId: out.jobId,
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
@@ -687,8 +553,9 @@ async function daemonAgentRun(
     await followRun(started.runId, false);
     const final = started.jobId ? await client.status(started.jobId) : null;
     const status = final?.state ?? started.status;
+    const publicStatus = runStatusForCli(status);
     print("");
-    print(`run ${started.runId} [${status}]`);
+    print(`run ${started.runId} [${publicStatus}]`);
     print(`  artifacts: ${final?.runDir ?? started.runDir}`);
     if (status === "blocked") {
       print(

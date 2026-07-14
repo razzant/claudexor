@@ -332,6 +332,11 @@ export function exitCodeForState(state: string): number {
     : 1;
 }
 
+/** Keep internal command-state spelling out of the public run-result envelope. */
+export function runStatusForCli(state: string): string {
+  return state === "succeeded" ? "success" : state;
+}
+
 /**
  * The run's derived apply-gate verdict from GET /runs/:id (single producer:
  * the delivery gate via the control API). Soft-fails to null — a detail

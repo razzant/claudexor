@@ -326,6 +326,12 @@ cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
 
 ## 6. Main Execution Paths
 
+Every public CLI mode (`ask`, `plan`, `audit`, `agent`, `orchestrate`) and the
+interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
+when needed and fails loudly if it cannot. There is no second in-process CLI
+run/thread authority. The daemon remains the single scheduler and journal
+writer while the mode pipelines below retain their distinct mutability.
+
 ### Ask
 
 Creates a run directory, writes a `TaskContract`, runs one adapter with
@@ -643,8 +649,8 @@ branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
 process is STILL ALIVE survive the sweep: `WorkspaceManager.create()` records
 an owner marker (pid + kernel start time — recycling-proof) that the sweeper
-  honors, so direct in-process CLI runs are never garbage-collected by a daemon
-starting mid-flight. One bounded exception: when start-time proof is
+honors, so a workspace whose owner is still active is never garbage-collected
+by a daemon starting mid-flight. One bounded exception: when start-time proof is
 unavailable on either side (`ps`-less or sandboxed environment, legacy
 marker), a live pid keeps the envelope only while its working dirs are fresh
 (24h window over the newest mtime of the envelope base, owner marker, and

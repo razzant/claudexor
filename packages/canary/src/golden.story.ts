@@ -106,6 +106,32 @@ describe("canary golden stories", () => {
     expect(oldRace.stdout + oldRace.stderr).toContain("claudexor best-of");
   });
 
+  it("[INV-035:cli-all-modes-daemon-owned] every product mode returns a durable daemon handle", () => {
+    const commands: Array<{ args: string[]; mode: string; harness?: string }> = [
+      { args: ["ask", "answer"], mode: "ask" },
+      { args: ["plan", "plan"], mode: "plan" },
+      { args: ["agent", "inspect", "--mode", "audit"], mode: "audit" },
+      { args: ["agent", "change"], mode: "agent" },
+      {
+        args: ["agent", "coordinate", "--mode", "orchestrate"],
+        mode: "orchestrate",
+        harness: "fake-implement",
+      },
+    ];
+    for (const command of commands) {
+      const result = cli(sb, [
+        ...command.args,
+        "--harness",
+        command.harness ?? "fake-success",
+        "--json",
+      ]);
+      expect(result.code, `${command.mode}: ${result.stdout}${result.stderr}`).toBe(0);
+      const output = result.json() as { jobId?: string; mode?: string };
+      expect(output.jobId).toMatch(/^job-/);
+      expect(output.mode).toBe(command.mode);
+    }
+  });
+
   it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
     const secret = "sk-" + "z".repeat(24);
     const r = cli(sb, [

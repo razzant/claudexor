@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daemonOutcomeSummary, exitCodeForState } from "./daemon-run.js";
+import { daemonOutcomeSummary, exitCodeForState, runStatusForCli } from "./daemon-run.js";
 
 describe("exitCodeForState", () => {
   it("maps success terminals to 0 and everything else to 1", () => {
@@ -16,6 +16,11 @@ describe("exitCodeForState", () => {
     ])
       expect(exitCodeForState(bad)).toBe(1);
   });
+});
+
+it("normalizes the internal succeeded command state at the public CLI boundary", () => {
+  expect(runStatusForCli("succeeded")).toBe("success");
+  expect(runStatusForCli("blocked")).toBe("blocked");
 });
 
 describe("daemonOutcomeSummary (P2: a reason on every non-success daemon terminal)", () => {
