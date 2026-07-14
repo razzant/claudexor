@@ -44,10 +44,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
-      yaml:
-        specifier: ^2.6.1
-        version: 2.9.0
-
   benchmarks/runner:
     dependencies:
       '@claudexor/util':
