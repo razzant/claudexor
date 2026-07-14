@@ -420,6 +420,8 @@ function controlServices(
   authReadiness: AuthReadinessService,
 ) {
   const secretStore = new SecretStore();
+  const journalPartition = (partition: string): JournalManager =>
+    partition === "global" ? journalManager : threads.journal(partition);
   const setupJobs = (): SetupJobManager => {
     try {
       return setupBinding.current();
@@ -495,8 +497,6 @@ function controlServices(
       code: string | null,
       retryable?: boolean,
     ) => threads.setTurnEnqueueError(turnId, message, code, retryable ?? true),
-    // User-level trust surface (narrow by design): list per-repo trust files
-    // and grant/revoke ONE flag — the same file/writer `claudexor trust` owns.
     listTrust: listTrustService,
     updateTrust: updateTrustService,
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
@@ -507,9 +507,6 @@ function controlServices(
         cwd: NO_PROJECT_ROOT,
         ...(input?.fresh !== undefined ? { fresh: input.fresh } : {}),
       });
-      // The doctor's configured-model truth check rides the status DTO
-      // so the UI renders the same honesty the CLI prints (never a green
-      // harness with a doomed configured model).
       const cfg = loadConfig(NO_PROJECT_ROOT);
       return {
         harnesses: await Promise.all(
@@ -531,8 +528,6 @@ function controlServices(
       harnessModels(input.harnessId, NO_PROJECT_ROOT),
     authReadiness: async (input: { harnessId: string; request: unknown }) =>
       authReadiness.refresh(input.harnessId, input.request),
-    // Derived catalog for external agents; same composer the CLI verb and the
-    // MCP tool use, so all three surfaces answer identically.
     agentCapabilities: async () => buildAgentCapabilityCatalog(),
     createSetupJob: async (input: unknown) => setupJobs().create(input),
     listSetupJobs: async (input?: unknown) => {
@@ -545,11 +540,15 @@ function controlServices(
     cancelSetupJob: async (input: unknown) => setupJobs().cancel(input),
     reconcileSetupJob: async (input: unknown) => setupJobs().reconcile(input),
     extendSetupJob: async (input: unknown) => setupJobs().extend(input),
-    recoveryInspectGlobal: async () => journalManager.inspect(),
-    recoveryValidateGlobal: async () => journalManager.validate(),
-    recoveryExportGlobal: async () => journalManager.exportRecovery(),
-    recoveryQuarantineGlobal: async (input: unknown) => {
+    recoveryInspectPartition: async (partition: string) => journalPartition(partition).inspect(),
+    recoveryValidatePartition: async (partition: string) => journalPartition(partition).validate(),
+    recoveryExportPartition: async (partition: string) =>
+      journalPartition(partition).exportRecovery(),
+    recoveryQuarantinePartition: async (partition: string, input: unknown) => {
       const request = input as Parameters<JournalManager["quarantineAndStartFresh"]>[0];
+      if (partition !== "global") {
+        return journalPartition(partition).quarantineAndStartFresh(request);
+      }
       const preflight = journalManager.preflightQuarantine(request);
       if (preflight.disposition === "completed" && setupBinding.isBoundToCurrentGeneration()) {
         return preflight.receipt;

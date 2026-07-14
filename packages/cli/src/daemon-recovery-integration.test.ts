@@ -114,10 +114,10 @@ describe("daemon recovery composition", () => {
       createSetupJob: async (input) => setup.current().create(input),
       setupJobStatus: async (input) => setup.current().status(input),
       setupJobEvents: async (input) => setup.current().events(input),
-      recoveryInspectGlobal: async () => journal.inspect(),
-      recoveryValidateGlobal: async () => journal.validate(),
-      recoveryExportGlobal: async () => journal.exportRecovery(),
-      recoveryQuarantineGlobal: async (input) => {
+      recoveryInspectPartition: async () => journal.inspect(),
+      recoveryValidatePartition: async () => journal.validate(),
+      recoveryExportPartition: async () => journal.exportRecovery(),
+      recoveryQuarantinePartition: async (_partition, input) => {
         const request = input as JournalQuarantineRequest;
         const preflight = journal.preflightQuarantine(request);
         if (preflight.disposition === "completed") return preflight.receipt;

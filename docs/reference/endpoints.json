@@ -80,28 +80,28 @@
     },
     {
       "method": "GET",
-      "path": "/v2/recovery/partitions/global",
+      "path": "/v2/recovery/partitions/:id",
       "mutating": false,
       "request_schema": null,
       "response_schema": "ControlJournalInspection"
     },
     {
       "method": "POST",
-      "path": "/v2/recovery/partitions/global/export",
+      "path": "/v2/recovery/partitions/:id/export",
       "mutating": false,
       "request_schema": null,
       "response_schema": "ControlJournalExportReceipt"
     },
     {
       "method": "POST",
-      "path": "/v2/recovery/partitions/global/quarantine",
+      "path": "/v2/recovery/partitions/:id/quarantine",
       "mutating": true,
       "request_schema": "ControlJournalQuarantineRequest",
       "response_schema": "ControlJournalQuarantineReceipt"
     },
     {
       "method": "POST",
-      "path": "/v2/recovery/partitions/global/validate",
+      "path": "/v2/recovery/partitions/:id/validate",
       "mutating": false,
       "request_schema": null,
       "response_schema": "ControlJournalValidation"

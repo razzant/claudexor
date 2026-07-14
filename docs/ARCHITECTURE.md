@@ -461,10 +461,10 @@ files.
 - `GET /v2/projects`
 - `POST /v2/projects`
 - `POST /v2/projects/:id/relink`
-- `GET /v2/recovery/partitions/global`
-- `POST /v2/recovery/partitions/global/export`
-- `POST /v2/recovery/partitions/global/quarantine`
-- `POST /v2/recovery/partitions/global/validate`
+- `GET /v2/recovery/partitions/:id`
+- `POST /v2/recovery/partitions/:id/export`
+- `POST /v2/recovery/partitions/:id/quarantine`
+- `POST /v2/recovery/partitions/:id/validate`
 - `GET /v2/runs`
 - `POST /v2/runs`
 - `GET /v2/runs/:id`

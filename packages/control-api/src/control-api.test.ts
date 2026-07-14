@@ -2761,6 +2761,7 @@ describe("DaemonControlApiServer", () => {
       evidenceRefs: [`recovery:global:${fingerprint}`],
     };
     const quarantineInputs: unknown[] = [];
+    const inspectedPartitions: string[] = [];
     await withDaemonServer(
       daemon,
       async (base) => {
@@ -2768,6 +2769,12 @@ describe("DaemonControlApiServer", () => {
         const inspect = await apiFetch(`${base}/v2/recovery/partitions/global`, { headers });
         expect(inspect.status).toBe(200);
         expect(await inspect.json()).toEqual(inspection);
+
+        const projectInspect = await apiFetch(`${base}/v2/recovery/partitions/project%3Aprj-1`, {
+          headers,
+        });
+        expect(projectInspect.status).toBe(200);
+        expect(await projectInspect.json()).toMatchObject({ partition: "project:prj-1" });
 
         const validate = await apiFetch(`${base}/v2/recovery/partitions/global/validate`, {
           method: "POST",
@@ -2797,7 +2804,7 @@ describe("DaemonControlApiServer", () => {
         expect(missingKey.headers.get("content-type")).toBe("application/problem+json");
         expect(await missingKey.json()).toMatchObject({
           code: "idempotency_key_required",
-          fieldErrors: { "Idempotency-Key": ["required for quarantine"] },
+          fieldErrors: { "Idempotency-Key": ["required for create operations"] },
         });
 
         const quarantine = await apiFetch(`${base}/v2/recovery/partitions/global/quarantine`, {
@@ -2823,28 +2830,37 @@ describe("DaemonControlApiServer", () => {
       },
       undefined,
       {
-        recoveryInspectGlobal: async () => inspection,
-        recoveryValidateGlobal: async () => ({
+        recoveryInspectPartition: async (partition) => {
+          inspectedPartitions.push(partition);
+          return {
+            ...inspection,
+            partition,
+            evidenceRefs: [`recovery:${partition}:${fingerprint}`],
+          };
+        },
+        recoveryValidatePartition: async (partition) => ({
           ...inspection,
+          partition,
+          evidenceRefs: [`recovery:${partition}:${fingerprint}`],
           projectionStatus: [
             { name: "setup", status: "invalid", detail: "semantic replay failed" },
           ],
         }),
-        recoveryExportGlobal: async () => ({
+        recoveryExportPartition: async (partition) => ({
           schemaVersion: 1,
           exportId: "export-1",
-          partition: "global",
+          partition,
           fingerprint,
           bundlePath: "/daemon-owned/recovery/export-1",
           manifestSha256: "b".repeat(64),
           createdAt: "2026-01-01T00:00:01.000Z",
         }),
-        recoveryQuarantineGlobal: async (input) => {
+        recoveryQuarantinePartition: async (partition, input) => {
           quarantineInputs.push(input);
           return {
             schemaVersion: 1,
             operationId: "00000000-0000-4000-8000-000000000001",
-            partition: "global",
+            partition,
             previousFingerprint: fingerprint,
             quarantineArtifactId: "quarantine-1",
             quarantinePath: "/daemon-owned/quarantine/quarantine-1",
@@ -2854,6 +2870,7 @@ describe("DaemonControlApiServer", () => {
         },
       },
     );
+    expect(inspectedPartitions).toEqual(["global", "project:prj-1"]);
   });
 
   it("preserves typed service problems and treats invalid service output as an internal fault", async () => {

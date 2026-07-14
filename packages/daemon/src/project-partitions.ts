@@ -66,6 +66,13 @@ export class ProjectPartitions implements CommandAuthority {
     return project;
   }
 
+  journal(partition: string): JournalManager {
+    if (!partition.startsWith("project:")) throw unknownPartition(partition);
+    const id = partition.slice("project:".length);
+    if (!id || !this.projects.current().get(id)) throw unknownPartition(partition);
+    return this.ensure(id).manager;
+  }
+
   createThread(input: CreateThreadInput): Thread {
     if (input.repoRoot && !this.projects.current().findByRoot(input.repoRoot)) {
       this.registerProject({
@@ -244,4 +251,11 @@ function record(value: unknown): Record<string, unknown> {
 function stringField(value: Record<string, unknown>, key: string): string {
   const field = value[key];
   return typeof field === "string" ? field : "";
+}
+
+function unknownPartition(partition: string): Error {
+  return Object.assign(new Error(`no such journal partition: ${partition}`), {
+    code: "journal_partition_not_found",
+    status: 404,
+  });
 }

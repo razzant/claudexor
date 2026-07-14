@@ -83,8 +83,8 @@ export function implementedEndpoints(input) {
 const READ_ONLY_NON_GET = new Set([
   "POST /v2/runs/:id/apply/check",
   "POST /v2/harnesses/:id/auth-readiness",
-  "POST /v2/recovery/partitions/global/export",
-  "POST /v2/recovery/partitions/global/validate",
+  "POST /v2/recovery/partitions/:id/export",
+  "POST /v2/recovery/partitions/:id/validate",
 ]);
 
 // Responses produced through HELPERS the slice-scan cannot see into (e.g.
@@ -97,11 +97,16 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["POST /v2/projects", "ControlProject"],
   ["POST /v2/projects/:id/relink", "ControlProject"],
   ["GET /v2/runs/:id", "ControlRunDetail"],
+  ["GET /v2/recovery/partitions/:id", "ControlJournalInspection"],
+  ["POST /v2/recovery/partitions/:id/validate", "ControlJournalValidation"],
+  ["POST /v2/recovery/partitions/:id/export", "ControlJournalExportReceipt"],
+  ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineReceipt"],
 ]);
 
 const ROUTE_REQUEST_OVERRIDES = new Map([
   ["POST /v2/projects", "ControlProjectRegisterRequest"],
   ["POST /v2/projects/:id/relink", "ControlProjectRelinkRequest"],
+  ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineRequest"],
 ]);
 
 export function endpointDetails(input) {

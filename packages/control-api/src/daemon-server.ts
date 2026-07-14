@@ -35,16 +35,12 @@ import * as runStart from "./run-start.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
+import { handleRecoveryRoute } from "./recovery-routes.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
   ControlAuthReadinessRefreshResponse,
   ControlProblem,
-  ControlJournalInspection,
-  ControlJournalValidation,
-  ControlJournalExportReceipt,
-  ControlJournalQuarantineRequest,
-  ControlJournalQuarantineReceipt,
   AccessProfile,
   AttachmentInput,
   ControlWebEvidence,
@@ -182,10 +178,10 @@ export interface DaemonControlApiOptions {
     cancelSetupJob?: (input: unknown) => Promise<unknown>;
     reconcileSetupJob?: (input: unknown) => Promise<unknown>;
     extendSetupJob?: (input: unknown) => Promise<unknown>;
-    recoveryInspectGlobal?: () => Promise<unknown>;
-    recoveryValidateGlobal?: () => Promise<unknown>;
-    recoveryExportGlobal?: () => Promise<unknown>;
-    recoveryQuarantineGlobal?: (input: unknown) => Promise<unknown>;
+    recoveryInspectPartition?: (partition: string) => Promise<unknown>;
+    recoveryValidatePartition?: (partition: string) => Promise<unknown>;
+    recoveryExportPartition?: (partition: string) => Promise<unknown>;
+    recoveryQuarantinePartition?: (partition: string, input: unknown) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
     listSecrets?: () => Promise<unknown>;
@@ -1412,38 +1408,21 @@ export class DaemonControlApiServer {
         res,
       );
     }
-    if (method === "GET" && path === "/recovery/partitions/global") {
-      return this.service(res, "recoveryInspectGlobal", undefined, ControlJournalInspection);
-    }
-    if (method === "POST" && path === "/recovery/partitions/global/validate") {
-      return this.service(res, "recoveryValidateGlobal", undefined, ControlJournalValidation);
-    }
-    if (method === "POST" && path === "/recovery/partitions/global/export") {
-      return this.service(res, "recoveryExportGlobal", undefined, ControlJournalExportReceipt);
-    }
-    if (method === "POST" && path === "/recovery/partitions/global/quarantine") {
-      try {
-        const header = req.headers["idempotency-key"];
-        if (Array.isArray(header)) throw new Error("Idempotency-Key may appear only once");
-        if (!header || header.trim().length === 0) {
-          throw Object.assign(new Error("Idempotency-Key is required"), {
-            code: "idempotency_key_required",
-            fieldErrors: { "Idempotency-Key": ["required for quarantine"] },
-          });
-        }
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        const body = ControlJournalQuarantineRequest.parse(raw);
-        return this.service(
-          res,
-          "recoveryQuarantineGlobal",
-          { ...body, idempotencyKey: header.trim() },
-          ControlJournalQuarantineReceipt,
-        );
-      } catch (error) {
-        return this.requestError(res, error);
-      }
-    }
+    if (
+      await handleRecoveryRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
     // User-level trust (INV-122: sensitive powers live OUTSIDE versioned repo
     // config). GET lists per-repo trust files; POST is deliberately NARROW —
     // exactly {repoRoot, allowFullAccess} (strict), everything else CLI-only.

@@ -238,24 +238,12 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/setup/jobs/:id/extend", "mutating", null, "ControlSetupJob", {
     idempotency: "natural",
   }),
-  j("GET", "/v2/recovery/partitions/global", "read_only", null, "ControlJournalInspection"),
+  j("GET", "/v2/recovery/partitions/:id", "read_only", null, "ControlJournalInspection"),
+  j("POST", "/v2/recovery/partitions/:id/validate", "read_only", null, "ControlJournalValidation"),
+  j("POST", "/v2/recovery/partitions/:id/export", "read_only", null, "ControlJournalExportReceipt"),
   j(
     "POST",
-    "/v2/recovery/partitions/global/validate",
-    "read_only",
-    null,
-    "ControlJournalValidation",
-  ),
-  j(
-    "POST",
-    "/v2/recovery/partitions/global/export",
-    "read_only",
-    null,
-    "ControlJournalExportReceipt",
-  ),
-  j(
-    "POST",
-    "/v2/recovery/partitions/global/quarantine",
+    "/v2/recovery/partitions/:id/quarantine",
     "mutating",
     "ControlJournalQuarantineRequest",
     "ControlJournalQuarantineReceipt",
