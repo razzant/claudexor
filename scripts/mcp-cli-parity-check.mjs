@@ -126,6 +126,12 @@ const CLI_ONLY_EXEMPT = {
   diff: "review verb flag, not a run control",
   intent: "review verb flag, not a run control",
   tests: "review verb flag (plural); the run control is --test, mapped above",
+  "evidence-dir": "frozen review packet path; local release-operator evidence, not a run control",
+  "artifacts-dir": "frozen review output path; local release-operator evidence, not a run control",
+  "candidate-sha": "frozen review identity; local release-operator evidence, not a run control",
+  "candidate-tree": "frozen review identity; local release-operator evidence, not a run control",
+  "packet-manifest-digest":
+    "frozen review identity; local release-operator evidence, not a run control",
 };
 
 const failures = [];
