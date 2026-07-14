@@ -11,7 +11,19 @@
  * (docs/reference/endpoints.json) for external agents, referencing the
  * generated JSON Schemas in packages/schema/generated/.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+
+const DEFAULT_ROUTE_SOURCES = [
+  "packages/control-api/src/daemon-server.ts",
+  ...readdirSync("packages/control-api/src")
+    .filter((name) => name.endsWith("-routes.ts"))
+    .sort()
+    .map((name) => `packages/control-api/src/${name}`),
+];
+
+function sourcePaths(input) {
+  return input === undefined ? DEFAULT_ROUTE_SOURCES : Array.isArray(input) ? input : [input];
+}
 
 /** Route guard positions + templates (shared by the set and detail views). */
 function routeSites(src) {
@@ -45,9 +57,12 @@ function routeSites(src) {
   return sites;
 }
 
-export function implementedEndpoints(srcPath = "packages/control-api/src/daemon-server.ts") {
-  const src = readFileSync(srcPath, "utf8");
-  const out = new Set(routeSites(src).map((s) => `${s.method} ${s.path}`));
+export function implementedEndpoints(input) {
+  const out = new Set();
+  for (const srcPath of sourcePaths(input)) {
+    const src = readFileSync(srcPath, "utf8");
+    for (const site of routeSites(src)) out.add(`${site.method} ${site.path}`);
+  }
   out.add("POST /v2/handshake");
   out.add("GET /v2/operations");
   out.add("GET /healthz"); // declared before auth with hostIsLoopback guard
@@ -78,39 +93,50 @@ const READ_ONLY_NON_GET = new Set([
 // fails loudly instead of shipping a dangling ref.
 const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["GET /v2/operations", "ControlOperationCatalog"],
+  ["GET /v2/projects", "ControlProjectListResponse"],
+  ["POST /v2/projects", "ControlProject"],
+  ["POST /v2/projects/:id/relink", "ControlProject"],
   ["GET /v2/runs/:id", "ControlRunDetail"],
 ]);
 
-export function endpointDetails(srcPath = "packages/control-api/src/daemon-server.ts") {
-  const src = readFileSync(srcPath, "utf8");
-  const sites = routeSites(src).sort((a, b) => a.index - b.index);
-  const details = sites.map((site, i) => {
-    // The handler slice is bounded by the NEXT route guard (or a hard cap for
-    // the last route) — no formatting-sensitive sentinels.
-    const sliceEnd =
-      i + 1 < sites.length ? sites[i + 1].index : Math.min(site.index + 4000, src.length);
-    const body = src.slice(site.index, sliceEnd);
-    // Request schema: any PascalCase *Request DTO parsed in the handler; the
-    // `body = X.parse(` form is preferred when both appear.
-    const requestMatch =
-      /body = ([A-Z]\w+)\.parse\(/.exec(body) ?? /\b([A-Z]\w*Request)\.parse\(/.exec(body);
-    // Response schema, two validated forms (both zod-parse the wire value):
-    //  - the service() helper's schema argument (last arg, tolerant of commas
-    //    inside the input argument);
-    //  - direct `this.json(res, <code>, Schema.parse(...))` responses.
-    // Schema DTOs are PascalCase exports; a lowercase arg (err, body, ...) is
-    // not a schema reference. Hand-built JSON stays null — honest absence.
-    const serviceMatch =
-      /this\.service\(\s*res,\s*"\w+",[\s\S]*?,\s*([A-Z]\w+)\s*,?\s*\);/.exec(body) ??
-      /this\.json\(res, \w+, (?:await )?([A-Z]\w+)\.parse\(/.exec(body);
-    const key = `${site.method} ${site.path}`;
-    return {
-      method: site.method,
-      path: site.path,
-      mutating: site.method !== "GET" && !READ_ONLY_NON_GET.has(key),
-      requestSchema: requestMatch ? requestMatch[1] : null,
-      responseSchema: ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
-    };
+const ROUTE_REQUEST_OVERRIDES = new Map([
+  ["POST /v2/projects", "ControlProjectRegisterRequest"],
+  ["POST /v2/projects/:id/relink", "ControlProjectRelinkRequest"],
+]);
+
+export function endpointDetails(input) {
+  const details = sourcePaths(input).flatMap((srcPath) => {
+    const src = readFileSync(srcPath, "utf8");
+    const sites = routeSites(src).sort((a, b) => a.index - b.index);
+    return sites.map((site, i) => {
+      // The handler slice is bounded by the NEXT route guard (or a hard cap for
+      // the last route) — no formatting-sensitive sentinels.
+      const sliceEnd =
+        i + 1 < sites.length ? sites[i + 1].index : Math.min(site.index + 4000, src.length);
+      const body = src.slice(site.index, sliceEnd);
+      // Request schema: any PascalCase *Request DTO parsed in the handler; the
+      // `body = X.parse(` form is preferred when both appear.
+      const requestMatch =
+        /body = ([A-Z]\w+)\.parse\(/.exec(body) ?? /\b([A-Z]\w*Request)\.parse\(/.exec(body);
+      // Response schema, two validated forms (both zod-parse the wire value):
+      //  - the service() helper's schema argument (last arg, tolerant of commas
+      //    inside the input argument);
+      //  - direct `this.json(res, <code>, Schema.parse(...))` responses.
+      // Schema DTOs are PascalCase exports; a lowercase arg (err, body, ...) is
+      // not a schema reference. Hand-built JSON stays null — honest absence.
+      const serviceMatch =
+        /this\.service\(\s*res,\s*"\w+",[\s\S]*?,\s*([A-Z]\w+)\s*,?\s*\);/.exec(body) ??
+        /this\.json\(res, \w+, (?:await )?([A-Z]\w+)\.parse\(/.exec(body);
+      const key = `${site.method} ${site.path}`;
+      return {
+        method: site.method,
+        path: site.path,
+        mutating: site.method !== "GET" && !READ_ONLY_NON_GET.has(key),
+        requestSchema: ROUTE_REQUEST_OVERRIDES.get(key) ?? (requestMatch ? requestMatch[1] : null),
+        responseSchema:
+          ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
+      };
+    });
   });
   details.push({
     method: "POST",

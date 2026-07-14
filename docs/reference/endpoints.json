@@ -59,6 +59,27 @@
     },
     {
       "method": "GET",
+      "path": "/v2/projects",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlProjectListResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/projects",
+      "mutating": true,
+      "request_schema": "ControlProjectRegisterRequest",
+      "response_schema": "ControlProject"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/projects/:id/relink",
+      "mutating": true,
+      "request_schema": "ControlProjectRelinkRequest",
+      "response_schema": "ControlProject"
+    },
+    {
+      "method": "GET",
       "path": "/v2/recovery/partitions/global",
       "mutating": false,
       "request_schema": null,

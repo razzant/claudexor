@@ -7,6 +7,8 @@ import {
   JournalManager,
   DaemonServer,
   InteractionRegistry,
+  ProjectStore,
+  projectProjection,
   RunEventBus,
   ThreadStore,
   threadProjection,
@@ -67,18 +69,16 @@ async function main(): Promise<void> {
       throw new Error("daemon shutdown coordinator is not initialized");
     };
 
-    // Refuse before opening the single-writer journal or sweeping state.
     if (await socketAlive(socketPath)) {
       throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
     }
     await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
 
-    // Live events are pushed for SSE latency; the event log remains canonical, and
-    // harness questions park in the interaction registry until answered.
     const bus = new RunEventBus();
     const interactions = new InteractionRegistry();
     const journalManager = new JournalManager(daemonDir());
     const commandStoreSlot = journalManager.registerProjection(commandProjection());
+    const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
       name: "setup",
@@ -86,19 +86,14 @@ async function main(): Promise<void> {
       validate: (store) => store.validateProjection(),
     });
     journalManager.start();
+    const projects = projectStoreSlot.current();
     const threads = threadStoreSlot.current();
 
     const server = new DaemonServer({
       socketPath,
       token,
       commands: commandStoreSlot,
-      // A terminal run must stop advertising waiting_on_user immediately —
-      // cancelled/failed runs otherwise park their questions in the registry
-      // until the interaction timeout.
       onRunTerminal: (runId) => interactions.dropForRun(runId),
-      // A turn whose job died BEFORE a run bound (trust gate, preflight throw)
-      // records the refusal on itself — the chat renders it inline instead of
-      // an eternally-empty bubble.
       onTurnEnqueueFailed: (turnId, error, code) =>
         threads.setTurnEnqueueError(turnId, error, code),
       onShutdownRequested: () => requestRootShutdown(),
@@ -119,7 +114,6 @@ async function main(): Promise<void> {
               ? p.reviewerEfforts
               : undefined,
         });
-        // Fail loud on bogus socket-caller thread/turn ids (job settles failed).
         const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
         // Resolve the execution tree: an ISOLATED thread runs in its persistent
         // worktree (lazily created); in-place threads and ordinary runs use the
@@ -255,6 +249,7 @@ async function main(): Promise<void> {
             bus,
             services: controlServices(
               interactions,
+              projects,
               threads,
               setupBinding,
               journalManager,
@@ -422,6 +417,7 @@ type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
 
 function controlServices(
   interactions: InteractionRegistry,
+  projects: ProjectStore,
   threads: ThreadStore,
   setupBinding: SetupBinding,
   journalManager: JournalManager,
@@ -446,6 +442,10 @@ function controlServices(
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
+    listProjects: async () => ({ projects: projects.list() as unknown[] }),
+    registerProject: async (input: Parameters<ProjectStore["register"]>[0]) =>
+      projects.register(input),
+    relinkProject: async (id: string, root: string) => projects.relink(id, root),
     createThread: async (input: unknown) =>
       threads.createThread((input ?? {}) as Parameters<ThreadStore["createThread"]>[0]),
     listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),

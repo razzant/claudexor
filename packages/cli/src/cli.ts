@@ -94,6 +94,7 @@ import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { trustCommand } from "./trust-command.js";
+import { projectCommand } from "./project-command.js";
 import {
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
@@ -114,17 +115,12 @@ import {
   parseReviewerPanelFlags,
 } from "./run-options.js";
 
-// Single version SSOT: the generated CLAUDEXOR_VERSION constant (from the root
-// package.json) so the banner / --version can never ship stale or drift.
 const CLI_VERSION = CLAUDEXOR_VERSION;
 
-// The help text is a rendered view of the command registry (the ONE owner of
-// the CLI surface — command-registry.ts). Never hand-edit a help literal.
 const HELP = renderHelp(CLI_VERSION);
 
 const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
 
-/** Canonical mode ids are single words; trim and validate against the schema. */
 function normalizeMode(s: string): ModeKind {
   const trimmed = s.trim();
   const parsed = ModeKindSchema.safeParse(trimmed);
@@ -1154,6 +1150,9 @@ async function main(): Promise<number> {
       if (advisory) print(`advisory: ${advisory}`);
       return 0;
     }
+
+    case "project":
+      return projectCommand(args, json);
 
     case "agent": {
       const specStrategyError =

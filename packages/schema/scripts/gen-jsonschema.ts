@@ -92,6 +92,11 @@ import {
   ControlJournalExportReceipt,
   ControlJournalQuarantineRequest,
   ControlJournalQuarantineReceipt,
+  Project,
+  ControlProject,
+  ControlProjectListResponse,
+  ControlProjectRegisterRequest,
+  ControlProjectRelinkRequest,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -187,6 +192,11 @@ const schemas = {
   ControlJournalExportReceipt,
   ControlJournalQuarantineRequest,
   ControlJournalQuarantineReceipt,
+  Project,
+  ControlProject,
+  ControlProjectListResponse,
+  ControlProjectRegisterRequest,
+  ControlProjectRelinkRequest,
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {

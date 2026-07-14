@@ -176,6 +176,7 @@ export function controlApiFetch(
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
     (externalPath === "/v2/runs" ||
+      externalPath === "/v2/projects" ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath)) &&
     !headers.has("Idempotency-Key")
   ) {

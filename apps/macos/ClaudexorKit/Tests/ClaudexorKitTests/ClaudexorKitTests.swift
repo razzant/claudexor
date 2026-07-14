@@ -433,6 +433,15 @@ import Testing
         #expect(s.contains("\"workspace\":\"isolated\""))
     }
 
+    @Test func projectRegistryDTOsMatchV2WireShape() throws {
+        let json = #"{"projects":[{"schemaVersion":2,"id":"prj-1","root":"/p","createdAt":"t","updatedAt":"t"}]}"#
+        let list = try JSONDecoder().decode(ProjectListResponse.self, from: Data(json.utf8))
+        #expect(list.projects.first?.id == "prj-1")
+        let body = try JSONEncoder().encode(ProjectRootRequest(root: "/next"))
+        let object = try JSONSerialization.jsonObject(with: body) as? [String: String]
+        #expect(object?["root"] == "/next")
+    }
+
     @Test func threadApplyResponseDecodes() throws {
         let json = #"{"applied":true,"status":"applied","headMoved":false,"detail":null}"#
         let r = try JSONDecoder().decode(ThreadApplyResponse.self, from: Data(json.utf8))

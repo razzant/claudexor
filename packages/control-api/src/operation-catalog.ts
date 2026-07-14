@@ -131,6 +131,18 @@ const operations: ControlOperationDescriptor[] = [
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),
   j("GET", "/v2/events", "read_only", null, null, { responseKind: "stream" }),
   j("GET", "/v2/harnesses", "read_only", null, "ControlHarnessListResponse"),
+  j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
+  j("POST", "/v2/projects", "mutating", "ControlProjectRegisterRequest", "ControlProject", {
+    idempotency: "key_required",
+  }),
+  j(
+    "POST",
+    "/v2/projects/:id/relink",
+    "mutating",
+    "ControlProjectRelinkRequest",
+    "ControlProject",
+    { idempotency: "natural" },
+  ),
   j("GET", "/v2/harnesses/:id/models", "read_only", null, "ControlHarnessModelsResponse"),
   j(
     "POST",

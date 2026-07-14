@@ -6,7 +6,7 @@ import FoundationNetworking
 public final class GatewayClient: Sendable {
     private let baseURL: URL
     private let token: String
-    private let session: URLSession
+    let session: URLSession
 
     public init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -14,8 +14,8 @@ public final class GatewayClient: Sendable {
         self.session = session
     }
 
-    private func request(_ path: String, method: String, timeout: TimeInterval? = nil,
-                         queryItems: [URLQueryItem] = []) -> URLRequest {
+    func request(_ path: String, method: String, timeout: TimeInterval? = nil,
+                 queryItems: [URLQueryItem] = []) -> URLRequest {
         let externalPath = path == "healthz" ? path : (path.hasPrefix("v2/") ? path : "v2/\(path)")
         var url = baseURL.appendingPathComponent(externalPath)
         if !queryItems.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
@@ -33,7 +33,7 @@ public final class GatewayClient: Sendable {
         return req
     }
 
-    private static let encoder = JSONEncoder(), decoder = JSONDecoder()
+    static let encoder = JSONEncoder(), decoder = JSONDecoder()
 
     private static func yieldChecked<Element: Sendable>(
         _ element: Element,

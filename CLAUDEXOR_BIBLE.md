@@ -122,6 +122,11 @@ process below. Never paper over the conflict.
   journal records; create and Exact Retry bind `Idempotency-Key` to the
   original request and never duplicate a turn. verify: thread journal restart
   and idempotency tests; session-resume orchestrator tests.
+- **INV-035** A v2 project has a stable daemon-owned id bound to one canonical
+  local root. The v2 registry starts empty, never imports v1 state implicitly,
+  and registration is request-idempotent; relink moves the same project id
+  instead of creating a second authority. verify: ProjectStore restart,
+  idempotency, canonical-root, and relink tests; `/v2/projects` API tests.
 
 ## 5. Evidence Beats Summaries
 

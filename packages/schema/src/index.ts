@@ -28,6 +28,7 @@ export * from "./telemetry.js";
 export * from "./config.js";
 export * from "./workspace.js";
 export * from "./thread.js";
+export * from "./project.js";
 export * from "./orchestrate.js";
 export * from "./control.js";
 export * from "./setup.js";

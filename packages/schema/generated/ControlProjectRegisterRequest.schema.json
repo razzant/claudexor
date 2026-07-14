@@ -1,0 +1,19 @@
+{
+  "$ref": "#/definitions/ControlProjectRegisterRequest",
+  "definitions": {
+    "ControlProjectRegisterRequest": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "root"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

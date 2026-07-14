@@ -35,6 +35,7 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
     (url.pathname === "/v2/runs" ||
+      url.pathname === "/v2/projects" ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(url.pathname)) &&
     !headers.has("Idempotency-Key")
   ) {
@@ -675,6 +676,69 @@ describe("DaemonControlApiServer", () => {
       });
       expect(esc.status).toBe(404);
     });
+  });
+
+  it("projects: registration requires idempotency, lists the durable handle, and relinks it", async () => {
+    const { daemon } = fakeDaemon();
+    const firstRoot = mkdtempSync(join(tmpdir(), "claudexor-project-first-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "claudexor-project-second-"));
+    const now = new Date().toISOString();
+    const project = {
+      schema_version: 2,
+      id: "prj-1",
+      root: firstRoot,
+      created_at: now,
+      updated_at: now,
+    };
+    let registration: unknown;
+    const services: DaemonControlApiOptions["services"] = {
+      listProjects: async () => ({ projects: [project] }),
+      registerProject: async (input) => {
+        registration = input;
+        return project;
+      },
+      relinkProject: async (id, root) => ({ ...project, id, root, updated_at: now }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const missingKey = await globalThis.fetch(`${base}/v2/projects`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            "X-Claudexor-Protocol-Major": "2",
+          },
+          body: JSON.stringify({ root: firstRoot }),
+        });
+        expect(missingKey.status).toBe(400);
+        expect(await missingKey.json()).toMatchObject({ code: "idempotency_key_required" });
+
+        const registered = await apiFetch(`${base}/projects`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ root: firstRoot }),
+        });
+        expect(registered.status).toBe(200);
+        expect(await registered.json()).toMatchObject({ id: "prj-1", root: firstRoot });
+        expect(registration).toMatchObject({ root: firstRoot, clientId: "control-api" });
+
+        const listed = await apiFetch(`${base}/projects`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(await listed.json()).toMatchObject({ projects: [{ id: "prj-1" }] });
+
+        const relinked = await apiFetch(`${base}/projects/prj-1/relink`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ root: secondRoot }),
+        });
+        expect(relinked.status).toBe(200);
+        expect(await relinked.json()).toMatchObject({ id: "prj-1", root: secondRoot });
+      },
+      undefined,
+      services,
+    );
   });
 
   it("threads: create -> list -> turn (enqueued with threadId + native resume anchors) -> detail", async () => {

@@ -1,15 +1,4 @@
-/**
- * CLI_COMMANDS registry — the ONE owner of the user-facing CLI surface.
- *
- * Command verbs, aliases, per-command flags, flag types, and the human help
- * strings all live HERE as typed data. Everything else is a derived view:
- * the `claudexor help` text and `help --json` machine output are rendered
- * from it, the arg-parser flag sets (KNOWN/VALUE/BOOLEAN) are projections of
- * it, host plugin instruction texts pull their CLI examples from it, and the
- * docs/parity gates import the BUILT module instead of regexing source. A new
- * command or flag added here shows up everywhere; one added anywhere else
- * fails loudly.
- */
+/** CLI command/flag SSOT; help, parsing, plugins, docs and parity are projections. */
 
 export type CliFlagKind = "boolean" | "value";
 
@@ -205,6 +194,14 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     summary: "Detect + conformance-test harnesses",
     flags: ["harness", "all", "json"],
     mutability: "read",
+    stability: "stable",
+  },
+  {
+    id: "project",
+    usageArgs: "list | register <absolute-root> | relink <project-id> <absolute-root>",
+    summary: "Manage the durable v2 project registry",
+    flags: ["json"],
+    mutability: "ops",
     stability: "stable",
   },
   {

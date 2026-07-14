@@ -120,7 +120,7 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/artifact-store`, `packages/event-log`: run artifact tree and
   append-only event log writers.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
-- `packages/daemon`: durable local Unix-socket queue and journal projections for commands and threads.
+- `packages/daemon`: durable local Unix-socket queue and journal projections for commands, projects, and threads.
 - `packages/interview`: spec interview engine for Plan/draft flows.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
@@ -458,6 +458,9 @@ files.
 - `POST /v2/harnesses/:id/auth-readiness`
 - `GET /v2/harnesses/:id/models`
 - `GET /v2/operations`
+- `GET /v2/projects`
+- `POST /v2/projects`
+- `POST /v2/projects/:id/relink`
 - `GET /v2/recovery/partitions/global`
 - `POST /v2/recovery/partitions/global/export`
 - `POST /v2/recovery/partitions/global/quarantine`
@@ -611,6 +614,11 @@ are frames in the checksummed global journal; the socket returns an enqueue ACK
 only after append + `fsync`. Create idempotency is scoped by client, partition,
 operation, and key. A restart maps every accepted nonterminal command to
 `interrupted_unknown`; mutating commands are never auto-replayed.
+The global journal also owns the deliberately empty-on-v2-start project
+registry. `GET/POST /v2/projects` list/register canonical local roots and
+`POST /v2/projects/:id/relink` moves an existing stable project id. The CLI
+projects the same surface as `claudexor project list|register|relink`; no v1
+config, thread, or run path is imported as a project registration.
 While running it snapshots its live harness child process groups to
 `daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace

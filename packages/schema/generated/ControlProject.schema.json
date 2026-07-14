@@ -1,0 +1,42 @@
+{
+  "$ref": "#/definitions/ControlProject",
+  "definitions": {
+    "ControlProject": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO-8601 timestamp string."
+        },
+        "updatedAt": {
+          "$ref": "#/definitions/ControlProject/properties/createdAt"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "root",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Control API projection of a registered project."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

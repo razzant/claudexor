@@ -34,6 +34,7 @@ import {
 import * as runStart from "./run-start.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
+import { handleProjectRoute } from "./project-routes.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -155,22 +156,20 @@ export interface DaemonControlApiOptions {
   host?: string;
   port?: number;
   pollMs?: number;
-  /** SSE comment-ping cadence so quiet phases are distinguishable from dead connections. */
   heartbeatMs?: number;
   runStartTimeoutMs?: number;
-  /**
-   * In-process run-event push source (the daemon's RunEventBus). The events
-   * FILE stays the canonical ordered log: a push only pokes the tailer so SSE
-   * latency drops from poll cadence to immediate, with the poll as fallback.
-   */
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
+    listProjects?: () => Promise<{ projects: unknown[] }>;
+    registerProject?: (input: {
+      root: string;
+      idempotencyKey: string;
+      clientId: string;
+    }) => Promise<unknown>;
+    relinkProject?: (id: string, root: string) => Promise<unknown>;
     harnesses?: (input?: { fresh?: boolean }) => Promise<unknown>;
-    /** Derived AgentCapabilityCatalog (GET /agent-capabilities). */
     agentCapabilities?: () => Promise<unknown>;
-    /** Enumerable models for one harness (ADP4); thin projection over the adapter's optional models(). */
     harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
-    /** Exact point-in-time readiness for one harness credential source. */
     authReadiness?: (input: {
       harnessId: string;
       request: ControlAuthReadinessRefreshRequest;
@@ -194,20 +193,17 @@ export interface DaemonControlApiOptions {
     deleteSecret?: (name: string) => Promise<unknown>;
     specQuestions?: (input: unknown) => Promise<unknown>;
     specFreeze?: (input: unknown) => Promise<unknown>;
-    /** Live waiting_on_user state (daemon InteractionRegistry projections). */
     pendingInteractions?: (runId: string) => ControlPendingInteraction[];
     answerInteraction?: (
       runId: string,
       interactionId: string,
       answers: unknown,
     ) => { status: string; message?: string };
-    /** Thread/session SSOT (chat/session-first). */
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (
       id: string,
     ) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
-    /** Single-writer turn creation (run_id bound later by the daemon runner). */
     createThreadTurn?: (
       id: string,
       prompt: string,
@@ -219,7 +215,6 @@ export interface DaemonControlApiOptions {
         idempotency?: { key: string; client: string; request: unknown };
       },
     ) => Promise<unknown>;
-    /** Rename / archive a thread or switch its sticky primary/pool. */
     updateThread?: (
       id: string,
       patch: {
@@ -229,34 +224,23 @@ export interface DaemonControlApiOptions {
         eligibleHarnesses?: string[];
       },
     ) => Promise<unknown>;
-    /** Deliver an isolated thread's accumulated worktree diff to the project. */
     applyThread?: (
       id: string,
       opts: { mode: string; branch?: string; message?: string },
     ) => Promise<unknown>;
-    /** Persist why a turn's run could not be enqueued (runless-turn honesty).
-     * `code` is the typed throw's machine code (null if none); `retryable`
-     * false marks refusals with no recorded job to replay. */
     setTurnEnqueueError?: (
       turnId: string,
       message: string,
       code: string | null,
       retryable?: boolean,
     ) => void;
-    /** User-level trust: enumerate per-repo trust files (Settings projection). */
     listTrust?: () => Promise<unknown>;
-    /** NARROW trust write: grant/revoke full access for ONE repo — the same
-     * user-level file `claudexor trust` owns; every other trust field stays
-     * CLI-only. */
     updateTrust?: (input: { repoRoot: string; allowFullAccess: boolean }) => Promise<unknown>;
   };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-/** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
-/** Larger cap for binary artifacts (images, etc.): they are naturally bounded and
- * the small cap exists to protect the event loop from multi-MB text logs, not binaries. */
 const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -619,6 +603,22 @@ export class DaemonControlApiServer {
       return this.json(res, protocol.status, protocol.body, protocol.contentType);
     }
     const path = protocol.path;
+    if (
+      await handleProjectRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
+
     if (method === "POST" && path === "/runs") {
       return runStart.handleRunCreate(
         {
