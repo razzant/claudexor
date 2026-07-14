@@ -268,12 +268,12 @@
                           "review_not_run",
                           "failed",
                           "cancelled",
-                          "interrupted",
+                          "interrupted_unknown",
                           "exhausted",
                           "not_converged",
                           "stuck_no_progress"
                         ],
-                        "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted, exhausted, not_converged, stuck_no_progress)."
+                        "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted_unknown, exhausted, not_converged, stuck_no_progress)."
                       },
                       "mode": {
                         "$ref": "#/definitions/ControlThreadDetail/properties/thread/properties/mode",

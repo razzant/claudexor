@@ -142,6 +142,7 @@ const operations: ControlOperationDescriptor[] = [
   j("GET", "/v2/runs", "read_only"),
   j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", null, {
     completion: "durable_handle",
+    idempotency: "key_required",
   }),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
   j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest"),

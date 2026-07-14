@@ -60,7 +60,7 @@ enum DemoData {
     static let convergenceTask = TaskRun(
         id: "run-2bd180",
         title: "Daemon durable registry survives restart",
-        prompt: "Persist job registry to jobs.json atomically; restore runId/runDir on restart without leaking raw results.",
+        prompt: "Persist commands in the checksummed journal; recover uncertain work without replay or raw result leakage.",
         mode: .untilClean,
         status: .needsReview,
         project: "claudexor",
@@ -75,7 +75,7 @@ enum DemoData {
         plan: [
             PlanItem("Add persistPath + atomic write", .done),
             PlanItem("Persist runId/runDir on onRunStart", .done),
-            PlanItem("Omit raw result from jobs.json", .done),
+            PlanItem("Omit raw result from the command journal", .done),
             PlanItem("Prune history; restore on boot", .done),
         ],
         activity: [

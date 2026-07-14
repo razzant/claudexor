@@ -157,7 +157,7 @@ const TERMINAL_STATES = new Set([
   "blocked",
   "failed",
   "cancelled",
-  "interrupted",
+  "interrupted_unknown",
   "exhausted",
   "not_converged",
   "stuck_no_progress",

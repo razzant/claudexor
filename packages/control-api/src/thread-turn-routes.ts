@@ -220,7 +220,7 @@ export function handleThreadTurnCreate(
         attachments: params.attachments,
       })) as { id: string };
       createdTurnId = turn.id;
-      // Strip base64 attachment bytes from the enqueued params: jobs.json must
+      // Strip base64 attachment bytes from the enqueued params: the command journal must
       // never carry the bytes (the turn holds the resolved scoped paths, and
       // the run reads them back from the turn at start).
       const { attachments: _att, ...enqueueParams } = params;

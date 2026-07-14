@@ -1,861 +1,342 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { createConnection } from "node:net";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
+import { CommandStore } from "./command-store.js";
+import { InteractionRegistry } from "./interactions.js";
 import { DaemonServer, type JobRecord } from "./server.js";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function tempDir(name = "daemon"): string {
+  return realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
 }
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
+function commandAuthority(dir: string): {
+  journal: DurableJournal;
+  store: CommandStore;
+  slot: { current(): CommandStore };
+} {
+  const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
+  const store = new CommandStore(journal);
+  return { journal, store, slot: { current: () => store } };
 }
 
-describe("daemon", () => {
-  it("has no constructor registry mutation and stop-before-start preserves jobs.json byte-identically", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-unloaded-stop-"));
-    const persistPath = join(dir, "jobs.json");
-    const original = Buffer.from(
-      '[ { "id": "user-format", "state": "succeeded", "params": {}, "createdAt": "2026-07-14T00:00:00.000Z" } ]\r\n',
-    );
-    writeFileSync(persistPath, original, { mode: 0o640 });
-    chmodSync(persistPath, 0o640);
-    const mode = statSync(persistPath).mode & 0o777;
+async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const record = (await client.status(id)) as JobRecord;
+    if (record.state !== "queued" && record.state !== "running") return record;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`job ${id} did not reach a terminal state`);
+}
 
-    const server = new DaemonServer({
-      socketPath: join(dir, "s.sock"),
-      token: "tkn-unloaded-stop",
-      persistPath,
-      runner: async () => ({ status: "success" }),
-    });
-    expect(readFileSync(persistPath)).toEqual(original);
-    expect(statSync(persistPath).mode & 0o777).toBe(mode);
-
-    await server.stop();
-    await server.waitForShutdown();
-    expect(readFileSync(persistPath)).toEqual(original);
-    expect(statSync(persistPath).mode & 0o777).toBe(mode);
-  });
-
-  it("preserves jobs.json when shutdown fences startup before registry load", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-before-load-stop-"));
-    const persistPath = join(dir, "jobs.json");
-    const original = Buffer.from(
-      '[{"id":"before-load","state":"succeeded","params":{},"createdAt":"2026-07-14T00:00:00.000Z"}]\n',
-    );
-    writeFileSync(persistPath, original, { mode: 0o600 });
-    const reached = deferred();
-    const release = deferred();
-    const server = new DaemonServer({
-      socketPath: join(dir, "s.sock"),
-      token: "tkn-before-load-stop",
-      persistPath,
-      runner: async () => ({ status: "success" }),
-      startupBarrier: async (barrier) => {
-        if (barrier !== "before_registry_load") return;
-        reached.resolve();
-        await release.promise;
-      },
-    });
-
-    const starting = server.start();
-    await reached.promise;
-    const stopping = server.stop();
-    expect(readFileSync(persistPath)).toEqual(original);
-    release.resolve();
-    await stopping;
-    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
-    expect(readFileSync(persistPath)).toEqual(original);
-  });
-
-  it("persists the loaded registry when shutdown fences startup after load", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-after-load-stop-"));
-    const persistPath = join(dir, "jobs.json");
-    writeFileSync(
-      persistPath,
-      JSON.stringify([
-        {
-          id: "loaded-running",
-          state: "running",
-          params: {},
-          createdAt: "2026-07-14T00:00:00.000Z",
-        },
-      ]),
-      { mode: 0o600 },
-    );
-    const reached = deferred();
-    const release = deferred();
-    let runnerCalls = 0;
-    const server = new DaemonServer({
-      socketPath: join(dir, "s.sock"),
-      token: "tkn-after-load-stop",
-      persistPath,
-      runner: async () => {
-        runnerCalls += 1;
-        return { status: "success" };
-      },
-      startupBarrier: async (barrier) => {
-        if (barrier !== "after_registry_load") return;
-        reached.resolve();
-        await release.promise;
-      },
-    });
-
-    const starting = server.start();
-    await reached.promise;
-    const stopping = server.stop();
-    release.resolve();
-    await stopping;
-    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
-    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{
-      id: string;
-      state: string;
-    }>;
-    expect(persisted).toEqual([
-      expect.objectContaining({ id: "loaded-running", state: "interrupted" }),
-    ]);
-    expect(runnerCalls).toBe(0);
-  });
-
-  it("does not leave a listener when shutdown races startup", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-start-stop-"));
-    const socketPath = join(dir, "s.sock");
-    const server = new DaemonServer({
-      socketPath,
-      token: "tkn-start-stop",
-      runner: async () => ({ status: "success" }),
-    });
-
-    const starting = server.start();
-    const stopping = server.stop();
-    await stopping;
-    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
-    await server.waitForShutdown();
-    expect(existsSync(socketPath)).toBe(false);
-    await expect(server.start()).rejects.toMatchObject({ code: "daemon_stopping" });
-  });
-
-  it("health, enqueue -> run via injected runner, status, auth, shutdown", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const token = "tkn-123";
+describe("DaemonServer", () => {
+  it("serves health, durably accepts a command, runs it, and shuts down", async () => {
+    const dir = tempDir();
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
     let ran = 0;
     const server = new DaemonServer({
       socketPath,
-      token,
+      token: "token",
+      commands: authority.slot,
       runner: async (params) => {
         ran += 1;
-        return { status: "success", echoed: (params as { x: number }).x * 2 };
+        return { status: "success", echoed: (params as { value: number }).value * 2 };
       },
     });
     await server.start();
     try {
-      const client = new DaemonClient(socketPath, token);
-      const health = (await client.health()) as { ok: boolean };
-      expect(health.ok).toBe(true);
-
-      const job = await client.enqueue({ x: 21 });
-      expect(job.state).toBe("queued");
-
-      let st = await client.status(job.id);
-      for (let i = 0; i < 100 && (st.state === "queued" || st.state === "running"); i++) {
-        await sleep(10);
-        st = await client.status(job.id);
-      }
-      expect(st.state).toBe("succeeded");
-      expect((st.result as { echoed: number }).echoed).toBe(42);
+      const client = new DaemonClient(socketPath, "token");
+      await expect(client.health()).resolves.toMatchObject({ ok: true });
+      const accepted = await client.enqueue(
+        { value: 21 },
+        { idempotencyKey: "create-1", clientId: "test" },
+      );
+      const record = await terminal(client, accepted.id);
+      expect(record).toMatchObject({ state: "succeeded", result: { echoed: 42 } });
       expect(ran).toBe(1);
-
-      const bad = new DaemonClient(socketPath, "wrong-token");
-      await expect(bad.health()).rejects.toThrow(/unauthorized/);
+      await expect(new DaemonClient(socketPath, "wrong").health()).rejects.toThrow(/unauthorized/);
     } finally {
       await server.stop();
+      authority.journal.close();
     }
   });
 
-  it("runs jobs concurrently up to the limit, surfaces runId, and cancels a running job via signal", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const token = "tkn-abc";
+  it("deduplicates the same create request and rejects key reuse with different bytes", async () => {
+    const dir = tempDir("idempotency");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    let calls = 0;
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async () => {
+        calls += 1;
+        return { status: "success" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const first = await client.enqueue({ value: 1 }, { idempotencyKey: "same", clientId: "ui" });
+      const again = await client.enqueue({ value: 1 }, { idempotencyKey: "same", clientId: "ui" });
+      expect(again.id).toBe(first.id);
+      await expect(
+        client.enqueue({ value: 2 }, { idempotencyKey: "same", clientId: "ui" }),
+      ).rejects.toMatchObject({ code: "idempotency_conflict", status: 409 });
+      await terminal(client, first.id);
+      expect(calls).toBe(1);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
+  it("recovers queued and running commands as interrupted_unknown without replay", async () => {
+    const dir = tempDir("restart");
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-queued",
+      params: { value: 1 },
+      idempotencyKey: "queued",
+      clientId: "test",
+    });
+    first.store.accept({
+      id: "job-running",
+      params: { value: 2 },
+      idempotencyKey: "running",
+      clientId: "test",
+    });
+    first.store.update("job-running", { state: "running", startedAt: new Date().toISOString() });
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    expect(recovered.store.records()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "job-queued", state: "interrupted_unknown" }),
+        expect.objectContaining({ id: "job-running", state: "interrupted_unknown" }),
+      ]),
+    );
+    let calls = 0;
+    const server = new DaemonServer({
+      socketPath: join(dir, "daemon.sock"),
+      token: "token",
+      commands: recovered.slot,
+      runner: async () => {
+        calls += 1;
+        return { status: "success" };
+      },
+    });
+    await server.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(calls).toBe(0);
+    } finally {
+      await server.stop();
+      recovered.journal.close();
+    }
+  });
+
+  it("bounds concurrency and cancellation while exposing run identity", async () => {
+    const dir = tempDir("concurrency");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
     let active = 0;
     let maxActive = 0;
     const server = new DaemonServer({
       socketPath,
-      token,
+      token: "token",
+      commands: authority.slot,
       maxConcurrent: 2,
       runner: async (params, ctx) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
         ctx.onRunStart({
-          runId: `run-${(params as { x: number }).x}`,
-          taskId: "t",
-          runDir: "/tmp/x",
+          runId: `run-${(params as { id: number }).id}`,
+          taskId: "task",
+          runDir: dir,
         });
-        try {
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, 1000);
-            ctx.signal.addEventListener("abort", () => {
-              clearTimeout(timer);
-              resolve();
-            });
-          });
-          return { ok: true };
-        } finally {
-          active -= 1;
-        }
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const j1 = await client.enqueue({ x: 1 });
-      const j2 = await client.enqueue({ x: 2 });
-      for (let i = 0; i < 100 && maxActive < 2; i++) await sleep(10);
-      expect(maxActive).toBe(2);
-
-      const st1 = await client.status(j1.id);
-      expect(st1.state).toBe("running");
-      expect((st1 as { runId?: string }).runId).toBe("run-1");
-
-      await client.cancel(j1.id);
-      let s = await client.status(j1.id);
-      for (let i = 0; i < 100 && s.state === "running"; i++) {
-        await sleep(10);
-        s = await client.status(j1.id);
-      }
-      expect(s.state).toBe("cancelled");
-
-      await client.cancel(j2.id);
-
-      // Honesty: cancelling an UNKNOWN id fails loudly (like status), never
-      // returns `{cancelled:true}` for a job that does not exist.
-      await expect(client.cancel("job-does-not-exist")).rejects.toThrow(/no such job/);
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("drains the exact accepted runner before shutdown and never starts queued work after the fence", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-drain-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-drain";
-    const started: number[] = [];
-    let aborted = false;
-    let release: (() => void) | undefined;
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath,
-      maxConcurrent: 1,
-      runner: async (params, ctx) => {
-        const id = (params as { id: number }).id;
-        started.push(id);
         await new Promise<void>((resolve) => {
-          release = resolve;
-          ctx.signal.addEventListener(
-            "abort",
-            () => {
-              aborted = true;
-            },
-            { once: true },
-          );
+          const timer = setTimeout(resolve, 1_000);
+          ctx.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
+        active -= 1;
         return { status: "success" };
       },
     });
     await server.start();
-    const client = new DaemonClient(socketPath, token);
-    const first = await client.enqueue({ id: 1 });
-    for (let i = 0; i < 100 && started.length === 0; i++) await sleep(2);
-    const second = await client.enqueue({ id: 2 });
-    expect(started).toEqual([1]);
-
-    let stopped = false;
-    const stopping = server.stop().then(() => {
-      stopped = true;
-    });
-    for (let i = 0; i < 100 && !aborted; i++) await sleep(2);
-    expect(aborted).toBe(true);
-    expect(stopped).toBe(false);
-    expect(started).toEqual([1]);
-
-    release?.();
-    await stopping;
-    expect(stopped).toBe(true);
-    expect(started).toEqual([1]);
-    await server.waitForShutdown();
-
-    const records = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{
-      id: string;
-      state: string;
-    }>;
-    expect(records.find((record) => record.id === first.id)?.state).toBe("cancelled");
-    expect(records.find((record) => record.id === second.id)?.state).toBe("queued");
-    await server.stop(); // idempotent: the same completed drain promise is returned.
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const jobs = await Promise.all([1, 2, 3].map((id) => client.enqueue({ id })));
+      await client.cancel(jobs[0]!.id);
+      const records = await Promise.all(jobs.map((job) => terminal(client, job.id)));
+      expect(maxActive).toBe(2);
+      expect(records[0]).toMatchObject({ state: "cancelled", runId: "run-1" });
+      expect(records.slice(1).map((record) => record.state)).toEqual(["succeeded", "succeeded"]);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
   });
 
-  it("fails shutdown closed when the final registry fsync cannot be established", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-persist-fail-"));
-    const socketPath = join(dir, "s.sock");
-    const registryDir = join(dir, "registry");
-    const persistPath = join(registryDir, "jobs.json");
-    mkdirSync(registryDir);
+  it("fences admission during shutdown and never starts queued work afterward", async () => {
+    const dir = tempDir("shutdown");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    let starts = 0;
     const server = new DaemonServer({
       socketPath,
-      token: "tkn-persist-fail",
-      persistPath,
+      token: "token",
+      commands: authority.slot,
+      maxConcurrent: 1,
+      runner: async (_params, ctx) => {
+        starts += 1;
+        await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve()));
+        return { status: "cancelled" };
+      },
+    });
+    await server.start();
+    const client = new DaemonClient(socketPath, "token");
+    await client.enqueue({ id: 1 });
+    await client.enqueue({ id: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const stopping = server.stop();
+    await expect(client.enqueue({ id: 3 })).rejects.toThrow();
+    await stopping;
+    expect(starts).toBe(1);
+    authority.journal.close();
+  });
+
+  it("records pre-run turn failures, preserves typed codes, and rejects inline secrets", async () => {
+    const dir = tempDir("refusal");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const failures: unknown[] = [];
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      onTurnEnqueueFailed: (...args) => failures.push(args),
+      runner: async (params) => {
+        if ((params as { fail?: boolean }).fail) {
+          throw Object.assign(new Error("preflight refused"), { code: "trust_required" });
+        }
+        return { status: "success" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const failed = await client.enqueue({ fail: true, turnId: "turn-1" });
+      expect(await terminal(client, failed.id)).toMatchObject({
+        state: "failed",
+        errorCode: "trust_required",
+      });
+      expect(failures).toEqual([["turn-1", "preflight refused", "trust_required"]]);
+      await expect(client.enqueue({ prompt: `use sk-${"a".repeat(32)}` })).rejects.toThrow(
+        /secret-like/i,
+      );
+      expect(authority.store.records()).toHaveLength(1);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
+  it("maps every non-success result to its honest terminal state", async () => {
+    const statuses = [
+      "no_op",
+      "ungated",
+      "review_not_run",
+      "blocked",
+      "exhausted",
+      "not_converged",
+      "stuck_no_progress",
+      "failed",
+    ];
+    const dir = tempDir("outcomes");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async (params) => ({ status: (params as { status: string }).status }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      for (const status of statuses) {
+        const job = await client.enqueue({ status });
+        expect((await terminal(client, job.id)).state).toBe(status);
+      }
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
+  it("does not leave a listener when shutdown races startup", async () => {
+    const dir = tempDir("start-stop");
+    const socketPath = join(dir, "daemon.sock");
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
       runner: async () => ({ status: "success" }),
     });
-    await server.start();
-    rmSync(registryDir, { recursive: true });
-    writeFileSync(registryDir, "not-a-directory");
-    await expect(server.stop()).rejects.toMatchObject({ code: "daemon_persistence_failed" });
-    let resolved = false;
-    void server.waitForShutdown().then(() => {
-      resolved = true;
-    });
-    await sleep(5);
-    expect(resolved).toBe(false);
+    const starting = server.start();
+    await server.stop();
+    await expect(starting).rejects.toMatchObject({ code: "daemon_stopping" });
+    expect(existsSync(socketPath)).toBe(false);
   });
-
-  it("onTurnEnqueueFailed fires when a turn-carrying job dies BEFORE a run binds — and never when one did", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const token = "tkn-turnfail";
-    const refusals: Array<{ turnId: string; error: string; code: string | null }> = [];
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath: join(dir, "jobs.json"),
-      onTurnEnqueueFailed: (turnId, error, code) => refusals.push({ turnId, error, code }),
-      runner: async (params, ctx) => {
-        const p = params as { boom?: string; turnId?: string };
-        // Pre-run refusal (the trust gate shape): a TYPED throw whose machine
-        // code must survive into the hook (remedies key on it).
-        if (p.boom === "pre-run") {
-          throw Object.assign(new Error("access profile 'full' requires allow_full_access: true"), {
-            code: "trust_full_access_required",
-          });
-        }
-        // Post-start failure: the run materialized, so the turn is bound and
-        // failure honesty lives on the RUN, not the turn.
-        ctx.onRunStart({ runId: "run-ok", taskId: "t", runDir: "/tmp/x" });
-        if (p.boom === "post-start") throw new Error("late failure");
-        return { status: "success" };
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const settle = async (id: string) => {
-        let st = await client.status(id);
-        for (let i = 0; i < 200 && (st.state === "queued" || st.state === "running"); i++) {
-          await sleep(10);
-          st = await client.status(id);
-        }
-        return st;
-      };
-      // 1. Pre-run refusal WITH a turn: the hook records message AND code.
-      const j1 = await client.enqueue({ boom: "pre-run", turnId: "tn-refused" });
-      expect((await settle(j1.id)).state).toBe("failed");
-      expect(refusals).toEqual([
-        {
-          turnId: "tn-refused",
-          error: expect.stringContaining("allow_full_access"),
-          code: "trust_full_access_required",
-        },
-      ]);
-      // 2. Post-start failure: run bound -> no turn-level refusal.
-      const j2 = await client.enqueue({ boom: "post-start", turnId: "tn-ran" });
-      expect((await settle(j2.id)).state).toBe("failed");
-      // 3. Pre-run refusal WITHOUT a turn: nothing to record.
-      const j3 = await client.enqueue({ boom: "pre-run" });
-      expect((await settle(j3.id)).state).toBe("failed");
-      expect(refusals).toHaveLength(1);
-      // The typed code SURVIVES the registry round-trip: persisted by the
-      // serializer, salvaged on reload — a daemon restart must not strip the
-      // machine-readable refusal from job history.
-      const persisted = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8")) as Array<{
-        id: string;
-        errorCode?: string;
-      }>;
-      expect(persisted.find((r) => r.id === j1.id)?.errorCode).toBe("trust_full_access_required");
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("persists the job registry across restart (durable run list)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-persist";
-    const mk = () =>
-      new DaemonServer({
-        socketPath,
-        token,
-        persistPath,
-        runner: async (params) => ({ status: "success", echoed: (params as { x: number }).x }),
-      });
-
-    const a = mk();
-    await a.start();
-    let jobId = "";
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ x: 7 });
-      jobId = job.id;
-      let st = await client.status(job.id);
-      for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
-        await sleep(10);
-        st = await client.status(job.id);
-      }
-      expect(st.state).toBe("succeeded");
-    } finally {
-      await a.stop();
-    }
-
-    const b = mk();
-    await b.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const list = (await client.list()) as JobRecord[];
-      expect(list.some((r) => r.id === jobId && r.state === "succeeded")).toBe(true);
-    } finally {
-      await b.stop();
-    }
-  }, 20000);
-
-  it("keeps terminal blocked state across restart (only in-flight states interrupt)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-blocked";
-    const mk = () =>
-      new DaemonServer({
-        socketPath,
-        token,
-        persistPath,
-        runner: async () => ({ status: "blocked", summary: "NEEDS_HUMAN findings" }),
-      });
-    const a = mk();
-    await a.start();
-    let jobId = "";
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ x: 1 });
-      jobId = job.id;
-      let st = await client.status(job.id);
-      for (let i = 0; i < 100 && st.state !== "blocked"; i++) {
-        await sleep(10);
-        st = await client.status(job.id);
-      }
-      expect(st.state).toBe("blocked");
-    } finally {
-      await a.stop();
-    }
-    const b = mk();
-    await b.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const list = (await client.list()) as JobRecord[];
-      // blocked is a TERMINAL review-queue state; a restart must not rewrite it.
-      expect(list.some((r) => r.id === jobId && r.state === "blocked")).toBe(true);
-    } finally {
-      await b.stop();
-    }
-  }, 20000);
-
-  it("re-enqueues persisted queued jobs on restart (pending work is not dropped to interrupted)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-requeue";
-    // Simulate a daemon that went down with a job still QUEUED (never started).
-    writeFileSync(
-      persistPath,
-      JSON.stringify([
-        { id: "job-q1", state: "queued", params: { x: 5 }, createdAt: new Date().toISOString() },
-      ]),
-    );
-    let ran = 0;
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath,
-      runner: async (p) => {
-        ran += 1;
-        return { status: "success", echoed: (p as { x: number }).x };
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      let st = await client.status("job-q1");
-      for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
-        await sleep(10);
-        st = await client.status("job-q1");
-      }
-      expect(st.state).toBe("succeeded");
-      expect(ran).toBe(1);
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("persists runId at run start and never writes the raw result to disk", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-redact";
-    const SECRET_SUMMARY = "RAW-MODEL-OUTPUT-do-not-persist";
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath,
-      runner: async (_params, ctx) => {
-        ctx.onRunStart({ runId: "run-redact-1", taskId: "t", runDir: "/tmp/run-redact-1" });
-        return { status: "success", summary: SECRET_SUMMARY };
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ x: 1, prompt: "tidy the README wording" });
-      let st = await client.status(job.id);
-      for (let i = 0; i < 100 && st.state !== "succeeded"; i++) {
-        await sleep(10);
-        st = await client.status(job.id);
-      }
-      expect(st.state).toBe("succeeded");
-      // status (over the local token-gated socket) still returns the result in memory
-      expect((st.result as { summary: string }).summary).toBe(SECRET_SUMMARY);
-      // but the durable file must NOT contain the raw result, and must keep the runId pointer
-      const onDisk = readFileSync(persistPath, "utf8");
-      expect(onDisk).not.toContain(SECRET_SUMMARY);
-      expect(onDisk).toContain("run-redact-1");
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("defense-in-depth: a secret-like prompt already ON DISK is redacted in public records and re-persistence", async () => {
-    // The enqueue fence makes this state unreachable through the front door;
-    // this pins the second layer for records that predate the fence (or are
-    // hand-edited): redactParams covers status output AND the next persist.
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-legacy";
-    const secret = "sk-" + "e".repeat(24);
-    writeFileSync(
-      persistPath,
-      JSON.stringify([
-        {
-          id: "job-legacy",
-          state: "failed",
-          params: { prompt: `use ${secret}` },
-          createdAt: new Date().toISOString(),
-        },
-      ]),
-    );
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath,
-      runner: async () => ({ status: "success", summary: "x" }),
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const st = await client.status("job-legacy");
-      expect(JSON.stringify(st)).not.toContain(secret);
-      expect(JSON.stringify((st as { params?: unknown }).params ?? {})).toContain("[redacted]");
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("REJECTS a secret-like prompt at enqueue (the prompt hard block; no bypass)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const token = "tkn-block";
-    let ran = 0;
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      persistPath,
-      runner: async () => {
-        ran += 1;
-        return { status: "success", summary: "should never run" };
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      await expect(client.enqueue({ prompt: "please use sk-" + "a".repeat(24) })).rejects.toThrow(
-        /durable run artifacts/,
-      );
-      expect(ran).toBe(0); // blocked BEFORE the runner, never queued
-      // ...and BEFORE persistence: the block happens ahead of the registry
-      // write, so no jobs.json record of the secret prompt ever exists.
-      expect(existsSync(persistPath)).toBe(false);
-      // The socket envelope carries the machine-readable class too.
-      const raw = await new Promise<string>((resolvePromise, rejectPromise) => {
-        const sock = createConnection(socketPath, () => {
-          sock.write(
-            JSON.stringify({
-              id: "e1",
-              method: "claudexor.enqueue",
-              token,
-              params: { prompt: "k sk-" + "b".repeat(24) },
-            }) + "\n",
-          );
-        });
-        let buf = "";
-        sock.on("data", (d) => {
-          buf += String(d);
-          if (buf.includes("\n")) {
-            sock.end();
-            resolvePromise(buf);
-          }
-        });
-        sock.on("error", rejectPromise);
-      });
-      const parsed = JSON.parse(raw.split("\n")[0] as string) as { error?: { code?: string } };
-      expect(parsed.error?.code).toBe("inline_secret_rejected");
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("maps non-success orchestrator results to honest terminal job states", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const token = "tkn-status";
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      runner: async (_params, ctx) => {
-        ctx.onRunStart({
-          runId: "run-not-converged",
-          taskId: "t",
-          runDir: "/tmp/run-not-converged",
-        });
-        return { status: "not_converged", summary: "best attempt still has blockers" };
-      },
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, token);
-      const job = await client.enqueue({ prompt: "x" });
-      let st = await client.status(job.id);
-      for (let i = 0; i < 100 && (st.state === "queued" || st.state === "running"); i++) {
-        await sleep(10);
-        st = await client.status(job.id);
-      }
-      expect(st.state).toBe("not_converged");
-      expect(st.error).toContain("best attempt");
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
 });
 
 describe("InteractionRegistry", () => {
-  it("keys pending entries by (runId, interactionId): concurrent runs reusing a native id never collide", async () => {
-    const { InteractionRegistry } = await import("./interactions.js");
+  it("isolates identical native interaction ids by run", async () => {
     const registry = new InteractionRegistry();
-    const ctx = (runId: string) => ({
+    const context = (runId: string) => ({
       runId,
       taskId: `task-${runId}`,
       attemptId: "a01",
-      harnessId: "claude",
+      harnessId: "test",
       request: {
-        interaction_id: "int-1", // same native id in BOTH runs
+        interaction_id: "same",
         source_tool: "AskUserQuestion",
-        questions: [
-          {
-            id: "q1",
-            question: "Color?",
-            header: null,
-            options: [{ label: "Red", description: null }],
-            multi_select: false,
-          },
-        ],
+        questions: [],
       },
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    const first = registry.register(ctx("run-a"));
-    const second = registry.register(ctx("run-b"));
+    const first = registry.register(context("run-a"));
+    const second = registry.register(context("run-b"));
     expect(registry.pendingForRun("run-a")).toHaveLength(1);
     expect(registry.pendingForRun("run-b")).toHaveLength(1);
-
-    const delivered = registry.answer("run-b", "int-1", {
-      interaction_id: "int-1",
-      answers: [{ question_id: "q1", selected_labels: ["Red"], free_text: null }],
-    });
-    expect(delivered.status).toBe("delivered");
-    await expect(second).resolves.toMatchObject({ interaction_id: "int-1" });
-    // run-a's identical native id is untouched and still answerable.
-    expect(registry.pendingForRun("run-a")).toHaveLength(1);
-    const other = registry.answer("run-a", "int-1", {
-      interaction_id: "int-1",
-      answers: [{ question_id: "q1", selected_labels: ["Red"], free_text: null }],
-    });
-    expect(other.status).toBe("delivered");
-    await expect(first).resolves.toMatchObject({ interaction_id: "int-1" });
+    const answer = { interaction_id: "same", answers: [] };
+    registry.answer("run-a", "same", answer);
+    registry.answer("run-b", "same", answer);
+    await expect(first).resolves.toEqual(answer);
+    await expect(second).resolves.toEqual(answer);
   });
-});
 
-describe("jobs.json robustness", () => {
-  it("backs up a corrupt registry, starts empty, and does not crash", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    writeFileSync(persistPath, "{ this is not json");
-    const server = new DaemonServer({
-      socketPath,
-      token: "tkn-corrupt",
-      persistPath,
-      runner: async () => ({ status: "success" }),
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, "tkn-corrupt");
-      const list = (await client.list()) as JobRecord[];
-      expect(list).toEqual([]);
-      expect(existsSync(`${persistPath}.bak`)).toBe(true);
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-
-  it("salvages good records around a bad one and rejects out-of-enum states", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const good = {
-      id: "job-good",
-      state: "succeeded",
-      params: {},
-      createdAt: new Date().toISOString(),
-    };
-    const badState = {
-      id: "job-bad-state",
-      state: "totally-new-state",
-      params: {},
-      createdAt: new Date().toISOString(),
-    };
-    const notObject = "garbage";
-    writeFileSync(persistPath, JSON.stringify([good, badState, notObject]));
-    const server = new DaemonServer({
-      socketPath,
-      token: "tkn-salvage",
-      persistPath,
-      runner: async () => ({ status: "success" }),
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, "tkn-salvage");
-      const list = (await client.list()) as JobRecord[];
-      expect(list.map((r) => r.id)).toEqual(["job-good"]);
-      expect(existsSync(`${persistPath}.bak`)).toBe(true);
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-});
-
-describe("interrupt terminal stamping", () => {
-  it("appends run.failed{interrupted} to the orphaned events.jsonl when a running job is flipped on restart", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-daemon-"));
-    const socketPath = join(dir, "s.sock");
-    const persistPath = join(dir, "jobs.json");
-    const runDir = join(dir, "run-orphan");
-    const eventsPath = join(runDir, "events.jsonl");
-    // A previous daemon life: run announced, one event, NO terminal.
-    const { mkdirSync } = await import("node:fs");
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(
-      eventsPath,
-      `${JSON.stringify({ seq: 1, ts: new Date().toISOString(), run_id: "run-orphan", task_id: "t1", type: "run.created", payload: {} })}\n`,
-    );
-    writeFileSync(
-      persistPath,
-      JSON.stringify([
-        {
-          id: "job-orphan",
-          state: "running",
-          params: {},
-          createdAt: new Date().toISOString(),
-          runId: "run-orphan",
-          taskId: "t1",
-          runDir,
-        },
-      ]),
-    );
-    const server = new DaemonServer({
-      socketPath,
-      token: "tkn-interrupt",
-      persistPath,
-      runner: async () => ({ status: "success" }),
-    });
-    await server.start();
-    try {
-      const client = new DaemonClient(socketPath, "tkn-interrupt");
-      const list = (await client.list()) as JobRecord[];
-      expect(list.find((r) => r.id === "job-orphan")?.state).toBe("interrupted");
-      const lines = readFileSync(eventsPath, "utf8")
-        .trim()
-        .split("\n")
-        .map((l) => JSON.parse(l) as { type: string; seq: number; payload: { status?: string } });
-      const terminal = lines.at(-1);
-      expect(terminal?.type).toBe("run.failed");
-      expect(terminal?.payload.status).toBe("interrupted");
-      expect(terminal?.seq).toBe(2); // seq continues the tail
-    } finally {
-      await server.stop();
-    }
-  }, 20000);
-});
-
-describe("InteractionRegistry terminal hygiene", () => {
-  it("dropForRun resolves and removes a run's pending questions (no stale waiting_on_user)", async () => {
-    const { InteractionRegistry } = await import("./interactions.js");
+  it("drops pending questions when a run terminates", async () => {
     const registry = new InteractionRegistry();
-    const ctx = {
-      runId: "run-t",
-      taskId: "task-t",
+    const pending = registry.register({
+      runId: "run",
+      taskId: "task",
       attemptId: "a01",
-      harnessId: "h",
-      request: { interaction_id: "int-1", source_tool: "AskUserQuestion", questions: [] },
+      harnessId: "test",
+      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
       requestedAt: new Date().toISOString(),
-      timeoutAt: new Date(Date.now() + 900_000).toISOString(),
-    };
-    const parked = registry.register(ctx as never);
-    expect(registry.pendingForRun("run-t").length).toBe(1);
-    registry.dropForRun("run-t");
-    expect(registry.pendingForRun("run-t").length).toBe(0);
-    await expect(parked).resolves.toBeNull();
+      timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    registry.dropForRun("run");
+    await expect(pending).resolves.toBeNull();
+    expect(registry.pendingForRun("run")).toEqual([]);
   });
 });

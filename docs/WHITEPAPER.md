@@ -125,7 +125,7 @@ the button, revocable from Settings at any time.
 
 A turn can carry attachments — files and images — and Claudexor treats them as
 typed run inputs, not prompt decoration. Attachment bytes persist only in a
-scoped store outside any worktree; they never enter the daemon's `jobs.json`,
+scoped store outside any worktree; they never enter the daemon command journal,
 task contracts, or `git add -A` scope. Direct non-thread runs accept only
 absolute existing file paths, while inline base64 upload bytes are accepted
 only through thread/composer turns, where they are sunk to scoped files before

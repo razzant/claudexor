@@ -37,7 +37,7 @@ export async function runStartupCrashGc(
   }
   try {
     const sweepActions = await sweepOrphanWorkspaces({
-      jobsPath: join(deps.daemonDir, "jobs.json"),
+      journalRoot: join(deps.daemonDir, "journal"),
       threadsPath: join(deps.daemonDir, "threads.json"),
     });
     for (const action of sweepActions) {

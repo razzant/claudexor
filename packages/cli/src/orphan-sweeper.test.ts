@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartTime } from "@claudexor/workspace";
 import { projectRuntimeDir } from "@claudexor/util";
+import { DurableJournal } from "@claudexor/journal";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
 
 function initRepo(): string {
@@ -37,6 +46,18 @@ function envelope(
   return base;
 }
 
+function recordProject(stateDir: string, root: string): string {
+  const journalRoot = join(realpathSync(stateDir), "journal");
+  const journal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
+  journal.append("command.accepted", {
+    record: { params: { scope: { kind: "project", root } } },
+    keyDigest: "test",
+    requestDigest: "test",
+  });
+  journal.close();
+  return journalRoot;
+}
+
 describe("crash-GC live-owner guard", () => {
   it("keeps envelopes whose recorded owner process is ALIVE and sweeps dead/markerless ones", async () => {
     const root = initRepo();
@@ -56,13 +77,9 @@ describe("crash-GC live-owner guard", () => {
       // Legacy envelope without a marker: swept (pre-marker debris).
       const legacy = envelope(root, "task-legacy", "a01");
 
-      const jobsPath = join(stateDir, "jobs.json");
-      writeFileSync(
-        jobsPath,
-        JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n",
-      );
+      const journalRoot = recordProject(stateDir, root);
       const actions = await sweepOrphanWorkspaces({
-        jobsPath,
+        journalRoot,
         threadsPath: join(stateDir, "threads.json"),
       });
 
@@ -100,11 +117,7 @@ describe("crash-GC live-owner guard", () => {
       ]) {
         utimesSync(path, old, old);
       }
-      const jobsPath = join(stateDir, "jobs.json");
-      writeFileSync(
-        jobsPath,
-        JSON.stringify([{ params: { scope: { kind: "project", root } } }]) + "\n",
-      );
+      const journalRoot = recordProject(stateDir, root);
       // Inverse case: dirs are OLD but one nested file is fresh — editing an
       // existing file bumps only the file's mtime, and that must count as
       // liveness (the walk looks at files, not just directory entries).
@@ -118,7 +131,7 @@ describe("crash-GC live-owner guard", () => {
         utimesSync(path, old, old);
       }
       // tree/work.txt keeps its fresh mtime (just created).
-      await sweepOrphanWorkspaces({ jobsPath, threadsPath: join(stateDir, "threads.json") });
+      await sweepOrphanWorkspaces({ journalRoot, threadsPath: join(stateDir, "threads.json") });
       expect(existsSync(fresh)).toBe(true);
       expect(existsSync(stale)).toBe(false);
       expect(existsSync(nested)).toBe(true);

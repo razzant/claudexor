@@ -215,7 +215,7 @@ otherwise a `0600` file. `auto` is native-first for Codex, Claude, and Cursor in
 both host and scoped/envelope runs; it reaches an API-key fallback only when the
 native route is not ready (and, for Claude, no verified setup-token source is
 ready). A typed auth-route disclosure makes that paid-route switch visible. Run
-params, daemon `jobs.json`, artifacts, summaries, patches, and PR text store
+params, the daemon command journal, artifacts, summaries, patches, and PR text store
 only refs/metadata, not raw secret values.
 Subscription/native routes scrub provider API-key, token, and endpoint-override
 environment variables unless a distinct stored API-key or Claude setup-token
@@ -272,7 +272,11 @@ actually ready.
 
 ## Daemon And Control API
 
-The optional daemon owns durable local job queueing over a Unix socket. The
+The optional daemon owns durable local command queueing over a Unix socket. A
+create is acknowledged only after its checksummed global-journal frame reaches
+`fsync`; `Idempotency-Key` binds retries to the original request. After a crash,
+an accepted nonterminal command becomes `interrupted_unknown` and is never
+auto-replayed. The
 loopback HTTP/SSE control API is a thin viewport over the daemon and run files.
 The canonical endpoint inventory lives in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from source;

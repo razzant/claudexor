@@ -93,7 +93,7 @@ export function makeSandbox(): Sandbox {
       } catch {
         /* best effort */
       }
-      // The daemon flushes jobs.json asynchronously during shutdown; retry the
+      // The daemon may still be closing its durable journal during shutdown; retry the
       // removal briefly instead of failing the story on ENOTEMPTY. A leftover
       // temp dir on the final attempt is acceptable OS-tmp residue, never a
       // test failure.

@@ -31,11 +31,7 @@ import {
   recordTurnEnqueueFailure,
   type ThreadTurnRouteCtx,
 } from "./thread-turn-routes.js";
-import {
-  normalizeRunStart,
-  validateAbsoluteRepoRoot,
-  validateDirectRunAttachments,
-} from "./run-start.js";
+import { handleRunCreate, normalizeRunStart, validateAbsoluteRepoRoot } from "./run-start.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import {
@@ -135,7 +131,14 @@ export interface DaemonRunRecord {
 }
 
 export interface DaemonFacadeClient {
-  enqueue(params: unknown): Promise<{ id: string; state: string }>;
+  enqueue(
+    params: unknown,
+    options?: { idempotencyKey?: string; clientId?: string; idempotencyRequest?: unknown },
+  ): Promise<{ id: string; state: string }>;
+  findAccepted?(
+    params: unknown,
+    options: { idempotencyKey: string; clientId?: string },
+  ): Promise<DaemonRunRecord | null>;
   status(id: string): Promise<DaemonRunRecord>;
   list(): Promise<DaemonRunRecord[]>;
   cancel(id: string): Promise<unknown>;
@@ -378,7 +381,7 @@ function originIsLoopback(origin: string | undefined): boolean {
 
 /**
  * HTTP/SSE facade over the durable daemon. Canonical run/job state comes from the
- * daemon (`jobs.json` over the unix-socket JSON-RPC API). This server is a live
+ * daemon (journal-backed commands over the unix-socket JSON-RPC API). This server is a live
  * viewport only: POST/GET/cancel delegate to daemon, and event streams replay/tail
  * the canonical `.claudexor/runs/<runId>/events.jsonl` file.
  */
@@ -611,122 +614,19 @@ export class DaemonControlApiServer {
     }
     const path = protocol.path;
     if (method === "POST" && path === "/runs") {
-      let params: ControlRunStartRequest;
-      try {
-        const body = await this.readBody(req);
-        assertNoInlineSecretValues(body);
-        const parsed = ControlRunStartRequest.parse(body);
-        params = normalizeRunStart(parsed);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-      const directThreadId =
-        typeof params.threadId === "string" && params.threadId ? params.threadId : null;
-      if (params.turnId) {
-        return this.json(res, 400, {
-          error:
-            "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
-        });
-      }
-      // planRunId only has an owner on thread turns: POST /threads/:id/turns
-      // reads final/plan.md, prefixes it into the prompt, and forces agent
-      // mode. A direct POST /runs — WITH OR WITHOUT a threadId — skips that
-      // pipeline, so the turn would record a plan contract the run never
-      // consumed. Reject unconditionally.
-      if (params.planRunId) {
-        return this.json(res, 400, {
-          error:
-            "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
-        });
-      }
-      let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
-      if (directThreadId && !params.turnId) {
-        const createTurnSvc = this.opts.services?.createThreadTurn;
-        if (createTurnSvc) {
-          const detailSvc = this.opts.services?.threadDetail;
-          // Validate the thread exists (404) BEFORE enqueue: the daemon runner
-          // swallows a failed createTurn, so an enqueue against a missing thread
-          // would otherwise orphan the run. Fail loudly here instead.
-          if (detailSvc) {
-            try {
-              await detailSvc(directThreadId);
-            } catch (err) {
-              const status =
-                err && typeof err === "object" && "status" in err
-                  ? Number((err as { status: number }).status)
-                  : 404;
-              return this.json(res, status, {
-                error: err instanceof Error ? err.message : `no such thread: ${directThreadId}`,
-              });
-            }
-          }
-          const turn = (await createTurnSvc(directThreadId, String(params.prompt ?? ""), {
-            parentRunId: params.parentRunId ?? null,
-            planRunId: params.planRunId ?? null,
-            // Resolve inbound attachment bytes onto the turn (scoped 0600 paths),
-            // same as the /threads/:id/turns path — so the base64 `data` below is
-            // stripped from the enqueued params and never persists in jobs.json.
-            attachments: params.attachments,
-          })) as { id: string };
-          const { attachments: _att, ...rest } = params;
-          enqueueParams = { ...rest, turnId: turn.id };
-        }
-      }
-      // Every failure UP TO a successful enqueue must land ON the pre-created
-      // turn (if any): a validation/enqueue throw would otherwise orphan it as
-      // the exact silent empty bubble the refusal record exists to eliminate.
-      // retryable=false — no job exists to replay, so clients keep drafts.
-      const preCreatedTurnId = (enqueueParams as { turnId?: string }).turnId;
-      let job: { id: string };
-      try {
-        enqueueParams = validateDirectRunAttachments(enqueueParams);
-        job = await this.opts.daemon.enqueue(enqueueParams);
-      } catch (err) {
-        recordTurnEnqueueFailure(this.opts.services?.setTurnEnqueueError, preCreatedTurnId, err);
-        // Untyped throws here are INFRA failures (daemon socket down mid-
-        // enqueue) — 500, not a client "bad request". Validation paths attach
-        // their own typed 400 status.
-        const status =
-          err && typeof err === "object" && "status" in err
-            ? Number((err as { status: number }).status)
-            : 500;
-        return this.json(res, status, {
-          error: err instanceof Error ? err.message : "enqueue failed",
-          ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
-        });
-      }
-      // POST-ENQUEUE: the job EXISTS. A status-poll throw is observation
-      // loss, NOT a refusal — record nothing (the runner hook records real
-      // pre-start deaths) and never claim retryable:false.
-      let rec: DaemonRunRecord;
-      try {
-        rec = await this.waitForRunStart(job.id);
-      } catch (err) {
-        return this.json(res, 500, {
-          error: `job ${job.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
-          jobId: job.id,
-          ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
-        });
-      }
-      if (rec.runId && rec.runDir) {
-        return this.json(
-          res,
-          200,
-          ControlRunStartInfo.parse({
-            jobId: rec.id,
-            runId: rec.runId,
-            taskId: rec.taskId,
-            runDir: rec.runDir,
-          }),
-        );
-      }
-      // Long-queued jobs remain canonical in the daemon. Don't fail the request
-      // while leaving an orphaned queued job behind; return the job id for polling.
-      const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-      return this.json(
+      return handleRunCreate(
+        {
+          daemon: this.opts.daemon,
+          readBody: (request) => this.readBody(request),
+          requestError: (response, error) => this.requestError(response, error),
+          json: (response, status, body) => this.json(response, status, body),
+          respondToAcceptedJob: (response, jobId) => this.respondToAcceptedJob(response, jobId),
+          createThreadTurn: this.opts.services?.createThreadTurn,
+          threadDetail: this.opts.services?.threadDetail,
+          setTurnEnqueueError: this.opts.services?.setTurnEnqueueError,
+        },
+        req,
         res,
-        status,
-        ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
       );
     }
 
@@ -931,7 +831,7 @@ export class DaemonControlApiServer {
           const headRec = (await this.opts.daemon.list()).find(
             (r) => (r.runId ?? r.id) === headRunId,
           );
-          // A recorded head run whose record was PRUNED from jobs.json
+          // A recorded head run whose command record was pruned
           // (maxHistory) has an unknowable state — the gate must fail closed,
           // not silently wave the apply through.
           if (!headRec) {
@@ -1908,6 +1808,28 @@ export class DaemonControlApiServer {
       if (Date.now() > deadline) return last;
       await new Promise((r) => setTimeout(r, pollMs));
     }
+  }
+
+  private async respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void> {
+    const rec = await this.waitForRunStart(jobId);
+    if (rec.runId && rec.runDir) {
+      return this.json(
+        res,
+        200,
+        ControlRunStartInfo.parse({
+          jobId: rec.id,
+          runId: rec.runId,
+          taskId: rec.taskId,
+          runDir: rec.runDir,
+        }),
+      );
+    }
+    const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
+    return this.json(
+      res,
+      status,
+      ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
+    );
   }
 
   private async findRun(id: string): Promise<DaemonRunRecord | null> {

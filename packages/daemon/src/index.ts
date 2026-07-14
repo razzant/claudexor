@@ -5,3 +5,4 @@ export * from "./events.js";
 export * from "./interactions.js";
 export * from "./threads.js";
 export * from "./journal-manager.js";
+export * from "./command-store.js";

@@ -337,13 +337,13 @@ export const ControlRunState = z
     "review_not_run",
     "failed",
     "cancelled",
-    "interrupted",
+    "interrupted_unknown",
     "exhausted",
     "not_converged",
     "stuck_no_progress",
   ])
   .describe(
-    "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted, exhausted, not_converged, stuck_no_progress).",
+    "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted_unknown, exhausted, not_converged, stuck_no_progress).",
   );
 export type ControlRunState = z.infer<typeof ControlRunState>;
 

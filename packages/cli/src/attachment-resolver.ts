@@ -28,7 +28,7 @@ function decodeBase64AttachmentData(data: string, index: number): Buffer {
 /**
  * Resolve inbound attachments (base64 `data`, or an existing `path`) to durable
  * Attachments under a scoped dir OUTSIDE any worktree, so they never enter a git
- * diff. base64 is decoded ONCE here and `jobs.json` never carries the bytes.
+ * diff. base64 is decoded ONCE here and the command journal never carries the bytes.
  */
 export function resolveAttachments(inputs: AttachmentInput[] | undefined): Attachment[] {
   if (!inputs || inputs.length === 0) return [];

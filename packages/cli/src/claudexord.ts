@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   DaemonClient,
+  commandProjection,
   JournalManager,
   DaemonServer,
   InteractionRegistry,
@@ -65,20 +66,19 @@ async function main(): Promise<void> {
       throw new Error("daemon shutdown coordinator is not initialized");
     };
 
-    // Live observation plane: every RunEvent is pushed onto the in-process bus
-    // (SSE latency drops to immediate; events.jsonl stays the canonical log) and
+    // Live events are pushed for SSE latency; the event log remains canonical, and
     // harness questions park in the interaction registry until answered.
     const bus = new RunEventBus();
     const interactions = new InteractionRegistry();
-    // Thread/session SSOT: durable conversation registry; vendor CLI session
-    // ids are the re-hostable cache that lets later turns resume natively.
+    // Durable conversation registry retains vendor session resume anchors.
     const threads = new ThreadStore(join(daemonDir(), "threads.json"));
+    const journalManager = new JournalManager(daemonDir());
+    const commandStoreSlot = journalManager.registerProjection(commandProjection());
 
     const server = new DaemonServer({
       socketPath,
       token,
-      // Durable run registry so the run list survives a daemon/Mac restart.
-      persistPath: join(daemonDir(), "jobs.json"),
+      commands: commandStoreSlot,
       // A terminal run must stop advertising waiting_on_user immediately —
       // cancelled/failed runs otherwise park their questions in the registry
       // until the interaction timeout.
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
           repoRoot,
           prompt: String(p.prompt ?? ""),
           // Attachments ride on the turn (resolved to scoped paths); a direct
-          // POST /runs without a turn resolves them here. Never base64 in jobs.json.
+          // POST /runs without a turn resolves them here. Never base64 in the command journal.
           attachments: turnId
             ? (threads.getTurn(turnId)?.attachments ?? [])
             : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
@@ -231,7 +231,6 @@ async function main(): Promise<void> {
     // One composition-root journal owner. A corrupt global partition is a
     // supported degraded startup: setup routes fail closed while recovery
     // inspect/export/validate/quarantine remain available on the control plane.
-    const journalManager = new JournalManager(daemonDir());
     const setupStoreSlot = journalManager.registerProjection({
       name: "setup",
       create: (journal) => new SetupJobStore(daemonDir(), { journal }),

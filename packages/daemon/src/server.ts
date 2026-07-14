@@ -1,30 +1,16 @@
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
-import {
-  chmodSync,
-  closeSync,
-  constants,
-  copyFileSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
-import { appendRunEvent } from "@claudexor/event-log";
 import {
   assertNoInlineSecretValues,
   errorCode,
   newId,
   nowIso,
   pathExists,
-  readJsonSafe,
   redactSecrets,
 } from "@claudexor/util";
+import type { CommandStore } from "./command-store.js";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -41,8 +27,8 @@ export interface DaemonOptions {
   runner: RunnerFn;
   /** Max concurrently-running jobs (parallel projects/runs). Default 4. */
   maxConcurrent?: number;
-  /** Optional JSON file to persist the job registry across restarts (durable run list). */
-  persistPath?: string;
+  /** Replaceable projection over the global durable journal. */
+  commands?: { current(): CommandStore };
   /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
   /** Called when a job reaches a terminal state (any path) with its runId —
@@ -58,7 +44,7 @@ export interface DaemonOptions {
   /** Composition-root shutdown hook. When present, RPC shutdown must drain
    * every daemon-owned subsystem, not only this socket queue. */
   onShutdownRequested?: () => Promise<void>;
-  /** Test-only deterministic barriers around registry authority acquisition.
+  /** Test-only deterministic barriers around command authority acquisition.
    * Production callers leave this unset. */
   startupBarrier?: (
     barrier: "before_registry_load" | "after_registry_load",
@@ -75,43 +61,13 @@ export const JOB_STATES = [
   "review_not_run",
   "failed",
   "cancelled",
-  "interrupted",
+  "interrupted_unknown",
   "exhausted",
   "not_converged",
   "stuck_no_progress",
 ] as const;
 
 export type JobState = (typeof JOB_STATES)[number];
-
-/**
- * Per-record validation for the persisted registry: one hand-edited or
- * version-skewed record must not wipe the whole run history, and a record
- * with a state outside the enum must never reach the strict control-api
- * DTOs (where it would 500 the entire GET /runs list).
- */
-function salvageJobRecord(raw: unknown): JobRecord | null {
-  if (!raw || typeof raw !== "object") return null;
-  const rec = raw as Record<string, unknown>;
-  if (typeof rec["id"] !== "string" || rec["id"].length === 0) return null;
-  if (typeof rec["state"] !== "string" || !(JOB_STATES as readonly string[]).includes(rec["state"]))
-    return null;
-  if (typeof rec["createdAt"] !== "string") return null;
-  const optionalString = (key: string): string | undefined =>
-    typeof rec[key] === "string" ? (rec[key] as string) : undefined;
-  return {
-    id: rec["id"],
-    state: rec["state"] as JobState,
-    params: rec["params"],
-    error: optionalString("error"),
-    errorCode: optionalString("errorCode"),
-    createdAt: rec["createdAt"],
-    runId: optionalString("runId"),
-    taskId: optionalString("taskId"),
-    runDir: optionalString("runDir"),
-    startedAt: optionalString("startedAt"),
-    finishedAt: optionalString("finishedAt"),
-  };
-}
 
 export interface JobRecord {
   id: string;
@@ -147,7 +103,6 @@ export class DaemonServer {
   private readonly controllers = new Map<string, AbortController>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
-  private registryState: "unloaded" | "loaded" = "unloaded";
   private active = 0;
   private readonly startedAt = Date.now();
   private stopping = false;
@@ -179,8 +134,7 @@ export class DaemonServer {
   }
 
   private async startOnce(): Promise<void> {
-    // Refuse to clobber a LIVE daemon: deleting its socket would orphan it and
-    // turn jobs.json into a last-writer-wins race between two processes.
+    // Refuse to clobber a live daemon or violate single-writer ownership.
     if (pathExists(this.opts.socketPath) && (await socketAlive(this.opts.socketPath))) {
       throw new Error(
         `a claudexor daemon is already listening on ${this.opts.socketPath}; stop it first`,
@@ -188,7 +142,7 @@ export class DaemonServer {
     }
     await this.opts.startupBarrier?.("before_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
-    this.load();
+    this.opts.commands?.current();
     await this.opts.startupBarrier?.("after_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
     try {
@@ -212,8 +166,6 @@ export class DaemonServer {
         resolve();
       });
     });
-    // Resume any queued jobs re-enqueued from a previous session (see load()).
-    void this.drain();
   }
 
   stop(): Promise<void> {
@@ -259,11 +211,6 @@ export class DaemonServer {
         },
       );
     }
-    // An instance stopped before acquiring registry authority must not write an
-    // empty in-memory view over a preexisting jobs.json. Once load completed,
-    // this writer owns the in-memory registry and final persistence is required.
-    if (this.registryState === "loaded") this.persist(true);
-
     // A signal may have fenced shutdown while listen() was still resolving.
     // Wait for that raw startup attempt, then close whatever listener exists;
     // start() observes `stopping` and refuses to advertise readiness.
@@ -339,6 +286,9 @@ export class DaemonServer {
         error: {
           message: redactSecrets(err instanceof Error ? err.message : String(err)),
           ...(code ? { code } : {}),
+          ...(err && typeof err === "object" && "status" in err
+            ? { status: Number((err as { status: unknown }).status) }
+            : {}),
         },
       });
     }
@@ -353,7 +303,7 @@ export class DaemonServer {
           queue: this.queue.length,
           running: this.active > 0,
           active: this.active,
-          jobs: this.records.size,
+          jobs: this.allRecords().length,
           stopping: this.stopping,
         };
       case "claudexor.enqueue": {
@@ -363,33 +313,54 @@ export class DaemonServer {
             status: 503,
           });
         }
-        assertNoInlineSecretValues(params, "$", "daemon job params");
-        const id = newId("job");
-        this.records.set(id, { id, state: "queued", params, createdAt: nowIso() });
-        this.queue.push(id);
-        this.persist();
+        const envelope = params as {
+          request?: unknown;
+          idempotencyKey?: unknown;
+          clientId?: unknown;
+          idempotencyRequest?: unknown;
+        };
+        const request = envelope?.request;
+        const idempotencyKey = String(envelope?.idempotencyKey ?? "");
+        const clientId = String(envelope?.clientId ?? "daemon-client");
+        assertNoInlineSecretValues(request, "$", "daemon job params");
+        const accepted = this.acceptCommand(
+          request,
+          idempotencyKey,
+          clientId,
+          envelope.idempotencyRequest,
+        );
+        if (!accepted.reused) this.queue.push(accepted.record.id);
         void this.drain();
-        return { id, state: "queued" };
+        return { id: accepted.record.id, state: accepted.record.state };
       }
       case "claudexor.status": {
-        const rec = this.records.get(String(params?.id));
+        const rec = this.getRecord(String(params?.id));
         if (!rec) throw new Error(`no such job: ${params?.id}`);
         return publicJobRecord(rec);
       }
+      case "claudexor.findAccepted": {
+        const store = this.opts.commands?.current();
+        if (!store) return null;
+        const record = store.find({
+          params: params?.request,
+          idempotencyKey: String(params?.idempotencyKey ?? ""),
+          clientId: String(params?.clientId ?? "daemon-client"),
+        });
+        return record ? publicJobRecord(record) : null;
+      }
       case "claudexor.list":
-        return [...this.records.values()].map(publicJobRecord);
+        return this.allRecords().map(publicJobRecord);
       case "claudexor.cancel": {
         const jid = String(params?.id);
         // Honesty: cancelling an unknown id must fail loudly (like status),
         // never claim `{cancelled:true}` for a job that does not exist.
-        const rec = this.records.get(jid);
+        const rec = this.getRecord(jid);
         if (!rec) throw new Error(`no such job: ${jid}`);
         this.cancelled.add(jid);
-        if (rec.state === "queued") rec.state = "cancelled";
+        if (rec.state === "queued") this.updateRecord(rec, { state: "cancelled" });
         // Abort the in-flight run; the runner (Orchestrator) honors the signal,
         // cancels the harness, then settles this job as cancelled.
         this.controllers.get(jid)?.abort();
-        this.persist();
         return { id: jid, cancelled: true };
       }
       case "claudexor.shutdown":
@@ -414,132 +385,57 @@ export class DaemonServer {
     return Object.assign(new Error(message), { code: "daemon_stopping", status: 503 });
   }
 
-  /**
-   * Best-effort durable persistence of the job registry. Writes atomically
-   * (temp file + rename) so a crash mid-write cannot corrupt/drop the registry.
-   * The raw run `result` is intentionally NOT persisted: canonical output lives
-   * in .claudexor/runs (redacted), and result.summary can contain raw model text —
-   * keeping it out of jobs.json upholds the redaction-at-persistence invariant.
-   */
-  private persist(strict = false): void {
-    if (this.registryState === "unloaded") return;
-    const path = this.opts.persistPath;
-    if (!path) return;
-    const tmp = `${path}.tmp-${process.pid}`;
-    try {
-      const view = [...this.records.values()].map(persistedJobRecord);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(tmp, JSON.stringify(view, null, 2) + "\n", { mode: 0o600 });
-      chmodSync(tmp, 0o600);
-      fsyncFile(tmp);
-      renameSync(tmp, path);
-      chmodSync(path, 0o600);
-      fsyncFile(path);
-      fsyncDirectory(dirname(path));
-    } catch (error) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* preserve primary error */
-      }
-      if (strict) {
-        throw Object.assign(
-          new Error(
-            `daemon registry final persistence failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-          { code: "daemon_persistence_failed", status: 503, cause: error },
-        );
-      }
-      // Runtime persistence remains best-effort until the command journal owns
-      // run state in Phase 1. Shutdown is the fail-closed durability boundary.
-    }
-  }
-
   /** Bound memory/disk: prune the oldest terminal jobs beyond maxHistory.
    * `blocked` runs are NEVER pruned — they are the needs-human inbox awaiting an
    * operator decision; dropping one would silently lose a pending action. */
   private pruneHistory(): void {
     const cap = this.opts.maxHistory ?? 500;
-    const terminal = [...this.records.values()].filter(
+    const terminal = this.allRecords().filter(
       (r) => r.state !== "running" && r.state !== "queued" && r.state !== "blocked",
     );
     if (terminal.length <= cap) return;
     terminal.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-    for (const r of terminal.slice(0, terminal.length - cap)) {
-      this.records.delete(r.id);
-      this.cancelled.delete(r.id);
+    const removed = terminal.slice(0, terminal.length - cap).map((record) => record.id);
+    this.opts.commands?.current().prune(removed);
+    for (const id of removed) {
+      this.records.delete(id);
+      this.cancelled.delete(id);
     }
   }
 
-  /** Reload the registry on startup; a fresh process cannot resume in-memory runs. */
-  private load(): void {
-    if (this.registryState === "loaded") throw new Error("daemon registry is already loaded");
-    this.loadRegistryContents();
-    this.registryState = "loaded";
+  private acceptCommand(
+    params: unknown,
+    idempotencyKey: string,
+    clientId: string,
+    idempotencyParams?: unknown,
+  ) {
+    const store = this.opts.commands?.current();
+    if (store)
+      return store.accept({
+        id: newId("job"),
+        params,
+        idempotencyKey,
+        clientId,
+        idempotencyParams,
+      });
+    const record: JobRecord = { id: newId("job"), state: "queued", params, createdAt: nowIso() };
+    this.records.set(record.id, record);
+    return { record, reused: false };
   }
 
-  private loadRegistryContents(): void {
-    const path = this.opts.persistPath;
-    if (!path || !pathExists(path)) return;
-    const saved = readJsonSafe<unknown>(path);
-    if (saved === null || !Array.isArray(saved)) {
-      // A corrupt registry must not be silently wiped: the run history includes
-      // the blocked needs-human inbox. Back the raw bytes up, start empty, and
-      // say so loudly (ThreadStore discipline).
-      this.backupCorruptRegistry(path, "registry file is not a JSON array");
-      return;
-    }
-    let dropped = 0;
-    for (const raw of saved) {
-      const rec = salvageJobRecord(raw);
-      if (!rec) {
-        dropped += 1;
-        continue;
-      }
-      // A fresh process cannot resume an in-memory RUN, so a `running` job becomes
-      // interrupted (honest). `blocked` is a TERMINAL outcome (NEEDS_HUMAN / web
-      // policy) the review queue must keep across restarts.
-      if (rec.state === "running") {
-        rec.state = "interrupted";
-        // Stamp the orphaned event log with a TERMINAL event: the
-        // canonical events.jsonl must agree with jobs.json, or SSE tailers and
-        // `follow` wait forever on a log that will never terminate.
-        if (rec.runDir && rec.runId) {
-          try {
-            appendRunEvent(
-              join(rec.runDir, "events.jsonl"),
-              rec.runId,
-              rec.taskId ?? "",
-              "run.failed",
-              {
-                status: "interrupted",
-                error: "daemon restarted while the run was in flight",
-              },
-            );
-          } catch {
-            /* best-effort: a missing/corrupt log must not block startup */
-          }
-        }
-      }
-      this.records.set(rec.id, rec);
-      // A `queued` job never started; its params are persisted, so RE-ENQUEUE it
-      // on restart (drain() runs after start()) instead of silently dropping
-      // pending work to interrupted.
-      if (rec.state === "queued") this.queue.push(rec.id);
-    }
-    if (dropped > 0) {
-      this.backupCorruptRegistry(path, `${dropped} unparseable job record(s) dropped`);
-    }
+  private allRecords(): JobRecord[] {
+    return this.opts.commands?.current().records() ?? [...this.records.values()];
   }
 
-  /** Preserve the raw bytes of a damaged registry and report the loss loudly. */
-  private backupCorruptRegistry(path: string, reason: string): void {
-    try {
-      copyFileSync(path, `${path}.bak`);
-      console.error(`[claudexor] jobs store: ${reason}; original backed up to ${path}.bak`);
-    } catch {
-      console.error(`[claudexor] jobs store: ${reason}; backup to ${path}.bak FAILED`);
-    }
+  private getRecord(id: string): JobRecord | undefined {
+    return this.opts.commands?.current().get(id) ?? this.records.get(id);
+  }
+
+  private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
+    const store = this.opts.commands?.current();
+    if (store) return store.update(record.id, patch);
+    Object.assign(record, patch);
+    return record;
   }
 
   private threadIdOf(rec: JobRecord): string | undefined {
@@ -561,14 +457,14 @@ export class DaemonServer {
     if (this.stopping) return;
     while (this.active < this.maxConcurrent && this.queue.length > 0) {
       const busyThreads = new Set(
-        [...this.records.values()]
+        this.allRecords()
           .filter((r) => r.state === "running")
           .map((r) => this.threadIdOf(r))
           .filter((t): t is string => !!t),
       );
       let pickIdx = -1;
       for (let i = 0; i < this.queue.length; i++) {
-        const rec = this.records.get(this.queue[i]);
+        const rec = this.getRecord(this.queue[i]);
         const tid = rec ? this.threadIdOf(rec) : undefined;
         if (!rec || !tid || !busyThreads.has(tid)) {
           pickIdx = i;
@@ -577,10 +473,10 @@ export class DaemonServer {
       }
       if (pickIdx === -1) break; // every queued job waits on a busy thread
       const id = this.queue.splice(pickIdx, 1)[0];
-      const rec = this.records.get(id);
+      const rec = this.getRecord(id);
       if (!rec) continue;
       if (this.cancelled.has(id)) {
-        rec.state = "cancelled";
+        this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
       this.active += 1;
@@ -599,45 +495,47 @@ export class DaemonServer {
   private async runJob(id: string, rec: JobRecord): Promise<void> {
     const controller = new AbortController();
     this.controllers.set(id, controller);
-    rec.state = "running";
-    rec.startedAt = nowIso();
-    this.persist();
+    rec = this.updateRecord(rec, { state: "running", startedAt: nowIso() });
     try {
-      rec.result = await this.opts.runner(rec.params, {
+      const result = await this.opts.runner(rec.params, {
         signal: controller.signal,
         onRunStart: (info) => {
-          rec.runId = info.runId;
-          rec.taskId = info.taskId;
-          rec.runDir = info.runDir;
-          // Persist the pointer immediately so a mid-run crash still reloads with
-          // runId/runDir to locate .claudexor/runs/<runId> (the recovery path).
-          this.persist();
+          rec = this.updateRecord(rec, info);
         },
       });
-      rec.state = jobStateFromResult(rec.result, controller.signal.aborted);
+      rec.result = result;
+      const state = jobStateFromResult(result, controller.signal.aborted);
       // Only failure-shaped terminals carry an error string. no_op / ungated /
       // review_not_run / blocked are HONEST terminals: fabricating an error here
       // would make the control facade render a failure that never happened.
       if (
-        rec.state === "failed" ||
-        rec.state === "exhausted" ||
-        rec.state === "not_converged" ||
-        rec.state === "stuck_no_progress"
+        state === "failed" ||
+        state === "exhausted" ||
+        state === "not_converged" ||
+        state === "stuck_no_progress"
       ) {
-        rec.error = resultSummary(rec.result) ?? `run ended with status ${rec.state}`;
+        rec = this.updateRecord(rec, {
+          state,
+          error: resultSummary(result) ?? `run ended with status ${state}`,
+          finishedAt: nowIso(),
+        });
+      } else {
+        rec = this.updateRecord(rec, { state, finishedAt: nowIso() });
       }
     } catch (err) {
-      rec.state = controller.signal.aborted ? "cancelled" : "failed";
-      rec.error = redactSecrets(err instanceof Error ? err.message : String(err));
       // Preserve a typed throw's machine code (e.g. the trust gate) so
       // consumers can key remedies on it instead of parsing the message.
       const code =
         err && typeof err === "object" && "code" in err
           ? (err as { code: unknown }).code
           : undefined;
-      if (typeof code === "string" && code) rec.errorCode = code;
+      rec = this.updateRecord(rec, {
+        state: controller.signal.aborted ? "cancelled" : "failed",
+        error: redactSecrets(err instanceof Error ? err.message : String(err)),
+        ...(typeof code === "string" && code ? { errorCode: code } : {}),
+        finishedAt: nowIso(),
+      });
     } finally {
-      rec.finishedAt = nowIso();
       this.controllers.delete(id);
       this.active -= 1;
       if (rec.runId) {
@@ -660,7 +558,6 @@ export class DaemonServer {
         }
       }
       this.pruneHistory();
-      this.persist();
       if (!this.stopping) this.drain();
     }
   }
@@ -705,24 +602,6 @@ function tokenMatches(candidate: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function fsyncFile(path: string): void {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function fsyncDirectory(path: string): void {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 /** True when something is actively accepting connections on the socket path. */
 /** Is a daemon already listening on this socket? Exported so the claudexord
  * entrypoint can refuse BEFORE running crash GC — a second daemon must never
@@ -757,22 +636,6 @@ function publicJobRecord(rec: JobRecord): JobRecord {
     ...rec,
     error: rec.error ? redactSecrets(rec.error) : undefined,
     params: redactParams(rec.params),
-  };
-}
-
-function persistedJobRecord(rec: JobRecord): Omit<JobRecord, "result"> {
-  return {
-    id: rec.id,
-    state: rec.state,
-    params: redactParams(rec.params),
-    error: rec.error ? redactSecrets(rec.error) : undefined,
-    errorCode: rec.errorCode,
-    createdAt: rec.createdAt,
-    runId: rec.runId,
-    taskId: rec.taskId,
-    runDir: rec.runDir,
-    startedAt: rec.startedAt,
-    finishedAt: rec.finishedAt,
   };
 }
 

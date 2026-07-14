@@ -114,7 +114,7 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case "not_converged", "not-converged": self = .notConverged
         case "stuck_no_progress", "stuck-no-progress": self = .stuckNoProgress
         case "cancelled", "canceled": self = .cancelled
-        case "interrupted": self = .interrupted
+        case "interrupted_unknown": self = .interrupted
         default: self = .unknown
         }
     }

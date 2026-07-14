@@ -201,7 +201,7 @@ process below. Never paper over the conflict.
   auth uses a Claudexor-owned `CODEX_HOME` with file-only credential storage,
   never the operator's ordinary `~/.codex` or OS Keychain. verify: adapter auth
   isolation tests; setup capability receipts; routing paid-fallback tests.
-- **INV-062** Raw secrets must not appear in run params, `jobs.json`, task
+- **INV-062** Raw secrets must not appear in run params, the command journal, task
   contracts, events, summaries, patches, PR text, logs, or docs. The PROMPT
   is included: a secret-like value inside the prompt text is hard-blocked at
   every ingress surface (CLI, POST /runs, thread turns, MCP, ACP, daemon
@@ -217,7 +217,7 @@ process below. Never paper over the conflict.
   mechanism is documented. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
   scoped store outside any worktree; attachment bytes never enter
-  `jobs.json`, task contracts, or `git add -A` scope. Direct non-thread
+  the command journal, task contracts, or `git add -A` scope. Direct non-thread
   `POST /v2/runs` accepts only absolute existing file paths; inline base64 is
   accepted only through thread/composer turns, where it is sunk to scoped
   files before a daemon job is queued. verify: attachment-resolver tests;

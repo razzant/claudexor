@@ -28,12 +28,12 @@ public final class GatewayClient: Sendable {
         if externalPath != "healthz" {
             req.setValue("2", forHTTPHeaderField: "X-Claudexor-Protocol-Major")
         }
+        if method == "POST" { req.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key") }
         if let timeout { req.timeoutInterval = timeout }
         return req
     }
 
-    private static let encoder = JSONEncoder()
-    private static let decoder = JSONDecoder()
+    private static let encoder = JSONEncoder(), decoder = JSONDecoder()
 
     private static func yieldChecked<Element: Sendable>(
         _ element: Element,

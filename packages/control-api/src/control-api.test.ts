@@ -32,6 +32,13 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
   if (url.pathname !== "/healthz" && url.pathname !== "/v2/handshake") {
     headers.set("X-Claudexor-Protocol-Major", "2");
   }
+  if (
+    (init.method ?? "GET").toUpperCase() === "POST" &&
+    url.pathname === "/v2/runs" &&
+    !headers.has("Idempotency-Key")
+  ) {
+    headers.set("Idempotency-Key", `test-${crypto.randomUUID()}`);
+  }
   return globalThis.fetch(url, { ...init, headers });
 }
 
@@ -460,6 +467,21 @@ describe("DaemonControlApiServer", () => {
           expect.objectContaining({ path: "/v2/setup/jobs" }),
         ]),
       );
+
+      const missingIdempotencyKey = await globalThis.fetch(`${base}/v2/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "X-Claudexor-Protocol-Major": "2",
+        },
+        body: startAgentBody(),
+      });
+      expect(missingIdempotencyKey.status).toBe(400);
+      expect(await missingIdempotencyKey.json()).toMatchObject({
+        code: "idempotency_key_required",
+        fieldErrors: { "Idempotency-Key": ["required for create operations"] },
+      });
     });
   });
 
@@ -3403,7 +3425,7 @@ describe("DaemonControlApiServer", () => {
         return { id: "x", state: "succeeded" };
       },
       async list() {
-        return []; // the head run's record aged out of jobs.json (maxHistory)
+        return []; // the head run's command record aged out (maxHistory)
       },
       async cancel() {
         return { ok: true };

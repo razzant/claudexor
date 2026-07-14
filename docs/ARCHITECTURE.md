@@ -317,7 +317,7 @@ injects `CURSOR_API_KEY`. Cursor's scoped native route bridges the user's
 
 Run params are validated before daemon enqueue. Inline `env`, `secrets`,
 `api_key`, `token`, `password`, or similar fields are rejected, so daemon
-`jobs.json` never becomes a secret store. Secret-setting endpoints bypass job
+the command journal never becomes a secret store. Secret-setting endpoints bypass command
 persistence and write only to the secret store.
 
 Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
@@ -527,7 +527,7 @@ Endpoint semantics beyond the inventory:
   throw), the daemon persists the reason on the turn (`ThreadTurn.enqueue_error`,
   projected as `enqueueError`) so every surface renders the refusal inline
   instead of an eternally-empty bubble. `POST /v2/threads/:id/turns/:turnId/retry`
-  re-enqueues that SAME turn by replaying the recorded job params verbatim (no
+  re-enqueues that SAME turn by replaying the recorded command params verbatim (no
   duplicate turn); a successful run binding clears the error, a repeat refusal
   replaces it. Retry refuses turns that already have a run, have no recorded
   refusal, or still have an active job (409).
@@ -602,7 +602,12 @@ lost" when the stream ends without a terminal event.
 ### Daemon lifecycle (signals, orphans, crash GC)
 
 `claudexord` shuts down gracefully on SIGTERM/SIGINT (same path as the
-`claudexor.shutdown` RPC: abort in-flight runs, bounded wait, persist state).
+`claudexor.shutdown` RPC: abort in-flight runs and complete their journaled
+terminal transitions). Command acceptance, start binding, and terminal state
+are frames in the checksummed global journal; the socket returns an enqueue ACK
+only after append + `fsync`. Create idempotency is scoped by client, partition,
+operation, and key. A restart maps every accepted nonterminal command to
+`interrupted_unknown`; mutating commands are never auto-replayed.
 While running it snapshots its live harness child process groups to
 `daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace
@@ -685,7 +690,7 @@ capability smoke with no durable completed receipt becomes
 `completed`, `not_supported`, `launch_failed`, `command_failed`,
 `auth_not_ready`, `capability_verification_failed`,
 `credential_route_mismatch`, `timed_out`, `cancelled_by_user`,
-`cancelled_on_restart`, `interrupted`, `interrupted_unknown`, and
+`cancelled_on_restart`, `interrupted_unknown`, and
 `termination_unconfirmed`.
 
 The checksummed, fsync-before-ACK global journal is the only setup lifecycle and
@@ -1009,7 +1014,7 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   expose no patch/apply controls.
 - Attachments are an engine contract the composer merely feeds: upload bytes
   are sunk to a scoped store OUTSIDE any worktree before a daemon job is queued
-  (bytes never enter `jobs.json` or `git add -A` scope), forwarded to the
+  (bytes never enter the command journal or `git add -A` scope), forwarded to the
   harness in its NATIVE shape (codex `-i/--image`, claude base64 image block on
   the stream-json transport, raw-api `image_url` data URL), and vision-gated:
   an image-bearing run routes only to harnesses declaring
@@ -1082,7 +1087,7 @@ code touching one of these areas must honor it or change it explicitly here.
   delimiters (never as governance); output deviating from the instructed
   format degrades to free-text questions instead of failing the interview.
 - Startup crash GC sweeps orphaned envelopes only under project roots recorded
-  in the daemon's jobs.json; envelopes created by in-process CLI/MCP/ACP runs
+  in the daemon command journal; envelopes created by CLI/MCP/ACP runs
   in roots the daemon never saw are reclaimed only by their own process.
 - Under `--web auto`, "the harness attempted web" is the intent signal; a
   separate did-this-task-NEED-web resolver does not exist yet, so web-required

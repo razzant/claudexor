@@ -67,7 +67,7 @@ describe("exitCodeForState", () => {
       "blocked",
       "failed",
       "cancelled",
-      "interrupted",
+      "interrupted_unknown",
       "exhausted",
       "not_converged",
       "stuck_no_progress",

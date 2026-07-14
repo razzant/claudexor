@@ -4137,7 +4137,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const repo = await initRepo();
     // A planner that talks prose without a fenced JSON plan: the typed-plan
     // contract fails, so the terminal must be failure-shaped, never
-    // run.completed (jobs.json and events.jsonl must agree).
+    // run.completed (command projection and events.jsonl must agree).
     const proseBrain: HarnessAdapter = {
       ...plannerAdapter("planner", {}),
       async *run(spec) {
@@ -4878,7 +4878,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
     expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
     // Failure-shaped terminal (a cut-short plan is NOT a clean success):
     // failure.yaml lands and the event log ends in run.failed, so `follow`
-    // exits non-zero and jobs.json agrees.
+    // exits non-zero and the command projection agrees.
     expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("budget");
     const evTypes = readRunEvents(res.runDir).map((e) => e.type);

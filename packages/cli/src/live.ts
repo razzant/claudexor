@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { daemonDir, readToken } from "@claudexor/daemon";
@@ -172,6 +173,13 @@ export function controlApiFetch(
   headers.set("Authorization", `Bearer ${addr.token}`);
   if (externalPath !== "/healthz")
     headers.set("X-Claudexor-Protocol-Major", String(CONTROL_PROTOCOL_MAJOR));
+  if (
+    (init.method ?? "GET").toUpperCase() === "POST" &&
+    externalPath === "/v2/runs" &&
+    !headers.has("Idempotency-Key")
+  ) {
+    headers.set("Idempotency-Key", randomUUID());
+  }
   return fetch(`${addr.baseUrl}${externalPath}`, { ...init, headers });
 }
 

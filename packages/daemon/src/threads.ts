@@ -292,7 +292,7 @@ export class ThreadStore {
       plan_run_id: input.planRunId ?? null,
       kind,
       // The durable conversation store is read back into UIs: redact at the
-      // persist boundary exactly like jobs.json / events.jsonl do.
+      // persistence boundary exactly like other durable state projections do.
       prompt: redactSecrets(prompt),
       attachments: input.attachments ?? [],
       created_at: nowIso(),

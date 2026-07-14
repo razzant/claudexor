@@ -44,6 +44,7 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
+
   benchmarks/runner:
     dependencies:
       '@claudexor/util':
@@ -219,9 +220,6 @@ importers:
 
   packages/daemon:
     dependencies:
-      '@claudexor/event-log':
-        specifier: workspace:*
-        version: link:../event-log
       '@claudexor/journal':
         specifier: workspace:*
         version: link:../journal

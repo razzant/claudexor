@@ -6032,7 +6032,7 @@ export class Orchestrator {
     } else if (terminal === "not_converged") {
       // Orchestrate's typed-plan contract failed (the planner produced no valid
       // plan): a failure-shaped terminal with artifacts, never run.completed —
-      // jobs.json and events.jsonl must agree the run did not converge.
+      // The command projection and events.jsonl must agree the run did not converge.
       writeFailure(store, paths, {
         phase: "plan",
         category: "harness_error",
@@ -6057,7 +6057,7 @@ export class Orchestrator {
       log.emit("run.failed", { status: terminal });
     } else if (terminal === "exhausted") {
       // A budget-truncated plan is failure-shaped: skipped steps mean the
-      // goal was NOT met — `claudexor follow` and jobs.json must not read a
+      // goal was NOT met — `claudexor follow` and the command projection must not read a
       // cut-short auto_full run as a clean success (exit 0).
       writeFailure(store, paths, {
         phase: "executor",

@@ -96,7 +96,7 @@
       "method": "POST",
       "path": "/v2/runs",
       "mutating": true,
-      "request_schema": "ControlRunStartRequest",
+      "request_schema": null,
       "response_schema": null
     },
     {

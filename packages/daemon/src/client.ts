@@ -1,4 +1,5 @@
 import { type Socket, connect } from "node:net";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
 /** Thin JSON-RPC client for the daemon over a Unix socket. */
@@ -42,8 +43,13 @@ export class DaemonClient {
         try {
           const msg = JSON.parse(line);
           if (msg.id !== id) return;
-          if (msg.error) finish(() => reject(new Error(msg.error.message)));
-          else finish(() => resolve(msg.result as T));
+          if (msg.error) {
+            const error = Object.assign(new Error(msg.error.message), {
+              ...(typeof msg.error.code === "string" ? { code: msg.error.code } : {}),
+              ...(typeof msg.error.status === "number" ? { status: msg.error.status } : {}),
+            });
+            finish(() => reject(error));
+          } else finish(() => resolve(msg.result as T));
         } catch {
           /* ignore */
         }
@@ -54,8 +60,16 @@ export class DaemonClient {
   health() {
     return this.call("claudexor.health");
   }
-  enqueue(params: unknown) {
-    return this.call<{ id: string; state: string }>("claudexor.enqueue", params);
+  enqueue(
+    request: unknown,
+    options: { idempotencyKey?: string; clientId?: string; idempotencyRequest?: unknown } = {},
+  ) {
+    return this.call<{ id: string; state: string }>("claudexor.enqueue", {
+      request,
+      idempotencyKey: options.idempotencyKey ?? randomUUID(),
+      clientId: options.clientId ?? "daemon-client",
+      idempotencyRequest: options.idempotencyRequest,
+    });
   }
   status(id: string) {
     return this.call<{
@@ -71,6 +85,13 @@ export class DaemonClient {
       startedAt?: string;
       finishedAt?: string;
     }>("claudexor.status", { id });
+  }
+  findAccepted(request: unknown, options: { idempotencyKey: string; clientId?: string }) {
+    return this.call<Awaited<ReturnType<DaemonClient["status"]>> | null>("claudexor.findAccepted", {
+      request,
+      idempotencyKey: options.idempotencyKey,
+      clientId: options.clientId ?? "daemon-client",
+    });
   }
   list() {
     return this.call<

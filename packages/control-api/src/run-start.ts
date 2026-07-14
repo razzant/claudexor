@@ -5,9 +5,12 @@
  * daemon-server.ts (INV-124 ratchet).
  */
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
 import { ControlRunStartRequest } from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
+import type { DaemonFacadeClient } from "./daemon-server.js";
+import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -134,4 +137,138 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
 export function normalizeRunStartRequest(raw: unknown): ControlRunStartRequest {
   assertNoInlineSecretValues(raw);
   return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}));
+}
+
+export interface RunCreateRouteContext {
+  daemon: DaemonFacadeClient;
+  readBody(req: IncomingMessage): Promise<unknown>;
+  requestError(res: ServerResponse, error: unknown): void;
+  json(res: ServerResponse, status: number, body: unknown): void;
+  respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
+  createThreadTurn?: (
+    id: string,
+    prompt: string,
+    options: {
+      parentRunId?: string | null;
+      planRunId?: string | null;
+      attachments?: ControlRunStartRequest["attachments"];
+    },
+  ) => Promise<unknown>;
+  threadDetail?: (id: string) => Promise<unknown>;
+  setTurnEnqueueError?: (
+    turnId: string,
+    message: string,
+    code: string | null,
+    retryable?: boolean,
+  ) => void;
+}
+
+/** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle. */
+export async function handleRunCreate(
+  ctx: RunCreateRouteContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let idempotencyKey: string;
+  let params: ControlRunStartRequest;
+  try {
+    idempotencyKey = requiredIdempotencyKey(req);
+    const body = await ctx.readBody(req);
+    assertNoInlineSecretValues(body);
+    params = normalizeRunStart(ControlRunStartRequest.parse(body));
+  } catch (error) {
+    return ctx.requestError(res, error);
+  }
+  try {
+    const prior = await ctx.daemon.findAccepted?.(params, {
+      idempotencyKey,
+      clientId: "control-api",
+    });
+    if (prior) return ctx.respondToAcceptedJob(res, prior.id);
+  } catch (error) {
+    return ctx.requestError(res, error);
+  }
+  const directThreadId = params.threadId || null;
+  if (params.turnId) {
+    return ctx.json(res, 400, {
+      error: "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
+    });
+  }
+  if (params.planRunId) {
+    return ctx.json(res, 400, {
+      error:
+        "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
+    });
+  }
+  let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
+  if (directThreadId && ctx.createThreadTurn) {
+    if (ctx.threadDetail) {
+      try {
+        await ctx.threadDetail(directThreadId);
+      } catch (error) {
+        const status =
+          error && typeof error === "object" && "status" in error
+            ? Number((error as { status: number }).status)
+            : 404;
+        return ctx.json(res, status, {
+          error: error instanceof Error ? error.message : `no such thread: ${directThreadId}`,
+        });
+      }
+    }
+    const turn = (await ctx.createThreadTurn(directThreadId, params.prompt, {
+      parentRunId: params.parentRunId ?? null,
+      planRunId: params.planRunId ?? null,
+      attachments: params.attachments,
+    })) as { id: string };
+    const { attachments: _attachments, ...rest } = params;
+    enqueueParams = { ...rest, turnId: turn.id };
+  }
+  const preCreatedTurnId = enqueueParams.turnId;
+  let job: { id: string };
+  try {
+    enqueueParams = validateDirectRunAttachments(enqueueParams);
+    job = await ctx.daemon.enqueue(enqueueParams, {
+      idempotencyKey,
+      clientId: "control-api",
+      idempotencyRequest: params,
+    });
+  } catch (error) {
+    recordTurnEnqueueFailure(ctx.setTurnEnqueueError, preCreatedTurnId, error);
+    const status =
+      error && typeof error === "object" && "status" in error
+        ? Number((error as { status: number }).status)
+        : 500;
+    return ctx.json(res, status, {
+      error: error instanceof Error ? error.message : "enqueue failed",
+      ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
+    });
+  }
+  try {
+    return await ctx.respondToAcceptedJob(res, job.id);
+  } catch (error) {
+    return ctx.json(res, 500, {
+      error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+      jobId: job.id,
+      ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
+    });
+  }
+}
+
+export function requiredIdempotencyKey(req: IncomingMessage): string {
+  const header = req.headers["idempotency-key"];
+  if (Array.isArray(header) || typeof header !== "string" || !header.trim()) {
+    throw Object.assign(new Error("Idempotency-Key is required"), {
+      code: "idempotency_key_required",
+      status: 400,
+      fieldErrors: { "Idempotency-Key": ["required for create operations"] },
+    });
+  }
+  const value = header.trim();
+  if (value.length > 256) {
+    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
+      code: "invalid_idempotency_key",
+      status: 400,
+    });
+  }
+  return value;
 }

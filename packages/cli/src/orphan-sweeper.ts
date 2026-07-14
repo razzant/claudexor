@@ -7,7 +7,7 @@
  * to interrupted, queued jobs have not materialized task ids), so every
  * found envelope under a daemon-known project root is an orphan.
  *
- * Reach is honest: only roots recorded in jobs.json (plus their thread
+ * Reach is honest: only roots recorded in the command journal (plus their thread
  * trees) are sweepable — a project never run through this daemon is not.
  *
  * LIVE-OWNER GUARD: envelopes carry owner.json (pid + kernel start time);
@@ -23,17 +23,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceManager, git, processStartTime } from "@claudexor/workspace";
 import { projectRuntimeDir } from "@claudexor/util";
+import { DurableJournal } from "@claudexor/journal";
 
 const RO_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 interface SweepInput {
-  jobsPath: string;
+  journalRoot: string;
   threadsPath: string;
 }
 
 export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]> {
   const actions: string[] = [];
-  const roots = knownProjectRoots(input.jobsPath);
+  const roots = knownProjectRoots(input.journalRoot);
   const liveThreadIds = knownThreadIds(input.threadsPath);
 
   for (const root of roots) {
@@ -47,15 +48,18 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
   return actions;
 }
 
-/** Project roots this daemon has ever run against (jobs.json scope roots). */
-function knownProjectRoots(jobsPath: string): string[] {
+/** Project roots this daemon has ever run against (command journal scope roots). */
+function knownProjectRoots(journalRoot: string): string[] {
   const roots = new Set<string>();
+  let journal: DurableJournal | null = null;
   try {
-    const records = JSON.parse(readFileSync(jobsPath, "utf8")) as Array<{ params?: unknown }>;
-    if (!Array.isArray(records)) return [];
-    for (const rec of records) {
-      const scope = (rec?.params as { scope?: { kind?: unknown; root?: unknown } } | undefined)
-        ?.scope;
+    journal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
+    for (const entry of journal.records()) {
+      if (entry.type !== "command.accepted") continue;
+      const payload = entry.payload as { record?: { params?: unknown } };
+      const scope = (
+        payload.record?.params as { scope?: { kind?: unknown; root?: unknown } } | undefined
+      )?.scope;
       if (
         scope &&
         scope.kind === "project" &&
@@ -67,6 +71,8 @@ function knownProjectRoots(jobsPath: string): string[] {
     }
   } catch {
     return [];
+  } finally {
+    journal?.close();
   }
   return [...roots];
 }
