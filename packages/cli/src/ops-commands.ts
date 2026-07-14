@@ -15,8 +15,13 @@ import {
   readToken,
   rotateToken,
 } from "@claudexor/daemon";
-import { harnessRuntimeEnv } from "@claudexor/core";
-import { ControlHarnessSetupHarness, ControlSetupJob } from "@claudexor/schema";
+import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
+import {
+  ControlHarnessListResponse,
+  ControlHarnessModelsResponse,
+  ControlHarnessSetupHarness,
+  ControlSetupJob,
+} from "@claudexor/schema";
 import {
   MANAGED_SECRET_NAMES,
   SecretStore,
@@ -32,7 +37,6 @@ import {
   printUsageError,
   statusGlyph,
 } from "./cli-io.js";
-import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
@@ -170,39 +174,96 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
   }
 }
 
-/**
- * The real CONSUMER (ADP4) of the adapter models() producer: list a harness's
- * enumerable models. With --harness it queries that one; otherwise it tries
- * every non-unavailable harness and shows which can honestly enumerate.
- */
-export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
-  // `--all` includes fakes (they honestly report source:"none"); honoring it here
-  // mirrors doctor/auth/harness-list instead of silently ignoring the flag (P15).
-  const includeFakes = flagBool(args, "all");
-  const only = flagStr(args, "harness");
-  let ids: string[];
-  if (only) {
-    ids = only
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    // An explicit --harness typo fails loudly (consistent with doctor/auth), not a
-    // silent source:"none" exit 0.
-    const known = new Set(buildRegistry({ includeFakes: true }).keys());
-    const unknown = ids.filter((id) => !known.has(id));
-    if (unknown.length)
-      return printUsageError(
-        json,
-        `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
-      );
-  } else {
-    // Default to harnesses that doctor considers usable (not unavailable);
-    // each harnessModels() reports source "none" when it cannot enumerate.
-    const statuses = await buildGateway({ includeFakes }).statusAll({ cwd: process.cwd() });
-    ids = statuses.filter((s) => s.status !== "unavailable").map((s) => s.id);
+async function daemonGet(path: string): Promise<unknown> {
+  const { addr } = await ensureDaemon();
+  const response = await controlApiFetch(addr, path, {
+    headers: { Authorization: `Bearer ${addr.token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`control API ${path} failed (${response.status}): ${await response.text()}`);
   }
+  return response.json();
+}
+
+function requestedHarnesses(args: ParsedArgs): string[] | undefined {
+  const only = flagStr(args, "harness");
+  return only
+    ? only
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    : undefined;
+}
+
+function harnessListPath(args: ParsedArgs, fresh = false): string {
+  const query = new URLSearchParams();
+  if (fresh) query.set("fresh", "true");
+  if (flagBool(args, "all")) query.set("all", "true");
+  for (const id of requestedHarnesses(args) ?? []) query.append("harness", id);
+  const encoded = query.toString();
+  return `/harnesses${encoded ? `?${encoded}` : ""}`;
+}
+
+function unknownHarnesses(requested: string[] | undefined, observed: string[]): string[] {
+  if (!requested) return [];
+  const known = new Set(observed);
+  return requested.filter((id) => !known.has(id));
+}
+
+export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const response = ControlHarnessListResponse.parse(await daemonGet(harnessListPath(args)));
+  const unknown = unknownHarnesses(
+    requestedHarnesses(args),
+    response.harnesses.map((status) => status.id),
+  );
+  if (unknown.length > 0) {
+    return printUsageError(
+      json,
+      `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
+    );
+  }
+  const advisory = atRiskNodeAdvisory();
+  if (json) {
+    printJson({ harnesses: response.harnesses, node_advisory: advisory });
+    return 0;
+  }
+  for (const status of response.harnesses) {
+    const version = status.manifest?.version ? ` ${status.manifest.version}` : "";
+    print(`${statusGlyph(status.status)} ${status.id}${version}`);
+    if (status.enabledIntents.length) print(`    intents: ${status.enabledIntents.join(", ")}`);
+    print(`    auth sources: ${authSourceAvailability(status)}`);
+    print(`    checks: ${checksSummary(status)}`);
+    if (status.reasons.length) print(`    reasons: ${status.reasons.join(", ")}`);
+    if (status.configuredModelCheck?.status === "rejected") {
+      print(`    model: INVALID — ${status.configuredModelCheck.message}`);
+    }
+  }
+  if (advisory) print(`advisory: ${advisory}`);
+  return 0;
+}
+
+/** List the daemon's live model truth for each requested/available harness. */
+export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const statuses = ControlHarnessListResponse.parse(await daemonGet(harnessListPath(args)));
+  const requested = requestedHarnesses(args);
+  const unknown = unknownHarnesses(
+    requested,
+    statuses.harnesses.map((status) => status.id),
+  );
+  if (unknown.length > 0) {
+    return printUsageError(
+      json,
+      `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
+    );
+  }
+  const ids =
+    requested ?? statuses.harnesses.filter((s) => s.status !== "unavailable").map((s) => s.id);
   const results = await Promise.all(
-    ids.map((id) => harnessModels(id, process.cwd(), includeFakes)),
+    ids.map(async (id) =>
+      ControlHarnessModelsResponse.parse(
+        await daemonGet(`/harnesses/${encodeURIComponent(id)}/models`),
+      ),
+    ),
   );
   if (json) {
     printJson({ harnesses: results });
@@ -227,12 +288,10 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
   const sub = args._[1] ?? "status";
   const harness = args._[2];
   if (sub === "status") {
-    const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
-    // Scope discovery to the requested harness (P14) instead of probe-all-then-filter.
-    const statuses = await gateway.statusAll(
-      { cwd: process.cwd(), fresh: true },
-      harness ? [harness] : undefined,
-    );
+    const queryArgs = harness ? { ...args, flags: { ...args.flags, harness } } : args;
+    const statuses = ControlHarnessListResponse.parse(
+      await daemonGet(harnessListPath(queryArgs, true)),
+    ).harnesses;
     // An explicit unknown harness must FAIL LOUDLY, not silently succeed over empty.
     if (harness && !statuses.some((s) => s.id === harness)) {
       return printUsageError(

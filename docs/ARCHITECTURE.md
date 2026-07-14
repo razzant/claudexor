@@ -317,8 +317,8 @@ injects `CURSOR_API_KEY`. Cursor's scoped native route bridges the user's
 
 Run params are validated before daemon enqueue. Inline `env`, `secrets`,
 `api_key`, `token`, `password`, or similar fields are rejected, so daemon
-the command journal never becomes a secret store. Secret-setting endpoints bypass command
-persistence and write only to the secret store.
+run requests never turn the command journal into a secret store. Secret-setting
+endpoints bypass command persistence and write only to the secret store.
 
 Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
 cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
@@ -331,6 +331,9 @@ interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
 when needed and fails loudly if it cannot. There is no second in-process CLI
 run/thread authority. The daemon remains the single scheduler and journal
 writer while the mode pipelines below retain their distinct mutability.
+`claudexor doctor`, `models`, and `auth status` are also thin projections of the
+daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
+requested harness filters reach the producer instead of probing unrelated adapters.
 
 ### Ask
 

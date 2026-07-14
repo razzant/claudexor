@@ -37,6 +37,7 @@ import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute, streamLiveRunEvents } from "./journal-event-routes.js";
+import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -114,7 +115,6 @@ import {
 } from "@claudexor/util";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-
 export interface DaemonRunRecord {
   id: string;
   state: string;
@@ -164,7 +164,11 @@ export interface DaemonControlApiOptions {
       clientId: string;
     }) => Promise<unknown>;
     relinkProject?: (id: string, root: string) => Promise<unknown>;
-    harnesses?: (input?: { fresh?: boolean }) => Promise<unknown>;
+    harnesses?: (input?: {
+      fresh?: boolean;
+      includeFakes?: boolean;
+      harnessIds?: string[];
+    }) => Promise<unknown>;
     agentCapabilities?: () => Promise<unknown>;
     harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
     authReadiness?: (input: {
@@ -1302,18 +1306,21 @@ export class DaemonControlApiServer {
 
     if (method === "GET" && path === "/harnesses") {
       try {
-        assertOnlyQueryParams(url, ["fresh"]);
-        const values = url.searchParams.getAll("fresh");
-        if (
-          values.length > 1 ||
-          (values[0] !== undefined && values[0] !== "true" && values[0] !== "false")
-        ) {
-          throw new Error("fresh must be exactly true or false");
-        }
+        assertOnlyQueryParams(url, ["fresh", "all", "harness"]);
+        const fresh = optionalBooleanQuery(url, "fresh");
+        const includeFakes = optionalBooleanQuery(url, "all");
+        const harnessIds = url.searchParams
+          .getAll("harness")
+          .map((id) => id.trim())
+          .filter(Boolean);
         return this.service(
           res,
           "harnesses",
-          values[0] === undefined ? undefined : { fresh: values[0] === "true" },
+          {
+            ...(fresh === undefined ? {} : { fresh }),
+            ...(includeFakes === undefined ? {} : { includeFakes }),
+            ...(harnessIds.length === 0 ? {} : { harnessIds }),
+          },
           ControlHarnessListResponse,
         );
       } catch (err) {
@@ -2752,13 +2759,6 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
     }
   }
   return out;
-}
-
-function assertOnlyQueryParams(url: URL, allowed: readonly string[]): void {
-  const allow = new Set(allowed);
-  for (const key of url.searchParams.keys()) {
-    if (!allow.has(key)) throw new Error(`unsupported query parameter: ${key}`);
-  }
 }
 
 function contentType(path: string): string {

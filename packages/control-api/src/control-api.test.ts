@@ -2359,11 +2359,20 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(fresh.status).toBe(200);
+        const scoped = await apiFetch(
+          `${base}/harnesses?fresh=true&all=true&harness=codex&harness=fake-success`,
+          { headers: { authorization: `Bearer ${token}` } },
+        );
+        expect(scoped.status).toBe(200);
         const invalid = await apiFetch(`${base}/harnesses?fresh=1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalid.status).toBe(400);
-        expect(harnessInputs).toEqual([undefined, { fresh: true }]);
+        expect(harnessInputs).toEqual([
+          {},
+          { fresh: true },
+          { fresh: true, includeFakes: true, harnessIds: ["codex", "fake-success"] },
+        ]);
       },
       undefined,
       {
@@ -2389,6 +2398,7 @@ describe("DaemonControlApiServer", () => {
 
   it("serves a harness's enumerable models through the typed harnessModels service (ADP4)", async () => {
     const { daemon } = fakeDaemon();
+    const modelInputs: unknown[] = [];
     await withDaemonServer(
       daemon,
       async (base) => {
@@ -2410,17 +2420,25 @@ describe("DaemonControlApiServer", () => {
         });
         expect(none.status).toBe(200);
         expect(await none.json()).toMatchObject({ harnessId: "codex", source: "none", models: [] });
+
+        const fake = await apiFetch(`${base}/harnesses/fake-success/models`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(fake.status).toBe(200);
+        expect(modelInputs.at(-1)).toEqual({ harnessId: "fake-success" });
       },
       undefined,
       {
-        harnessModels: async ({ harnessId }) =>
-          harnessId === "raw-api"
+        harnessModels: async (input) => {
+          modelInputs.push(input);
+          return input.harnessId === "raw-api"
             ? {
-                harnessId,
+                harnessId: input.harnessId,
                 source: "api",
                 models: [{ id: "gpt-4o-mini", label: null, context_window: null }],
               }
-            : { harnessId, source: "none", models: [] },
+            : { harnessId: input.harnessId, source: "none", models: [] };
+        },
       },
     );
   });

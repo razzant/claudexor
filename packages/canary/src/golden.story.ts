@@ -426,6 +426,12 @@ describe("canary golden stories", () => {
     const fake = out.harnesses.find((h) => h.harnessId === "fake-success");
     expect(fake?.source).toBe("manifest");
     expect(fake?.models.map((m) => m.id)).toContain("fake-model");
+
+    const doctor = cli(sb, ["doctor", "--harness", "fake-success", "--all", "--json"]);
+    expect(doctor.code).toBe(0);
+    expect(
+      (doctor.json() as { harnesses: Array<{ id: string }> }).harnesses.map((h) => h.id),
+    ).toEqual(["fake-success"]);
   });
 
   it("[INV-104:settings-write-strict] `settings set harness.<id>.default_model` refuses a model outside the truth source and persists nothing", () => {

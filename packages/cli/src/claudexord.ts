@@ -410,7 +410,7 @@ async function applyThreadDiff(
 }
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
-
+type HarnessListInput = { fresh?: boolean; includeFakes?: boolean; harnessIds?: string[] };
 function controlServices(
   interactions: InteractionRegistry,
   projects: () => ProjectStore,
@@ -545,11 +545,11 @@ function controlServices(
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
       interactions.answer(runId, interactionId, answers),
-    harnesses: async (input?: { fresh?: boolean }) => {
-      const statuses = await buildGateway({ includeFakes: false }).statusAll({
-        cwd: NO_PROJECT_ROOT,
-        ...(input?.fresh !== undefined ? { fresh: input.fresh } : {}),
-      });
+    harnesses: async (input?: HarnessListInput) => {
+      const statuses = await buildGateway({ includeFakes: input?.includeFakes ?? false }).statusAll(
+        { cwd: NO_PROJECT_ROOT, fresh: input?.fresh ?? false },
+        input?.harnessIds,
+      );
       const cfg = loadConfig(NO_PROJECT_ROOT);
       return {
         harnesses: await Promise.all(
@@ -568,7 +568,7 @@ function controlServices(
       };
     },
     harnessModels: async (input: { harnessId: string }) =>
-      harnessModels(input.harnessId, NO_PROJECT_ROOT),
+      harnessModels(input.harnessId, NO_PROJECT_ROOT, true),
     authReadiness: async (input: { harnessId: string; request: unknown }) =>
       authReadiness.refresh(input.harnessId, input.request),
     agentCapabilities: async () => buildAgentCapabilityCatalog(),

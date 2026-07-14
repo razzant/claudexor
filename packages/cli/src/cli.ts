@@ -23,8 +23,7 @@ import {
 import { checkName } from "./release.js";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
-import { initProjectConfig, loadConfig } from "@claudexor/config";
-import { atRiskNodeAdvisory, validateModel } from "@claudexor/core";
+import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
   EffortHint,
@@ -49,14 +48,7 @@ import {
   requiredStringFlagError,
   type ParsedArgs,
 } from "./args.js";
-import {
-  authSourceAvailability,
-  checksSummary,
-  print,
-  printJson,
-  printUsageError,
-  statusGlyph,
-} from "./cli-io.js";
+import { print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
 import {
   KNOWN_FLAGS,
   VALUE_FLAGS,
@@ -65,7 +57,13 @@ import {
   renderHelp,
 } from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
+import {
+  authCommand,
+  daemonCommand,
+  doctorCommand,
+  modelsCommand,
+  secretsCommand,
+} from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
@@ -89,7 +87,7 @@ import {
   type PluginTarget,
   type PluginVerb,
 } from "./plugins.js";
-import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { buildRegistry } from "./registry.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { trustCommand } from "./trust-command.js";
@@ -940,83 +938,8 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    case "doctor": {
-      const cfg = loadConfig(cwd);
-      const only = flagStr(args, "harness");
-      const onlyList = only
-        ? only
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : undefined;
-      const gateway = buildGateway({ includeFakes: flagBool(args, "all") });
-      // Scope discovery to the requested harness(es) (P14): a single-harness
-      // query no longer probes every adapter (incl. paid smokes) just to filter.
-      const statuses = await gateway.statusAll({ cwd }, onlyList);
-      // An explicit --harness typo must FAIL LOUDLY, not silently succeed over an
-      // empty list (the scoped probe returns nothing for an unknown id).
-      if (onlyList) {
-        const got = new Set(statuses.map((s) => s.id));
-        const unknown = onlyList.filter((id) => !got.has(id));
-        if (unknown.length)
-          return printUsageError(
-            json,
-            `claudexor: unknown harness(es): ${unknown.join(", ")} (run \`claudexor harness list --all\`)`,
-          );
-      }
-      const filtered = statuses;
-      // a configured default model that the harness does not recognize must
-      // not be silently masked by a smoke that ran a DIFFERENT model. Validate
-      // each harness's configured default against its model truth source (live
-      // inventory or manifest hints via the shared harnessModels SSOT) and
-      // surface a violation honestly as INVALID (strict model truth — no "unverified").
-      const configuredChecks = new Map<
-        string,
-        { configured: string; check: ReturnType<typeof validateModel> }
-      >();
-      await Promise.all(
-        filtered.map(async (s) => {
-          const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
-          if (!configured) return;
-          const truth = await harnessModels(s.id, process.cwd(), true);
-          const check = validateModel(
-            configured,
-            truth.models.map((m) => m.id),
-            truth.source === "api" ? "api" : "manifest",
-          );
-          configuredChecks.set(s.id, { configured, check });
-        }),
-      );
-      const modelNote = (s: (typeof statuses)[number]): string | null => {
-        const entry = configuredChecks.get(s.id);
-        if (!entry || entry.check.status === "ok") return null;
-        return `    model: INVALID — ${entry.check.message}`;
-      };
-      if (json) {
-        printJson({
-          harnesses: filtered.map((s) => ({
-            ...s,
-            configured_model: configuredChecks.get(s.id)?.configured ?? null,
-            configured_model_check: configuredChecks.get(s.id)?.check ?? null,
-          })),
-          node_advisory: atRiskNodeAdvisory(),
-        });
-        return 0;
-      }
-      for (const s of filtered) {
-        const ver = s.manifest?.version ? ` ${s.manifest.version}` : "";
-        print(`${statusGlyph(s.status)} ${s.id}${ver}`);
-        if (s.enabledIntents.length) print(`    intents: ${s.enabledIntents.join(", ")}`);
-        print(`    auth sources: ${authSourceAvailability(s)}`);
-        print(`    checks: ${checksSummary(s)}`);
-        if (s.reasons.length) print(`    reasons: ${s.reasons.join(", ")}`);
-        const mn = modelNote(s);
-        if (mn) print(mn);
-      }
-      const advisory = atRiskNodeAdvisory();
-      if (advisory) print(`advisory: ${advisory}`);
-      return 0;
-    }
+    case "doctor":
+      return doctorCommand(args, json);
 
     case "project":
       return projectCommand(args, json);
