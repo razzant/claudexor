@@ -7,7 +7,7 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 704,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 1003,
   "packages/acp-server/src/index.ts": 506,
-  "packages/cli/src/claudexord.ts": 775,
+  "packages/cli/src/claudexord.ts": 774,
   "packages/cli/src/cli.ts": 1572,
   "packages/cli/src/command-registry.ts": 641,
   "packages/cli/src/plugins.ts": 1866,

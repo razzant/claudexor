@@ -442,7 +442,7 @@ describe("canary golden stories", () => {
     // Fakes are test fixtures, never persistable routing targets.
     const fake = cli(sb, ["settings", "set", "harness.fake-success.default_model", "fake-model"]);
     expect(fake.code).toBe(1);
-    expect(fake.stdout + fake.stderr).toMatch(/unknown harness 'fake-success'/);
+    expect(fake.stdout + fake.stderr).toMatch(/fake-success.*(?:not persistable|not a real)/i);
   });
 
   it("[INV-103:no-global-model] the retired global default_model setting hard-errors with the harness-scoped remedy", () => {

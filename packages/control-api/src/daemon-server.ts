@@ -1478,7 +1478,7 @@ export class DaemonControlApiServer {
       } catch (err) {
         return this.requestError(res, err);
       }
-      return this.service(res, "updateSettings", body);
+      return this.service(res, "updateSettings", body, ControlSettingsSnapshot);
     }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
     if (method === "GET" && path === "/secrets")

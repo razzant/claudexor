@@ -216,7 +216,7 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "natural",
   }),
   j("GET", "/v2/settings", "read_only", null, "ControlSettingsSnapshot"),
-  j("POST", "/v2/settings", "mutating", "ControlSettingsUpdateRequest", null, {
+  j("POST", "/v2/settings", "mutating", "ControlSettingsUpdateRequest", "ControlSettingsSnapshot", {
     idempotency: "natural",
   }),
   j("GET", "/v2/secrets", "read_only", null, "ControlSecretListResponse"),

@@ -438,6 +438,49 @@ function controlServices(
       throw error;
     }
   };
+  const settingsSnapshot = () => {
+    const cfg = loadConfig(NO_PROJECT_ROOT);
+    return {
+      sources: cfg.sources,
+      defaultPortfolio: cfg.global.default_portfolio,
+      interactionTimeoutMs: cfg.global.interaction_timeout_ms,
+      routing: {
+        defaultPolicy: cfg.global.routing.default_policy,
+        primaryHarness: cfg.global.routing.primary_harness,
+        eligibleHarnesses: cfg.global.routing.eligible_harnesses,
+        envInheritance: cfg.global.routing.env_inheritance,
+        authPreference: cfg.global.routing.auth_preference,
+      },
+      budget: { maxUsdPerRun: cfg.global.budget.max_usd_per_run },
+      runtime: {
+        reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
+        harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
+        transientRetry: {
+          maxRetries: cfg.global.runtime.transient_retry.max_retries,
+          initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,
+          maxDelayMs: cfg.global.runtime.transient_retry.max_delay_ms,
+        },
+      },
+      harnesses: Object.fromEntries(
+        Object.entries(cfg.global.harnesses).map(([id, h]) => [
+          id,
+          {
+            enabled: h.enabled,
+            defaultModel: h.default_model,
+            effort: h.effort,
+            maxTurns: h.max_turns,
+            maxRounds: h.max_rounds,
+            maxUsd: h.max_usd,
+            toolsAllow: h.tools_allow,
+            toolsDeny: h.tools_deny,
+            fallbackModel: h.fallback_model,
+            web: h.web,
+            authPreference: h.auth_preference,
+          },
+        ]),
+      ),
+    };
+  };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
     listProjects: async () => ({ projects: projects().list() as unknown[] }),
@@ -557,51 +600,7 @@ function controlServices(
       }
       return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
     },
-    settings: async () => {
-      const cfg = loadConfig(NO_PROJECT_ROOT);
-      return {
-        sources: cfg.sources,
-        defaultPortfolio: cfg.global.default_portfolio,
-        interactionTimeoutMs: cfg.global.interaction_timeout_ms,
-        routing: {
-          defaultPolicy: cfg.global.routing.default_policy,
-          primaryHarness: cfg.global.routing.primary_harness,
-          eligibleHarnesses: cfg.global.routing.eligible_harnesses,
-          envInheritance: cfg.global.routing.env_inheritance,
-          authPreference: cfg.global.routing.auth_preference,
-        },
-        budget: {
-          maxUsdPerRun: cfg.global.budget.max_usd_per_run,
-        },
-        runtime: {
-          reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
-          harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
-          transientRetry: {
-            maxRetries: cfg.global.runtime.transient_retry.max_retries,
-            initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,
-            maxDelayMs: cfg.global.runtime.transient_retry.max_delay_ms,
-          },
-        },
-        harnesses: Object.fromEntries(
-          Object.entries(cfg.global.harnesses).map(([id, h]) => [
-            id,
-            {
-              enabled: h.enabled,
-              defaultModel: h.default_model,
-              effort: h.effort,
-              maxTurns: h.max_turns,
-              maxRounds: h.max_rounds,
-              maxUsd: h.max_usd,
-              toolsAllow: h.tools_allow,
-              toolsDeny: h.tools_deny,
-              fallbackModel: h.fallback_model,
-              web: h.web,
-              authPreference: h.auth_preference,
-            },
-          ]),
-        ),
-      };
-    },
+    settings: async () => settingsSnapshot(),
     updateSettings: async (patch: unknown) => {
       // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
       // surface as a 4xx, never be silently dropped.
@@ -615,7 +614,7 @@ function controlServices(
         if (value === null) return null;
         return value;
       };
-      const updated = updateGlobalConfig((cfg) => ({
+      updateGlobalConfig((cfg) => ({
         ...cfg,
         default_portfolio: p.defaultPortfolio ?? cfg.default_portfolio,
         interaction_timeout_ms: p.interactionTimeoutMs ?? cfg.interaction_timeout_ms,
@@ -637,7 +636,7 @@ function controlServices(
       // Routing/auth settings change harness readiness semantics: drop the
       // doctor TTL cache so the next /harnesses reflects the new truth.
       invalidateDoctorCache();
-      return updated;
+      return settingsSnapshot();
     },
     listSecrets: async () => ({
       backend: secretStore.resolvedBackend(),

@@ -565,6 +565,10 @@ Endpoint semantics beyond the inventory:
   source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
 - `GET /v2/events` is the global live-only run-event multiplex (see the streaming
   contract below).
+- `claudexor settings show|set` is a thin client of `GET|POST /v2/settings`.
+  Validation, persistence, cache invalidation, and the returned effective
+  `ControlSettingsSnapshot` come from the daemon; the CLI has no second config
+  writer or model/effort validator.
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.

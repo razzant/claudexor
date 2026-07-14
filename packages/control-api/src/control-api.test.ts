@@ -4456,27 +4456,28 @@ describe("DaemonControlApiServer", () => {
 
   it("validates settings patches and managed secret names", async () => {
     const { daemon } = fakeDaemon();
+    const snapshot = {
+      sources: [],
+      defaultPortfolio: "subscription-first" as const,
+      routing: {
+        defaultPolicy: "auto" as const,
+        primaryHarness: null,
+        eligibleHarnesses: [],
+        envInheritance: "mirror_native" as const,
+      },
+      budget: { maxUsdPerRun: null },
+      runtime: {
+        reviewerTimeoutMs: 2_400_000,
+        transientRetry: { maxRetries: 3, initialDelayMs: 2_000, maxDelayMs: 20_000 },
+      },
+    };
     const server = new DaemonControlApiServer({
       ...readyIdentity,
       token,
       daemon,
       services: {
-        settings: async () => ({
-          sources: [],
-          defaultPortfolio: "subscription-first",
-          routing: {
-            defaultPolicy: "auto",
-            primaryHarness: null,
-            eligibleHarnesses: [],
-            envInheritance: "mirror_native",
-          },
-          budget: { maxUsdPerRun: null },
-          runtime: {
-            reviewerTimeoutMs: 2_400_000,
-            transientRetry: { maxRetries: 3, initialDelayMs: 2_000, maxDelayMs: 20_000 },
-          },
-        }),
-        updateSettings: async (patch) => ({ patch }),
+        settings: async () => snapshot,
+        updateSettings: async () => snapshot,
         listSecrets: async () => ({ backend: "file", secrets: [] }),
         setSecret: async () => ({ ok: true }),
         deleteSecret: async () => ({ ok: true }),
@@ -4498,6 +4499,7 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ clearMaxUsdPerRun: true }),
       });
       expect(okSettings.status).toBe(200);
+      expect(await okSettings.json()).toMatchObject(snapshot);
       const shownSettings = await apiFetch(`${base}/settings`, {
         headers: { authorization: `Bearer ${token}` },
       });
