@@ -6,6 +6,7 @@ import {
   type DaemonControlApiOptions,
   type DaemonFacadeClient,
   type DaemonRunRecord,
+  type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
 import {
   appendFileSync,
@@ -605,13 +606,21 @@ describe("DaemonControlApiServer", () => {
     services?: DaemonControlApiOptions["services"],
     bus?: DaemonControlApiOptions["bus"],
   ): Promise<void> {
+    const operatorDecisions = new Map<string, ControlOperatorDecisionRecord>();
     const server = new DaemonControlApiServer({
       ...readyIdentity,
       token,
       daemon,
       pollMs: 5,
       runStartTimeoutMs,
-      services,
+      services: {
+        operatorDecision: (runId) => operatorDecisions.get(runId) ?? null,
+        recordOperatorDecision: (runId, _params, decision) => {
+          operatorDecisions.set(runId, decision);
+          return decision;
+        },
+        ...services,
+      },
       bus,
     });
     const { host, port } = await server.start();
@@ -3506,6 +3515,7 @@ describe("DaemonControlApiServer", () => {
       state: "active",
     };
     let applied = 0;
+    const operatorDecisions = new Map<string, ControlOperatorDecisionRecord>();
     const daemon: DaemonFacadeClient = {
       async enqueue() {
         return { id: "j", state: "queued" };
@@ -3525,6 +3535,11 @@ describe("DaemonControlApiServer", () => {
       token,
       daemon,
       services: {
+        operatorDecision: (runId) => operatorDecisions.get(runId) ?? null,
+        recordOperatorDecision: (runId, _params, decision) => {
+          operatorDecisions.set(runId, decision);
+          return decision;
+        },
         threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
         applyThread: async () => {
           applied += 1;
@@ -3551,10 +3566,13 @@ describe("DaemonControlApiServer", () => {
       mkd(join(runDir, "final"), { recursive: true });
       const patchText = "diff --git a/x b/x\n";
       writeFileSync(join(runDir, "final", "patch.diff"), patchText);
-      writeFileSync(
-        join(runDir, "arbitration", "operator_decision.yaml"),
-        `action: accept_risk\ndecided_at: "${now}"\npatch_sha256: "${sha256(patchText)}"\n`,
-      );
+      operatorDecisions.set("run-head", {
+        action: "accept_risk",
+        findingIds: [],
+        acceptedRisks: ["test owner accepted"],
+        patchSha256: sha256(patchText),
+        decidedAt: now,
+      });
       const okRes = await apiFetch(`${base}/threads/th-gate/apply`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
@@ -4286,7 +4304,7 @@ describe("DaemonControlApiServer", () => {
       });
       expect(decide.status).toBe(200);
       expect(((await decide.json()) as { accepted: boolean }).accepted).toBe(true);
-      // The decision is a durable, auditable artifact.
+      // The journal-backed authority also emits the artifact-only compatibility projection.
       const persisted = readFileSync(
         join(record.runDir as string, "arbitration", "operator_decision.yaml"),
         "utf8",

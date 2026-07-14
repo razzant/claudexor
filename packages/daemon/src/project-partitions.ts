@@ -3,6 +3,11 @@ import { hashJson } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
 import { interactionProjection, type InteractionStore } from "./interactions.js";
+import {
+  operatorDecisionProjection,
+  type OperatorDecisionRecord,
+  type OperatorDecisionStore,
+} from "./operator-decisions.js";
 import { specSessionProjection, type SpecSessionStore } from "./spec-sessions.js";
 import type { ProjectStore } from "./projects.js";
 import {
@@ -18,6 +23,7 @@ interface ProjectPartition {
   manager: JournalManager;
   commands: JournalProjectionSlot<CommandStore>;
   interactions: JournalProjectionSlot<InteractionStore>;
+  decisions: JournalProjectionSlot<OperatorDecisionStore>;
   specs: JournalProjectionSlot<SpecSessionStore>;
   threads: JournalProjectionSlot<ThreadStore>;
 }
@@ -30,6 +36,7 @@ export class ProjectPartitions implements CommandAuthority {
     private readonly projects: JournalProjectionSlot<ProjectStore>,
     private readonly globalCommands: JournalProjectionSlot<CommandStore>,
     private readonly globalInteractions: JournalProjectionSlot<InteractionStore>,
+    private readonly globalDecisions: JournalProjectionSlot<OperatorDecisionStore>,
     private readonly globalThreads: JournalProjectionSlot<ThreadStore>,
   ) {
     this.sync();
@@ -55,6 +62,17 @@ export class ProjectPartitions implements CommandAuthority {
     const entry = this.healthy().find((candidate) => candidate.commands.current() === commandStore);
     if (!entry) throw new Error("command partition has no interaction authority");
     return entry.interactions.current();
+  }
+
+  operatorDecision(params: unknown, runId: string): OperatorDecisionRecord | null {
+    return this.decisionStoreForRequest(params).get(runId);
+  }
+
+  recordOperatorDecision(
+    params: unknown,
+    decision: OperatorDecisionRecord,
+  ): OperatorDecisionRecord {
+    return this.decisionStoreForRequest(params).record(decision);
   }
 
   specsForRequest(params: unknown): SpecSessionStore {
@@ -217,10 +235,11 @@ export class ProjectPartitions implements CommandAuthority {
     const manager = new JournalManager(this.rootDir, { partition: `project:${projectId}` });
     const commands = manager.registerProjection(commandProjection());
     const interactions = manager.registerProjection(interactionProjection());
+    const decisions = manager.registerProjection(operatorDecisionProjection());
     const specs = manager.registerProjection(specSessionProjection());
     const threads = manager.registerProjection(threadProjection());
     manager.start();
-    const entry = { manager, commands, interactions, specs, threads };
+    const entry = { manager, commands, interactions, decisions, specs, threads };
     this.partitions.set(projectId, entry);
     return entry;
   }
@@ -279,6 +298,14 @@ export class ProjectPartitions implements CommandAuthority {
     const entry = this.healthy().find((candidate) => candidate.threads.current() === store);
     if (!entry) throw new Error("thread partition has no command authority");
     return entry.commands.current();
+  }
+
+  private decisionStoreForRequest(params: unknown): OperatorDecisionStore {
+    const commands = this.forRequest(params);
+    if (commands === this.globalCommands.current()) return this.globalDecisions.current();
+    const entry = this.healthy().find((candidate) => candidate.commands.current() === commands);
+    if (!entry) throw new Error("command partition has no operator-decision authority");
+    return entry.decisions.current();
   }
 }
 

@@ -124,6 +124,14 @@ export interface DaemonRunRecord {
   finishedAt?: string;
 }
 
+export interface ControlOperatorDecisionRecord {
+  action: "accept_risk" | "override_needs_human";
+  findingIds: string[];
+  acceptedRisks: string[];
+  patchSha256: string;
+  decidedAt: string;
+}
+
 export interface DaemonFacadeClient {
   enqueue(
     params: unknown,
@@ -202,6 +210,12 @@ export interface DaemonControlApiOptions {
       interactionId: string,
       answers: unknown,
     ) => { status: string; message?: string };
+    operatorDecision?: (runId: string, params: unknown) => ControlOperatorDecisionRecord | null;
+    recordOperatorDecision?: (
+      runId: string,
+      params: unknown,
+      decision: ControlOperatorDecisionRecord,
+    ) => ControlOperatorDecisionRecord;
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
     threadDetail?: (
@@ -651,7 +665,16 @@ export class DaemonControlApiServer {
       // Fence order: cursor FIRST, every projection (pending interactions
       // included) after it — see the detailFor doc comment.
       const lastSeq = rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0;
-      return this.json(res, 200, detailFor(rec, this.pendingInteractionsFor(rec), lastSeq));
+      return this.json(
+        res,
+        200,
+        detailFor(
+          rec,
+          this.pendingInteractionsFor(rec),
+          lastSeq,
+          this.validOperatorDecisionFor(rec),
+        ),
+      );
     }
 
     const interactionAnswerMatch = /^\/runs\/([^/]+)\/interactions\/([^/]+)\/answer$/.exec(path);
@@ -770,7 +793,7 @@ export class DaemonControlApiServer {
       // persisted operator_decision is no longer in the "needs me" inbox.
       const blocked = new Set(
         runs
-          .filter((r) => r.state === "blocked" && readValidOperatorDecision(r) === null)
+          .filter((r) => r.state === "blocked" && this.validOperatorDecisionFor(r) === null)
           .map((r) => r.runId ?? r.id),
       );
       return this.json(
@@ -806,7 +829,7 @@ export class DaemonControlApiServer {
         }
         const headRec = byRun.get(thread.head_run_id ?? "");
         const headNeedsHuman =
-          headRec?.state === "blocked" && readValidOperatorDecision(headRec) === null;
+          headRec?.state === "blocked" && this.validOperatorDecisionFor(headRec) === null;
         return this.json(
           res,
           200,
@@ -871,7 +894,7 @@ export class DaemonControlApiServer {
             });
           }
           if (headRec.state === "blocked" || headRec.state === "failed") {
-            const decision = readValidOperatorDecision(headRec);
+            const decision = this.validOperatorDecisionFor(headRec);
             if (!decision) {
               appendRunAuditEvent(headRec, "control.rejected", {
                 control: "thread_apply",
@@ -1044,7 +1067,7 @@ export class DaemonControlApiServer {
         return this.json(res, 400, { error: "project root is required for apply check" });
       const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const gateError = applyGateError(rec, patch, repoRoot);
+      const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
       if (gateError) return this.json(res, 409, { error: gateError });
       return this.json(res, 200, await checkPatch(repoRoot, patch));
     }
@@ -1069,7 +1092,7 @@ export class DaemonControlApiServer {
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
       const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const gateError = applyGateError(rec, patch, repoRoot);
+      const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
       if (gateError) return this.json(res, 409, { error: gateError });
       return this.json(
         res,
@@ -1114,14 +1137,14 @@ export class DaemonControlApiServer {
           return this.json(res, 409, {
             error: "no patch artifact; there is nothing to unblock for apply",
           });
-        const written = writeOperatorDecision(rec, {
+        const decision = this.recordOperatorDecision(rec, {
           action: body.action,
-          finding_ids: body.findingIds,
-          accepted_risks: body.acceptedRisks,
-          patch_sha256: sha256(patch),
-          decided_at: nowIso(),
+          findingIds: body.findingIds,
+          acceptedRisks: body.acceptedRisks,
+          patchSha256: sha256(patch),
+          decidedAt: nowIso(),
         });
-        if (!written) return this.json(res, 500, { error: "cannot resolve run artifact root" });
+        writeOperatorDecisionProjection(rec, decision);
         appendRunAuditEvent(rec, "control.applied", {
           decision: body.action,
           finding_ids: body.findingIds,
@@ -1201,7 +1224,7 @@ export class DaemonControlApiServer {
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
         const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-        const gateError = applyGateError(rec, patch, repoRoot);
+        const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
         if (gateError) return this.json(res, 409, { error: gateError });
         const delivered = await deliver(repoRoot, patch, { mode: body.applyMode ?? "apply" });
         appendRunAuditEvent(rec, "control.applied", {
@@ -1828,6 +1851,30 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
+  private operatorDecisionFor(rec: DaemonRunRecord): ControlOperatorDecisionRecord | null {
+    return this.opts.services?.operatorDecision?.(rec.runId ?? rec.id, rec.params) ?? null;
+  }
+
+  private validOperatorDecisionFor(rec: DaemonRunRecord): ControlOperatorDecisionRecord | null {
+    const decision = this.operatorDecisionFor(rec);
+    if (!decision) return null;
+    const patch = readTextArtifact(rec, "final/patch.diff", false);
+    return patch !== null && decision.patchSha256 === sha256(patch) ? decision : null;
+  }
+
+  private recordOperatorDecision(
+    rec: DaemonRunRecord,
+    decision: ControlOperatorDecisionRecord,
+  ): ControlOperatorDecisionRecord {
+    const record = this.opts.services?.recordOperatorDecision;
+    if (!record) {
+      throw Object.assign(new Error("operator decisions are not supported by this engine build"), {
+        status: 501,
+      });
+    }
+    return record(rec.runId ?? rec.id, rec.params, decision);
+  }
+
   private threadTurnRouteCtx(): ThreadTurnRouteCtx {
     const services = this.opts.services ?? {};
     return {
@@ -2309,6 +2356,7 @@ function detailFor(
   rec: DaemonRunRecord,
   pendingInteractions: ControlPendingInteraction[] = [],
   cursor?: number,
+  operator: ControlOperatorDecisionRecord | null = null,
 ): ControlRunDetail {
   // Snapshot fence: capture the event cursor BEFORE building any projection.
   // The fence promise is "every event with seq <= lastSeq is reflected" — a
@@ -2320,25 +2368,8 @@ function detailFor(
   const lastSeq = cursor ?? (rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  // Project ONLY a VALID operator decision (action is an unblock AND patch-hash
-  // matches the current patch) — same gate as the needs-human inbox — so a stale
-  // or mutated operator_decision.yaml can't make a surface render an apply
-  // affordance for a run the server still considers blocked.
-  const operator = readValidOperatorDecision(rec);
   const operatorDecisionRaw = operator
-    ? (() => {
-        try {
-          const doc = parseYaml(
-            readTextArtifact(rec, "arbitration/operator_decision.yaml") ?? "",
-          ) as Record<string, unknown> | null;
-          return {
-            action: operator.action,
-            decidedAt: typeof doc?.["decided_at"] === "string" ? doc["decided_at"] : null,
-          };
-        } catch {
-          return { action: operator.action, decidedAt: null };
-        }
-      })()
+    ? { action: operator.action, decidedAt: operator.decidedAt }
     : null;
   const summary = summarizeRun(rec);
   return ControlRunDetail.parse({
@@ -2354,7 +2385,7 @@ function detailFor(
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     // Derived apply-gate verdict (single producer: delivery's
     // deriveApplyEligibility) — null when the run has no patch artifact.
-    applyEligibility: applyEligibilityFor(rec),
+    applyEligibility: applyEligibilityFor(rec, operator),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
     // Typed executor progress for an orchestrate auto_safe/auto_full run; null
@@ -2603,14 +2634,16 @@ function applyGateError(
   rec: DaemonRunRecord,
   patch: string,
   targetRepoRoot: string,
+  operatorDecision: ControlOperatorDecisionRecord | null,
 ): string | null {
-  return validateApplyGate(applyGateInputFor(rec, patch, targetRepoRoot));
+  return validateApplyGate(applyGateInputFor(rec, patch, targetRepoRoot, operatorDecision));
 }
 
 function applyGateInputFor(
   rec: DaemonRunRecord,
   patch: string,
   targetRepoRoot: string,
+  operatorDecision: ControlOperatorDecisionRecord | null,
 ): ApplyGateInput {
   return {
     state: rec.state,
@@ -2619,7 +2652,9 @@ function applyGateInputFor(
     patch,
     originalRepoRoot: runRepoRoot(rec),
     targetRepoRoot,
-    operatorDecision: readOperatorDecision(rec),
+    operatorDecision: operatorDecision
+      ? { action: operatorDecision.action, patch_sha256: operatorDecision.patchSha256 }
+      : null,
   };
 }
 
@@ -2628,75 +2663,36 @@ function applyGateInputFor(
  * patch artifact (nothing to apply); otherwise the derived verdict against
  * the run's own original project root.
  */
-function applyEligibilityFor(rec: DaemonRunRecord): ApplyEligibility | null {
+function applyEligibilityFor(
+  rec: DaemonRunRecord,
+  operatorDecision: ControlOperatorDecisionRecord | null,
+): ApplyEligibility | null {
   const patch = readPatch(rec);
   if (patch === null || patch.trim() === "") return null;
   const root = runRepoRoot(rec);
   if (!root) return null;
-  return deriveApplyEligibility(applyGateInputFor(rec, patch, root));
+  return deriveApplyEligibility(applyGateInputFor(rec, patch, root, operatorDecision));
 }
 
-/**
- * SINGLE writer of the operator unblock artifact. Every accept_risk /
- * override decision routes through here so the on-disk shape and the path
- * resolution (server-fixed name, validated run-dir root) exist in exactly one
- * place — the mirror of readOperatorDecision below. Returns false when the run
- * artifact root cannot be resolved (caller fails loudly). */
-function writeOperatorDecision(
+/** Compatibility projection for artifact-only CLI reads; the journal record is authority. */
+function writeOperatorDecisionProjection(
   rec: DaemonRunRecord,
-  record: {
-    action: string;
-    finding_ids: string[];
-    accepted_risks: string[];
-    patch_sha256: string;
-    decided_at: string;
-  },
-): boolean {
-  // The artifact name is server-fixed (no client path input); only the run dir
-  // root needs validating before the write.
+  record: ControlOperatorDecisionRecord,
+): void {
   const root = rec.runDir ? safeArtifactRoot(rec.runDir) : null;
-  if (!root) return false;
+  if (!root) return;
   mkdirSync(join(root, "arbitration"), { recursive: true });
-  writeFileSync(join(root, "arbitration", "operator_decision.yaml"), stringifyYaml(record), "utf8");
-  return true;
-}
-
-/** The persisted operator unblock decision (accept_risk / override), if any. */
-function readOperatorDecision(
-  rec: DaemonRunRecord,
-): { action: string; patch_sha256?: string } | null {
-  try {
-    const raw = readTextArtifact(rec, "arbitration/operator_decision.yaml");
-    if (!raw) return null;
-    const doc = parseYaml(raw) as Record<string, unknown> | null;
-    if (!doc || typeof doc["action"] !== "string") return null;
-    return {
-      action: doc["action"],
-      patch_sha256: typeof doc["patch_sha256"] === "string" ? doc["patch_sha256"] : undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A VALID operator unblock decision: the action is a genuine unblock
- * (accept_risk / override_needs_human) AND its recorded patch_sha256 still
- * matches the current final/patch.diff. Used to clear the needs-human inbox —
- * mirrors the apply gate (delivery validateApplyGate) so a mutated decision
- * artifact or a mutated patch can NEVER silently hide a blocked run from the
- * operator. Returns null when the decision is absent, the wrong action, or stale.
- */
-function readValidOperatorDecision(
-  rec: DaemonRunRecord,
-): { action: string; patch_sha256?: string } | null {
-  const decision = readOperatorDecision(rec);
-  if (!decision) return null;
-  if (decision.action !== "accept_risk" && decision.action !== "override_needs_human") return null;
-  if (typeof decision.patch_sha256 !== "string" || decision.patch_sha256.length === 0) return null;
-  const patch = readTextArtifact(rec, "final/patch.diff", false);
-  if (patch === null || decision.patch_sha256 !== sha256(patch)) return null;
-  return decision;
+  writeFileSync(
+    join(root, "arbitration", "operator_decision.yaml"),
+    stringifyYaml({
+      action: record.action,
+      finding_ids: record.findingIds,
+      accepted_risks: record.acceptedRisks,
+      patch_sha256: record.patchSha256,
+      decided_at: record.decidedAt,
+    }),
+    "utf8",
+  );
 }
 
 function safeReadStructuredArtifact<T>(

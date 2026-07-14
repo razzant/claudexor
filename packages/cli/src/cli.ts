@@ -1231,8 +1231,8 @@ async function main(): Promise<number> {
       // Apply policy has ONE owner (delivery.validateApplyGate) shared with the
       // Control API; the CLI only adapts artifact reads into it. No duplicated
       // pre-checks here: a NEEDS_HUMAN run unblocked through the typed decision
-      // endpoint (arbitration/operator_decision.yaml, hash-bound) must apply
-      // identically from BOTH surfaces.
+      // endpoint is journal authority; its hash-bound artifact projection keeps
+      // this artifact-only path aligned until delivery consolidation.
       const applyDecision = DecisionRecord.safeParse(
         store.readYaml(join(paths.arbitrationDir, "decision.yaml")),
       );

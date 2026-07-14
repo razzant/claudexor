@@ -5,6 +5,8 @@ import {
   DaemonClient,
   commandProjection,
   interactionProjection,
+  operatorDecisionProjection,
+  type OperatorDecisionRecord,
   JournalManager,
   DaemonServer,
   InteractionRegistry,
@@ -45,7 +47,11 @@ import { AuthReadinessService } from "@claudexor/gateway";
 import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import { applyHarnessSettingsPatches, assertSettingsPatchValid } from "./settings-service.js";
+import {
+  applyHarnessSettingsPatches,
+  assertSettingsPatchValid,
+  settingsSnapshot,
+} from "./settings-service.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
@@ -78,6 +84,9 @@ async function main(): Promise<void> {
     const journalManager = new JournalManager(daemonDir());
     const commandStoreSlot = journalManager.registerProjection(commandProjection());
     const interactionStoreSlot = journalManager.registerProjection(interactionProjection());
+    const operatorDecisionStoreSlot = journalManager.registerProjection(
+      operatorDecisionProjection(),
+    );
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
@@ -91,6 +100,7 @@ async function main(): Promise<void> {
       projectStoreSlot,
       commandStoreSlot,
       interactionStoreSlot,
+      operatorDecisionStoreSlot,
       threadStoreSlot,
     );
     const interactions = new InteractionRegistry({
@@ -429,49 +439,6 @@ function controlServices(
       throw error;
     }
   };
-  const settingsSnapshot = () => {
-    const cfg = loadConfig(NO_PROJECT_ROOT);
-    return {
-      sources: cfg.sources,
-      defaultPortfolio: cfg.global.default_portfolio,
-      interactionTimeoutMs: cfg.global.interaction_timeout_ms,
-      routing: {
-        defaultPolicy: cfg.global.routing.default_policy,
-        primaryHarness: cfg.global.routing.primary_harness,
-        eligibleHarnesses: cfg.global.routing.eligible_harnesses,
-        envInheritance: cfg.global.routing.env_inheritance,
-        authPreference: cfg.global.routing.auth_preference,
-      },
-      budget: { maxUsdPerRun: cfg.global.budget.max_usd_per_run },
-      runtime: {
-        reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
-        harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
-        transientRetry: {
-          maxRetries: cfg.global.runtime.transient_retry.max_retries,
-          initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,
-          maxDelayMs: cfg.global.runtime.transient_retry.max_delay_ms,
-        },
-      },
-      harnesses: Object.fromEntries(
-        Object.entries(cfg.global.harnesses).map(([id, h]) => [
-          id,
-          {
-            enabled: h.enabled,
-            defaultModel: h.default_model,
-            effort: h.effort,
-            maxTurns: h.max_turns,
-            maxRounds: h.max_rounds,
-            maxUsd: h.max_usd,
-            toolsAllow: h.tools_allow,
-            toolsDeny: h.tools_deny,
-            fallbackModel: h.fallback_model,
-            web: h.web,
-            authPreference: h.auth_preference,
-          },
-        ]),
-      ),
-    };
-  };
   const requireSpecStore = (id: string) => {
     const store = threads.specStoreForSession(id);
     if (!store) throw Object.assign(new Error(`no such spec session: ${id}`), { status: 404 });
@@ -608,6 +575,12 @@ function controlServices(
     pendingInteractions: (runId: string) => interactions.pendingForRun(runId),
     answerInteraction: (runId: string, interactionId: string, answers: unknown) =>
       interactions.answer(runId, interactionId, answers),
+    operatorDecision: (runId: string, params: unknown) => threads.operatorDecision(params, runId),
+    recordOperatorDecision: (
+      runId: string,
+      params: unknown,
+      decision: Omit<OperatorDecisionRecord, "runId">,
+    ) => threads.recordOperatorDecision(params, { runId, ...decision }),
     harnesses: async (input?: HarnessListInput) => {
       const statuses = await buildGateway({ includeFakes: input?.includeFakes ?? false }).statusAll(
         { cwd: NO_PROJECT_ROOT, fresh: input?.fresh ?? false },
@@ -663,7 +636,7 @@ function controlServices(
       }
       return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
     },
-    settings: async () => settingsSnapshot(),
+    settings: async () => settingsSnapshot(NO_PROJECT_ROOT),
     updateSettings: async (patch: unknown) => {
       // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
       // surface as a 4xx, never be silently dropped.
@@ -699,7 +672,7 @@ function controlServices(
       // Routing/auth settings change harness readiness semantics: drop the
       // doctor TTL cache so the next /harnesses reflects the new truth.
       invalidateDoctorCache();
-      return settingsSnapshot();
+      return settingsSnapshot(NO_PROJECT_ROOT);
     },
     listSecrets: async () => ({
       backend: secretStore.resolvedBackend(),

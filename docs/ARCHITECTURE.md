@@ -564,8 +564,10 @@ Endpoint semantics beyond the inventory:
   update one repo. CLI trust commands use this same boundary. This backs the macOS one-click remedy on a
   trust-refused turn and the Settings trust section (list + revoke).
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
-  `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
-  `arbitration/operator_decision.yaml` honored by the apply gate;
+  `accept_risk` / `override_needs_human` append an auditable patch-hash-bound
+  record to the owning global/project journal before ACK. The run artifact
+  `arbitration/operator_decision.yaml` is only a compatibility projection for
+  artifact-only CLI reads; the apply gate reads journal authority;
   `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
   `revert_run` restores the live in-place tree to the turn's pre-turn snapshot —
   a server-owned, tree-SHA divergence-fenced revert that refuses (fail loud) if
@@ -768,9 +770,10 @@ change, critical-risk diff) is a terminal `blocked` state whose findings surface
 inline on the blocking turn and in the run inspector's Review tab (there is no
 separate Review Queue screen). Since v0.9 the human decision is a TYPED server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
-auditable, patch-hash-bound `arbitration/operator_decision.yaml` that the
-single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
-apply`); `accept_clean_patch` delivers through the gate and
+auditable, patch-hash-bound record in the owning journal. The single-owner
+Control API apply gate reads that authority; the mirrored
+`arbitration/operator_decision.yaml` keeps artifact-only `claudexor apply`
+compatible until delivery consolidation. `accept_clean_patch` delivers through the gate and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
 override. UI must not fake local accept/unblock state. The CLI resolves a run from
 any cwd (project store, user Ask store, or — only when a daemon is already running —
@@ -855,7 +858,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    `deliver` path (`--check` first, restore on failure, honest
    `treeMutated`).
 6. **Automatic git init** — a NON-GIT project folder is initialized before any
-   write candidate spawns (`.gitignore` seeded with `.claudexor/`, `git init`,
+   write candidate spawns (`git init`,
    deterministic baseline commit). Fence: the mutation is announced via a typed
    `project.git.initialized` run event — never silent.
 7. **`revert_run`** — the server-owned in-place revert restores a turn's

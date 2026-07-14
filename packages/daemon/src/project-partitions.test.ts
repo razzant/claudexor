@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { commandProjection } from "./command-store.js";
 import { interactionProjection } from "./interactions.js";
 import { JournalManager } from "./journal-manager.js";
+import { operatorDecisionProjection } from "./operator-decisions.js";
 import { ProjectPartitions } from "./project-partitions.js";
 import { projectProjection } from "./projects.js";
 import { threadProjection } from "./threads.js";
@@ -21,6 +22,7 @@ function fixture() {
   const manager = new JournalManager(root);
   const commands = manager.registerProjection(commandProjection());
   const interactions = manager.registerProjection(interactionProjection());
+  const decisions = manager.registerProjection(operatorDecisionProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
@@ -28,7 +30,7 @@ function fixture() {
     root,
     manager,
     projects,
-    partitions: new ProjectPartitions(root, projects, commands, interactions, threads),
+    partitions: new ProjectPartitions(root, projects, commands, interactions, decisions, threads),
   };
 }
 
@@ -81,6 +83,17 @@ describe("ProjectPartitions", () => {
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
     expect(aInteractions.pendingForRun("run-a")).toHaveLength(1);
+    f.partitions.recordOperatorDecision(
+      { scope: { kind: "project", root: projectA } },
+      {
+        runId: "run-a",
+        action: "accept_risk",
+        findingIds: ["finding-a"],
+        acceptedRisks: ["owner accepted"],
+        patchSha256: `sha256:${"a".repeat(64)}`,
+        decidedAt: "2026-01-01T00:00:00.000Z",
+      },
+    );
 
     f.partitions.relinkProject(b.id, projectB2);
     expect(f.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));
@@ -96,6 +109,10 @@ describe("ProjectPartitions", () => {
     expect(
       restarted.partitions.interactionStores().flatMap((store) => store.pendingForRun("run-a")),
     ).toEqual([]);
+    expect(
+      restarted.partitions.operatorDecision({ scope: { kind: "project", root: projectA } }, "run-a")
+        ?.patchSha256,
+    ).toBe(`sha256:${"a".repeat(64)}`);
     restarted.partitions.close();
     restarted.manager.close();
   });
@@ -119,11 +136,12 @@ function fixtureAt(root: string) {
   const manager = new JournalManager(root);
   const commands = manager.registerProjection(commandProjection());
   const interactions = manager.registerProjection(interactionProjection());
+  const decisions = manager.registerProjection(operatorDecisionProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
   return {
     manager,
-    partitions: new ProjectPartitions(root, projects, commands, interactions, threads),
+    partitions: new ProjectPartitions(root, projects, commands, interactions, decisions, threads),
   };
 }

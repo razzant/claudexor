@@ -14,7 +14,52 @@ import type {
 } from "@claudexor/schema";
 import { GlobalConfig } from "@claudexor/schema";
 import { validateModel } from "@claudexor/core";
+import { loadConfig } from "@claudexor/config";
 import { buildRegistry, harnessModels } from "./registry.js";
+
+export function settingsSnapshot(repoRoot: string) {
+  const cfg = loadConfig(repoRoot);
+  return {
+    sources: cfg.sources,
+    defaultPortfolio: cfg.global.default_portfolio,
+    interactionTimeoutMs: cfg.global.interaction_timeout_ms,
+    routing: {
+      defaultPolicy: cfg.global.routing.default_policy,
+      primaryHarness: cfg.global.routing.primary_harness,
+      eligibleHarnesses: cfg.global.routing.eligible_harnesses,
+      envInheritance: cfg.global.routing.env_inheritance,
+      authPreference: cfg.global.routing.auth_preference,
+    },
+    budget: { maxUsdPerRun: cfg.global.budget.max_usd_per_run },
+    runtime: {
+      reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
+      harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
+      transientRetry: {
+        maxRetries: cfg.global.runtime.transient_retry.max_retries,
+        initialDelayMs: cfg.global.runtime.transient_retry.initial_delay_ms,
+        maxDelayMs: cfg.global.runtime.transient_retry.max_delay_ms,
+      },
+    },
+    harnesses: Object.fromEntries(
+      Object.entries(cfg.global.harnesses).map(([id, h]) => [
+        id,
+        {
+          enabled: h.enabled,
+          defaultModel: h.default_model,
+          effort: h.effort,
+          maxTurns: h.max_turns,
+          maxRounds: h.max_rounds,
+          maxUsd: h.max_usd,
+          toolsAllow: h.tools_allow,
+          toolsDeny: h.tools_deny,
+          fallbackModel: h.fallback_model,
+          web: h.web,
+          authPreference: h.auth_preference,
+        },
+      ]),
+    ),
+  };
+}
 
 function badRequest(message: string): never {
   throw Object.assign(new Error(message), { status: 400 });
