@@ -1486,7 +1486,7 @@ import Testing
         let client = GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t", session: session)
 
         RequestStubURLProtocol.handler = { request in
-            guard request.url?.path == "/harnesses", request.url?.query == "fresh=true" else {
+            guard request.url?.path == "/v2/harnesses", request.url?.query == "fresh=true" else {
                 throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
             }
             return (Self.response(for: request), Data(#"{"harnesses":[]}"#.utf8))
@@ -1504,6 +1504,35 @@ import Testing
         }
         _ = try await client.listSetupJobs(filter: SetupJobListFilter(harness: "claude", active: true, limit: 1))
         RequestStubURLProtocol.handler = nil
+    }
+
+    @Test func gatewayHealthNegotiatesV2BeforeReportingReady() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        RequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/healthz"):
+                return (Self.response(for: request), Data(#"{"ok":true}"#.utf8))
+            case ("POST", "/v2/handshake"):
+                guard request.value(forHTTPHeaderField: "X-Claudexor-Protocol-Major") == "2",
+                      let body = testRequestBody(request),
+                      String(decoding: body, as: UTF8.self).contains(#""protocolMajor":2"#) else {
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+                return (
+                    Self.response(for: request),
+                    Data(#"{"protocolMajor":2,"compatible":true,"operationsPath":"/v2/operations"}"#.utf8)
+                )
+            default:
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+        }
+        #expect(try await client.health())
     }
 
     @Test func gatewayRefreshesOneExactAuthSourceAndDecodesControlProblems() async throws {

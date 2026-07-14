@@ -108,6 +108,7 @@ import {
   ProtectedPathApproval,
   WorkProduct,
 } from "@claudexor/schema";
+import { resolveControlProtocol } from "./operation-catalog.js";
 import {
   assertNoInlineSecretValues,
   containsSecretLikeToken,
@@ -572,10 +573,10 @@ export class DaemonControlApiServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const path = url.pathname;
+    const requestPath = url.pathname;
     const method = req.method ?? "GET";
 
-    if (method === "GET" && path === "/healthz") {
+    if (method === "GET" && requestPath === "/healthz") {
       if (!hostIsLoopback(req.headers.host)) return this.json(res, 403, { error: "forbidden" });
       return this.json(res, this.stopping ? 503 : 200, { ok: !this.stopping });
     }
@@ -594,7 +595,21 @@ export class DaemonControlApiServer {
         true,
       );
     }
-
+    let protocol;
+    try {
+      protocol = await resolveControlProtocol({
+        method,
+        requestPath,
+        requestedMajor: req.headers["x-claudexor-protocol-major"],
+        readBody: () => this.readBody(req),
+      });
+    } catch (error) {
+      return this.requestError(res, error);
+    }
+    if (protocol.kind === "response") {
+      return this.json(res, protocol.status, protocol.body, protocol.contentType);
+    }
+    const path = protocol.path;
     if (method === "POST" && path === "/runs") {
       let params: ControlRunStartRequest;
       try {
@@ -605,22 +620,8 @@ export class DaemonControlApiServer {
       } catch (err) {
         return this.requestError(res, err);
       }
-      // 202-queued lineage race: a thread-anchored direct enqueue is a TURN
-      // of that conversation. The daemon runner binds the turn only at onRunStart,
-      // so a run that sits QUEUED (another turn on the thread is active) would be
-      // observable headless (GET /runs, GET /threads) with NO turn record and a
-      // stale head_run_id until it starts. Mirror the rerun_with_feedback / turns
-      // ordering: single-writer — pre-create the turn (run_id=null) BEFORE enqueue
-      // and pass its id, so the queued run is recorded on its thread deterministically
-      // before it can be seen. A pre-created turnId (the /threads/:id/turns path)
-      // already did this, so we only fill the gap for a bare threadId.
       const directThreadId =
         typeof params.threadId === "string" && params.threadId ? params.threadId : null;
-      // turnId is the INTERNAL single-writer handoff (control-api pre-creates
-      // the turn, the daemon runner binds the run to it). A client-supplied
-      // turnId could rebind any thread's turn lineage to an unrelated run
-      // — reject it at the boundary; the /threads/:id/turns path is
-      // the public way to create a turn.
       if (params.turnId) {
         return this.json(res, 400, {
           error:
@@ -1402,7 +1403,7 @@ export class DaemonControlApiServer {
         ControlHarnessModelsResponse,
       );
     }
-    const authReadinessMatch = /^\/v2\/harnesses\/([^/]+)\/auth-readiness$/.exec(path);
+    const authReadinessMatch = /^\/harnesses\/([^/]+)\/auth-readiness$/.exec(path);
     if (method === "POST" && authReadinessMatch) {
       try {
         assertOnlyQueryParams(url, []);
@@ -1419,7 +1420,7 @@ export class DaemonControlApiServer {
         return this.requestError(res, error);
       }
     }
-    if (method === "GET" && path === "/v2/setup/jobs") {
+    if (method === "GET" && path === "/setup/jobs") {
       try {
         assertOnlyQueryParams(url, ["harness", "action", "active", "limit"]);
         for (const key of ["harness", "action", "active", "limit"]) {
@@ -1443,7 +1444,7 @@ export class DaemonControlApiServer {
         return this.requestError(res, err);
       }
     }
-    if (method === "POST" && path === "/v2/setup/jobs") {
+    if (method === "POST" && path === "/setup/jobs") {
       let body: ControlSetupJobCreateRequest;
       try {
         const raw = await this.readBody(req);
@@ -1454,7 +1455,7 @@ export class DaemonControlApiServer {
       }
       return this.service(res, "createSetupJob", body, ControlSetupJob);
     }
-    const setupJobMatch = /^\/v2\/setup\/jobs\/([^/]+)$/.exec(path);
+    const setupJobMatch = /^\/setup\/jobs\/([^/]+)$/.exec(path);
     if (method === "GET" && setupJobMatch) {
       return this.service(
         res,
@@ -1463,7 +1464,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobSnapshotMatch = /^\/v2\/setup\/jobs\/([^/]+)\/snapshot$/.exec(path);
+    const setupJobSnapshotMatch = /^\/setup\/jobs\/([^/]+)\/snapshot$/.exec(path);
     if (method === "GET" && setupJobSnapshotMatch) {
       return this.service(
         res,
@@ -1472,7 +1473,7 @@ export class DaemonControlApiServer {
         ControlSetupJobSnapshot,
       );
     }
-    const setupJobCancelMatch = /^\/v2\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
+    const setupJobCancelMatch = /^\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && setupJobCancelMatch) {
       return this.service(
         res,
@@ -1481,7 +1482,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobReconcileMatch = /^\/v2\/setup\/jobs\/([^/]+)\/reconcile$/.exec(path);
+    const setupJobReconcileMatch = /^\/setup\/jobs\/([^/]+)\/reconcile$/.exec(path);
     if (method === "POST" && setupJobReconcileMatch) {
       return this.service(
         res,
@@ -1490,7 +1491,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobExtendMatch = /^\/v2\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
+    const setupJobExtendMatch = /^\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
     if (method === "POST" && setupJobExtendMatch) {
       return this.service(
         res,
@@ -1499,7 +1500,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobEventsMatch = /^\/v2\/setup\/jobs\/([^/]+)\/events$/.exec(path);
+    const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && setupJobEventsMatch) {
       return this.streamSetupJobEvents(
         decodeURIComponent(setupJobEventsMatch[1] as string),
@@ -1507,16 +1508,16 @@ export class DaemonControlApiServer {
         res,
       );
     }
-    if (method === "GET" && path === "/v2/recovery/partitions/global") {
+    if (method === "GET" && path === "/recovery/partitions/global") {
       return this.service(res, "recoveryInspectGlobal", undefined, ControlJournalInspection);
     }
-    if (method === "POST" && path === "/v2/recovery/partitions/global/validate") {
+    if (method === "POST" && path === "/recovery/partitions/global/validate") {
       return this.service(res, "recoveryValidateGlobal", undefined, ControlJournalValidation);
     }
-    if (method === "POST" && path === "/v2/recovery/partitions/global/export") {
+    if (method === "POST" && path === "/recovery/partitions/global/export") {
       return this.service(res, "recoveryExportGlobal", undefined, ControlJournalExportReceipt);
     }
-    if (method === "POST" && path === "/v2/recovery/partitions/global/quarantine") {
+    if (method === "POST" && path === "/recovery/partitions/global/quarantine") {
       try {
         const header = req.headers["idempotency-key"];
         if (Array.isArray(header)) throw new Error("Idempotency-Key may appear only once");

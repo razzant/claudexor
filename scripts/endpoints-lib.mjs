@@ -18,7 +18,7 @@ function routeSites(src) {
   const sites = [];
   const litRe = /method === "(GET|POST|DELETE|PUT|PATCH)"\s*&&\s*path === "([^"]+)"/g;
   for (let m = litRe.exec(src); m; m = litRe.exec(src)) {
-    sites.push({ method: m[1], path: m[2], index: m.index });
+    sites.push({ method: m[1], path: `/v2${m[2]}`, index: m.index });
   }
   const regexByName = new Map();
   const declRe = /const (\w+Match) = (\/\^[^;]+\/)\.exec\(path\);/g;
@@ -33,7 +33,7 @@ function routeSites(src) {
       .replaceAll("\\/", "/")
       .replace(/\(\[\^\/\]\+\)/g, ":id")
       .replace(/\(\.\+\)/g, "<path>");
-    sites.push({ method: m[1], path: template, index: m.index });
+    sites.push({ method: m[1], path: `/v2${template}`, index: m.index });
   }
   for (const [name] of regexByName) {
     if (!src.includes(`&& ${name}`)) {
@@ -48,6 +48,8 @@ function routeSites(src) {
 export function implementedEndpoints(srcPath = "packages/control-api/src/daemon-server.ts") {
   const src = readFileSync(srcPath, "utf8");
   const out = new Set(routeSites(src).map((s) => `${s.method} ${s.path}`));
+  out.add("POST /v2/handshake");
+  out.add("GET /v2/operations");
   out.add("GET /healthz"); // declared before auth with hostIsLoopback guard
   return out;
 }
@@ -64,15 +66,20 @@ export function implementedEndpoints(srcPath = "packages/control-api/src/daemon-
 // handler docs — a new dry-check route must be added here or agents will see
 // a false mutating flag.
 const READ_ONLY_NON_GET = new Set([
-  "POST /runs/:id/apply/check",
+  "POST /v2/runs/:id/apply/check",
   "POST /v2/harnesses/:id/auth-readiness",
+  "POST /v2/recovery/partitions/global/export",
+  "POST /v2/recovery/partitions/global/validate",
 ]);
 
 // Responses produced through HELPERS the slice-scan cannot see into (e.g.
 // `this.json(res, 200, detailFor(...))` where detailFor zod-parses the DTO).
 // docs-truth self-checks every named schema exists in generated/, so a rename
 // fails loudly instead of shipping a dangling ref.
-const ROUTE_RESPONSE_OVERRIDES = new Map([["GET /runs/:id", "ControlRunDetail"]]);
+const ROUTE_RESPONSE_OVERRIDES = new Map([
+  ["GET /v2/operations", "ControlOperationCatalog"],
+  ["GET /v2/runs/:id", "ControlRunDetail"],
+]);
 
 export function endpointDetails(srcPath = "packages/control-api/src/daemon-server.ts") {
   const src = readFileSync(srcPath, "utf8");
@@ -104,6 +111,20 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
       requestSchema: requestMatch ? requestMatch[1] : null,
       responseSchema: ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
     };
+  });
+  details.push({
+    method: "POST",
+    path: "/v2/handshake",
+    mutating: false,
+    requestSchema: "ControlHandshakeRequest",
+    responseSchema: "ControlHandshakeResponse",
+  });
+  details.push({
+    method: "GET",
+    path: "/v2/operations",
+    mutating: false,
+    requestSchema: null,
+    responseSchema: "ControlOperationCatalog",
   });
   details.push({
     method: "GET",

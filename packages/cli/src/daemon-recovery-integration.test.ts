@@ -133,7 +133,10 @@ describe("daemon recovery composition", () => {
     });
     const { host, port } = await control.start();
     const base = `http://${host}:${port}`;
-    const auth = { authorization: `Bearer ${token}` };
+    const auth = {
+      authorization: `Bearer ${token}`,
+      "x-claudexor-protocol-major": "2",
+    };
     const jsonHeaders = { ...auth, "content-type": "application/json" };
 
     try {

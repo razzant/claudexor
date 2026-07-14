@@ -1,0 +1,105 @@
+{
+  "$ref": "#/definitions/ControlOperationDescriptor",
+  "definitions": {
+    "ControlOperationDescriptor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^\\/v2\\/"
+        },
+        "requestSchema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "responseSchema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mutability": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "mutating"
+          ]
+        },
+        "idempotency": {
+          "type": "string",
+          "enum": [
+            "none",
+            "natural",
+            "key_required"
+          ]
+        },
+        "applicability": {
+          "type": "string",
+          "enum": [
+            "global",
+            "project",
+            "thread",
+            "run"
+          ]
+        },
+        "responseKind": {
+          "type": "string",
+          "enum": [
+            "json",
+            "stream",
+            "binary"
+          ]
+        },
+        "completion": {
+          "type": "string",
+          "enum": [
+            "immediate",
+            "durable_handle",
+            "terminal_stream"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "path",
+        "requestSchema",
+        "responseSchema",
+        "mutability",
+        "idempotency",
+        "applicability",
+        "responseKind",
+        "completion"
+      ],
+      "additionalProperties": false,
+      "description": "Machine-readable truth for one implemented v2 operation."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

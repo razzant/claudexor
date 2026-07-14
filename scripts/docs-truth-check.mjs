@@ -55,6 +55,25 @@ function documentedEndpoints(docText) {
 
 const implemented = implementedEndpoints();
 
+// Runtime catalog and handler registry must describe the same product surface.
+// The CLI build performed by docs:check builds this artifact first.
+try {
+  const { OPERATION_CATALOG } = await import("../packages/control-api/dist/operation-catalog.js");
+  const described = new Set(OPERATION_CATALOG.operations.map((op) => `${op.method} ${op.path}`));
+  const product = new Set([...implemented].filter((endpoint) => endpoint !== "GET /healthz"));
+  for (const endpoint of product) {
+    if (!described.has(endpoint)) failures.push(`operation catalog is missing '${endpoint}'`);
+  }
+  for (const endpoint of described) {
+    if (!product.has(endpoint))
+      failures.push(`operation catalog advertises unimplemented '${endpoint}'`);
+  }
+} catch (error) {
+  failures.push(
+    `cannot load the built operation catalog: ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
+
 // 1a. ARCHITECTURE holds the canonical generated block: present, fresh, and
 // its documented set matches the implemented set in both directions.
 {

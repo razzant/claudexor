@@ -1,0 +1,26 @@
+{
+  "$ref": "#/definitions/ControlHandshakeRequest",
+  "definitions": {
+    "ControlHandshakeRequest": {
+      "type": "object",
+      "properties": {
+        "protocolMajor": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "client": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "required": [
+        "protocolMajor",
+        "client"
+      ],
+      "additionalProperties": false,
+      "description": "Control-plane protocol negotiation requested before product calls."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

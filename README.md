@@ -202,7 +202,7 @@ current model ids for adapters that expose inventory.
 
 In the chat surface this is sticky per thread: a thread remembers which harness
 answers in chat (its primary) and the eligible pool Best-of competes over. The macOS
-app sets them via `POST /threads` / `PATCH /threads/:id` and may override per turn
+app sets them via `POST /v2/threads` / `PATCH /v2/threads/:id` and may override per turn
 — the engine still owns all routing; the surface only sends the choice.
 
 Harness chips in the macOS app are not decorative toggles: unavailable,
@@ -278,6 +278,12 @@ The canonical endpoint inventory lives in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from source;
 this README does not duplicate it.
 
+`GET /healthz` is the sole unversioned route. Every product call uses `/v2`:
+official clients negotiate `POST /v2/handshake`, send
+`X-Claudexor-Protocol-Major: 2`, and can inspect the implemented contract at
+`GET /v2/operations`. Missing/incompatible negotiation returns a typed `426`;
+there are no v1 aliases.
+
 Harness setup is server-owned. `/v2/setup/jobs` (create / status / reconcile /
 cancel / extend) is the only supported setup surface. Native login uses a
 bundled observable runner: 10-second launch watchdog, 15-minute user deadline,
@@ -303,14 +309,14 @@ which remains open on the result until Return. Doctor verification runs
 in-process inside the daemon (no shell PATH dependency). UI surfaces must not
 invent setup commands or accept inline secrets.
 
-Run events carry a monotonic per-run `seq`; `GET /runs/:id` returns the
-snapshot plus `lastSeq`, so clients subscribe to `GET /runs/:id/events` with
+Run events carry a monotonic per-run `seq`; `GET /v2/runs/:id` returns the
+snapshot plus `lastSeq`, so clients subscribe to `GET /v2/runs/:id/events` with
 `Last-Event-ID` for gap-free live state (snapshot-then-subscribe). Run detail
 responses include `primaryOutput`, `timeline`, `budget`, `pendingInteractions`,
 and `summary.route` projections. Web/tool evidence is projected from the
 engine-owned `final/telemetry.yaml`. Clients should use those fields first
 instead of guessing artifact paths or displaying fake zero spend/quota values.
-`POST /runs/:id/control` supports cancel for active daemon jobs.
+`POST /v2/runs/:id/control` supports cancel for active daemon jobs.
 Interactive harnesses (Claude Code) can ask typed questions mid-run: the run
 parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
 interactions endpoint, and unanswered questions decline benignly after the
@@ -388,7 +394,7 @@ The CLI accepts the same attachment contract as the control API for run modes:
 use repeatable/comma-separated `--attach <path>` for files or `--image <path>` for
 images. Vision routing remains capability-gated; a blind harness is rejected with
 an actionable pre-flight reason instead of silently dropping the attachment.
-Direct non-thread `POST /runs` requests accept only non-empty absolute existing
+Direct non-thread `POST /v2/runs` requests accept only non-empty absolute existing
 file paths for attachments; inline base64 upload bytes are accepted through
 thread/composer turns so they are sunk to scoped files before a daemon job is
 queued.
@@ -538,7 +544,7 @@ points, in the order an agent should discover them:
 2. `claudexor capabilities --json` — the live AgentCapabilityCatalog:
    doctor-backed harness status, model truth, the mutability matrix,
    run-control keys, and the run-apply-state vocabulary. Also served at
-   `GET /agent-capabilities` and by the MCP `claudexor_capabilities` tool.
+   `GET /v2/agent-capabilities` and by the MCP `claudexor_capabilities` tool.
 3. `docs/reference/endpoints.json` — the control-API endpoint map with
    request/response schema names; field semantics live in the generated
    JSON Schemas under `packages/schema/generated/`.

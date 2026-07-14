@@ -10,6 +10,7 @@ import { ControlSettingsSnapshot, EffortHint, GlobalConfig, Portfolio } from "@c
 import type { ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
 import { connectDaemonIfRunning } from "./daemon-run.js";
+import { controlApiFetch } from "./live.js";
 import { buildRegistry, harnessModels } from "./registry.js";
 import { daemonRuntimeDiffLines } from "./settings-display.js";
 
@@ -26,7 +27,7 @@ async function daemonSettingsSnapshotIfRunning() {
   const conn = await connectDaemonIfRunning();
   if (!conn) return null;
   try {
-    const res = await fetch(`${conn.addr.baseUrl}/settings`, {
+    const res = await controlApiFetch(conn.addr, "/settings", {
       headers: { Authorization: `Bearer ${conn.addr.token}` },
       signal: AbortSignal.timeout(1500),
     });

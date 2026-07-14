@@ -11,6 +11,15 @@ function sseServer(
 ): Promise<{ server: Server; port: number }> {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/v2/handshake") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({ protocolMajor: 2, compatible: true, operationsPath: "/v2/operations" }),
+        );
+        return;
+      }
+      expect(req.url).toBe("/v2/runs/run-f/events");
+      expect(req.headers["x-claudexor-protocol-major"]).toBe("2");
       const lastEventId = Number(req.headers["last-event-id"] ?? 0);
       res.writeHead(200, { "content-type": "text/event-stream" });
       handler(lastEventId, res);

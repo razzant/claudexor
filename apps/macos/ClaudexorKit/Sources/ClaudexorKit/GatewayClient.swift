@@ -16,7 +16,8 @@ public final class GatewayClient: Sendable {
 
     private func request(_ path: String, method: String, timeout: TimeInterval? = nil,
                          queryItems: [URLQueryItem] = []) -> URLRequest {
-        var url = baseURL.appendingPathComponent(path)
+        let externalPath = path == "healthz" ? path : (path.hasPrefix("v2/") ? path : "v2/\(path)")
+        var url = baseURL.appendingPathComponent(externalPath)
         if !queryItems.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             components.queryItems = queryItems
             if let encoded = components.url { url = encoded }
@@ -24,6 +25,9 @@ public final class GatewayClient: Sendable {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if externalPath != "healthz" {
+            req.setValue("2", forHTTPHeaderField: "X-Claudexor-Protocol-Major")
+        }
         if let timeout { req.timeoutInterval = timeout }
         return req
     }
@@ -49,11 +53,7 @@ public final class GatewayClient: Sendable {
     }
 
     public func health() async throws -> Bool {
-        let req = request("healthz", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return false }
-        let obj = try? Self.decoder.decode([String: JSONValue].self, from: data)
-        return obj?["ok"]?.boolValue ?? false
+        try await gatewayHealth(baseURL: baseURL, token: token, session: session)
     }
 
     public func startRun(_ body: StartRunRequest) async throws -> RunStartResult {

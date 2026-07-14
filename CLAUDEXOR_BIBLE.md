@@ -218,7 +218,7 @@ process below. Never paper over the conflict.
 - **INV-064** User attachments (images, files) are persisted only in a
   scoped store outside any worktree; attachment bytes never enter
   `jobs.json`, task contracts, or `git add -A` scope. Direct non-thread
-  `POST /runs` accepts only absolute existing file paths; inline base64 is
+  `POST /v2/runs` accepts only absolute existing file paths; inline base64 is
   accepted only through thread/composer turns, where it is sunk to scoped
   files before a daemon job is queued. verify: attachment-resolver tests;
   control-api attachment DTO tests.
@@ -361,12 +361,14 @@ process below. Never paper over the conflict.
 
 - **INV-110** Inspect/apply/check use control-api endpoints and run
   artifacts. The UI must not invent local accept/rebut/apply state.
-  Read-only modes do not expose patch apply controls. verify: control-api
-  tests; UI review.
+  Read-only modes do not expose patch apply controls. Every product endpoint
+  is under `/v2`; official clients negotiate `POST /v2/handshake` and send the
+  negotiated major, while unversioned product aliases are refused. verify:
+  control-api handshake/catalog tests; docs-truth catalog parity; UI review.
 - **INV-111** Apply is allowed only for successful runs with a successful
   decision record and a patch WorkProduct for the original verified repo
   root — with one typed, server-owned exception: an operator decision
-  (`POST /runs/:id/decision`, `accept_risk`/`override_needs_human`)
+  (`POST /v2/runs/:id/decision`, `accept_risk`/`override_needs_human`)
   persists an auditable, patch-hash-bound record that unblocks apply for a
   `blocked` run; a mutated patch invalidates the override. The human
   decision is never client-faked state. verify: apply-gate tests; canary

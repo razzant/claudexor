@@ -8,6 +8,7 @@
 export * from "./primitives.js";
 export * from "./auth.js";
 export * from "./problem.js";
+export * from "./operation.js";
 export * from "./recovery.js";
 export * from "./surface-run-controls.js";
 export * from "./attachment.js";

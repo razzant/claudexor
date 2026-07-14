@@ -1,0 +1,30 @@
+{
+  "$ref": "#/definitions/ControlHandshakeResponse",
+  "definitions": {
+    "ControlHandshakeResponse": {
+      "type": "object",
+      "properties": {
+        "protocolMajor": {
+          "type": "number",
+          "const": 2
+        },
+        "compatible": {
+          "type": "boolean",
+          "const": true
+        },
+        "operationsPath": {
+          "type": "string",
+          "const": "/v2/operations"
+        }
+      },
+      "required": [
+        "protocolMajor",
+        "compatible",
+        "operationsPath"
+      ],
+      "additionalProperties": false,
+      "description": "Successful v2 control-plane negotiation."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

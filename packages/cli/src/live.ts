@@ -143,6 +143,8 @@ export interface ControlApiAddress {
   token: string;
 }
 
+export const CONTROL_PROTOCOL_MAJOR = 2;
+
 export function controlApiAddress(): ControlApiAddress {
   const info = JSON.parse(readFileSync(join(daemonDir(), "control-api.json"), "utf8")) as {
     host?: string;
@@ -152,6 +154,42 @@ export function controlApiAddress(): ControlApiAddress {
   if (!info.host || !info.port || !token)
     throw new Error("daemon control API is not available (run: claudexor daemon start)");
   return { baseUrl: `http://${info.host}:${info.port}`, token };
+}
+
+/** One control-plane transport boundary for CLI, MCP and ACP projections. */
+export function controlApiFetch(
+  addr: ControlApiAddress,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const externalPath =
+    path === "/healthz"
+      ? path
+      : path.startsWith("/v2/")
+        ? path
+        : `/v2${path.startsWith("/") ? path : `/${path}`}`;
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${addr.token}`);
+  if (externalPath !== "/healthz")
+    headers.set("X-Claudexor-Protocol-Major", String(CONTROL_PROTOCOL_MAJOR));
+  return fetch(`${addr.baseUrl}${externalPath}`, { ...init, headers });
+}
+
+export async function handshakeControlApi(
+  addr: ControlApiAddress,
+  client = "claudexor-cli",
+): Promise<void> {
+  const response = await controlApiFetch(addr, "/v2/handshake", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ protocolMajor: CONTROL_PROTOCOL_MAJOR, client }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `control API handshake failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
 }
 
 /**
@@ -166,6 +204,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
   let addr: ControlApiAddress;
   try {
     addr = controlApiAddress();
+    await handshakeControlApi(addr);
   } catch (err) {
     process.stderr.write(`claudexor follow: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
@@ -211,7 +250,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     }
     let res: Response;
     try {
-      res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
+      res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/events`, {
         headers: {
           Authorization: `Bearer ${addr.token}`,
           Accept: "text/event-stream",
@@ -290,7 +329,7 @@ async function answerInteractionFromTty(
   // LIVE question is always visible here). On a detail fetch failure, fall
   // through — the expired-deadline guard in promptQuestionsOnTty still holds.
   try {
-    const detailRes = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+    const detailRes = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
       headers: { Authorization: `Bearer ${addr.token}` },
     });
     if (detailRes.ok) {
@@ -321,8 +360,9 @@ async function answerInteractionFromTty(
       freeText: a.free_text,
     })),
   };
-  const res = await fetch(
-    `${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
+  const res = await controlApiFetch(
+    addr,
+    `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },

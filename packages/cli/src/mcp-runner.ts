@@ -1,8 +1,4 @@
-import { Orchestrator } from "@claudexor/orchestrator";
-import { AccessProfile, EffortHint, ExternalContextPolicy } from "@claudexor/schema";
-import { loadConfig } from "@claudexor/config";
-import { buildGateway, buildRegistry } from "./registry.js";
-import { buildAgentCapabilityCatalog } from "./capabilities.js";
+import { ModeKind } from "@claudexor/schema";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
@@ -11,7 +7,7 @@ import {
   fetchApplyEligibility,
 } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
-import type { ControlApiAddress } from "./live.js";
+import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -20,110 +16,24 @@ export interface SurfaceRunnerHooks {
 }
 
 /**
- * The IN-PROCESS runner for read-only surface calls (ask/plan/audit and a
- * suggest-autonomy orchestrate — nothing to apply or unblock, per the CLI
- * doctrine in cli.ts). Also answers `__status` from the doctor-backed gateway.
+ * Shared MCP/ACP runner. All product modes cross the daemon's /v2 boundary;
+ * interactive questions bridge through pendingInteractions and typed answers.
  */
-export function orchestratorRunner() {
-  const registry = buildRegistry();
-  const orch = new Orchestrator({ registry });
+export function mcpSurfaceRunner() {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
-    if (p?.mode === "__status") {
-      // Doctor-backed truth (probe-cheap): fakes and unavailable harnesses are
-      // never presented as available tools to an MCP host. Enriched view:
-      // disabled intents, doctor reasons/checks, and the configured model
-      // (same facts GET /harnesses serves).
-      const statuses = await buildGateway({ includeFakes: false }).statusAll({
-        cwd: process.cwd(),
-      });
-      const cfg = loadConfig(process.cwd());
-      // ADD-ONLY contract: {harnesses:[{id,status,intents}],available} is the
-      // pre-existing shape deployed MCP hosts parse; the enrichment fields
-      // (disabledIntents/reasons/checks/configuredModel) may grow but the
-      // original keys must not be renamed or removed.
-      return {
-        harnesses: statuses.map((s) => ({
-          id: s.id,
-          status: s.status,
-          intents: s.enabledIntents,
-          disabledIntents: s.disabledIntents,
-          reasons: s.reasons,
-          checks: s.checks.map((c) => ({ id: c.id, status: c.status })),
-          configuredModel: cfg.global.harnesses[s.id]?.default_model ?? null,
-        })),
-        available: statuses.filter((s) => s.status === "ok").map((s) => s.id),
-      };
-    }
-    if (p?.mode === "__capabilities") {
-      // The derived AgentCapabilityCatalog — same composer as the CLI verb
-      // and the daemon's GET /agent-capabilities.
-      return buildAgentCapabilityCatalog();
+    if (p?.mode === "__status" || p?.mode === "__capabilities") {
+      return catalogQuery(p.mode);
     }
     if (p?.mode === "__runs_list" || p?.mode === "__run_inspect" || p?.mode === "__apply_check") {
       return recoveryQuery(p.mode, typeof p?.runId === "string" ? p.runId : "");
     }
-    const reviewerPanel = Array.isArray(p?.reviewerPanel) ? p.reviewerPanel : undefined;
-    const reviewerModels =
-      p?.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined;
-    const reviewerEfforts =
-      p?.reviewerEfforts && typeof p.reviewerEfforts === "object" ? p.reviewerEfforts : undefined;
-    const runner =
-      reviewerPanel || reviewerModels || reviewerEfforts
-        ? new Orchestrator({
-            registry,
-            reviewerPanel,
-            reviewerModels,
-            reviewerEfforts,
-          })
-        : orch;
-    return runner.run({
-      repoRoot: typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd(),
-      prompt: String(p?.prompt ?? ""),
-      mode: p?.mode ?? "agent",
-      harnesses: p?.harness ? [String(p.harness)] : undefined,
-      primaryHarness: p?.primaryHarness ? String(p.primaryHarness) : undefined,
-      web: p?.web ? ExternalContextPolicy.parse(String(p.web)) : undefined,
-      externalContextPolicy: p?.externalContextPolicy
-        ? ExternalContextPolicy.parse(String(p.externalContextPolicy))
-        : undefined,
-      model: p?.model ? String(p.model) : undefined,
-      effort: p?.effort ? EffortHint.parse(String(p.effort)) : undefined,
-      n: typeof p?.n === "number" ? p.n : p?.race === true ? 2 : undefined,
-      untilClean: p?.untilClean === true,
-      swarm: p?.swarm === true,
-      create: p?.create === true,
-      tests: Array.isArray(p?.tests) ? p.tests.map(String) : undefined,
-      maxUsd: typeof p?.maxUsd === "number" ? p.maxUsd : undefined,
-      access: p?.access ? AccessProfile.parse(String(p.access)) : undefined,
-      protectedPathApprovals: Array.isArray(p?.protectedPathApprovals)
-        ? p.protectedPathApprovals
-        : undefined,
-      onEvent: hooks?.onEvent,
-      onInteraction: hooks?.onInteraction,
-      signal: hooks?.signal,
-    });
-  };
-}
-
-/**
- * The MCP surface runner: MUTATING verbs (mode=agent — agent/best-of/create)
- * are DAEMON-TRACKED exactly like the CLI (`GET /runs` sees them, `claudexor
- * decision` can unblock them, cancel works), read-only verbs stay in-process
- * — the same doctrine split as cli.ts. Interactive questions on daemon runs
- * bridge through pendingInteractions polling + the typed answer endpoint,
- * driven by the caller's onInteraction hook (the MCP server maps that hook to
- * host elicitation).
- */
-export function mcpSurfaceRunner() {
-  const inProcess = orchestratorRunner();
-  return async (p: any, hooks?: SurfaceRunnerHooks) => {
-    if (p?.mode !== "agent") return inProcess(p, hooks);
+    const mode = ModeKind.parse(p?.mode ?? "agent");
     const { client, addr } = await ensureDaemon();
     const repoRoot =
       typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd();
     const body: Record<string, unknown> = {
       prompt: String(p?.prompt ?? ""),
-      mode: "agent",
+      mode,
       scope: { kind: "project", root: repoRoot },
       execution: { isolation: "envelope" },
       ...(p?.harness ? { harnesses: [String(p.harness)] } : {}),
@@ -178,7 +88,7 @@ export function mcpSurfaceRunner() {
     });
     // The MCP result: the run's primary output as the summary (the daemon
     // outcome reason for non-success terminals), plus the artifact handle.
-    const primary = out.runDir ? primaryOutputForCli(out.runDir, "agent") : null;
+    const primary = out.runDir ? primaryOutputForCli(out.runDir, mode) : null;
     const reason = daemonOutcomeSummary(out);
     const summary =
       primary && primary.kind !== "patch"
@@ -189,6 +99,22 @@ export function mcpSurfaceRunner() {
     // detail endpoint). Soft-fail: a detail hiccup never eats the run result.
     const applyEligibility = await fetchApplyEligibility(addr, out.runId);
     return { runId: out.runId, runDir: out.runDir, status: out.status, summary, applyEligibility };
+  };
+}
+
+async function catalogQuery(mode: "__status" | "__capabilities"): Promise<unknown> {
+  const { addr } = await ensureDaemon();
+  const path = mode === "__status" ? "/harnesses" : "/agent-capabilities";
+  const response = await controlApiFetch(addr, path);
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) throw new Error(`control API ${path} failed (HTTP ${response.status})`);
+  if (mode === "__capabilities") return body;
+  const harnesses = Array.isArray(body["harnesses"])
+    ? (body["harnesses"] as Record<string, unknown>[])
+    : [];
+  return {
+    ...body,
+    available: harnesses.filter((item) => item["status"] === "ok").map((item) => item["id"]),
   };
 }
 
@@ -209,7 +135,7 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
   }
   const { addr } = conn;
   const get = async (path: string): Promise<Record<string, unknown>> => {
-    const res = await fetch(`${addr.baseUrl}${path}`, {
+    const res = await controlApiFetch(addr, path, {
       headers: { authorization: `Bearer ${addr.token}` },
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -254,7 +180,7 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
     };
   }
   // __apply_check: the server-side dry gate + patch check (no mutation).
-  const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/apply/check`, {
+  const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/apply/check`, {
     method: "POST",
     headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
     body: JSON.stringify({}),
@@ -302,7 +228,7 @@ export function makeCancelBridge(
   return ({ runId }) => {
     if (posted || !signal.aborted || !runId) return;
     posted = true;
-    void fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/control`, {
+    void controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -337,7 +263,7 @@ export function makeInteractionBridge(
       timeoutAt?: string | null;
     }> = [];
     try {
-      const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
         headers: { Authorization: `Bearer ${addr.token}` },
         signal: AbortSignal.timeout(2_000),
       });
@@ -362,8 +288,9 @@ export function makeInteractionBridge(
         });
         const answers = result && Array.isArray(result.answers) ? result.answers : null;
         if (answers) {
-          await fetch(
-            `${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
+          await controlApiFetch(
+            addr,
+            `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
             {
               method: "POST",
               headers: {

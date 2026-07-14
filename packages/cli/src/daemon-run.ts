@@ -11,7 +11,12 @@ import {
   type DaemonClient as DaemonClientType,
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
-import { controlApiAddress, type ControlApiAddress } from "./live.js";
+import {
+  controlApiAddress,
+  controlApiFetch,
+  handshakeControlApi,
+  type ControlApiAddress,
+} from "./live.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -29,8 +34,10 @@ async function daemonReachable(client: DaemonClientType): Promise<boolean> {
 async function controlApiReachable(): Promise<ControlApiAddress | null> {
   try {
     const addr = controlApiAddress();
-    const res = await fetch(`${addr.baseUrl}/healthz`, { signal: AbortSignal.timeout(1500) });
-    return res.ok ? addr : null;
+    const res = await controlApiFetch(addr, "/healthz", { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return null;
+    await handshakeControlApi(addr);
+    return addr;
   } catch {
     return null;
   }
@@ -185,7 +192,7 @@ export async function enqueueAndAwait(
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
-  const startRes = await fetch(`${addr.baseUrl}/runs`, {
+  const startRes = await controlApiFetch(addr, "/runs", {
     method: "POST",
     headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -213,7 +220,7 @@ export async function enqueueAndAwait(
     sigCount += 1;
     if (sigCount >= 2) process.exit(130);
     process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
-    void fetch(`${addr.baseUrl}/runs/${encodeURIComponent(jobId)}/control`, {
+    void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: JSON.stringify({ control: { kind: "cancel", reason: "ctrl-c on the waiting CLI" } }),
@@ -315,7 +322,7 @@ export async function fetchApplyEligibility(
 } | null> {
   if (!runId) return null;
   try {
-    const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
       headers: { authorization: `Bearer ${addr.token}` },
     });
     if (!res.ok) return null;

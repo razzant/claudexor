@@ -45,7 +45,7 @@ from `inspect`.
 ## Daemon And Control API
 
 The daemon owns local durable scheduling. The loopback control API is the live
-surface used by the macOS app.
+surface used by CLI, macOS, MCP, and ACP.
 
 The canonical endpoint inventory lives in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) §7 and is generated from source; this
@@ -54,7 +54,10 @@ document does not duplicate it.
 The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
 unauthenticated, loopback-host-guarded liveness route). Artifact files remain
 the source of truth; API responses are projections over daemon state and run
-files. Native login commands are server allowlisted and use setup jobs with
+files. Every product route is under `/v2`: clients first `POST /v2/handshake`,
+then send `X-Claudexor-Protocol-Major: 2`; incompatible or missing negotiation
+returns a typed `426`. `GET /v2/operations` is the runtime operation catalog,
+and unversioned product aliases do not exist. Native login commands are server allowlisted and use setup jobs with
 typed phase/deadline/outcome,
 restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
 stream (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
@@ -93,7 +96,7 @@ imported.
 `POST /v2/setup/jobs/:id/reconcile` is the sole replacement-fence recovery path:
 it succeeds only after a fresh daemon-side probe proves the recorded group empty.
 
-`GET /runs/:id` includes `lastSeq` (the snapshot's event cursor for
+`GET /v2/runs/:id` includes `lastSeq` (the snapshot's event cursor for
 gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
 `summary.waitingOnUser`, `summary.route` (requested vs stream-observed model;
 verified only on observed evidence), `primaryOutput`, `timeline`, `budget`,
@@ -111,17 +114,17 @@ Terminal state may include diagnostic non-success states such as
 Telemetry attempts can include adapter-declared transient failures; integrations
 should render those as infrastructure/retry evidence, not as model findings.
 
-`POST /runs/:id/control` supports cancel for active daemon jobs.
+`POST /v2/runs/:id/control` supports cancel for active daemon jobs.
 Interactive runs use the typed interaction surface instead of raw input
 forwarding: `interaction.requested` events carry the questions, the macOS app
-and `claudexor follow` answer via `POST /runs/:id/interactions/:id/answer`,
+and `claudexor follow` answer via `POST /v2/runs/:id/interactions/:id/answer`,
 and an unanswered question declines benignly after the configurable
 `interaction_timeout_ms`.
 
 A thread turn whose run is refused before it starts (trust gate, preflight)
 carries the persisted reason in its projection (`enqueueError`);
-`POST /threads/:id/turns/:turnId/retry` re-enqueues that same turn.
-`GET /trust` / `POST /trust` expose the narrow user-level full-access surface
+`POST /v2/threads/:id/turns/:turnId/retry` re-enqueues that same turn.
+`GET /v2/trust` / `POST /v2/trust` expose the narrow user-level full-access surface
 (`{repoRoot, allowFullAccess}` only); all other trust fields stay CLI-only.
 
 ## MCP
@@ -158,16 +161,14 @@ route — MCP orchestrate is suggest-autonomy only) and, for run tools and
 the capability catalog, an outputSchema with a structuredContent mirror of
 the text result: `{summary, runId, runDir, status, applyEligibility}` —
 `applyEligibility` is the derived apply-gate verdict `{eligible, state,
-reason, requiredAction}` the control API serves on `GET /runs/:id`.
+reason, requiredAction}` the control API serves on `GET /v2/runs/:id`.
 
 Current operational behavior:
 
-- MUTATING verbs (`claudexor_run`, `claudexor_best_of`, `claudexor_create`) are
-  DAEMON-TRACKED: the server auto-starts the local daemon and enqueues
-  through the control API, so `GET /runs` lists MCP-started runs and
-  `claudexor decision` can unblock a blocked one. Read-only verbs
-  (ask/explore/plan/orchestrate) run in-process — nothing to apply or
-  unblock (same doctrine as the CLI).
+- All five run modes are daemon-tracked through `/v2`; the server auto-starts
+  the local daemon and enqueues through the control API. `GET /v2/runs` lists
+  every MCP-started run, including ask/plan/audit/orchestrate, while mutating
+  runs remain cancellable and operator-unblockable through the same authority.
 - Every run result ends with a `runId:`/`artifacts:`/`status:` trailer — the
   host has a handle for `claudexor inspect`, `follow`, `apply`, `decision`.
 - Mid-run harness questions bridge to MCP ELICITATION when the host declares
@@ -338,7 +339,7 @@ Deliberate limits of the external/host surfaces. Each is a designed boundary
 
 - MCP host clients enforce their own tool-call timeouts; a multi-minute
   `claudexor_best_of` call can be cut client-side — the result trailer's runId
-  keeps the run recoverable via `claudexor_inspect` / `GET /runs`.
+  keeps the run recoverable via `claudexor_inspect` / `GET /v2/runs`.
 - The cursor and opencode adapters emit no typed rate-limit/transient signals
   yet: a detector is added only from a recorded native rate-limit transcript
   (fail-honest, never guessed from prose), and their stream fixtures are

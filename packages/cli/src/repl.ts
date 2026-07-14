@@ -4,8 +4,8 @@ import { Orchestrator } from "@claudexor/orchestrator";
 import type { ModeKind } from "@claudexor/schema";
 import { buildRegistry } from "./registry.js";
 import { renderReplHelp } from "./command-registry.js";
-import { type ControlApiAddress, controlApiAddress, followRun } from "./live.js";
-import { ensureDaemon } from "./daemon-run.js";
+import { controlApiFetch, type ControlApiAddress, followRun } from "./live.js";
+import { connectDaemonIfRunning, ensureDaemon } from "./daemon-run.js";
 
 /** REPL turn modes that MUTATE the tree. These are ALWAYS daemon-tracked —
  * there is NO in-process fallback for a mutating run (a run no daemon tracks is
@@ -64,11 +64,7 @@ function parseReplLine(
 
 /** Daemon control-api reachable right now? (threads SSOT lives there). */
 async function daemonAddress(): Promise<ControlApiAddress | null> {
-  try {
-    return await controlApiAddress();
-  } catch {
-    return null;
-  }
+  return (await connectDaemonIfRunning())?.addr ?? null;
 }
 
 /**
@@ -101,7 +97,7 @@ export async function runRepl(repoRoot: string): Promise<number> {
 async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise<number> {
   const headers = { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" };
   const api = async (method: string, path: string, body?: unknown): Promise<any> => {
-    const res = await fetch(`${addr.baseUrl}${path}`, {
+    const res = await controlApiFetch(addr, path, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),

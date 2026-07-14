@@ -34,6 +34,7 @@ import {
 } from "./cli-io.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
+import { controlApiFetch } from "./live.js";
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
@@ -264,7 +265,7 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
       );
     }
     const { addr } = await ensureDaemon();
-    const response = await fetch(`${addr.baseUrl}/v2/setup/jobs`, {
+    const response = await controlApiFetch(addr, "/setup/jobs", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${addr.token}`,

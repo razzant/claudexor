@@ -130,7 +130,10 @@ describe("mcp daemon body mapping", () => {
     try {
       const runner = mcpSurfaceRunner();
       await runner({ mode: "agent", prompt: "go", externalContextPolicy: "cached" });
+      await runner({ mode: "plan", prompt: "plan it" });
       expect(bodies[0]?.["web"]).toBe("cached");
+      expect(bodies[1]?.["mode"]).toBe("plan");
+      expect(ensureSpy).toHaveBeenCalledTimes(2);
     } finally {
       ensureSpy.mockRestore();
       enqueueSpy.mockRestore();

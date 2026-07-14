@@ -134,10 +134,9 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
-  its MUTATING verbs (agent/best-of/create) enqueue through the DAEMON — MCP runs
-  appear in `GET /runs`, are cancellable/unblockable, and every result
-  carries a runId/artifacts trailer. Read-only verbs stay in-process (same
-  doctrine as the CLI). Engine questions bridge to MCP elicitation when the
+  all five run modes enqueue through the daemon `/v2` control API — MCP and ACP
+  runs appear in `GET /v2/runs`, mutating runs are cancellable/unblockable, and
+  every result carries a runId/artifacts trailer. Engine questions bridge to MCP elicitation when the
   host declares the capability; otherwise the timeout-decline fallback holds.
   ACP replies `authMethods: []`, tolerates the protocol's `_meta` envelope,
   and announces a `tool_call` before every `session/request_permission`.
@@ -175,14 +174,14 @@ A thread carries sticky routing so the chat surface stays a thin gateway: a
 `Thread` persists `primary_harness` (which harness answers in chat) and
 `eligible_harnesses` (the pool Best-of runs — one candidate per harness, so its N is
 the pool size). A turn inherits both unless its request overrides them
-(`POST /threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
+(`POST /v2/threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
 auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
 `primaryHarness` is only pinned first, and an EXPLICITLY-selected primary outside
 the selected pool fails loudly (the engine rejects it). An INHERITED sticky
 primary that no longer fits the pool is instead dropped by the thin gateway
 before the turn is enqueued (so a stale bias never forces routing). Surfaces just
-set the sticky values (`POST /threads`, `PATCH /threads/:id`) and send DTOs; they
+set the sticky values (`POST /v2/threads`, `PATCH /v2/threads/:id`) and send DTOs; they
 never route.
 
 Harness availability is determined by discovery + doctor + capabilities:
@@ -396,7 +395,7 @@ patch into the execution tree (`git apply --3way`, disclosed via
 `work_product.adopted`); a conflict leaves `adopted:false` and offers a manual
 apply, never losing work. Blockers (NEEDS_HUMAN / non-clean terminal) stop
 adoption. An isolated thread's accumulated worktree diff is delivered to the
-project on demand via `POST /threads/:id/apply`.
+project on demand via `POST /v2/threads/:id/apply`.
 
 ### Agent --n (race) / --create
 
@@ -451,45 +450,36 @@ carries `.describe()` documentation that lands in the generated JSON Schema
 files.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
-- `GET /agent-capabilities`
-- `GET /events`
-- `GET /harnesses`
-- `GET /harnesses/:id/models`
 - `GET /healthz`
-- `GET /runs`
-- `POST /runs`
-- `GET /runs/:id`
-- `POST /runs/:id/apply`
-- `POST /runs/:id/apply/check`
-- `GET /runs/:id/artifacts`
-- `GET /runs/:id/artifacts/<path>`
-- `POST /runs/:id/control`
-- `POST /runs/:id/decision`
-- `GET /runs/:id/events`
-- `POST /runs/:id/interactions/:id/answer`
-- `GET /runs/:id/produced`
-- `GET /runs/:id/produced/<path>`
-- `GET /secrets`
-- `POST /secrets`
-- `DELETE /secrets/:id`
-- `GET /settings`
-- `POST /settings`
-- `POST /spec/freeze`
-- `POST /spec/questions`
-- `GET /threads`
-- `POST /threads`
-- `GET /threads/:id`
-- `PATCH /threads/:id`
-- `POST /threads/:id/apply`
-- `POST /threads/:id/turns`
-- `POST /threads/:id/turns/:id/retry`
-- `GET /trust`
-- `POST /trust`
+- `GET /v2/agent-capabilities`
+- `GET /v2/events`
+- `POST /v2/handshake`
+- `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
+- `GET /v2/harnesses/:id/models`
+- `GET /v2/operations`
 - `GET /v2/recovery/partitions/global`
 - `POST /v2/recovery/partitions/global/export`
 - `POST /v2/recovery/partitions/global/quarantine`
 - `POST /v2/recovery/partitions/global/validate`
+- `GET /v2/runs`
+- `POST /v2/runs`
+- `GET /v2/runs/:id`
+- `POST /v2/runs/:id/apply`
+- `POST /v2/runs/:id/apply/check`
+- `GET /v2/runs/:id/artifacts`
+- `GET /v2/runs/:id/artifacts/<path>`
+- `POST /v2/runs/:id/control`
+- `POST /v2/runs/:id/decision`
+- `GET /v2/runs/:id/events`
+- `POST /v2/runs/:id/interactions/:id/answer`
+- `GET /v2/runs/:id/produced`
+- `GET /v2/runs/:id/produced/<path>`
+- `GET /v2/secrets`
+- `POST /v2/secrets`
+- `DELETE /v2/secrets/:id`
+- `GET /v2/settings`
+- `POST /v2/settings`
 - `GET /v2/setup/jobs`
 - `POST /v2/setup/jobs`
 - `GET /v2/setup/jobs/:id`
@@ -498,6 +488,17 @@ files.
 - `POST /v2/setup/jobs/:id/extend`
 - `POST /v2/setup/jobs/:id/reconcile`
 - `GET /v2/setup/jobs/:id/snapshot`
+- `POST /v2/spec/freeze`
+- `POST /v2/spec/questions`
+- `GET /v2/threads`
+- `POST /v2/threads`
+- `GET /v2/threads/:id`
+- `PATCH /v2/threads/:id`
+- `POST /v2/threads/:id/apply`
+- `POST /v2/threads/:id/turns`
+- `POST /v2/threads/:id/turns/:id/retry`
+- `GET /v2/trust`
+- `POST /v2/trust`
 <!-- END GENERATED ENDPOINTS -->
 
 Endpoint semantics beyond the inventory:
@@ -506,10 +507,10 @@ Endpoint semantics beyond the inventory:
   harness sessions). A thread declares a `workspace.mode`: `in_place` (default)
   mutates the live project tree; `isolated` keeps a persistent git worktree per
   thread. It also carries sticky routing — `primaryHarness` and
-  `eligibleHarnesses` — that its turns inherit; `PATCH /threads/:id` renames /
+  `eligibleHarnesses` — that its turns inherit; `PATCH /v2/threads/:id` renames /
   archives a thread (title + open/closed state) and switches the sticky
   routing.
-- `POST /threads/:id/turns` enqueues a follow-up run anchored to the thread.
+- `POST /v2/threads/:id/turns` enqueues a follow-up run anchored to the thread.
   Agent turns run IN-PLACE in the execution tree — the live project for an
   in-place thread, or the thread's worktree for an isolated thread — so the
   routed harness resumes its own native CLI session and the next turn sees the
@@ -518,19 +519,19 @@ Endpoint semantics beyond the inventory:
   those isolated candidates). A `planRunId` body field implements an approved
   plan from an earlier turn; a `specPath` body field implements the turn
   against a frozen SpecPack — the agent runs against that contract instead of
-  a bare prompt. `POST /threads/:id/apply` delivers an isolated thread's accumulated
+  a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated
   worktree diff to the project; in-place threads write the project directly and
   never need it.
 - Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
   (the trust gate refusing `access: full`, preflight validation, an enqueue
   throw), the daemon persists the reason on the turn (`ThreadTurn.enqueue_error`,
   projected as `enqueueError`) so every surface renders the refusal inline
-  instead of an eternally-empty bubble. `POST /threads/:id/turns/:turnId/retry`
+  instead of an eternally-empty bubble. `POST /v2/threads/:id/turns/:turnId/retry`
   re-enqueues that SAME turn by replaying the recorded job params verbatim (no
   duplicate turn); a successful run binding clears the error, a repeat refusal
   replaces it. Retry refuses turns that already have a run, have no recorded
   refusal, or still have an active job (409).
-- `GET /trust` + `POST /trust` are the NARROW user-level trust surface: the GET
+- `GET /v2/trust` + `POST /v2/trust` are the NARROW user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
   pre-provenance files show a null root), and the POST accepts exactly
@@ -538,17 +539,17 @@ Endpoint semantics beyond the inventory:
   revoke unsandboxed full access for ONE repo. Every other trust field stays
   CLI-only (`claudexor trust`). This backs the macOS one-click remedy on a
   trust-refused turn and the Settings trust section (list + revoke).
-- `POST /runs/:id/decision` records a typed operator decision on a blocked run:
+- `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
   `arbitration/operator_decision.yaml` honored by the apply gate;
   `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
   `revert_run` restores the live in-place tree to the turn's pre-turn snapshot —
   a server-owned, tree-SHA divergence-fenced revert that refuses (fail loud) if
   the tree has diverged from the recorded post-turn state.
-- `GET /runs/:id/produced` and `GET /runs/:id/produced/<path>` serve the
+- `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS Canvas
-  source — distinct from the run-internal `GET /runs/:id/artifacts` tree.
-- `GET /events` is the global live-only run-event multiplex (see the streaming
+  source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
+- `GET /v2/events` is the global live-only run-event multiplex (see the streaming
   contract below).
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
@@ -557,7 +558,7 @@ and returns liveness only.
 ### Spec flow (interview → frozen SpecPack → Implement)
 
 The server owns the interactive spec interview; a surface is a thin driver.
-`POST /spec/questions` runs a read-only grounding `plan` over the prompt, with a
+`POST /v2/spec/questions` runs a read-only grounding `plan` over the prompt, with a
 grounding instruction that asks the harness to end its plan with a structured
 `## Open Questions` block; the server parses that into multiple-choice
 `InterviewQuestion`s (`single`/`multi` with `options`, or free-text `text`) and
@@ -565,10 +566,10 @@ returns them (`planRunId`, `planDir`, `questions`). Parsing is tolerant for
 backward compatibility: a plain untagged bullet under the heading (no `[kind]`
 tag, no `::` options) degrades to a free-text question. The surface renders the
 choices and collects answers (selected `option_ids` and/or free `text`), then
-`POST /spec/freeze` freezes a
+`POST /v2/spec/freeze` freezes a
 SpecPack and persists it, returning `specId`, `specDir`, `specPath` (the frozen
 SpecPack file), `specHash`, and `changes`. An Implement run is then a normal
-agent thread turn: `POST /threads/:id/turns` carrying that `specPath`, so the
+agent thread turn: `POST /v2/threads/:id/turns` carrying that `specPath`, so the
 agent runs against the frozen SpecPack contract rather than a bare prompt. The
 interview is multi-tier (`priorDecisions` carries earlier answers into the next
 question round), while the frozen SpecPack remains single-commit in v1 — one
@@ -578,20 +579,20 @@ freeze, no post-freeze spec-version ladder.
 
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
-`GET /runs/:id` returns the snapshot together with `lastSeq` — the highest seq
+`GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
 already reflected in that snapshot — so a client subscribes to
-`GET /runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
+`GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
 no gaps and no duplicates. The per-run stream replays from the canonical
 `events.jsonl` (legacy pre-seq lines fall back to line-number ids) and is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
-has applied the terminal event provably has the output. `GET /events` is the
+has applied the terminal event provably has the output. `GET /v2/events` is the
 global LIVE-ONLY multiplex (events tagged with `run_id`, no replay): on
 reconnect a client re-snapshots `/runs` first and uses per-run streams where it
 needs gap-free state.
 
-A QUEUED job's per-run stream does not 404: `GET /runs/:id/events` opens the
+A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds
 to the run directory when it materializes — a client can subscribe at enqueue
 time and never race the scheduler. `claudexor follow` rides the same contract
@@ -611,7 +612,7 @@ branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
 process is STILL ALIVE survive the sweep: `WorkspaceManager.create()` records
 an owner marker (pid + kernel start time — recycling-proof) that the sweeper
-honors, so in-process CLI/MCP/ACP runs are never garbage-collected by a daemon
+  honors, so direct in-process CLI runs are never garbage-collected by a daemon
 starting mid-flight. One bounded exception: when start-time proof is
 unavailable on either side (`ps`-less or sandboxed environment, legacy
 marker), a live pid keeps the envelope only while its working dirs are fresh
@@ -631,8 +632,8 @@ orchestrator OFFERS the interaction channel only to routes whose manifest
 declares `interactive`. The
 engine emits `interaction.requested` (questions, options, timeout deadline),
 parks ONLY that attempt, and the daemon registry exposes the pending question
-via `GET /runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
-arrive via `POST /runs/:id/interactions/:id/answer` and are delivered into the
+via `GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
+arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
 live session (`interaction.answered`); an unanswered question times out after
 the configurable `interaction_timeout_ms` (default 15 min) into a benign
 decline (`interaction.timeout`) — the model continues with stated assumptions
@@ -698,7 +699,7 @@ Every endpoint is loopback + bearer-token guarded. Apply endpoints read
 `final/patch.diff`; read-only modes without a patch return a real error instead
 of local fake apply state.
 
-`POST /runs/:id/control` is capability-based. The implemented verb is `cancel`:
+`POST /v2/runs/:id/control` is capability-based. The implemented verb is `cancel`:
 daemon abort closes the active harness stream and the process helper sends a
 cooperative interrupt with hard-kill fallback. (The former `interrupt` control
 kind was deleted as a fake knob — it mapped to the same daemon cancel.) Live
@@ -710,7 +711,7 @@ A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
 change, critical-risk diff) is a terminal `blocked` state whose findings surface
 inline on the blocking turn and in the run inspector's Review tab (there is no
 separate Review Queue screen). Since v0.9 the human decision is a TYPED server action:
-`POST /runs/:id/decision` records `accept_risk` / `override_needs_human` as an
+`POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound `arbitration/operator_decision.yaml` that the
 single-owner apply gate honors on BOTH surfaces (Control API and `claudexor
 apply`); `accept_clean_patch` delivers through the gate and
@@ -767,7 +768,7 @@ accepted only from the run request surface, not from frozen SpecPack constraints
 Every path that can mutate the live project tree is enumerated here with its
 fence (Bible INV-113); an unlisted mutation path is a release blocker:
 
-1. **Envelope delivery/apply** — `POST /runs/:id/apply` and CLI
+1. **Envelope delivery/apply** — `POST /v2/runs/:id/apply` and CLI
    `claudexor apply` both go through the single-owner apply gate
    (`validateApplyGate` in `packages/delivery`): terminal success or a typed
    patch-hash-bound operator decision, a patch WorkProduct, and the original
@@ -789,7 +790,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    `--3way` failure): `adopted:false` guarantees the tree is byte-identical,
    and a failed restore is disclosed as `tree_mutated` on the adoption event
    instead of hidden (INV-114).
-5. **Thread apply** — `POST /threads/:id/apply` delivers an isolated thread's
+5. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
    accumulated worktree diff. Fences: a HEAD-RUN STATE GATE (a thread whose
    head run is blocked or failed 409s unless a typed operator decision covers
    that run — the audited `control.rejected` event records the refusal),
@@ -991,16 +992,16 @@ interaction rule — lives in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md), the macOS
 UI/UX SSOT. This section keeps only the engine-facing facts.
 
 - The app is a thin native control surface over the control API (§7). It
-  consumes: threads and turns (`/threads`, `/threads/:id`, `/threads/:id/turns`,
-  `/threads/:id/apply`), runs and events (`/runs`, `/runs/:id`,
-  `/runs/:id/events`, `/events`), run-internal artifacts (`/runs/:id/artifacts`)
-  and produced project outputs (`/runs/:id/produced` — the Canvas source),
-  delivery, decisions, and control (`/runs/:id/apply/check`, `/runs/:id/apply`,
-  `/runs/:id/decision`, `/runs/:id/control`,
-  `/runs/:id/interactions/:id/answer`), harness status (`/harnesses`,
-  `/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
-  (`/settings`, `/secrets`), and the server-owned spec flow
-  (`/spec/questions`, `/spec/freeze`; the app's Spec intent is a thin driver
+  consumes: threads and turns (`/v2/threads`, `/v2/threads/:id`, `/v2/threads/:id/turns`,
+  `/v2/threads/:id/apply`), runs and events (`/v2/runs`, `/v2/runs/:id`,
+  `/v2/runs/:id/events`, `/v2/events`), run-internal artifacts (`/v2/runs/:id/artifacts`)
+  and produced project outputs (`/v2/runs/:id/produced` — the Canvas source),
+  delivery, decisions, and control (`/v2/runs/:id/apply/check`, `/v2/runs/:id/apply`,
+  `/v2/runs/:id/decision`, `/v2/runs/:id/control`,
+  `/v2/runs/:id/interactions/:id/answer`), harness status (`/v2/harnesses`,
+  `/v2/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
+  (`/v2/settings`, `/v2/secrets`), and the server-owned spec flow
+  (`/v2/spec/questions`, `/v2/spec/freeze`; the app's Spec intent is a thin driver
   over these endpoints, not a new `ModeKind`).
 - The app must not invent server state: delivery, decisions, review verdicts,
   routing readiness, setup progress, and budget truth are projections of
@@ -1013,7 +1014,7 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   the stream-json transport, raw-api `image_url` data URL), and vision-gated:
   an image-bearing run routes only to harnesses declaring
   `capability_profile.image_input`, else it is refused pre-flight. Direct
-  non-thread `POST /runs` accepts only non-empty absolute existing file paths
+  non-thread `POST /v2/runs` accepts only non-empty absolute existing file paths
   for attachments; inline base64 is accepted only through thread/composer turn
   creation.
 - The agent-driven browser is an engine capability the app merely arms: the
@@ -1051,7 +1052,7 @@ code touching one of these areas must honor it or change it explicitly here.
   honestly.
 - Spec-interview grounding runs execute in-process in the daemon (synchronous
   request/response); they persist a normal run dir but are not daemon jobs —
-  they do not appear in `GET /runs` and cannot be cancelled via the run
+  they do not appear in `GET /v2/runs` and cannot be cancelled via the run
   control endpoint.
 - `--json` mode guarantees exactly one JSON object on stdout for run/ops
   verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text

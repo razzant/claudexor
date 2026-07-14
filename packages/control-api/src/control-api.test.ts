@@ -22,6 +22,19 @@ import { connect } from "node:net";
 import { sha256 } from "@claudexor/util";
 import type { ControlSetupJob } from "@claudexor/schema";
 
+function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+  if (input instanceof Request) return globalThis.fetch(input, init);
+  const url = new URL(String(input));
+  if (url.pathname !== "/healthz" && !url.pathname.startsWith("/v2/")) {
+    url.pathname = `/v2${url.pathname}`;
+  }
+  const headers = new Headers(init.headers);
+  if (url.pathname !== "/healthz" && url.pathname !== "/v2/handshake") {
+    headers.set("X-Claudexor-Protocol-Major", "2");
+  }
+  return globalThis.fetch(url, { ...init, headers });
+}
+
 describe("normalizeRunStart prompt validation", () => {
   const projectScope = () => ({ scope: { kind: "project" as const, root: tmpdir() } });
   it("rejects an empty prompt (no silent no-op)", () => {
@@ -380,12 +393,74 @@ describe("DaemonControlApiServer", () => {
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     try {
-      const healthy = await fetch(`${base}/healthz`);
+      const healthy = await apiFetch(`${base}/healthz`);
       expect(healthy.status).toBe(200);
       expect(await healthy.json()).toEqual({ ok: true });
     } finally {
       await server.stop();
     }
+  });
+
+  it("requires v2 negotiation and serves the truthful operation catalog", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const legacy = await globalThis.fetch(`${base}/runs`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(legacy.status).toBe(404);
+
+      const incompatible = await globalThis.fetch(`${base}/v2/handshake`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ protocolMajor: 1, client: "test" }),
+      });
+      expect(incompatible.status).toBe(426);
+      expect(await incompatible.json()).toMatchObject({ code: "incompatible_protocol_major" });
+
+      const handshake = await apiFetch(`${base}/v2/handshake`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ protocolMajor: 2, client: "test" }),
+      });
+      expect(handshake.status).toBe(200);
+      expect(await handshake.json()).toMatchObject({
+        protocolMajor: 2,
+        compatible: true,
+        operationsPath: "/v2/operations",
+      });
+
+      const missingMajor = await globalThis.fetch(`${base}/v2/operations`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(missingMajor.status).toBe(426);
+      expect(await missingMajor.json()).toMatchObject({ code: "handshake_required" });
+
+      const catalog = await apiFetch(`${base}/v2/operations`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(catalog.status).toBe(200);
+      const body = (await catalog.json()) as {
+        protocolMajor: number;
+        operations: { id: string; path: string }[];
+      };
+      expect(body.protocolMajor).toBe(2);
+      expect(body.operations.every((operation) => operation.path.startsWith("/v2/"))).toBe(true);
+      expect(new Set(body.operations.map((operation) => operation.id)).size).toBe(
+        body.operations.length,
+      );
+      expect(body.operations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "/v2/runs" }),
+          expect.objectContaining({ path: "/v2/setup/jobs" }),
+        ]),
+      );
+    });
   });
 
   it("refuses a mutation delivered on a preconnected socket after stop is marked", async () => {
@@ -473,7 +548,7 @@ describe("DaemonControlApiServer", () => {
     });
     const { host, port } = await server.start();
     const controller = new AbortController();
-    const request = fetch(`http://${host}:${port}/settings`, {
+    const request = apiFetch(`http://${host}:${port}/settings`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
       body: JSON.stringify({ clearMaxUsdPerRun: true }),
@@ -555,7 +630,7 @@ describe("DaemonControlApiServer", () => {
     );
     await withDaemonServer(daemon, async (base) => {
       const list = (await (
-        await fetch(`${base}/runs/run-d1/produced`, {
+        await apiFetch(`${base}/runs/run-d1/produced`, {
           headers: { authorization: `Bearer ${token}` },
         })
       ).json()) as {
@@ -566,13 +641,13 @@ describe("DaemonControlApiServer", () => {
       );
       // The run-internal orchestration tree (decision.yaml etc.) must NOT leak in.
       expect(list.artifacts.some((a) => a.path.includes("decision.yaml"))).toBe(false);
-      const png = await fetch(`${base}/runs/run-d1/produced/preview.png`, {
+      const png = await apiFetch(`${base}/runs/run-d1/produced/preview.png`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(png.status).toBe(200);
       expect(png.headers.get("content-type")).toBe("image/png");
       // Traversal out of <repoRoot>/artifacts is rejected by safeArtifactPath.
-      const esc = await fetch(`${base}/runs/run-d1/produced/..%2f..%2fcontext%2ftask.yaml`, {
+      const esc = await apiFetch(`${base}/runs/run-d1/produced/..%2f..%2fcontext%2ftask.yaml`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(esc.status).toBe(404);
@@ -644,7 +719,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       wrapped,
       async (base) => {
-        const created = await fetch(`${base}/threads`, {
+        const created = await apiFetch(`${base}/threads`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ title: "test thread", scope: { kind: "project", root: repo } }),
@@ -653,11 +728,11 @@ describe("DaemonControlApiServer", () => {
         expect(((await created.json()) as { id: string }).id).toBe("th-1");
 
         const list = (await (
-          await fetch(`${base}/threads`, { headers: { authorization: `Bearer ${token}` } })
+          await apiFetch(`${base}/threads`, { headers: { authorization: `Bearer ${token}` } })
         ).json()) as { threads: { id: string; needsHuman: boolean }[] };
         expect(list.threads[0]?.id).toBe("th-1");
 
-        const turn = await fetch(`${base}/threads/th-1/turns`, {
+        const turn = await apiFetch(`${base}/threads/th-1/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "continue the plan" }),
@@ -674,7 +749,7 @@ describe("DaemonControlApiServer", () => {
         });
 
         const detail = (await (
-          await fetch(`${base}/threads/th-1`, { headers: { authorization: `Bearer ${token}` } })
+          await apiFetch(`${base}/threads/th-1`, { headers: { authorization: `Bearer ${token}` } })
         ).json()) as {
           thread: { id: string; headRunId: string | null };
           turns: { prompt: string; state?: string }[];
@@ -740,7 +815,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       refusing,
       async (base) => {
-        const res = await fetch(`${base}/threads/th-r/turns`, {
+        const res = await apiFetch(`${base}/threads/th-r/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "do work" }),
@@ -755,7 +830,7 @@ describe("DaemonControlApiServer", () => {
         expect(body.error).toContain("daemon socket is gone");
         // The projection renders the refusal so a reloading client sees it.
         const detail = (await (
-          await fetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
+          await apiFetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
         ).json()) as {
           turns: {
             id: string;
@@ -835,7 +910,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       failFast,
       async (base) => {
-        const res = await fetch(`${base}/threads/th-t/turns`, {
+        const res = await apiFetch(`${base}/threads/th-t/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "risky work" }),
@@ -910,7 +985,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/threads/th-n/turns/tn-norep/retry`, {
+        const res = await apiFetch(`${base}/threads/th-n/turns/tn-norep/retry`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -975,7 +1050,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       refusing,
       async (base) => {
-        const res = await fetch(`${base}/runs`, {
+        const res = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1136,7 +1211,7 @@ describe("DaemonControlApiServer", () => {
       retryDaemon,
       async (base) => {
         const retry = (turnId: string) =>
-          fetch(`${base}/threads/th-x/turns/${turnId}/retry`, {
+          apiFetch(`${base}/threads/th-x/turns/${turnId}/retry`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}` },
           });
@@ -1227,7 +1302,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const list = await fetch(`${base}/trust`, {
+        const list = await apiFetch(`${base}/trust`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(list.status).toBe(200);
@@ -1239,7 +1314,7 @@ describe("DaemonControlApiServer", () => {
 
         // NARROW by construction: unknown fields are refused, not ignored —
         // the control surface must never grow trust powers by accident.
-        const widened = await fetch(`${base}/trust`, {
+        const widened = await apiFetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1251,14 +1326,14 @@ describe("DaemonControlApiServer", () => {
         expect(widened.status).toBe(400);
         expect(calls).toHaveLength(0);
 
-        const missing = await fetch(`${base}/trust`, {
+        const missing = await apiFetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ repoRoot: "/Users/x/proj" }),
         });
         expect(missing.status).toBe(400);
 
-        const ok = await fetch(`${base}/trust`, {
+        const ok = await apiFetch(`${base}/trust`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ repoRoot: "/Users/x/proj", allowFullAccess: true }),
@@ -1341,7 +1416,7 @@ describe("DaemonControlApiServer", () => {
       wrapped,
       async (base) => {
         // 1) No routing in the body -> inherit thread sticky primary + pool.
-        await fetch(`${base}/threads/th-9/turns`, {
+        await apiFetch(`${base}/threads/th-9/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "go" }),
@@ -1350,7 +1425,7 @@ describe("DaemonControlApiServer", () => {
 
         // 2) Body override wins over the thread sticky values (+ per-turn strategy flags pass through).
         enqueued = undefined;
-        await fetch(`${base}/threads/th-9/turns`, {
+        await apiFetch(`${base}/threads/th-9/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1372,7 +1447,7 @@ describe("DaemonControlApiServer", () => {
         // must NOT drag the sticky primary along when it is outside that pool — else
         // the engine would fail "primary not in eligible pool". Drop the bias instead.
         enqueued = undefined;
-        await fetch(`${base}/threads/th-9/turns`, {
+        await apiFetch(`${base}/threads/th-9/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "race available", harnesses: ["claude"], n: 2 }), // codex (sticky primary) unavailable -> excluded
@@ -1384,13 +1459,13 @@ describe("DaemonControlApiServer", () => {
         // the THREAD's own sticky pool no longer contains it — e.g. the user removed the
         // primary harness from the pool via the "⋯" chips. Otherwise EVERY following turn
         // inherits both and the engine rejects routing with "primary not in pool".
-        await fetch(`${base}/threads/th-9`, {
+        await apiFetch(`${base}/threads/th-9`, {
           method: "PATCH",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ eligibleHarnesses: ["claude"] }), // drop codex (the sticky primary) from the pool
         });
         enqueued = undefined;
-        await fetch(`${base}/threads/th-9/turns`, {
+        await apiFetch(`${base}/threads/th-9/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "ordinary turn" }), // no body routing -> inherit thread sticky
@@ -1399,7 +1474,7 @@ describe("DaemonControlApiServer", () => {
         expect(enqueued && "primaryHarness" in enqueued).toBe(false); // sticky codex NOT inherited (outside the narrowed pool)
 
         // 3) PATCH switches the sticky primary + pool (the thin-gateway persist path).
-        const patch = await fetch(`${base}/threads/th-9`, {
+        const patch = await apiFetch(`${base}/threads/th-9`, {
           method: "PATCH",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1480,7 +1555,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       wrapped,
       async (base) => {
-        await fetch(`${base}/threads/th-10/turns`, {
+        await apiFetch(`${base}/threads/th-10/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "go" }),
@@ -1555,7 +1630,7 @@ describe("DaemonControlApiServer", () => {
       async (base) => {
         // A spec Implement turn: empty prompt is allowed because a frozen specPath
         // supplies the intent (mirrors normalizeRunStart's prompt-or-specPath rule).
-        const r = await fetch(`${base}/threads/th-11/turns`, {
+        const r = await apiFetch(`${base}/threads/th-11/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1599,7 +1674,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: "2+2?", mode: "ask", harnesses: ["codex"] }),
@@ -1632,7 +1707,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1670,7 +1745,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1725,7 +1800,7 @@ describe("DaemonControlApiServer", () => {
         { kind: "file", mime: "text/plain", name: "missing.txt", path: join(repo, "missing.txt") },
         { kind: "file", mime: "text/plain", name: "dir", path: nestedDir },
       ]) {
-        const start = await fetch(`${base}/runs`, {
+        const start = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -1748,7 +1823,7 @@ describe("DaemonControlApiServer", () => {
     record.params = { prompt: "2+2?", mode: "ask", scope: { kind: "none" } };
     await withDaemonServer(daemon, async (base) => {
       const list = (await (
-        await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         runs: {
           project: {
@@ -1766,7 +1841,7 @@ describe("DaemonControlApiServer", () => {
         context: "off",
       });
       const detail = (await (
-        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         summary: {
           project: {
@@ -1802,7 +1877,7 @@ describe("DaemonControlApiServer", () => {
     };
     await withDaemonServer(daemon, async (base) => {
       const detail = (await (
-        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         summary: {
           reviewerPanel?: { harness: string; model?: string; effort?: string }[];
@@ -1852,7 +1927,7 @@ describe("DaemonControlApiServer", () => {
     );
     await withDaemonServer(daemon, async (base) => {
       const detail = (await (
-        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as { summary: { tests?: string[] } };
       expect(detail.summary.tests).toEqual(["pnpm test", "pnpm build"]);
     });
@@ -1862,7 +1937,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-proj-"));
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1884,7 +1959,7 @@ describe("DaemonControlApiServer", () => {
   it("rejects project-aware modes without a project scope instead of falling back to cwd", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: "edit this", mode: "agent", harnesses: ["codex"] }),
@@ -1897,7 +1972,7 @@ describe("DaemonControlApiServer", () => {
   it("rejects relative project roots at run-start and apply boundaries", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1910,7 +1985,7 @@ describe("DaemonControlApiServer", () => {
       expect(start.status).toBe(400);
       expect(await start.text()).toContain("project root must be an absolute path");
 
-      const check = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ target: { kind: "project", root: "." } }),
@@ -1931,7 +2006,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1944,7 +2019,7 @@ describe("DaemonControlApiServer", () => {
       expect(start.status).toBe(400);
       expect(enqueued).toBe(false);
 
-      const blankPrimary = await fetch(`${base}/runs`, {
+      const blankPrimary = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1970,7 +2045,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const valid = await fetch(`${base}/runs`, {
+      const valid = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1984,7 +2059,7 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued).toMatchObject({ reviewerEfforts: { anthropic: "max", openai: "xhigh" } });
 
       enqueued = undefined;
-      const openaiFamily = await fetch(`${base}/runs`, {
+      const openaiFamily = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1998,7 +2073,7 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued).toMatchObject({ reviewerEfforts: { openai: "high" } });
 
       enqueued = undefined;
-      const validModel = await fetch(`${base}/runs`, {
+      const validModel = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2012,7 +2087,7 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued).toMatchObject({ reviewerModels: { openai: "gpt-4o" } });
 
       enqueued = undefined;
-      const invalidValue = await fetch(`${base}/runs`, {
+      const invalidValue = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2025,7 +2100,7 @@ describe("DaemonControlApiServer", () => {
       expect(invalidValue.status).toBe(400);
       expect(enqueued).toBeUndefined();
 
-      const invalidProvider = await fetch(`${base}/runs`, {
+      const invalidProvider = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2038,7 +2113,7 @@ describe("DaemonControlApiServer", () => {
       expect(invalidProvider.status).toBe(400);
       expect(enqueued).toBeUndefined();
 
-      const invalidModelProvider = await fetch(`${base}/runs`, {
+      const invalidModelProvider = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2074,7 +2149,7 @@ describe("DaemonControlApiServer", () => {
         { protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: " " }] },
       ];
       for (const body of bodies) {
-        const res = await fetch(`${base}/runs`, {
+        const res = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "2+2?", mode: "ask", ...body }),
@@ -2096,7 +2171,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const valid = await fetch(`${base}/runs`, {
+      const valid = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2121,7 +2196,7 @@ describe("DaemonControlApiServer", () => {
       });
 
       enqueued = undefined;
-      const invalid = await fetch(`${base}/runs`, {
+      const invalid = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -2141,7 +2216,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/harnesses`, {
+        const res = await apiFetch(`${base}/harnesses`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(res.status).toBe(200);
@@ -2167,11 +2242,11 @@ describe("DaemonControlApiServer", () => {
           status: "fail",
           detail: "401",
         });
-        const fresh = await fetch(`${base}/harnesses?fresh=true`, {
+        const fresh = await apiFetch(`${base}/harnesses?fresh=true`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(fresh.status).toBe(200);
-        const invalid = await fetch(`${base}/harnesses?fresh=1`, {
+        const invalid = await apiFetch(`${base}/harnesses?fresh=1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalid.status).toBe(400);
@@ -2204,7 +2279,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const ok = await fetch(`${base}/harnesses/raw-api/models`, {
+        const ok = await apiFetch(`${base}/harnesses/raw-api/models`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(ok.status).toBe(200);
@@ -2217,7 +2292,7 @@ describe("DaemonControlApiServer", () => {
         expect(body.models).toEqual([{ id: "gpt-4o-mini", label: null, context_window: null }]);
 
         // A harness that cannot enumerate -> honest source "none" with [].
-        const none = await fetch(`${base}/harnesses/codex/models`, {
+        const none = await apiFetch(`${base}/harnesses/codex/models`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(none.status).toBe(200);
@@ -2281,7 +2356,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const created = await fetch(`${base}/v2/setup/jobs`, {
+        const created = await apiFetch(`${base}/v2/setup/jobs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -2293,12 +2368,12 @@ describe("DaemonControlApiServer", () => {
         expect(created.status).toBe(200);
         expect(await created.json()).toMatchObject({ jobId: "setup-1", action: "login" });
         expect(seen).toEqual([{ harness: "cursor", action: "login", authRequest: "subscription" }]);
-        const retired = await fetch(`${base}/setup/jobs`, {
+        const retired = await globalThis.fetch(`${base}/setup/jobs`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(retired.status).toBe(404);
 
-        const listed = await fetch(
+        const listed = await apiFetch(
           `${base}/v2/setup/jobs?harness=cursor&action=login&active=true&limit=1`,
           {
             headers: { authorization: `Bearer ${token}` },
@@ -2309,21 +2384,21 @@ describe("DaemonControlApiServer", () => {
         expect(listFilters).toEqual([
           { harness: "cursor", action: "login", active: true, limit: 1 },
         ]);
-        const invalidList = await fetch(`${base}/v2/setup/jobs?state=running`, {
+        const invalidList = await apiFetch(`${base}/v2/setup/jobs?state=running`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalidList.status).toBe(400);
-        const invalidHarness = await fetch(`${base}/v2/setup/jobs?harness=unknown`, {
+        const invalidHarness = await apiFetch(`${base}/v2/setup/jobs?harness=unknown`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalidHarness.status).toBe(400);
 
-        const status = await fetch(`${base}/v2/setup/jobs/setup-1`, {
+        const status = await apiFetch(`${base}/v2/setup/jobs/setup-1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(status.status).toBe(200);
         expect(await status.json()).toMatchObject({ jobId: "setup-1", state: "waiting_for_input" });
-        const snapshot = await fetch(`${base}/v2/setup/jobs/setup-1/snapshot`, {
+        const snapshot = await apiFetch(`${base}/v2/setup/jobs/setup-1/snapshot`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(snapshot.status).toBe(200);
@@ -2336,7 +2411,7 @@ describe("DaemonControlApiServer", () => {
         // The lifecycle stream STAYS OPEN for a non-terminal job (it is a real
         // stream now, not a one-shot snapshot): read the first frame and abort.
         const sseAbort = new AbortController();
-        const events = await fetch(`${base}/v2/setup/jobs/setup-1/events`, {
+        const events = await apiFetch(`${base}/v2/setup/jobs/setup-1/events`, {
           headers: { authorization: `Bearer ${token}` },
           signal: sseAbort.signal,
         });
@@ -2355,7 +2430,7 @@ describe("DaemonControlApiServer", () => {
         expect(sseText).not.toContain("event: end");
         sseAbort.abort();
 
-        const extended = await fetch(`${base}/v2/setup/jobs/setup-1/extend`, {
+        const extended = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -2365,7 +2440,7 @@ describe("DaemonControlApiServer", () => {
           deadlineAt: "2026-01-01T00:15:00.000Z",
         });
 
-        const reconciled = await fetch(`${base}/v2/setup/jobs/setup-1/reconcile`, {
+        const reconciled = await apiFetch(`${base}/v2/setup/jobs/setup-1/reconcile`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -2375,7 +2450,7 @@ describe("DaemonControlApiServer", () => {
           terminationReconciliation: { status: "empty" },
         });
 
-        const cancelled = await fetch(`${base}/v2/setup/jobs/setup-1/cancel`, {
+        const cancelled = await apiFetch(`${base}/v2/setup/jobs/setup-1/cancel`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -2392,7 +2467,7 @@ describe("DaemonControlApiServer", () => {
           outcome: { reason: "timed_out" },
           finishedAt: new Date().toISOString(),
         };
-        const ended = await fetch(`${base}/v2/setup/jobs/setup-1/events`, {
+        const ended = await apiFetch(`${base}/v2/setup/jobs/setup-1/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-41" },
         });
         expect(ended.status).toBe(200);
@@ -2464,7 +2539,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
+        const response = await apiFetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-base" },
         });
         expect(response.status).toBe(200);
@@ -2504,7 +2579,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
+        const response = await apiFetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(response.status).toBe(200);
@@ -2526,7 +2601,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
+        const response = await apiFetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "stale-cursor" },
         });
         expect(response.status).toBe(409);
@@ -2577,11 +2652,11 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const headers = { authorization: `Bearer ${token}` };
-        const inspect = await fetch(`${base}/v2/recovery/partitions/global`, { headers });
+        const inspect = await apiFetch(`${base}/v2/recovery/partitions/global`, { headers });
         expect(inspect.status).toBe(200);
         expect(await inspect.json()).toEqual(inspection);
 
-        const validate = await fetch(`${base}/v2/recovery/partitions/global/validate`, {
+        const validate = await apiFetch(`${base}/v2/recovery/partitions/global/validate`, {
           method: "POST",
           headers,
         });
@@ -2590,14 +2665,14 @@ describe("DaemonControlApiServer", () => {
           projectionStatus: [{ name: "setup", status: "invalid" }],
         });
 
-        const exported = await fetch(`${base}/v2/recovery/partitions/global/export`, {
+        const exported = await apiFetch(`${base}/v2/recovery/partitions/global/export`, {
           method: "POST",
           headers,
         });
         expect(exported.status).toBe(200);
         expect(await exported.json()).toMatchObject({ exportId: "export-1", fingerprint });
 
-        const missingKey = await fetch(`${base}/v2/recovery/partitions/global/quarantine`, {
+        const missingKey = await apiFetch(`${base}/v2/recovery/partitions/global/quarantine`, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -2612,7 +2687,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: { "Idempotency-Key": ["required for quarantine"] },
         });
 
-        const quarantine = await fetch(`${base}/v2/recovery/partitions/global/quarantine`, {
+        const quarantine = await apiFetch(`${base}/v2/recovery/partitions/global/quarantine`, {
           method: "POST",
           headers: { ...headers, "Idempotency-Key": "quarantine-1" },
           body: JSON.stringify({
@@ -2674,7 +2749,7 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const headers = { authorization: `Bearer ${token}` };
-        const typed = await fetch(`${base}/v2/setup/jobs/job-corrupt`, { headers });
+        const typed = await apiFetch(`${base}/v2/setup/jobs/job-corrupt`, { headers });
         expect(typed.status).toBe(503);
         expect(typed.headers.get("content-type")).toBe("application/problem+json");
         expect(await typed.json()).toEqual({
@@ -2686,7 +2761,7 @@ describe("DaemonControlApiServer", () => {
           evidenceRefs: ["recovery:global:abc"],
         });
 
-        const invalidOutput = await fetch(`${base}/harnesses`, { headers });
+        const invalidOutput = await apiFetch(`${base}/harnesses`, { headers });
         expect(invalidOutput.status).toBe(500);
         expect(invalidOutput.headers.get("content-type")).toBe("application/problem+json");
         expect(await invalidOutput.json()).toEqual({
@@ -2721,7 +2796,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+        const response = await apiFetch(`${base}/v2/harnesses/claude/auth-readiness`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ authRequest: "subscription", source: "native_session" }),
@@ -2782,7 +2857,7 @@ describe("DaemonControlApiServer", () => {
         };
         const validBody = JSON.stringify({ authRequest: "subscription", source: "native_session" });
 
-        const query = await fetch(`${base}/v2/harnesses/claude/auth-readiness?fresh=true`, {
+        const query = await apiFetch(`${base}/v2/harnesses/claude/auth-readiness?fresh=true`, {
           method: "POST",
           headers,
           body: validBody,
@@ -2791,7 +2866,7 @@ describe("DaemonControlApiServer", () => {
         expect(query.headers.get("content-type")).toBe("application/problem+json");
         expect(await query.json()).toMatchObject({ code: "invalid_request" });
 
-        const extraBody = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+        const extraBody = await apiFetch(`${base}/v2/harnesses/claude/auth-readiness`, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -2804,13 +2879,13 @@ describe("DaemonControlApiServer", () => {
         expect(extraBody.headers.get("content-type")).toBe("application/problem+json");
         expect(await extraBody.json()).toMatchObject({ code: "invalid_request" });
 
-        const alias = await fetch(`${base}/harnesses/claude/auth-readiness`, {
+        const alias = await globalThis.fetch(`${base}/harnesses/claude/auth-readiness`, {
           method: "POST",
           headers,
           body: validBody,
         });
         expect(alias.status).toBe(404);
-        expect(await alias.json()).toEqual({ error: "not found" });
+        expect(await alias.json()).toMatchObject({ code: "route_not_found" });
         expect(serviceCalls).toBe(0);
       },
       undefined,
@@ -2828,7 +2903,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+        const response = await apiFetch(`${base}/v2/harnesses/claude/auth-readiness`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${token}`,
@@ -2867,7 +2942,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/v2/harnesses/claude/auth-readiness`, {
+        const response = await apiFetch(`${base}/v2/harnesses/claude/auth-readiness`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${token}`,
@@ -2910,7 +2985,7 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const abort = new AbortController();
-        const response = await fetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
+        const response = await apiFetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
           headers: { authorization: `Bearer ${token}` },
           signal: abort.signal,
         });
@@ -2934,7 +3009,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const validQuestions = await fetch(`${base}/spec/questions`, {
+        const validQuestions = await apiFetch(`${base}/spec/questions`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -2955,7 +3030,7 @@ describe("DaemonControlApiServer", () => {
           },
           { prompt: "legacy", scope: { kind: "project", root: "/tmp/project" }, inPlace: true },
         ]) {
-          const bad = await fetch(`${base}/spec/questions`, {
+          const bad = await apiFetch(`${base}/spec/questions`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}` },
             body: JSON.stringify(body),
@@ -2963,7 +3038,7 @@ describe("DaemonControlApiServer", () => {
           expect(bad.status).toBe(400);
         }
 
-        const validFreeze = await fetch(`${base}/spec/freeze`, {
+        const validFreeze = await apiFetch(`${base}/spec/freeze`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -2979,7 +3054,7 @@ describe("DaemonControlApiServer", () => {
           specPath: "/tmp/spec-1/spec.json",
         });
 
-        const badFreeze = await fetch(`${base}/spec/freeze`, {
+        const badFreeze = await apiFetch(`${base}/spec/freeze`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -3019,7 +3094,7 @@ describe("DaemonControlApiServer", () => {
       JSON.stringify({ token: "sk-" + "a".repeat(24) }),
     );
     await withDaemonServer(daemon, async (base) => {
-      const res = await fetch(`${base}/runs/run-d1/artifacts/final/metadata.json`, {
+      const res = await apiFetch(`${base}/runs/run-d1/artifacts/final/metadata.json`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.status).toBe(200);
@@ -3034,7 +3109,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon } = fakeDaemon();
     const secret = "sk-" + "c".repeat(24);
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: "safe", mode: "ask", tests: [`echo ${secret}`] }),
@@ -3048,7 +3123,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon } = fakeDaemon();
     const secret = "sk-" + "d".repeat(24);
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: `use ${secret} to auth`, mode: "agent" }),
@@ -3067,7 +3142,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const turn = await fetch(`${base}/threads/th-any/turns`, {
+        const turn = await apiFetch(`${base}/threads/th-any/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: `retry with ${secret}` }),
@@ -3092,7 +3167,7 @@ describe("DaemonControlApiServer", () => {
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
     const { daemon, cancelled, record } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const start = await fetch(`${base}/runs`, {
+      const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: startAgentBody(),
@@ -3109,7 +3184,7 @@ describe("DaemonControlApiServer", () => {
       expect(started.taskId).toBe("task-d1");
 
       const list = (await (
-        await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         runs: {
           jobId: string;
@@ -3124,7 +3199,7 @@ describe("DaemonControlApiServer", () => {
       expect(list.runs[0]?.spendUsd).toBeCloseTo(0.1234);
       expect(list.runs[0]?.spendEstimated).toBe(true);
 
-      const sse = await fetch(`${base}/runs/run-d1/events`, {
+      const sse = await apiFetch(`${base}/runs/run-d1/events`, {
         headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "1" },
       });
       expect(sse.status).toBe(200);
@@ -3137,7 +3212,7 @@ describe("DaemonControlApiServer", () => {
       expect(text).toContain("event: end");
 
       // Control on a TERMINAL run is rejected honestly (nothing to stop)…
-      const cancelTerminal = await fetch(`${base}/runs/run-d1/control`, {
+      const cancelTerminal = await apiFetch(`${base}/runs/run-d1/control`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ control: { kind: "cancel" } }),
@@ -3146,7 +3221,7 @@ describe("DaemonControlApiServer", () => {
       expect(cancelled).toEqual([]);
       // …and applied only while the job is actually active.
       record.state = "running";
-      const cancel = await fetch(`${base}/runs/run-d1/control`, {
+      const cancel = await apiFetch(`${base}/runs/run-d1/control`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ control: { kind: "cancel" } }),
@@ -3164,7 +3239,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const start = await fetch(`${base}/runs`, {
+        const start = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: startAgentBody(),
@@ -3200,7 +3275,7 @@ describe("DaemonControlApiServer", () => {
     });
     const { host, port } = await server.start();
     try {
-      const res = await fetch(`http://${host}:${port}/runs`, {
+      const res = await apiFetch(`http://${host}:${port}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: startAgentBody(),
@@ -3266,7 +3341,7 @@ describe("DaemonControlApiServer", () => {
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     try {
-      const blockedRes = await fetch(`${base}/threads/th-gate/apply`, {
+      const blockedRes = await apiFetch(`${base}/threads/th-gate/apply`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ mode: "apply" }),
@@ -3286,7 +3361,7 @@ describe("DaemonControlApiServer", () => {
         join(runDir, "arbitration", "operator_decision.yaml"),
         `action: accept_risk\ndecided_at: "${now}"\npatch_sha256: "${sha256(patchText)}"\n`,
       );
-      const okRes = await fetch(`${base}/threads/th-gate/apply`, {
+      const okRes = await apiFetch(`${base}/threads/th-gate/apply`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ mode: "apply" }),
@@ -3349,7 +3424,7 @@ describe("DaemonControlApiServer", () => {
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     try {
-      const res = await fetch(`${base}/threads/th-pruned/apply`, {
+      const res = await apiFetch(`${base}/threads/th-pruned/apply`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ mode: "apply" }),
@@ -3392,7 +3467,7 @@ describe("DaemonControlApiServer", () => {
     const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon, pollMs: 5 });
     const { host, port } = await server.start();
     try {
-      const res = await fetch(`http://${host}:${port}/runs/job-q1/events`, {
+      const res = await apiFetch(`http://${host}:${port}/runs/job-q1/events`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.status).toBe(200); // stream OPEN while queued (was a 404)
@@ -3487,7 +3562,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/runs`, {
+        const res = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -3540,7 +3615,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/runs`, {
+        const res = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -3608,7 +3683,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/runs`, {
+        const res = await apiFetch(`${base}/runs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -3648,14 +3723,14 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(daemon, async (base) => {
-      const oldMode = await fetch(`${base}/runs`, {
+      const oldMode = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: "x", mode: "daily" }),
       });
       expect(oldMode.status).toBe(400);
 
-      const inlineEnv = await fetch(`${base}/runs`, {
+      const inlineEnv = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt: "x", mode: "agent", env: { OPENAI_API_KEY: "sk-nope" } }),
@@ -3693,7 +3768,7 @@ describe("DaemonControlApiServer", () => {
         "\n",
     );
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       const body = (await detail.json()) as {
@@ -3710,7 +3785,7 @@ describe("DaemonControlApiServer", () => {
   it("projects candidate evidence cards from attempts/reviews/decision artifacts", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
@@ -3760,7 +3835,7 @@ describe("DaemonControlApiServer", () => {
   it("serves run detail and artifact index from the run directory", async () => {
     const { daemon, record } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
@@ -3817,13 +3892,13 @@ describe("DaemonControlApiServer", () => {
         expect(eligibility.requiredAction).toBeNull();
       }
 
-      const artifacts = await fetch(`${base}/runs/run-d1/artifacts`, {
+      const artifacts = await apiFetch(`${base}/runs/run-d1/artifacts`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(artifacts.status).toBe(200);
       expect(await artifacts.text()).toContain("final/patch.diff");
 
-      const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
+      const summary = await apiFetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(summary.status).toBe(200);
@@ -3833,7 +3908,7 @@ describe("DaemonControlApiServer", () => {
       // the no-patch path is a null projection, never a crash (missing
       // artifacts resolve to null in safeArtifactPath before any lstat).
       rmSync(join(record.runDir as string, "final", "patch.diff"), { force: true });
-      const noPatchDetail = await fetch(`${base}/runs/run-d1`, {
+      const noPatchDetail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(noPatchDetail.status).toBe(200);
@@ -3869,7 +3944,7 @@ describe("DaemonControlApiServer", () => {
     );
 
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
@@ -3895,7 +3970,7 @@ describe("DaemonControlApiServer", () => {
       record.params = { ...(record.params as Record<string, unknown>), mode: c.mode };
       writeFileSync(join(record.runDir as string, c.path), `${c.text}\n`);
       await withDaemonServer(daemon, async (base) => {
-        const detail = await fetch(`${base}/runs/run-d1`, {
+        const detail = await apiFetch(`${base}/runs/run-d1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(detail.status).toBe(200);
@@ -3918,7 +3993,7 @@ describe("DaemonControlApiServer", () => {
       "safeMessage: Auth failed\ncategory: auth\n",
     );
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       const body = (await detail.json()) as { primaryOutput?: { kind: string; text: string } };
@@ -3933,12 +4008,12 @@ describe("DaemonControlApiServer", () => {
     writeFileSync(outside, "outside secret\n");
     symlinkSync(outside, join(record.runDir as string, "final", "escape.txt"));
     await withDaemonServer(daemon, async (base) => {
-      const listed = await fetch(`${base}/runs/run-d1/artifacts`, {
+      const listed = await apiFetch(`${base}/runs/run-d1/artifacts`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(await listed.text()).not.toContain("escape.txt");
 
-      const fetched = await fetch(`${base}/runs/run-d1/artifacts/final/escape.txt`, {
+      const fetched = await apiFetch(`${base}/runs/run-d1/artifacts/final/escape.txt`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(fetched.status).toBe(404);
@@ -3952,7 +4027,7 @@ describe("DaemonControlApiServer", () => {
     rmSync(join(record.runDir as string, "final"), { recursive: true, force: true });
     symlinkSync(outside, join(record.runDir as string, "final"), "dir");
     await withDaemonServer(daemon, async (base) => {
-      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -3969,7 +4044,7 @@ describe("DaemonControlApiServer", () => {
       "diff --git a/x b/x\n+changed\n",
     );
     await withDaemonServer(daemon, async (base) => {
-      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -3983,7 +4058,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon, record } = fakeDaemon();
     record.state = "not_converged";
     await withDaemonServer(daemon, async (base) => {
-      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -3998,7 +4073,7 @@ describe("DaemonControlApiServer", () => {
     record.state = "blocked";
     await withDaemonServer(daemon, async (base) => {
       // Blocked: apply/check refuses before any operator decision.
-      const before = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const before = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -4006,7 +4081,7 @@ describe("DaemonControlApiServer", () => {
       expect(before.status).toBe(409);
 
       // Operator accepts the risk (typed, audited, hash-bound).
-      const decide = await fetch(`${base}/runs/run-d1/decision`, {
+      const decide = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -4026,7 +4101,7 @@ describe("DaemonControlApiServer", () => {
       expect(persisted).toContain("patch_sha256");
 
       // The gate now passes for THIS patch...
-      const after = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const after = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -4038,7 +4113,7 @@ describe("DaemonControlApiServer", () => {
         join(record.runDir as string, "final", "patch.diff"),
         "diff --git a/x b/x\n+tampered\n",
       );
-      const tampered = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const tampered = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -4052,16 +4127,16 @@ describe("DaemonControlApiServer", () => {
     record.state = "blocked";
     await withDaemonServer(daemon, async (base) => {
       const before = (await (
-        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as { lastSeq: number };
-      const decide = await fetch(`${base}/runs/run-d1/decision`, {
+      const decide = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ action: "accept_risk", acceptedRisks: ["r"] }),
       });
       expect(decide.status).toBe(200);
       const after = (await (
-        await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as { lastSeq: number; operatorDecision?: { action: string } | null };
       // The control.applied audit event appended to the terminal run must advance
       // the durable cursor (a collision would break Last-Event-ID resume).
@@ -4083,7 +4158,7 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(wrapped, async (base) => {
-      const res = await fetch(`${base}/runs/run-d1/decision`, {
+      const res = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -4107,14 +4182,16 @@ describe("DaemonControlApiServer", () => {
     const { daemon, record } = fakeDaemon();
     record.params = { prompt: "legacy", mode: "daily" };
     await withDaemonServer(daemon, async (base) => {
-      const detail = await fetch(`${base}/runs/run-d1`, {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
       const body = (await detail.json()) as { summary: { mode?: string; runId: string } };
       expect(body.summary.mode).toBeUndefined();
       expect(body.summary.runId).toBe("run-d1");
-      const list = await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } });
+      const list = await apiFetch(`${base}/runs`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
       expect(list.status).toBe(200);
     });
   });
@@ -4129,19 +4206,19 @@ describe("DaemonControlApiServer", () => {
     );
     await withDaemonServer(daemon, async (base) => {
       const list = (await (
-        await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
+        await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         runs: { prompt?: string }[];
       };
       expect(list.runs[0]?.prompt).toContain("[redacted]");
       expect(list.runs[0]?.prompt).not.toContain(secret);
 
-      const patch = await fetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
+      const patch = await apiFetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(patch.status).toBe(409);
 
-      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -4158,7 +4235,7 @@ describe("DaemonControlApiServer", () => {
       `# Summary\n\nToken ${secret}\n`,
     );
     await withDaemonServer(daemon, async (base) => {
-      const summary = await fetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
+      const summary = await apiFetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(summary.status).toBe(200);
@@ -4176,7 +4253,7 @@ describe("DaemonControlApiServer", () => {
       JSON.stringify({ type: "message", text: secret }) + "\n",
     );
     await withDaemonServer(daemon, async (base) => {
-      const events = await fetch(`${base}/runs/run-d1/artifacts/events.jsonl`, {
+      const events = await apiFetch(`${base}/runs/run-d1/artifacts/events.jsonl`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(events.status).toBe(200);
@@ -4198,7 +4275,7 @@ describe("DaemonControlApiServer", () => {
       ].join("\n"),
     );
     await withDaemonServer(daemon, async (base) => {
-      const events = await fetch(`${base}/runs/run-d1/events`, {
+      const events = await apiFetch(`${base}/runs/run-d1/events`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(events.status).toBe(200);
@@ -4213,7 +4290,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon, record } = fakeDaemon();
     writeFileSync(join(record.runDir as string, "arbitration", "decision.yaml"), "winner: [\n");
     await withDaemonServer(daemon, async (base) => {
-      const apply = await fetch(`${base}/runs/run-d1/apply/check`, {
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: "{}",
@@ -4229,7 +4306,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/settings`, {
+        const res = await apiFetch(`${base}/settings`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(res.status).toBe(500);
@@ -4278,20 +4355,20 @@ describe("DaemonControlApiServer", () => {
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     try {
-      const badSettings = await fetch(`${base}/settings`, {
+      const badSettings = await apiFetch(`${base}/settings`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ routingPolicy: "surprise" }),
       });
       expect(badSettings.status).toBe(400);
 
-      const okSettings = await fetch(`${base}/settings`, {
+      const okSettings = await apiFetch(`${base}/settings`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ clearMaxUsdPerRun: true }),
       });
       expect(okSettings.status).toBe(200);
-      const shownSettings = await fetch(`${base}/settings`, {
+      const shownSettings = await apiFetch(`${base}/settings`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(shownSettings.status).toBe(200);
@@ -4299,14 +4376,14 @@ describe("DaemonControlApiServer", () => {
       expect(shownJson["runtime"]?.["reviewerTimeoutMs"]).toBe(2_400_000);
       expect(shownJson["runtime"]?.["transientRetry"]?.["maxRetries"]).toBe(3);
 
-      const badSecret = await fetch(`${base}/secrets`, {
+      const badSecret = await apiFetch(`${base}/secrets`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ name: "github", value: "x" }),
       });
       expect(badSecret.status).toBe(400);
 
-      const okSecretList = await fetch(`${base}/secrets`, {
+      const okSecretList = await apiFetch(`${base}/secrets`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(okSecretList.status).toBe(200);
@@ -4348,7 +4425,7 @@ describe("DaemonControlApiServer", () => {
       ].join("\n"),
     );
     await withDaemonServer(daemon, async (base) => {
-      const sse = await fetch(`${base}/runs/run-d1/events`, {
+      const sse = await apiFetch(`${base}/runs/run-d1/events`, {
         headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "10" },
       });
       const text = await sse.text();
@@ -4419,7 +4496,7 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const detail = (await (
-          await fetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+          await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
         ).json()) as {
           lastSeq: number;
           pendingInteractions: { interactionId: string }[];
@@ -4431,13 +4508,13 @@ describe("DaemonControlApiServer", () => {
         expect(detail.summary.waitingOnUser).toBe(true);
 
         const list = (await (
-          await fetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
+          await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
         ).json()) as {
           runs: { waitingOnUser: boolean }[];
         };
         expect(list.runs[0]?.waitingOnUser).toBe(true);
 
-        const answer = await fetch(`${base}/runs/run-d1/interactions/int-1/answer`, {
+        const answer = await apiFetch(`${base}/runs/run-d1/interactions/int-1/answer`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -4455,7 +4532,7 @@ describe("DaemonControlApiServer", () => {
           },
         });
 
-        const missing = await fetch(`${base}/runs/run-d1/interactions/int-404/answer`, {
+        const missing = await apiFetch(`${base}/runs/run-d1/interactions/int-404/answer`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ answers: [] }),
@@ -4482,7 +4559,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const res = await fetch(`${base}/events`, {
+        const res = await apiFetch(`${base}/events`, {
           headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
         });
         expect(res.status).toBe(200);
@@ -4516,7 +4593,9 @@ describe("DaemonControlApiServer", () => {
     );
 
     await withDaemonServer(daemon, async (base) => {
-      const res = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`${base}/events`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
       expect(res.status).toBe(501);
     });
   });
@@ -4525,7 +4604,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon } = fakeDaemon();
     const nonGit = mkdtempSync(join(tmpdir(), "claudexor-nongit-api-"));
     await withDaemonServer(daemon, async (base) => {
-      const ok = await fetch(`${base}/runs`, {
+      const ok = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -4536,7 +4615,7 @@ describe("DaemonControlApiServer", () => {
       });
       expect(ok.status).toBe(200);
 
-      const missing = await fetch(`${base}/runs`, {
+      const missing = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -4580,7 +4659,7 @@ describe("DaemonControlApiServer", () => {
     const base = `http://${host}:${port}`;
     const repo = mkdtempSync(join(tmpdir(), "claudexor-turnid-"));
     try {
-      const withTurn = await fetch(`${base}/runs`, {
+      const withTurn = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -4595,7 +4674,7 @@ describe("DaemonControlApiServer", () => {
         "turnId is not accepted",
       );
 
-      const withPlan = await fetch(`${base}/runs`, {
+      const withPlan = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({

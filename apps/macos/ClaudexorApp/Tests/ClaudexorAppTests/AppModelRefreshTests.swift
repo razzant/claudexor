@@ -18,7 +18,7 @@ struct AppModelRefreshTests {
         let model = AppModel(client: client, requestNotificationAuthorization: false)
 
         AppRequestStubURLProtocol.handler = { request in
-            guard request.url?.path == "/harnesses", request.url?.query == "fresh=true" else {
+            guard request.url?.path == "/v2/harnesses", request.url?.query == "fresh=true" else {
                 throw AppRefreshTestError.badRequest
             }
             return (
@@ -52,7 +52,7 @@ struct AppModelRefreshTests {
         let model = AppModel(client: client, requestNotificationAuthorization: false)
 
         AppRequestStubURLProtocol.handler = { request in
-            guard request.url?.path == "/harnesses", request.url?.query == nil else {
+            guard request.url?.path == "/v2/harnesses", request.url?.query == nil else {
                 throw AppRefreshTestError.badRequest
             }
             return (
@@ -110,9 +110,9 @@ struct AppModelRefreshTests {
 
         AppRequestStubURLProtocol.handler = { request in
             switch (request.httpMethod, request.url?.path) {
-            case ("POST", "/secrets"):
+            case ("POST", "/v2/secrets"):
                 return (appResponse(for: request), Data("{}".utf8))
-            case ("GET", "/secrets"):
+            case ("GET", "/v2/secrets"):
                 return (appResponse(for: request), Data(#"{"backend":"file","secrets":[]}"#.utf8))
             case ("POST", "/v2/harnesses/raw-api/auth-readiness"):
                 let response = HTTPURLResponse(

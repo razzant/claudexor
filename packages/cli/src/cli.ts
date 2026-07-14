@@ -69,7 +69,7 @@ import {
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
-import { followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
+import { controlApiFetch, followRun, formatRunEventLine, promptQuestionsOnTty } from "./live.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import {
   connectDaemonIfRunning,
@@ -91,7 +91,7 @@ import {
   type PluginVerb,
 } from "./plugins.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
-import { mcpSurfaceRunner, orchestratorRunner } from "./mcp-runner.js";
+import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { trustCommand } from "./trust-command.js";
 import {
@@ -749,7 +749,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
 
   try {
     const { addr } = await ensureDaemon();
-    const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/decision`, {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/decision`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -826,7 +826,7 @@ async function resolveRunStore(
     const conn = await connectDaemonIfRunning();
     if (!conn) return null;
     const { addr } = conn;
-    const resp = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+    const resp = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
       headers: { Authorization: `Bearer ${addr.token}` },
     });
     if (resp.ok) {
@@ -1272,7 +1272,7 @@ async function main(): Promise<number> {
       if (args._[1] === "serve") {
         await new AcpServer({
           version: CLAUDEXOR_VERSION,
-          runner: orchestratorRunner(),
+          runner: mcpSurfaceRunner(),
           transport: { read: process.stdin, write: process.stdout },
         }).serve();
         return 0;
