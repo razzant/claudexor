@@ -38,7 +38,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 /// commit. The flow is keyed to a thread id so switching threads never shows a
 /// stale spec card.
 enum SpecFlowState: Equatable {
-    /// The grounding plan is running (pre-questions): /spec/questions is in flight,
+    /// The grounding plan is running (pre-questions): session creation is in flight,
     /// reading the repo to derive the interview. NOTHING is frozen yet — this is a
     /// distinct phase from `.freezing` so the spinner doesn't claim "freezing the
     /// SpecPack" while only the grounding plan runs (it can take minutes).
@@ -116,7 +116,7 @@ final class AppModel {
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
     /// SPEC-FLOW state (questions → freeze → implement) keyed PER THREAD. Keyed —
-    /// not a single slot — so a long `/spec/questions` or `/spec/freeze` await that
+    /// not a single slot — so a long spec create or freeze await that
     /// returns AFTER the user switched threads still records its result on the
     /// OWNING thread (never stranding that thread's card at `.grounding`/`.freezing`),
     /// and a concurrent spec on another thread is never clobbered. `specFlow` reads
@@ -124,7 +124,7 @@ final class AppModel {
     private var specFlowByThread: [String: SpecFlowState] = [:]
     /// Per-thread SPEC-FLOW generation. Spec grounding/freeze are NOT thread turns,
     /// so `selectedThreadBusy` can't block a second Spec on the same thread — two
-    /// in-flight `/spec/questions` (or a cancel mid-grounding) would otherwise race
+    /// in-flight spec create (or a cancel mid-grounding) would otherwise race
     /// and the LAST response would clobber the newest interview. Each start / submit
     /// / cancel bumps the generation; an await that returns stale (its gen is no
     /// longer current) drops its write instead of overwriting fresher state.
@@ -1329,8 +1329,8 @@ final class AppModel {
     }
 
     /// Begin the SPEC-FLOW: resolve/create a thread (reusing the existing draft
-    /// bootstrap), require a project, then run the grounding plan synchronously via
-    /// /spec/questions. Empty questions => freeze directly (nothing to ask). The
+    /// bootstrap), require a project, then create a durable spec session.
+    /// Empty questions => freeze directly (nothing to ask). The
     /// question card and the frozen card both render off `specFlow`.
     ///
     /// Returns TRUE when the flow was accepted OR an error CARD was established (any
@@ -1426,8 +1426,8 @@ final class AppModel {
         // A fresh generation supersedes any in-flight freeze for this thread.
         let gen = nextSpecGen(tid)
         // The freeze prompt is the user's ORIGINAL spec intent, carried on
-        // `.askingQuestions` since startSpec — so /spec/freeze posts the exact prompt
-        // the grounding plan ran on (not the stale head-turn prompt, which on a fresh
+        // `.askingQuestions` since startSpec; the durable session retains the exact
+        // prompt the grounding plan ran on (not the stale head-turn prompt, which on a fresh
         // thread is generic and on an existing thread is the PREVIOUS turn's). The
         // current questions/planRunId are passed EXPLICITLY (not re-read from mutable
         // state) so a 400 can re-open the SAME card.

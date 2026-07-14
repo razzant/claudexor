@@ -31,6 +31,8 @@ export * from "./thread.js";
 export * from "./project.js";
 export * from "./orchestrate.js";
 export * from "./control.js";
+export * from "./control-run-scope.js";
+export * from "./control-spec.js";
 export * from "./setup.js";
 export * from "./control-trust.js";
 export * from "./control-secret.js";

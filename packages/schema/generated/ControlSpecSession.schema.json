@@ -1,0 +1,249 @@
+{
+  "$ref": "#/definitions/ControlSpecSession",
+  "definitions": {
+    "ControlSpecSession": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "User-supplied string that must contain visible content, not just whitespace."
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "project"
+            },
+            "root": {
+              "type": "string"
+            },
+            "context": {
+              "type": "string",
+              "enum": [
+                "auto"
+              ],
+              "description": "Project context depth; auto is the only mode."
+            }
+          },
+          "required": [
+            "kind",
+            "root",
+            "context"
+          ],
+          "additionalProperties": false
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "grounding",
+            "questions",
+            "answered",
+            "freezing",
+            "frozen",
+            "cancelled",
+            "failed",
+            "interrupted_unknown"
+          ]
+        },
+        "planRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Question id."
+              },
+              "tier": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": "Hierarchical depth of the question (0 = foundational)."
+              },
+              "prompt": {
+                "type": "string",
+                "description": "The question text shown to the user."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "single",
+                  "multi",
+                  "text"
+                ],
+                "description": "Answer shape of an interview question: single choice, multiple choice, or free text.",
+                "default": "single"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Option id."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Human-readable option label."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false,
+                  "description": "One selectable option of an interview question."
+                },
+                "default": [],
+                "description": "Selectable options; empty for pure free-text questions."
+              },
+              "allow_text": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether free-text is accepted in addition to or instead of options."
+              },
+              "rationale": {
+                "type": "string",
+                "description": "Why this question matters for the spec."
+              }
+            },
+            "required": [
+              "id",
+              "prompt"
+            ],
+            "additionalProperties": false,
+            "description": "One quiz card of the spec interview."
+          }
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Id of the question being answered."
+              },
+              "option_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
+                },
+                "default": [],
+                "description": "Ids of the selected options."
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Free-text answer; null when only options were selected."
+              }
+            },
+            "required": [
+              "question_id"
+            ],
+            "additionalProperties": false,
+            "description": "The user's answer to one interview question."
+          }
+        },
+        "priorDecisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string",
+                "description": "Question asked in a prior tier."
+              },
+              "answer": {
+                "type": "string",
+                "description": "The user's answer."
+              }
+            },
+            "required": [
+              "question",
+              "answer"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "specId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "specDir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "specPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "specHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "prompt",
+        "scope",
+        "state",
+        "planRunId",
+        "questions",
+        "answers",
+        "priorDecisions",
+        "specId",
+        "specDir",
+        "specPath",
+        "specHash",
+        "error",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Durable public projection of a spec interview session."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -3,6 +3,7 @@ import { hashJson } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
 import { interactionProjection, type InteractionStore } from "./interactions.js";
+import { specSessionProjection, type SpecSessionStore } from "./spec-sessions.js";
 import type { ProjectStore } from "./projects.js";
 import {
   threadProjection,
@@ -17,6 +18,7 @@ interface ProjectPartition {
   manager: JournalManager;
   commands: JournalProjectionSlot<CommandStore>;
   interactions: JournalProjectionSlot<InteractionStore>;
+  specs: JournalProjectionSlot<SpecSessionStore>;
   threads: JournalProjectionSlot<ThreadStore>;
 }
 
@@ -53,6 +55,24 @@ export class ProjectPartitions implements CommandAuthority {
     const entry = this.healthy().find((candidate) => candidate.commands.current() === commandStore);
     if (!entry) throw new Error("command partition has no interaction authority");
     return entry.interactions.current();
+  }
+
+  specsForRequest(params: unknown): SpecSessionStore {
+    const input = record(params);
+    const scope = record(input.scope);
+    if (scope.kind !== "project")
+      throw Object.assign(new Error("spec sessions require a project"), { status: 400 });
+    return this.partitionForRoot(stringField(scope, "root")).specs.current();
+  }
+
+  specStoreForSession(id: string): SpecSessionStore | undefined {
+    return this.healthy()
+      .map((entry) => entry.specs.current())
+      .find((store) => store.get(id));
+  }
+
+  listSpecSessions() {
+    return this.healthy().flatMap((entry) => entry.specs.current().list());
   }
 
   forRequest(params: unknown): CommandStore {
@@ -197,9 +217,10 @@ export class ProjectPartitions implements CommandAuthority {
     const manager = new JournalManager(this.rootDir, { partition: `project:${projectId}` });
     const commands = manager.registerProjection(commandProjection());
     const interactions = manager.registerProjection(interactionProjection());
+    const specs = manager.registerProjection(specSessionProjection());
     const threads = manager.registerProjection(threadProjection());
     manager.start();
-    const entry = { manager, commands, interactions, threads };
+    const entry = { manager, commands, interactions, specs, threads };
     this.partitions.set(projectId, entry);
     return entry;
   }

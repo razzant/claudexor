@@ -547,9 +547,9 @@ views in the shared design-system files; screens compose them.
 - **Spec interview cards.** The Spec intent runs the server-owned interview as
   cards in the conversation: each round renders the structured multiple-choice
   questions (single/multi/text with options), and the answer card ends with two
-  explicit continuations — **"Ask deeper"** (another `/spec/questions` round
+  explicit continuations — **"Ask deeper"** (another durable `/spec/sessions` round
   carrying the accumulated `priorDecisions`) and **"Enough — freeze"**
-  (`/spec/freeze` → the frozen SpecPack, then Implement as a normal agent turn
+  (`/spec/sessions/:id/freeze` → the frozen SpecPack, then Implement as a normal agent turn
   carrying the returned `specPath`). Spec is a macOS UI intent over the
   server-owned spec flow, not a wire run mode; the grounding plan uses the
   composer's eligible pool with each harness's default model, while the

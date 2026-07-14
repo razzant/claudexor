@@ -173,8 +173,8 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     }
 
     /// The wire MODE (v0.9: five canonical ids — strategies ride as flags, see `strategyFlags`).
-    /// `.spec` has NO wire mode: it is handled client-side via /spec/questions +
-    /// /spec/freeze (sendTurn never sends it as a normal turn), so it maps to the
+    /// `.spec` has NO wire mode: it uses the durable `/spec/sessions` workflow
+    /// (sendTurn never sends it as a normal turn), so it maps to the
     /// sentinel "unknown" — which `sendTurn` rejects loudly if it ever leaks here.
     var apiValue: String {
         switch self {

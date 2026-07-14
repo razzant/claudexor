@@ -24,32 +24,7 @@ import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
 import { ProtectedPathApproval } from "./task.js";
-
-/** Project context depth. The "deep" tier never shipped a distinct behavior
- * (v0.15 triage): auto is the only mode; off exists solely on projections of
- * no-project runs. */
-export const RunScopeContext = z
-  .enum(["auto"])
-  .describe("Project context depth; auto is the only mode.");
-export type RunScopeContext = z.infer<typeof RunScopeContext>;
-
-export const RunScope = z
-  .discriminatedUnion("kind", [
-    z
-      .object({
-        kind: z.literal("project"),
-        root: z.string().describe("Absolute path of the project root."),
-        context: RunScopeContext.default("auto"),
-      })
-      .strict()
-      .describe("Run anchored to a project."),
-    z
-      .object({ kind: z.literal("none") })
-      .strict()
-      .describe("Run with no project (pure ask)."),
-  ])
-  .describe("What the run operates on: a project (with root) or nothing.");
-export type RunScope = z.infer<typeof RunScope>;
+import { RunScope } from "./control-run-scope.js";
 
 export const RunExecution = z
   .object({
@@ -249,72 +224,6 @@ export const ControlRunStartRequest = z
     "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and spec/thread linkage.",
   );
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
-
-export const ControlSpecQuestionsRequest = z
-  .object({
-    prompt: z.string().describe("The user's request the interview is clarifying."),
-    scope: z
-      .object({
-        kind: z.literal("project"),
-        root: z.string().describe("Absolute path of the project root."),
-        context: RunScopeContext.default("auto"),
-      })
-      .strict()
-      .describe("Project the spec is about."),
-    harnesses: z
-      .array(NonBlankString)
-      .optional()
-      .describe("Harnesses eligible to generate the questions."),
-    /** Already-answered decisions from prior tiers; carried so each round goes
-     *  DEEPER instead of re-asking (multi-tier adaptive interview). */
-    priorDecisions: z
-      .array(
-        z.object({
-          question: z.string().describe("Question asked in a prior tier."),
-          answer: z.string().describe("The user's answer."),
-        }),
-      )
-      .optional()
-      .describe(
-        "Already-answered decisions from prior tiers, carried so each round goes deeper instead of re-asking.",
-      ),
-  })
-  .strict()
-  .describe("Request body to generate the next tier of spec interview questions.");
-export type ControlSpecQuestionsRequest = z.infer<typeof ControlSpecQuestionsRequest>;
-
-export const ControlSpecFreezeRequest = z
-  .object({
-    prompt: z.string().describe("The user's request the spec captures."),
-    scope: z
-      .object({
-        kind: z.literal("project"),
-        root: z.string().describe("Absolute path of the project root."),
-        context: RunScopeContext.default("auto"),
-      })
-      .strict()
-      .describe("Project the spec is about."),
-    planDir: z.string().optional().describe("Directory to write the frozen spec artifacts into."),
-    plan: z.string().optional().describe("Plan text to fold into the spec."),
-    answers: z.array(z.unknown()).optional().describe("Interview answers for the current tier."),
-    /** Accumulated prior-tier interview decisions. Folded into the frozen
-     *  SpecPack's decided_tradeoffs so a MULTI-TIER spec carries every tier, not
-     *  just the last (mirror of ControlSpecQuestionsRequest.priorDecisions). */
-    priorDecisions: z
-      .array(
-        z.object({
-          question: z.string().describe("Question asked in a prior tier."),
-          answer: z.string().describe("The user's answer."),
-        }),
-      )
-      .optional()
-      .describe(
-        "Accumulated prior-tier interview decisions, folded into the frozen SpecPack's decided tradeoffs.",
-      ),
-  })
-  .strict()
-  .describe("Request body to freeze a SpecPack from the interview.");
-export type ControlSpecFreezeRequest = z.infer<typeof ControlSpecFreezeRequest>;
 
 export const ControlRunStartInfo = z
   .object({

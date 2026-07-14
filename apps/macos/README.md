@@ -128,8 +128,8 @@ attachments (file picker + the `screencapture`-backed Capture button) as
 attachment DTOs on turn creation, gated by an available vision-capable route;
 the per-turn browser toggle arms the engine's agent-driven browser (offered
 only when a pooled harness reports `browser_tool`); and the Spec intent drives
-the server-owned interview endpoints (`POST /spec/questions` →
-`POST /spec/freeze`) and then sends a normal agent turn carrying the returned
+the server-owned durable interview lifecycle (`POST /spec/sessions` → answers →
+freeze) and then sends a normal agent turn carrying the returned
 `specPath`.
 
 Sample data is off by default behind Settings. Surfaces the engine does not

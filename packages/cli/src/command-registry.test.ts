@@ -68,7 +68,7 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(commandFlagScopeError("ask", ["force"])).toContain("--force");
     // Declared flags plus the global affordances pass; aliases resolve.
     expect(commandFlagScopeError("plugin", ["dry-run", "force", "json"])).toBeNull();
-    expect(commandFlagScopeError("spec", ["answers", "previous", "help"])).toBeNull();
+    expect(commandFlagScopeError("spec", ["answers", "help"])).toBeNull();
     expect(commandFlagScopeError("map", ["swarm"])).toBeNull(); // audit alias
     // Unknown/renamed verbs are dispatch's problem, not the scope check's.
     expect(commandFlagScopeError("run", ["harness"])).toBeNull();

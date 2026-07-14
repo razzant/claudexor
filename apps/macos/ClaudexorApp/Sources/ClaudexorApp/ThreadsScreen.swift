@@ -794,8 +794,8 @@ struct ThreadsScreen: View {
         let atts = composerAttachments
         composerText = ""
         composerAttachments = []
-        // Spec is NOT a normal turn: it drives the server-owned interview
-        // (/spec/questions → answers → /spec/freeze) client-side. The flow renders
+        // Spec is NOT a normal turn: it drives a durable server-owned session
+        // (create → answers → freeze). The flow renders
         // its own cards above the composer once accepted. But startSpec can fail HARD
         // before any durable card exists (engine offline / no project / transport
         // error) — restore the prompt in that case, mirroring composerSend below

@@ -293,7 +293,7 @@ Review blocked on evidence.
       tests: ["node test.js"],
     });
     const persisted = persistSpec(repo, spec, PLAN);
-    // This is exactly the `specPath` the control-api /spec/freeze returns and an
+    // This is exactly the `specPath` the durable freeze response returns and an
     // Implement run reads — keep the layout (specDir + "/spec.json") locked.
     const specPath = join(persisted.specDir, "spec.json");
     expect(existsSync(specPath)).toBe(true);
@@ -355,21 +355,19 @@ Review blocked on evidence.
     expect(draft.clarifications?.every((c) => c.status === "open")).toBe(true);
   });
 
-  it("answers files preserve planDir/planRunId so freeze reuses the original plan", () => {
+  it("answers files preserve the durable session id used for freeze", () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-spec-answers-"));
     const path = join(dir, "answers.json");
     const body = {
       prompt: "x",
-      planRunId: "run-original",
-      planDir: "/tmp/plan-original",
+      sessionId: "spec-session-original",
       questions: [{ id: "q1", tier: 0, prompt: "?", kind: "text", options: [], allow_text: true }],
       answers: [{ question_id: "q1", option_ids: [], text: "answer" }],
     };
     // JSON written exactly like claudexor spec's questions.json draft.
     writeFileSync(path, JSON.stringify(body), "utf8");
     const parsed = readAnswers(path);
-    expect(parsed.planRunId).toBe("run-original");
-    expect(parsed.planDir).toBe("/tmp/plan-original");
+    expect(parsed.sessionId).toBe("spec-session-original");
     expect(parsed.answers[0]?.question_id).toBe("q1");
   });
 });

@@ -554,7 +554,7 @@ import Testing
     // MARK: - SPEC-FLOW DTOs
 
     @Test func specQuestionsResponseDecodesInterview() throws {
-        // /spec/questions: tier, snake_case allow_text, options[{id,label}], rationale.
+        // Durable spec session: tier, snake_case allow_text, options[{id,label}], rationale.
         let json = """
         {
           "planRunId": "run-plan-1",
@@ -593,7 +593,7 @@ import Testing
     }
 
     @Test func specFreezeResponseDecodesSpecPath() throws {
-        // /spec/freeze: specPath is the FILE an Implement run reads (must decode).
+        // Frozen session: specPath is the FILE an Implement run reads (must decode).
         let json = """
         {
           "specId": "spec-7f3a",

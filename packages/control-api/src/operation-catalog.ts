@@ -226,8 +226,28 @@ const operations: ControlOperationDescriptor[] = [
   j("DELETE", "/v2/secrets/:id", "mutating", null, "ControlSecretMutationResponse", {
     idempotency: "natural",
   }),
-  j("POST", "/v2/spec/questions", "mutating", "ControlSpecQuestionsRequest"),
-  j("POST", "/v2/spec/freeze", "mutating", "ControlSpecFreezeRequest"),
+  j("GET", "/v2/spec/sessions", "read_only", null, "ControlSpecSessionListResponse"),
+  j("POST", "/v2/spec/sessions", "mutating", "ControlSpecQuestionsRequest", "ControlSpecSession", {
+    idempotency: "key_required",
+  }),
+  j("GET", "/v2/spec/sessions/:id", "read_only", null, "ControlSpecSession"),
+  j(
+    "POST",
+    "/v2/spec/sessions/:id/answers",
+    "mutating",
+    "ControlSpecAnswersRequest",
+    "ControlSpecSession",
+    {
+      idempotency: "natural",
+    },
+  ),
+  j("POST", "/v2/spec/sessions/:id/freeze", "mutating", null, "ControlSpecSession"),
+  j("POST", "/v2/spec/sessions/:id/cancel", "mutating", null, "ControlSpecSession", {
+    idempotency: "natural",
+  }),
+  j("POST", "/v2/spec/sessions/:id/resume", "mutating", null, "ControlSpecSession", {
+    idempotency: "natural",
+  }),
   j("GET", "/v2/setup/jobs", "read_only", null, "ControlSetupJobListResponse"),
   j("POST", "/v2/setup/jobs", "mutating", "ControlSetupJobCreateRequest", "ControlSetupJob", {
     completion: "durable_handle",

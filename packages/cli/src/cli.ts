@@ -2,7 +2,6 @@
 import process from "node:process";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { Orchestrator } from "@claudexor/orchestrator";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
   DELIVER_MODES,
@@ -14,11 +13,9 @@ import {
 import {
   CLAUDEXOR_VERSION,
   containsSecretLikeToken,
-  ensureDir,
   noProjectRepoRoot,
   readTextSafe,
   userConfigDir,
-  writeJson,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
@@ -26,6 +23,7 @@ import { AcpServer } from "@claudexor/acp-server";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
+  ControlSpecSession,
   EffortHint,
   ExternalContextPolicy,
   type ProtectedPathApproval,
@@ -92,16 +90,7 @@ import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
-import {
-  extractQuestionsFromPlan,
-  freezeSpecFromGrounding,
-  loadFrozenSpec,
-  loadPreviousSpec,
-  persistSpec,
-  readAnswers,
-  resolveRunTestCommands,
-  type SpecCommandResult,
-} from "./spec.js";
+import { loadFrozenSpec, readAnswers, resolveRunTestCommands } from "./spec.js";
 import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 import {
@@ -762,92 +751,68 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
     );
   }
   try {
-    const answers = answersPath ? readAnswers(answersPath) : null;
-    let planRunId = answers?.planRunId ?? "";
-    let planDir = answers?.planDir ?? "";
-    let planText = planDir ? (readTextSafe(join(planDir, "final", "plan.md")) ?? "") : "";
-
-    if (!planText) {
-      if (answersPath) {
-        throw new Error(
-          "answers file does not contain a usable planDir/final/plan.md; re-run without --answers to generate a fresh questions file",
+    const { addr } = await ensureDaemon();
+    await controlJson(addr, "/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ root: process.cwd() }),
+    });
+    if (!answersPath) {
+      const session = ControlSpecSession.parse(
+        await controlJson(addr, "/spec/sessions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            scope: { kind: "project", root: process.cwd(), context: "auto" },
+            harnesses: groundingHarnesses,
+            n: groundingN,
+            effort: groundingEffort,
+            maxUsd: groundingMaxUsd,
+            web: groundingWeb,
+            reviewerPanel: groundingReviewerPanel,
+            reviewerModels: groundingReviewerModels,
+            reviewerEfforts: groundingReviewerEfforts,
+          }),
+        }),
+      );
+      if (json) printJson(session);
+      else {
+        print(`durable spec session: ${session.sessionId}`);
+        print(`grounding run: ${session.planRunId ?? "pending"}`);
+        for (const question of session.questions) print(`- [${question.id}] ${question.prompt}`);
+        print(
+          "save `claudexor spec ... --json` output, fill its answers array, then pass it with --answers",
         );
       }
-      const orch = new Orchestrator({
-        registry: buildRegistry(),
-        reviewerPanel: groundingReviewerPanel,
-        reviewerModels: groundingReviewerModels,
-        reviewerEfforts: groundingReviewerEfforts,
-      });
-      const plan = await orch.run({
-        repoRoot: process.cwd(),
-        prompt,
-        mode: "plan",
-        harnesses: groundingHarnesses,
-        n: groundingN,
-        access: "readonly",
-        web: groundingWeb,
-        effort: groundingEffort,
-        maxUsd: groundingMaxUsd ?? null,
-      });
-      planRunId = plan.runId;
-      planDir = plan.runDir;
-      planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
+      return session.state === "failed" || session.state === "interrupted_unknown" ? 1 : 0;
     }
 
-    const questions = extractQuestionsFromPlan(planText);
-
-    if (!answersPath) {
-      const draftDir = join(process.cwd(), ".claudexor", "specs", "drafts", planRunId);
-      ensureDir(draftDir);
-      const questionsPath = join(draftDir, "questions.json");
-      writeJson(questionsPath, { prompt, planRunId, planDir, questions, answers: [] });
-      const result: SpecCommandResult = {
-        status: "questions",
-        planRunId,
-        planDir,
-        questionsPath,
-        questions,
-      };
-      if (json) printJson(result);
-      else {
-        print(`plan grounding run: ${planRunId}`);
-        print(`questions: ${questionsPath}`);
-        print(`answer with: claudexor spec ${JSON.stringify(prompt)} --answers ${questionsPath}`);
-      }
-      return 0;
+    const answers = readAnswers(answersPath);
+    if (!answers.sessionId) {
+      throw new Error("answers file must contain sessionId from the durable spec session");
     }
-
-    const spec = await freezeSpecFromGrounding(
-      prompt,
-      planText,
-      answers ?? readAnswers(answersPath),
+    const encodedId = encodeURIComponent(answers.sessionId);
+    await controlJson(addr, `/spec/sessions/${encodedId}/answers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        answers: answers.answers,
+        priorDecisions: answers.priorDecisions,
+      }),
+    });
+    const session = ControlSpecSession.parse(
+      await controlJson(addr, `/spec/sessions/${encodedId}/freeze`, { method: "POST" }),
     );
-    const persisted = persistSpec(
-      process.cwd(),
-      spec,
-      planText,
-      loadPreviousSpec(flagStr(args, "previous")),
-    );
-    const specJsonPath = join(persisted.specDir, "spec.json");
-    const runHint = `claudexor best-of --spec ${JSON.stringify(specJsonPath)}`;
-    const result: SpecCommandResult = {
-      status: "frozen",
-      planRunId,
-      planDir,
-      specId: spec.id,
-      specDir: persisted.specDir,
-      specHash: persisted.specHash,
-      runHint,
-      questions,
-      changes: persisted.changes,
-    };
-    if (json) printJson(result);
+    if (session.state !== "frozen" || !session.specPath || !session.specId || !session.specHash) {
+      throw new Error(`spec session ended as ${session.state}`);
+    }
+    const runHint = `claudexor best-of --spec ${JSON.stringify(session.specPath)}`;
+    if (json) printJson({ ...session, status: "frozen", runHint });
     else {
-      print(`frozen SpecPack: ${spec.id} v${spec.version}`);
-      print(`  dir: ${persisted.specDir}`);
-      print(`  hash: ${persisted.specHash}`);
-      print(`  native projection: ${join(persisted.specDir, "PLANS.md")}`);
+      print(`frozen SpecPack: ${session.specId}`);
+      print(`  path: ${session.specPath}`);
+      print(`  hash: ${session.specHash}`);
       print(`run: ${runHint}`);
     }
     return 0;
@@ -864,6 +829,19 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
       process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
+}
+
+async function controlJson(
+  addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"],
+  path: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  const response = await controlApiFetch(addr, path, init);
+  const text = await response.text();
+  const body = text ? (JSON.parse(text) as unknown) : {};
+  if (response.ok) return body;
+  const detail = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  throw new Error(String(detail["message"] ?? detail["error"] ?? `HTTP ${response.status}`));
 }
 
 function printPreflightError(args: ParsedArgs, json: boolean, error: string): number {

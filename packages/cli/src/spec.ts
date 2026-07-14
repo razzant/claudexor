@@ -24,30 +24,17 @@ import {
 } from "@claudexor/util";
 
 export interface SpecAnswersFile {
+  /** Durable daemon session that owns the questions and grounding plan. */
+  sessionId?: string;
   answers: InterviewAnswer[];
-  /** Present in the draft questions file so freezing can reuse the exact grounding plan. */
-  planRunId?: string;
-  planDir?: string;
   questions?: InterviewQuestion[];
+  priorDecisions?: PriorDecision[];
   summary?: string;
   success_criteria?: string[];
   non_goals?: string[];
   forbidden_approaches?: string[];
   decided_tradeoffs?: string[];
   tests?: string[];
-}
-
-export interface SpecCommandResult {
-  status: "questions" | "frozen";
-  planRunId: string;
-  planDir: string;
-  questionsPath?: string;
-  specId?: string;
-  specDir?: string;
-  specHash?: string;
-  runHint?: string;
-  questions: InterviewQuestion[];
-  changes?: SpecFieldChange[];
 }
 
 export interface LoadedFrozenSpec {
@@ -511,7 +498,7 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
     redactSecrets(plan).trim(),
     "",
     "> This file is a generated projection for native harnesses. The canonical SSOT",
-    `> is .claudexor/specs/${spec.id}/spec.json (hash above). Regenerate rather than editing this projection.`,
+    "> is the sibling spec.json (hash above). Regenerate rather than editing this projection.",
     "",
   ].join("\n");
 }
@@ -521,13 +508,23 @@ export function persistSpec(
   spec: SpecPack,
   plan: string,
   previous?: SpecPack | null,
+): ReturnType<typeof persistSpecAt> {
+  return persistSpecAt(join(repoRoot, ".claudexor", "specs"), spec, plan, previous);
+}
+
+/** Persist a runnable immutable projection outside the user repository. */
+export function persistSpecAt(
+  specsRoot: string,
+  spec: SpecPack,
+  plan: string,
+  previous?: SpecPack | null,
 ): {
   specDir: string;
   specHash: string;
   changes: SpecFieldChange[];
 } {
   const canonical = SpecPackSchema.parse(spec);
-  const specDir = join(repoRoot, ".claudexor", "specs", canonical.id);
+  const specDir = join(specsRoot, canonical.id);
   ensureDir(specDir);
   const specHash = hashJson(canonical);
   const changes = previous ? diffSpecPacks(previous, canonical) : [];
@@ -535,7 +532,7 @@ export function persistSpec(
   // (tmp + rename) as the commit point — downstream hash verification reads
   // spec.json, so a crash mid-persist leaves either no spec or a complete
   // one, never a torn multi-file state fronted by a valid-looking spec.json.
-  new ArtifactStore(repoRoot).writeYaml(join(specDir, "spec.yaml"), canonical);
+  new ArtifactStore(specsRoot).writeYaml(join(specDir, "spec.yaml"), canonical);
   writeText(join(specDir, "PLANS.md"), renderNativePlanProjection(canonical, plan, specHash));
   writeJson(join(specDir, "changes.json"), changes);
   // Atomic commit point: rename MOVES the tmp file (no leftover on success);
@@ -549,10 +546,4 @@ export function persistSpec(
     throw err;
   }
   return { specDir, specHash, changes };
-}
-
-export function loadPreviousSpec(path?: string): SpecPack | null {
-  if (!path) return null;
-  const raw = readFileSync(path, "utf8");
-  return SpecPackSchema.parse(JSON.parse(raw));
 }

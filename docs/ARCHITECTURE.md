@@ -505,8 +505,13 @@ files.
 - `POST /v2/setup/jobs/:id/extend`
 - `POST /v2/setup/jobs/:id/reconcile`
 - `GET /v2/setup/jobs/:id/snapshot`
-- `POST /v2/spec/freeze`
-- `POST /v2/spec/questions`
+- `GET /v2/spec/sessions`
+- `POST /v2/spec/sessions`
+- `GET /v2/spec/sessions/:id`
+- `POST /v2/spec/sessions/:id/answers`
+- `POST /v2/spec/sessions/:id/cancel`
+- `POST /v2/spec/sessions/:id/freeze`
+- `POST /v2/spec/sessions/:id/resume`
 - `GET /v2/threads`
 - `POST /v2/threads`
 - `GET /v2/threads/:id`
@@ -580,18 +585,20 @@ and returns liveness only.
 
 ### Spec flow (interview → frozen SpecPack → Implement)
 
-The server owns the interactive spec interview; a surface is a thin driver.
-`POST /v2/spec/questions` runs a read-only grounding `plan` over the prompt, with a
+The server owns the interactive spec interview and journals each session in its
+project partition before running the grounding model; a surface is a thin driver.
+`POST /v2/spec/sessions` runs a read-only grounding `plan` over the prompt, with a
 grounding instruction that asks the harness to end its plan with a structured
 `## Open Questions` block; the server parses that into multiple-choice
 `InterviewQuestion`s (`single`/`multi` with `options`, or free-text `text`) and
-returns them (`planRunId`, `planDir`, `questions`). Parsing is tolerant for
+returns the durable session projection (`sessionId`, `planRunId`, `questions`). Parsing is tolerant for
 backward compatibility: a plain untagged bullet under the heading (no `[kind]`
 tag, no `::` options) degrades to a free-text question. The surface renders the
-choices and collects answers (selected `option_ids` and/or free `text`), then
-`POST /v2/spec/freeze` freezes a
-SpecPack and persists it, returning `specId`, `specDir`, `specPath` (the frozen
-SpecPack file), `specHash`, and `changes`. An Implement run is then a normal
+choices and records answers through `POST /v2/spec/sessions/:id/answers`, then
+`POST /v2/spec/sessions/:id/freeze` freezes the SpecPack under the daemon-owned
+external data root. The returned session carries `specId`, `specDir`, `specPath`
+and `specHash`. List/get/cancel/resume use the same durable session authority;
+an in-flight operation becomes `interrupted_unknown` after restart. An Implement run is then a normal
 agent thread turn: `POST /v2/threads/:id/turns` carrying that `specPath`, so the
 agent runs against the frozen SpecPack contract rather than a bare prompt. The
 interview is multi-tier (`priorDecisions` carries earlier answers into the next
@@ -1050,7 +1057,7 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   `/v2/runs/:id/interactions/:id/answer`), harness status (`/v2/harnesses`,
   `/v2/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
   (`/v2/settings`, `/v2/secrets`), and the server-owned spec flow
-  (`/v2/spec/questions`, `/v2/spec/freeze`; the app's Spec intent is a thin driver
+  (`/v2/spec/sessions` and its answers/freeze/cancel/resume actions; the app's Spec intent is a thin driver
   over these endpoints, not a new `ModeKind`).
 - The app must not invent server state: delivery, decisions, review verdicts,
   routing readiness, setup progress, and budget truth are projections of

@@ -303,18 +303,53 @@
       "response_schema": "ControlSetupJobSnapshot"
     },
     {
-      "method": "POST",
-      "path": "/v2/spec/freeze",
-      "mutating": true,
-      "request_schema": "ControlSpecFreezeRequest",
-      "response_schema": null
+      "method": "GET",
+      "path": "/v2/spec/sessions",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSpecSessionListResponse"
     },
     {
       "method": "POST",
-      "path": "/v2/spec/questions",
+      "path": "/v2/spec/sessions",
       "mutating": true,
       "request_schema": "ControlSpecQuestionsRequest",
-      "response_schema": null
+      "response_schema": "ControlSpecSession"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/spec/sessions/:id",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSpecSession"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/spec/sessions/:id/answers",
+      "mutating": true,
+      "request_schema": "ControlSpecAnswersRequest",
+      "response_schema": "ControlSpecSession"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/spec/sessions/:id/cancel",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSpecSession"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/spec/sessions/:id/freeze",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSpecSession"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/spec/sessions/:id/resume",
+      "mutating": true,
+      "request_schema": "ControlSpecAnswersRequest",
+      "response_schema": "ControlSpecSession"
     },
     {
       "method": "GET",

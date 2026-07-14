@@ -39,6 +39,7 @@ import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute, streamLiveRunEvents } from "./journal-event-routes.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { handleSecurityRoute } from "./security-routes.js";
+import { handleSpecRoute, type SpecRouteServices } from "./spec-routes.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -59,8 +60,6 @@ import {
   isTerminalControlSetupJobState,
   ControlSetupJobListFilter,
   ControlSetupJobListResponse,
-  ControlSpecFreezeRequest,
-  ControlSpecQuestionsRequest,
   ControlRunStartRequest,
   ControlRunStartInfo,
   ControlQueuedRunInfo,
@@ -190,8 +189,13 @@ export interface DaemonControlApiOptions {
     listSecrets?: () => Promise<unknown>;
     setSecret?: (input: unknown) => Promise<unknown>;
     deleteSecret?: (name: string) => Promise<unknown>;
-    specQuestions?: (input: unknown) => Promise<unknown>;
-    specFreeze?: (input: unknown) => Promise<unknown>;
+    createSpecSession?: SpecRouteServices["createSpecSession"];
+    listSpecSessions?: SpecRouteServices["listSpecSessions"];
+    getSpecSession?: SpecRouteServices["getSpecSession"];
+    answerSpecSession?: SpecRouteServices["answerSpecSession"];
+    freezeSpecSession?: SpecRouteServices["freezeSpecSession"];
+    cancelSpecSession?: SpecRouteServices["cancelSpecSession"];
+    resumeSpecSession?: SpecRouteServices["resumeSpecSession"];
     pendingInteractions?: (runId: string) => ControlPendingInteraction[];
     answerInteraction?: (
       runId: string,
@@ -1471,6 +1475,21 @@ export class DaemonControlApiServer {
       )
     )
       return;
+    if (
+      await handleSpecRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
     if (method === "GET" && path === "/settings")
       return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
@@ -1485,27 +1504,6 @@ export class DaemonControlApiServer {
       return this.service(res, "updateSettings", body, ControlSettingsSnapshot);
     }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
-    if (method === "POST" && path === "/spec/questions") {
-      try {
-        const raw = await this.readBody(req);
-        assertNoSpecBodySecrets(raw);
-        const body = ControlSpecQuestionsRequest.parse(raw);
-        return this.service(res, "specQuestions", body);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-    }
-    if (method === "POST" && path === "/spec/freeze") {
-      try {
-        const raw = await this.readBody(req);
-        assertNoSpecBodySecrets(raw);
-        const body = ControlSpecFreezeRequest.parse(raw);
-        return this.service(res, "specFreeze", body);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-    }
-
     const controlMatch = /^\/runs\/([^/]+)\/control$/.exec(path);
     if (method === "POST" && controlMatch) {
       const rec = await this.findRun(decodeURIComponent(controlMatch[1] as string));
@@ -2786,19 +2784,6 @@ function isPatchArtifact(path: string): boolean {
 function isTextArtifact(path: string): boolean {
   const type = contentType(path);
   return type.startsWith("text/") || type.startsWith("application/json");
-}
-
-function assertNoSpecBodySecrets(body: unknown): void {
-  assertNoInlineSecretValues(body, "$", "spec body");
-  const serialized = JSON.stringify(body ?? null);
-  if (containsSecretLikeToken(serialized)) {
-    throw Object.assign(
-      new Error(
-        "secret-like value is not accepted in spec body; store secrets by ref and keep specs durable/sanitized",
-      ),
-      { status: 400 },
-    );
-  }
 }
 
 function redactPrompt(prompt: string): string {

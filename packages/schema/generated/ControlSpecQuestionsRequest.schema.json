@@ -6,6 +6,7 @@
       "properties": {
         "prompt": {
           "type": "string",
+          "minLength": 1,
           "description": "The user's request the interview is clarifying."
         },
         "scope": {
@@ -45,6 +46,99 @@
           },
           "description": "Harnesses eligible to generate the questions."
         },
+        "n": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+        },
+        "maxUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "web": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "cached",
+            "live"
+          ],
+          "description": "External web/context policy for a run: off (no external context), auto (engine decides), cached (cached sources only), live (live web access). Separate from process/network sandboxing."
+        },
+        "reviewerModels": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/harnesses/items"
+          },
+          "propertyNames": {
+            "enum": [
+              "openai",
+              "anthropic",
+              "google",
+              "cursor",
+              "opencode",
+              "xai",
+              "local",
+              "unknown"
+            ]
+          }
+        },
+        "reviewerEfforts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/effort"
+          },
+          "propertyNames": {
+            "enum": [
+              "openai",
+              "anthropic",
+              "google",
+              "cursor",
+              "opencode",
+              "xai",
+              "local",
+              "unknown"
+            ]
+          }
+        },
+        "reviewerPanel": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
+              },
+              "model": {
+                "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/harnesses/items",
+                "description": "Per-reviewer model hint, passed to that harness only."
+              },
+              "effort": {
+                "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/effort",
+                "description": "Per-reviewer effort hint, passed to that harness only."
+              }
+            },
+            "required": [
+              "harness"
+            ],
+            "additionalProperties": false,
+            "description": "One reviewer of an explicit reviewer panel."
+          },
+          "minItems": 1
+        },
         "priorDecisions": {
           "type": "array",
           "items": {
@@ -65,7 +159,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "Already-answered decisions from prior tiers, carried so each round goes deeper instead of re-asking."
+          "description": "Prior-tier decisions carried into the next interview tier."
         }
       },
       "required": [
@@ -73,7 +167,7 @@
         "scope"
       ],
       "additionalProperties": false,
-      "description": "Request body to generate the next tier of spec interview questions."
+      "description": "Request to create a durable spec interview session."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

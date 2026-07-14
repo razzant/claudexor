@@ -60,12 +60,12 @@ by picking options and/or typing, and the server FREEZES a SpecPack (a
 content-hashed contract file) that RECORDS each resolved decision. Implement is
 then an ordinary agent turn carrying that frozen spec, so the agent works against
 the contract — including the user's recorded choices — not a re-derived prompt. The app is a thin driver over the existing
-server-owned `/spec/questions` → `/spec/freeze` endpoints — it never composes the
+server-owned durable `/spec/sessions` lifecycle — it never composes the
 spec or its path itself — and Spec stays a UI intent that maps onto the engine's
 read-only plan/spec surface, not a new wire mode. The interview is multi-tier:
-each `/spec/questions` round carries prior answers so the next plan can go
+each new session round carries prior answers so the next plan can go
 deeper on unresolved choices. Freeze remains a single contract commit for v1:
-after `/spec/freeze` there is no spec-version ladder.
+after the session freezes there is no spec-version ladder.
 
 Auth is subscription-first where that route is readiness-proven: native
 Codex, Claude, and Cursor routes use the vendor-owned native store rather than

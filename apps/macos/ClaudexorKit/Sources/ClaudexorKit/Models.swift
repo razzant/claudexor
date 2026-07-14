@@ -133,9 +133,8 @@ public struct StartRunRequest: Codable, Sendable {
 
 // MARK: - SPEC-FLOW (server-owned interview: questions -> answers -> freeze)
 
-/// Body for POST /spec/questions — run the grounding plan synchronously and
-/// extract the open-questions interview. Mirrors ControlSpecQuestionsRequest
-/// (the server .strict()-parses it; scope must be a project root).
+/// Body for POST /spec/sessions — create a durable grounding session and
+/// extract the open-questions interview. Mirrors ControlSpecQuestionsRequest.
 /// One already-answered decision carried into a deeper interview tier so the
 /// server asks the NEXT layer instead of re-asking. Mirrors control priorDecisions.
 public struct SpecPriorDecision: Codable, Sendable, Equatable {
@@ -216,8 +215,8 @@ public struct SpecQuestion: Codable, Sendable, Identifiable, Equatable, Hashable
     }
 }
 
-/// Response from POST /spec/questions: the grounding plan ran (planRunId/planDir)
-/// and produced this interview. Empty `questions` => nothing to ask, freeze directly.
+/// App-facing projection of a durable spec session after grounding. Empty
+/// `questions` means there is nothing to ask and the session can freeze directly.
 public struct SpecQuestionsResponse: Codable, Sendable {
     public let planRunId: String
     public let planDir: String
@@ -244,10 +243,8 @@ public struct SpecAnswer: Codable, Sendable, Equatable {
     }
 }
 
-/// Body for POST /spec/freeze — assemble + freeze the SpecPack from the grounding
-/// plan (planDir or inline plan) and the user's answers. Mirrors
-/// ControlSpecFreezeRequest. Unresolved clarifications => the server 400s (the
-/// interview refuses to silently guess).
+/// App-facing freeze input. The gateway first journals answers on the durable
+/// session and then asks that session to freeze. Unresolved clarifications fail.
 public struct SpecFreezeRequest: Codable, Sendable {
     public var prompt: String
     public var scope: RunScope
@@ -269,7 +266,7 @@ public struct SpecFreezeRequest: Codable, Sendable {
     }
 }
 
-/// Response from POST /spec/freeze: the frozen SpecPack. `specPath` is the file an
+/// Projection of a frozen durable spec session. `specPath` is the file an
 /// Implement run reads (a bare specId does not load content). `changes` is a
 /// section-level diff vs the prior revision (opaque to the UI — count it).
 public struct SpecFreezeResponse: Codable, Sendable {

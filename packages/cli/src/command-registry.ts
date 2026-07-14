@@ -143,7 +143,6 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "Run write turns against the live project tree (single-candidate\n                           in-place; best-of-N candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
   ),
   valueFlag("answers", "<file>", "Answers JSON for claudexor spec (batch mode)"),
-  valueFlag("previous", "<spec.json>", "Previous SpecPack JSON for section-level diff"),
   valueFlag("spec", "<spec.json>", "Frozen SpecPack context for agent/best-of/create/convergence"),
   valueFlag("attach", "<path[,path...]>", "Attach file(s) to ask/agent/best-of/plan/audit"),
   valueFlag(
@@ -257,7 +256,6 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
       "reviewer-model",
       "reviewer-effort",
       "answers",
-      "previous",
       "json",
     ],
     mutability: "read",

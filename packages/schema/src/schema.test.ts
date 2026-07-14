@@ -6,7 +6,7 @@ import {
   ControlSetupJobCreateRequest,
   ControlSetupJobEvent,
   ControlSettingsSnapshot,
-  ControlSpecFreezeRequest,
+  ControlSpecAnswersRequest,
   ControlSpecQuestionsRequest,
   ControlThread,
   ConformanceReport,
@@ -448,7 +448,7 @@ describe("Control API schemas", () => {
     expect(specReq.scope.root).toBe("/repo");
     expect(specReq.scope.context).toBe("auto"); // defaulted
     // The macOS RunScope serializes `context` — the spec scope MUST accept it (a
-    // strict scope without it 400'd /spec/questions before grounding ran).
+    // strict scope without it rejects session creation before grounding runs).
     const specWithCtx = ControlSpecQuestionsRequest.parse({
       prompt: "x",
       scope: { kind: "project", root: "/repo", context: "auto" },
@@ -457,7 +457,7 @@ describe("Control API schemas", () => {
     // "deep" was retired in the v0.15 triage — it never had distinct behavior;
     // an old client sending it must fail loudly, not silently rewrite.
     expect(() =>
-      ControlSpecFreezeRequest.parse({
+      ControlSpecQuestionsRequest.parse({
         prompt: "x",
         scope: { kind: "project", root: "/repo", context: "deep" },
       }),
@@ -472,14 +472,7 @@ describe("Control API schemas", () => {
         contextMode: "off",
       }),
     ).toThrow();
-    expect(() =>
-      ControlSpecFreezeRequest.parse({
-        prompt: "legacy",
-        scope: { kind: "project", root: "/repo" },
-        inPlace: true,
-        plan: "x",
-      }),
-    ).toThrow();
+    expect(() => ControlSpecAnswersRequest.parse({ answers: [], plan: "legacy" })).toThrow();
   });
 });
 

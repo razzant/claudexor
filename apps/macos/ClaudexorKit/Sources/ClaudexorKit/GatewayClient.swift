@@ -383,40 +383,6 @@ public final class GatewayClient: Sendable {
         try await decide(runId: runId, body: RunDecisionRequest(action: "revert_run"))
     }
 
-    // MARK: SPEC-FLOW (server-owned interview)
-
-    /// Run the grounding plan synchronously and extract the open-questions
-    /// interview (POST /spec/questions). The plan runs a full read-only multi-
-    /// harness round-trip on the server, so this can take MINUTES — use a generous
-    /// per-request timeout instead of the default (~60s) which would abort it.
-    public func specQuestions(_ body: SpecQuestionsRequest) async throws -> SpecQuestionsResponse {
-        var req = request("spec/questions", method: "POST", timeout: 1_200)
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try Self.encoder.encode(body)
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return try Self.decoder.decode(SpecQuestionsResponse.self, from: data)
-    }
-
-    /// Assemble + freeze the SpecPack from the grounding plan and the user's
-    /// answers (POST /spec/freeze). On unresolved clarifications the server 400s
-    /// (the interview refuses to silently guess) — surfaced via GatewayError.http
-    /// so the caller can keep the question card open and show the reason.
-    public func specFreeze(_ body: SpecFreezeRequest) async throws -> SpecFreezeResponse {
-        var req = request("spec/freeze", method: "POST", timeout: 120)
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try Self.encoder.encode(body)
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return try Self.decoder.decode(SpecFreezeResponse.self, from: data)
-    }
-
     // MARK: Threads (chat/session-first)
 
     public func listThreads() async throws -> ThreadListResponse {

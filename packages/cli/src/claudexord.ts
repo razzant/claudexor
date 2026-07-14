@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import {
   DaemonClient,
   commandProjection,
@@ -36,8 +36,9 @@ import {
 } from "@claudexor/util";
 import {
   type AttachmentInput,
+  type ControlSpecAnswersRequest,
+  type ControlSpecQuestionsRequest,
   ControlSettingsUpdateRequest,
-  InterviewAnswer,
 } from "@claudexor/schema";
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
 import { AuthReadinessService } from "@claudexor/gateway";
@@ -53,7 +54,7 @@ import {
   buildGroundingPrompt,
   extractQuestionsFromPlan,
   freezeSpecFromGrounding,
-  persistSpec,
+  persistSpecAt,
 } from "./spec.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -334,22 +335,6 @@ async function main(): Promise<void> {
     throw error;
   }
 }
-function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string): string {
-  if ("repoRoot" in p)
-    throw new Error(
-      "legacy repoRoot field is not accepted; use scope.kind=project with scope.root",
-    );
-  const scope = p["scope"];
-  if (!scope || typeof scope !== "object" || Array.isArray(scope))
-    throw new Error(`project scope is required for ${purpose}`);
-  const s = scope as Record<string, unknown>;
-  if (s["kind"] !== "project") throw new Error(`project scope is required for ${purpose}`);
-  const root = typeof s["root"] === "string" ? s["root"].trim() : "";
-  if (!root) throw new Error(`project scope root is required for ${purpose}`);
-  if (!isAbsolute(root)) throw new Error("project root must be an absolute path");
-  return root;
-}
-
 /** Deliver an isolated thread's accumulated worktree diff to its project. */
 async function applyThreadDiff(
   threads: ProjectPartitions,
@@ -486,6 +471,78 @@ function controlServices(
         ]),
       ),
     };
+  };
+  const requireSpecStore = (id: string) => {
+    const store = threads.specStoreForSession(id);
+    if (!store) throw Object.assign(new Error(`no such spec session: ${id}`), { status: 404 });
+    return store;
+  };
+  const specControllers = new Map<string, AbortController>();
+  const groundSpec = async (id: string) => {
+    const store = requireSpecStore(id);
+    const material = store.material(id);
+    const controller = new AbortController();
+    specControllers.set(id, controller);
+    try {
+      const plan = await new Orchestrator({
+        registry: buildRegistry(),
+        reviewerPanel: material.request.reviewerPanel,
+        reviewerModels: material.request.reviewerModels,
+        reviewerEfforts: material.request.reviewerEfforts,
+      }).run({
+        repoRoot: material.request.scope.root,
+        prompt: buildGroundingPrompt(
+          material.request.prompt,
+          material.request.priorDecisions ?? [],
+        ),
+        mode: "plan",
+        harnesses: material.request.harnesses,
+        n: material.request.n,
+        effort: material.request.effort,
+        maxUsd: material.request.maxUsd ?? null,
+        web: material.request.web,
+        signal: controller.signal,
+        access: "readonly",
+      });
+      const planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
+      return store.completeGrounding(id, {
+        planRunId: plan.runId,
+        planText,
+        questions: extractQuestionsFromPlan(planText),
+      });
+    } catch (error) {
+      const current = store.get(id);
+      if (current?.state === "cancelled") return current;
+      store.fail(id, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      if (specControllers.get(id) === controller) specControllers.delete(id);
+    }
+  };
+  const freezeSpecSession = async (id: string) => {
+    const store = requireSpecStore(id);
+    const material = store.material(id);
+    const active = store.beginFreeze(id);
+    try {
+      const priorLines = material.answers.priorDecisions?.map(
+        (decision) => `Interview (prior tier) — ${decision.question} → ${decision.answer}`,
+      );
+      const spec = await freezeSpecFromGrounding(material.request.prompt, material.planText, {
+        answers: material.answers.answers,
+        decided_tradeoffs: priorLines,
+      });
+      const persisted = persistSpecAt(join(daemonDir(), "specs"), spec, material.planText);
+      return store.completeFreeze(id, {
+        specId: spec.id,
+        specDir: persisted.specDir,
+        specPath: join(persisted.specDir, "spec.json"),
+        specHash: persisted.specHash,
+        changes: persisted.changes,
+      });
+    } catch (error) {
+      store.rejectFreeze(active.sessionId, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
@@ -668,100 +725,30 @@ function controlServices(
       invalidateDoctorCache();
       return { name, deleted: true };
     },
-    specQuestions: async (input: unknown) => {
-      const p = (input ?? {}) as Record<string, unknown>;
-      const prompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
-      if (!prompt.trim()) throw new Error("prompt is required");
-      const repoRoot = projectRootFromScopedInput(p, "spec questions");
-      // The grounding contract and its question parser are co-located in spec.ts;
-      // prior decisions make each interview tier go deeper instead of repeating.
-      const priorDecisions = Array.isArray(p["priorDecisions"])
-        ? (p["priorDecisions"] as unknown[]).filter(
-            (d): d is { question: string; answer: string } =>
-              !!d &&
-              typeof d === "object" &&
-              typeof (d as Record<string, unknown>).question === "string" &&
-              typeof (d as Record<string, unknown>).answer === "string",
-          )
-        : [];
-      const plan = await new Orchestrator({ registry: buildRegistry() }).run({
-        repoRoot,
-        prompt: buildGroundingPrompt(prompt, priorDecisions),
-        mode: "plan",
-        harnesses: Array.isArray(p["harnesses"])
-          ? p["harnesses"].filter((x): x is string => typeof x === "string")
-          : undefined,
-        access: "readonly",
-      });
-      const planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
-      return {
-        planRunId: plan.runId,
-        planDir: plan.runDir,
-        questions: extractQuestionsFromPlan(planText),
-      };
+    createSpecSession: async (input: {
+      request: ControlSpecQuestionsRequest;
+      idempotencyKey: string;
+      clientId: string;
+    }) => {
+      const store = threads.specsForRequest(input.request);
+      const created = store.create(input);
+      return created.reused ? created.session : groundSpec(created.session.sessionId);
     },
-    specFreeze: async (input: unknown) => {
-      const p = (input ?? {}) as Record<string, unknown>;
-      const prompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
-      const planDir = typeof p["planDir"] === "string" ? p["planDir"] : "";
-      const plan =
-        typeof p["plan"] === "string"
-          ? p["plan"]
-          : (readTextSafe(join(planDir, "final", "plan.md")) ?? "");
-      if (!prompt.trim() || !plan.trim()) throw new Error("prompt and plan/planDir are required");
-      const repoRoot = projectRootFromScopedInput(p, "spec freeze");
-      // Forward the full draft shape so client edits are not silently dropped;
-      // malformed fields fail loudly instead of being filtered.
-      const strArr = (v: unknown, field: string): string[] | undefined => {
-        if (v === undefined) return undefined;
-        if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
-          throw new Error(`spec freeze: "${field}" must be an array of strings`);
-        }
-        return v as string[];
-      };
-      const strOpt = (v: unknown, field: string): string | undefined => {
-        if (v === undefined) return undefined;
-        if (typeof v !== "string") throw new Error(`spec freeze: "${field}" must be a string`);
-        return v;
-      };
-      // Schema-parse answers at the wire boundary; absent means no answers.
-      const answers = p["answers"] === undefined ? [] : InterviewAnswer.array().parse(p["answers"]);
-      // Multi-tier interview: prior-tier decisions are folded into decided_tradeoffs
-      // so the frozen SpecPack carries EVERY tier, not just the last one the client
-      // sent as `answers` (the v0.13 freeze-drops-prior-tiers bug, #8/#9).
-      const priorDecisions = Array.isArray(p["priorDecisions"])
-        ? (p["priorDecisions"] as unknown[]).filter(
-            (d): d is { question: string; answer: string } =>
-              !!d &&
-              typeof (d as { question?: unknown }).question === "string" &&
-              typeof (d as { answer?: unknown }).answer === "string",
-          )
-        : [];
-      const priorLines = priorDecisions.map(
-        (d) => `Interview (prior tier) — ${d.question} → ${d.answer}`,
-      );
-      const explicitTradeoffs = strArr(p["decided_tradeoffs"], "decided_tradeoffs") ?? [];
-      const mergedTradeoffs = [...priorLines, ...explicitTradeoffs];
-      const spec = await freezeSpecFromGrounding(prompt, plan, {
-        answers,
-        summary: strOpt(p["summary"], "summary"),
-        success_criteria: strArr(p["success_criteria"], "success_criteria"),
-        non_goals: strArr(p["non_goals"], "non_goals"),
-        forbidden_approaches: strArr(p["forbidden_approaches"], "forbidden_approaches"),
-        // undefined-when-empty keeps single-tier behavior byte-identical.
-        decided_tradeoffs: mergedTradeoffs.length ? mergedTradeoffs : undefined,
-        tests: strArr(p["tests"], "tests"),
-      });
-      const persisted = persistSpec(repoRoot, spec, plan);
-      // specPath = the frozen SpecPack file an Implement run reads (a bare specId
-      // does not load content). Single producer; the layout matches persistSpec.
-      return {
-        specId: spec.id,
-        specDir: persisted.specDir,
-        specPath: join(persisted.specDir, "spec.json"),
-        specHash: persisted.specHash,
-        changes: persisted.changes,
-      };
+    listSpecSessions: async () => ({ sessions: threads.listSpecSessions() }),
+    getSpecSession: async (id: string) => requireSpecStore(id).get(id),
+    answerSpecSession: async (id: string, input: ControlSpecAnswersRequest) =>
+      requireSpecStore(id).recordAnswers(id, input),
+    freezeSpecSession,
+    cancelSpecSession: async (id: string) => {
+      specControllers.get(id)?.abort();
+      return requireSpecStore(id).cancel(id);
+    },
+    resumeSpecSession: async (id: string) => {
+      const store = requireSpecStore(id);
+      const session = store.get(id)!;
+      if (session.state !== "interrupted_unknown" && session.state !== "failed") return session;
+      store.restart(id);
+      return groundSpec(id);
     },
   };
 }
