@@ -8,8 +8,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ProcessGroupService,
@@ -17,7 +19,7 @@ import {
   type ProcessIdentityReader,
 } from "@claudexor/core";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
-import { runSetupLoginWorker } from "./setup-login-runner.js";
+import { runSetupLogin, runSetupLoginWorker } from "./setup-login-runner.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
   atomicPrivateJson,
@@ -112,6 +114,30 @@ function issuePermit(spec: SetupLoginManifest, issuedAt = new Date().toISOString
 }
 
 describe("setup-login sidecar protocol v2", () => {
+  it("passes the disposable native-store selector from Terminal runner to its worker", async () => {
+    const { manifestPath } = prepare("#!/bin/sh\nexit 0\n");
+    const previous = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    process.env.CLAUDEXOR_CODEX_NATIVE_HOME = join(root, "disposable-codex-home");
+    let workerEnvironment: NodeJS.ProcessEnv | undefined;
+    const child = new EventEmitter() as ChildProcess;
+    try {
+      const result = runSetupLogin(manifestPath, {
+        spawnProcess: ((_command: string, _args: readonly string[], options: SpawnOptions) => {
+          workerEnvironment = options.env;
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return child;
+        }) as never,
+      });
+      await expect(result).resolves.toBe(0);
+      expect(workerEnvironment?.CLAUDEXOR_CODEX_NATIVE_HOME).toBe(
+        join(root, "disposable-codex-home"),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previous;
+    }
+  });
+
   it("runs only after a matching permit and persists hash-bound state/result from a space-containing path", async () => {
     const { manifestPath, spec } = prepare("#!/bin/sh\nsleep 0.01\nexit 0\n");
     const issuedAt = new Date().toISOString();

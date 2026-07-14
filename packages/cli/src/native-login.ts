@@ -53,6 +53,31 @@ export function nativeLoginDisplayCommand(harness: string): string | null {
   return NATIVE_LOGIN_DEFINITIONS[harness]?.displayCommand ?? null;
 }
 
+/**
+ * Terminal opens a setup script in the GUI app's login environment rather than
+ * the daemon's. Restore only non-secret paths that select the same native store
+ * post-login verification will probe; provider credentials stay excluded.
+ */
+export function nativeLoginTerminalExports(
+  harness: string,
+  source: NodeJS.ProcessEnv = process.env,
+): string {
+  const keys = [
+    "HOME",
+    "TMPDIR",
+    ...(harness === "codex" ? ["CLAUDEXOR_CODEX_NATIVE_HOME"] : []),
+    ...(harness === "claude" ? ["CLAUDEXOR_CLAUDE_NATIVE_DIR"] : []),
+  ];
+  return keys
+    .map((key) => [key, source[key]] as const)
+    .filter(
+      (entry): entry is readonly [string, string] =>
+        typeof entry[1] === "string" && entry[1].length > 0,
+    )
+    .map(([key, value]) => `export ${key}='${value.replaceAll("'", `'"'"'`)}'\n`)
+    .join("");
+}
+
 /** Native login must never inherit a provider key or endpoint override. */
 export function nativeLoginEnv(
   harness: string,

@@ -233,7 +233,17 @@ function describeCaptureFailure(
 /** The bootstrap itself never needs model/provider credentials. */
 function runnerBootstrapEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "USER", "LOGNAME"] as const) {
+  for (const key of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "USER",
+    "LOGNAME",
+    "CLAUDEXOR_CODEX_NATIVE_HOME",
+    "CLAUDEXOR_CLAUDE_NATIVE_DIR",
+  ] as const) {
     if (source[key] !== undefined) env[key] = source[key];
   }
   return env;

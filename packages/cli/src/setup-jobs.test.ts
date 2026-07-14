@@ -508,6 +508,38 @@ describe("setup jobs", () => {
     expect(script.indexOf("IFS= read -r _")).toBeLessThan(script.indexOf('exit "$status"'));
   });
 
+  it("carries the daemon's disposable native store into the Terminal handoff", () => {
+    const previousHome = process.env.HOME;
+    const previousNativeHome = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.HOME = join(root, "disposable home");
+    process.env.CLAUDEXOR_CODEX_NATIVE_HOME = join(root, "disposable codex");
+    process.env.OPENAI_API_KEY = "must-not-enter-terminal-script";
+    try {
+      const manager = createSetupJobManager({
+        rootDir: join(root, "environment-handoff"),
+        platform: "darwin",
+        runnerPath: "/tmp/setup-login-runner.js",
+        openTerminal: fakeOpener,
+      });
+      const job = manager.create(LOGIN_REQUEST);
+      const script = readFileSync(manager._store.paths(job.jobId).command, "utf8");
+      expect(script).toContain(`export HOME='${join(root, "disposable home")}'`);
+      expect(script).toContain(
+        `export CLAUDEXOR_CODEX_NATIVE_HOME='${join(root, "disposable codex")}'`,
+      );
+      expect(script).not.toContain("must-not-enter-terminal-script");
+      expect(script).not.toContain("OPENAI_API_KEY");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+    }
+  });
+
   it("requires fresh subscription-native readiness after a zero exit", async () => {
     let ms = Date.now();
     const probes: unknown[] = [];

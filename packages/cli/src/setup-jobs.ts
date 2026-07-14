@@ -21,7 +21,7 @@ import {
   type ControlSetupJobListFilter,
 } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
-import { nativeLoginSpec, type NativeLoginSpec } from "./native-login.js";
+import * as NativeLogin from "./native-login.js";
 import { buildGateway } from "./registry.js";
 import { ACTIVE_SETUP_STATES, SetupJobStore, TERMINAL_SETUP_STATES } from "./setup-job-store.js";
 import {
@@ -43,7 +43,7 @@ import { SetupSupervisor } from "./setup-supervisor.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 const LOGIN_EXTENSION_MS = 15 * 60_000;
-
+type NativeLoginSpec = NativeLogin.NativeLoginSpec;
 type SetupProfile = {
   guideUrl: string;
   note: string;
@@ -994,7 +994,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         commandDigest: authorizedCommandDigest,
       });
       atomicPrivateJson(paths.manifest, manifest);
-      const script = `#!/usr/bin/env bash\nset -uo pipefail\nset +e\n${shellQuote(nodePath)} ${shellQuote(runnerPath)} ${shellQuote(paths.manifest)}\nstatus=$?\nset -e\nprintf '\\nClaudexor setup command finished (exit %s). Press Return to close this window. ' "$status"\nIFS= read -r _\nexit "$status"\n`;
+      const script = `#!/usr/bin/env bash\nset -uo pipefail\n${NativeLogin.nativeLoginTerminalExports(job.harness)}set +e\n${shellQuote(nodePath)} ${shellQuote(runnerPath)} ${shellQuote(paths.manifest)}\nstatus=$?\nset -e\nprintf '\\nClaudexor setup command finished (exit %s). Press Return to close this window. ' "$status"\nIFS= read -r _\nexit "$status"\n`;
       writeFileSync(paths.command, script, { mode: 0o700, flag: "wx" });
       chmodSync(paths.command, 0o700);
       const waiting = update(job.jobId, {
@@ -1148,7 +1148,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         authCapability,
       });
       log(jobId, `created ${harness} ${action}`);
-      const spec = nativeLoginSpec(harness);
+      const spec = NativeLogin.nativeLoginSpec(harness);
       if (!spec)
         return finish(
           jobId,
