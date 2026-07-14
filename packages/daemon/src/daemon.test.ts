@@ -12,12 +12,15 @@ function tempDir(name = "daemon"): string {
   return realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
 }
 
-function commandAuthority(dir: string): {
+function commandAuthority(
+  dir: string,
+  partition = "global",
+): {
   journal: DurableJournal;
   store: CommandStore;
   slot: { current(): CommandStore };
 } {
-  const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
+  const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition });
   const store = new CommandStore(journal);
   return { journal, store, slot: { current: () => store } };
 }
@@ -32,6 +35,32 @@ async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
 }
 
 describe("DaemonServer", () => {
+  it("scopes identical command idempotency keys to their journal partition", () => {
+    const dir = tempDir("partition-idempotency");
+    const global = commandAuthority(dir);
+    const project = commandAuthority(dir, "project:alpha");
+    try {
+      global.store.accept({
+        id: "job-global",
+        params: { value: 1 },
+        idempotencyKey: "same",
+        clientId: "ui",
+      });
+      project.store.accept({
+        id: "job-project",
+        params: { value: 2 },
+        idempotencyKey: "same",
+        clientId: "ui",
+      });
+      const globalKey = (global.journal.records()[0]!.payload as { keyDigest: string }).keyDigest;
+      const projectKey = (project.journal.records()[0]!.payload as { keyDigest: string }).keyDigest;
+      expect(globalKey).not.toBe(projectKey);
+    } finally {
+      global.journal.close();
+      project.journal.close();
+    }
+  });
+
   it("serves health, durably accepts a command, runs it, and shuts down", async () => {
     const dir = tempDir();
     const authority = commandAuthority(dir);

@@ -27,10 +27,6 @@ import {
   writeExclusiveFile,
 } from "./journal-recovery-files.js";
 
-export type JournalInspection = ControlJournalInspection;
-export type JournalValidation = ControlJournalValidation;
-export type JournalExportReceipt = ControlJournalExportReceipt;
-export type JournalQuarantineReceipt = ControlJournalQuarantineReceipt;
 export type JournalQuarantineRequest = ControlJournalQuarantineRequest & {
   idempotencyKey: string;
 };
@@ -46,10 +42,6 @@ export interface JournalProjectionSlot<T> {
   generation(): number;
 }
 
-export type JournalQuarantinePreflight =
-  | { disposition: "new" | "prepared"; receipt: null }
-  | { disposition: "completed"; receipt: JournalQuarantineReceipt };
-
 interface ProjectionRegistration<T = unknown> {
   descriptor: JournalProjectionDescriptor<T>;
   slot: ProjectionSlot<T>;
@@ -63,20 +55,26 @@ interface QuarantineOperation {
   expectedFingerprint: string;
   quarantinePath: string;
   status: "prepared" | "completed";
-  receipt: JournalQuarantineReceipt | null;
+  receipt: ControlJournalQuarantineReceipt | null;
 }
 
-export interface JournalManagerFaults {
-  afterQuarantineRename?: () => void;
-  afterQuarantineReceipt?: () => void;
+type JournalManagerFault = "afterQuarantineRename" | "afterQuarantineReceipt";
+
+export interface JournalManagerOptions {
+  partition?: string;
+  now?: () => Date;
+  faults?: Partial<Record<JournalManagerFault, () => void>>;
 }
 
-/** Owns the Phase-0 global journal writer and its replaceable projections. */
 export class JournalManager {
+  readonly partition: string;
   readonly journalRoot: string;
   readonly partitionDir: string;
   private readonly operationsDir: string;
   private readonly quarantineDir: string;
+  private readonly artifactPrefix: string;
+  private readonly now: () => Date;
+  private readonly faults: Partial<Record<JournalManagerFault, () => void>>;
   private readonly registrations = new Map<string, ProjectionRegistration>();
   private journal: DurableJournal | null = null;
   private recovery: JournalRecoveryState = { status: "ready", discardedTailBytes: 0 };
@@ -86,14 +84,17 @@ export class JournalManager {
 
   constructor(
     readonly rootDir: string,
-    private readonly now: () => Date = () => new Date(),
-    private readonly faults: JournalManagerFaults = {},
+    options: JournalManagerOptions = {},
   ) {
+    this.partition = options.partition?.trim() || "global";
+    this.now = options.now ?? (() => new Date());
+    this.faults = options.faults ?? {};
     ensureCanonicalPrivateDirectory(rootDir);
     this.journalRoot = join(realpathSync(rootDir), "journal");
     ensureCanonicalPrivateDirectory(this.journalRoot);
-    this.partitionDir = journalPartitionDirectory(this.journalRoot, "global");
-    this.operationsDir = join(this.rootDir, "recovery-operations");
+    this.partitionDir = journalPartitionDirectory(this.journalRoot, this.partition);
+    this.artifactPrefix = basename(this.partitionDir);
+    this.operationsDir = join(this.rootDir, "recovery-operations", basename(this.partitionDir));
     this.quarantineDir = join(this.rootDir, "journal-quarantine");
   }
 
@@ -108,16 +109,16 @@ export class JournalManager {
     return slot;
   }
 
-  start(): JournalInspection {
+  start(): ControlJournalInspection {
     this.assertOpen();
     if (this.started) return this.inspect();
-    if (this.registrations.size === 0) throw new Error("global journal requires a projection");
+    if (this.registrations.size === 0) throw new Error("journal partition requires a projection");
     this.started = true;
     if (!this.reconcilePrepared()) this.openGeneration();
     return this.inspect();
   }
 
-  inspect(): JournalInspection {
+  inspect(): ControlJournalInspection {
     this.assertStarted();
     if (this.journal && this.recovery.status === "ready") {
       const state = this.journal.state();
@@ -126,10 +127,10 @@ export class JournalManager {
     return this.inspection(fingerprintPartition(this.partitionDir));
   }
 
-  validate(): JournalValidation {
+  validate(): ControlJournalValidation {
     this.assertStarted();
     const before = fingerprintPartition(this.partitionDir);
-    const projectionStatus: JournalValidation["projectionStatus"] = [];
+    const projectionStatus: ControlJournalValidation["projectionStatus"] = [];
     for (const registration of this.registrations.values()) {
       try {
         const projection = registration.slot.current();
@@ -155,7 +156,7 @@ export class JournalManager {
     return { ...this.inspection(after), projectionStatus };
   }
 
-  exportRecovery(): JournalExportReceipt {
+  exportRecovery(): ControlJournalExportReceipt {
     this.assertStarted();
     const fingerprint = fingerprintPartition(this.partitionDir);
     const exportId = `journal-export-${this.now().getTime().toString(36)}-${randomUUID()}`;
@@ -174,7 +175,7 @@ export class JournalManager {
             {
               schemaVersion: 1,
               exportId,
-              partition: "global",
+              partition: this.partition,
               fingerprint,
               recovery: this.recovery,
               createdAt,
@@ -193,7 +194,7 @@ export class JournalManager {
       return {
         schemaVersion: 1,
         exportId,
-        partition: "global",
+        partition: this.partition,
         fingerprint,
         bundlePath,
         manifestSha256: sha256File(manifestPath),
@@ -206,17 +207,20 @@ export class JournalManager {
     }
   }
 
-  preflightQuarantine(input: JournalQuarantineRequest): JournalQuarantinePreflight {
+  preflightQuarantine(input: JournalQuarantineRequest) {
     this.assertStarted();
     validateRequest(input);
     const keyDigest = sha256(Buffer.from(input.idempotencyKey));
     const path = join(this.operationsDir, `${keyDigest}.json`);
-    const existing = readOperation(path, this.quarantineDir);
-    const requestDigest = quarantineRequestDigest(input);
+    const existing = readOperation(path, this.quarantineDir, this.partition, this.artifactPrefix);
+    const requestDigest = quarantineRequestDigest(this.partition, input);
     if (existing) {
       if (existing.requestDigest !== requestDigest) throw conflict("idempotency_conflict");
       if (existing.status === "completed") {
-        return { disposition: "completed", receipt: matchingReceipt(existing) };
+        return {
+          disposition: "completed",
+          receipt: matchingReceipt(existing, undefined, this.partition, this.artifactPrefix),
+        };
       }
       return { disposition: "prepared", receipt: null };
     }
@@ -233,23 +237,29 @@ export class JournalManager {
     return { disposition: "new", receipt: null };
   }
 
-  quarantineAndStartFresh(input: JournalQuarantineRequest): JournalQuarantineReceipt {
+  quarantineAndStartFresh(input: JournalQuarantineRequest): ControlJournalQuarantineReceipt {
     const preflight = this.preflightQuarantine(input);
-    if (preflight.disposition === "completed") return preflight.receipt;
+    if (preflight.disposition === "completed") return preflight.receipt!;
+    ensureCanonicalPrivateDirectory(dirname(this.operationsDir));
     ensureCanonicalPrivateDirectory(this.operationsDir);
     ensureCanonicalPrivateDirectory(this.quarantineDir);
     const keyDigest = sha256(Buffer.from(input.idempotencyKey));
     const operationPath = join(this.operationsDir, `${keyDigest}.json`);
-    let operation = readOperation(operationPath, this.quarantineDir);
+    let operation = readOperation(
+      operationPath,
+      this.quarantineDir,
+      this.partition,
+      this.artifactPrefix,
+    );
     if (!operation) {
       const operationId = randomUUID();
       operation = {
         schemaVersion: 1,
         operationId,
         keyDigest,
-        requestDigest: quarantineRequestDigest(input),
+        requestDigest: quarantineRequestDigest(this.partition, input),
         expectedFingerprint: input.expectedFingerprint,
-        quarantinePath: join(this.quarantineDir, `global-${operationId}`),
+        quarantinePath: join(this.quarantineDir, `${this.artifactPrefix}-${operationId}`),
         status: "prepared",
         receipt: null,
       };
@@ -275,7 +285,7 @@ export class JournalManager {
     try {
       this.journal = new DurableJournal({
         rootDir: this.journalRoot,
-        partition: "global",
+        partition: this.partition,
         now: this.now,
       });
       this.recovery = this.journal.state();
@@ -293,12 +303,15 @@ export class JournalManager {
       } catch {
         /* preserve the projection/open failure */
       }
-      this.enterRecovery(recoveryFrom(error, "global journal could not be opened"));
+      this.enterRecovery(recoveryFrom(error, `${this.partition} journal could not be opened`));
     }
     if (this.recovery.status === "recovery_required") this.clearSlots();
   }
 
-  private resume(operation: QuarantineOperation, operationPath: string): JournalQuarantineReceipt {
+  private resume(
+    operation: QuarantineOperation,
+    operationPath: string,
+  ): ControlJournalQuarantineReceipt {
     const sourceExists = existsSync(this.partitionDir);
     const targetExists = existsSync(operation.quarantinePath);
     if (sourceExists && targetExists) return this.completeFromReceipt(operation, operationPath);
@@ -333,12 +346,12 @@ export class JournalManager {
     if (this.journal.records().length !== 0) {
       throw typedError("recovery_operation_ambiguous", 503, "fresh journal is not empty");
     }
-    const receipt: JournalQuarantineReceipt = {
+    const receipt: ControlJournalQuarantineReceipt = {
       schemaVersion: 1,
       operationId: operation.operationId,
-      partition: "global",
+      partition: this.partition,
       previousFingerprint: operation.expectedFingerprint,
-      quarantineArtifactId: `global-${operation.operationId}`,
+      quarantineArtifactId: `${this.artifactPrefix}-${operation.operationId}`,
       quarantinePath: operation.quarantinePath,
       newEpoch: this.journal.currentEpoch(),
       completedAt: this.now().toISOString(),
@@ -352,7 +365,7 @@ export class JournalManager {
   private completeFromReceipt(
     operation: QuarantineOperation,
     operationPath: string,
-  ): JournalQuarantineReceipt {
+  ): ControlJournalQuarantineReceipt {
     if (fingerprintPartition(operation.quarantinePath) !== operation.expectedFingerprint) {
       throw typedError("recovery_quarantine_mismatch", 503, "quarantined bytes changed");
     }
@@ -364,7 +377,12 @@ export class JournalManager {
     if (records.length !== 1 || records[0]?.type !== "journal.partition_quarantined") {
       throw typedError("recovery_operation_ambiguous", 503, "fresh receipt is missing");
     }
-    const receipt = matchingReceipt(operation, records[0].payload);
+    const receipt = matchingReceipt(
+      operation,
+      records[0].payload,
+      this.partition,
+      this.artifactPrefix,
+    );
     writeAtomicPrivateJson(operationPath, { ...operation, status: "completed", receipt }, false);
     return receipt;
   }
@@ -376,7 +394,10 @@ export class JournalManager {
         .filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
         .map((name) => {
           const path = join(this.operationsDir, name);
-          return { path, operation: readOperation(path, this.quarantineDir) };
+          return {
+            path,
+            operation: readOperation(path, this.quarantineDir, this.partition, this.artifactPrefix),
+          };
         })
         .filter(
           (entry): entry is { path: string; operation: QuarantineOperation } =>
@@ -396,16 +417,16 @@ export class JournalManager {
     return true;
   }
 
-  private inspection(fingerprint: string): JournalInspection {
+  private inspection(fingerprint: string): ControlJournalInspection {
     return {
       schemaVersion: 1,
-      partition: "global",
+      partition: this.partition,
       generation: this.generationValue,
       status: this.recovery.status,
       recovery: cloneRecovery(this.recovery),
       fingerprint,
       observedAt: this.now().toISOString(),
-      evidenceRefs: [`recovery:global:${fingerprint}`],
+      evidenceRefs: [`recovery:${this.partition}:${fingerprint}`],
     };
   }
 
@@ -458,7 +479,12 @@ class ProjectionSlot<T> implements JournalProjectionSlot<T> {
   }
 }
 
-function readOperation(path: string, quarantineDir: string): QuarantineOperation | null {
+function readOperation(
+  path: string,
+  quarantineDir: string,
+  partition: string,
+  artifactPrefix: string,
+): QuarantineOperation | null {
   if (!existsSync(path)) return null;
   const value = JSON.parse(readOwnedFile(path).toString("utf8")) as unknown;
   if (
@@ -470,7 +496,7 @@ function readOperation(path: string, quarantineDir: string): QuarantineOperation
     typeof value.requestDigest !== "string" ||
     typeof value.expectedFingerprint !== "string" ||
     typeof value.quarantinePath !== "string" ||
-    value.quarantinePath !== join(quarantineDir, `global-${value.operationId}`) ||
+    value.quarantinePath !== join(quarantineDir, `${artifactPrefix}-${value.operationId}`) ||
     (value.status !== "prepared" && value.status !== "completed")
   ) {
     throw new Error("recovery operation is malformed");
@@ -479,20 +505,25 @@ function readOperation(path: string, quarantineDir: string): QuarantineOperation
   if (operation.status === "prepared" && operation.receipt !== null) {
     throw new Error("prepared recovery operation contains a receipt");
   }
-  if (operation.status === "completed") matchingReceipt(operation);
+  if (operation.status === "completed") {
+    matchingReceipt(operation, undefined, partition, artifactPrefix);
+  }
   return operation;
 }
 
 function matchingReceipt(
   operation: QuarantineOperation,
-  value: unknown = operation.receipt,
-): JournalQuarantineReceipt {
-  const receipt = QuarantineReceiptSchema.parse(value);
+  value: unknown,
+  partition: string,
+  artifactPrefix: string,
+): ControlJournalQuarantineReceipt {
+  const receipt = QuarantineReceiptSchema.parse(value ?? operation.receipt);
   if (
     receipt.operationId !== operation.operationId ||
+    receipt.partition !== partition ||
     receipt.previousFingerprint !== operation.expectedFingerprint ||
     receipt.quarantinePath !== operation.quarantinePath ||
-    receipt.quarantineArtifactId !== `global-${operation.operationId}`
+    receipt.quarantineArtifactId !== `${artifactPrefix}-${operation.operationId}`
   ) {
     throw typedError("recovery_receipt_mismatch", 503, "quarantine receipt does not match intent");
   }
@@ -515,11 +546,11 @@ function validateRequest(input: JournalQuarantineRequest): void {
   }
 }
 
-function quarantineRequestDigest(input: JournalQuarantineRequest): string {
+function quarantineRequestDigest(partition: string, input: JournalQuarantineRequest): string {
   return sha256(
     Buffer.from(
       JSON.stringify({
-        partition: "global",
+        partition,
         expectedFingerprint: input.expectedFingerprint,
         confirmation: input.confirmation,
       }),

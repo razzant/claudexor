@@ -43,8 +43,8 @@ function corruptFirstByte(path: string): Buffer {
   return bytes;
 }
 
-function seedCorruptPartition() {
-  const first = new JournalManager(root);
+function seedCorruptPartition(partition = "global") {
+  const first = new JournalManager(root, { partition });
   const slot = registerProbe(first);
   first.start();
   slot.current().journal.append("probe.saved", { value: 1 });
@@ -60,15 +60,51 @@ interface StoredOperation {
 }
 
 function storedOperation(): StoredOperation {
-  const dir = join(root, "recovery-operations");
+  const operationsRoot = join(root, "recovery-operations");
+  const partitionDirs = readdirSync(operationsRoot);
+  if (partitionDirs.length !== 1) {
+    throw new Error(`expected one recovery partition, found ${partitionDirs.length}`);
+  }
+  const dir = join(operationsRoot, partitionDirs[0]!);
   const names = readdirSync(dir).filter((name) => name.endsWith(".json"));
   if (names.length !== 1) throw new Error(`expected one recovery operation, found ${names.length}`);
   return JSON.parse(readFileSync(join(dir, names[0]!), "utf8")) as StoredOperation;
 }
 
 describe("JournalManager", () => {
+  it("isolates recovery and projection availability by partition", () => {
+    const partitions = ["global", "project:a", "project:b"] as const;
+    const seeded = partitions.map((partition) => {
+      const manager = new JournalManager(root, { partition });
+      const slot = registerProbe(manager);
+      expect(manager.start().partition).toBe(partition);
+      slot.current().journal.append("probe.saved", { partition });
+      const path = slot.current().journal.path;
+      manager.close();
+      return { partition, path };
+    });
+    corruptFirstByte(seeded[1]!.path);
+
+    const reopened = partitions.map((partition) => {
+      const manager = new JournalManager(root, { partition });
+      const slot = registerProbe(manager);
+      return { partition, manager, slot, inspection: manager.start() };
+    });
+    expect(reopened[0]!.inspection.status).toBe("ready");
+    expect(reopened[1]!.inspection.status).toBe("recovery_required");
+    expect(reopened[2]!.inspection.status).toBe("ready");
+    expect(() => reopened[1]!.slot.current()).toThrow(/requires recovery/);
+    for (const entry of [reopened[0]!, reopened[2]!]) {
+      expect(entry.slot.current().journal.records()).toHaveLength(1);
+      entry.slot.current().journal.append("probe.after_reopen", { partition: entry.partition });
+    }
+    for (const entry of reopened) entry.manager.close();
+  });
+
   it("owns one writer, seals registration, and validates every projection", () => {
-    const manager = new JournalManager(root, () => new Date("2026-07-14T00:00:00.000Z"));
+    const manager = new JournalManager(root, {
+      now: () => new Date("2026-07-14T00:00:00.000Z"),
+    });
     const first = registerProbe(manager, "first");
     const second = registerProbe(manager, "second");
     expect(manager.start().status).toBe("ready");
@@ -82,7 +118,9 @@ describe("JournalManager", () => {
   it("keeps inspect, validate and secret-safe export online without mutating corrupt bytes", () => {
     const { journalPath, corruptBytes } = seedCorruptPartition();
     const mode = statSync(journalPath).mode & 0o777;
-    const manager = new JournalManager(root, () => new Date("2026-07-14T01:00:00.000Z"));
+    const manager = new JournalManager(root, {
+      now: () => new Date("2026-07-14T01:00:00.000Z"),
+    });
     registerProbe(manager);
     const inspection = manager.start();
     expect(inspection.status).toBe("recovery_required");
@@ -145,6 +183,30 @@ describe("JournalManager", () => {
     manager.close();
   });
 
+  it("reports the exact project partition in export and quarantine receipts", () => {
+    const partition = "project:alpha";
+    const { journalPath } = seedCorruptPartition(partition);
+    const manager = new JournalManager(root, { partition });
+    registerProbe(manager);
+    const inspection = manager.start();
+    expect(inspection.partition).toBe(partition);
+    const exported = manager.exportRecovery();
+    expect(exported.partition).toBe(partition);
+    const manifest = JSON.parse(
+      readFileSync(join(exported.bundlePath, "manifest.json"), "utf8"),
+    ) as { partition: string };
+    expect(manifest.partition).toBe(partition);
+    const receipt = manager.quarantineAndStartFresh({
+      idempotencyKey: "recover-project-alpha",
+      expectedFingerprint: inspection.fingerprint,
+      confirmation: "quarantine_and_start_fresh",
+    });
+    expect(receipt.partition).toBe(partition);
+    expect(receipt.quarantinePath).not.toContain("global-");
+    expect(existsSync(journalPath)).toBe(true);
+    manager.close();
+  });
+
   it.each([
     ["healthy partition", "ready", "f".repeat(64), "only a corrupt partition"],
     ["stale fingerprint", "corrupt", "0".repeat(64), "fingerprint mismatch"],
@@ -169,9 +231,11 @@ describe("JournalManager", () => {
 
   it("finishes a prepared quarantine after a crash immediately after rename", () => {
     seedCorruptPartition();
-    const crashing = new JournalManager(root, undefined, {
-      afterQuarantineRename: () => {
-        throw new Error("simulated crash after rename");
+    const crashing = new JournalManager(root, {
+      faults: {
+        afterQuarantineRename: () => {
+          throw new Error("simulated crash after rename");
+        },
       },
     });
     registerProbe(crashing);
@@ -201,9 +265,11 @@ describe("JournalManager", () => {
 
   it("binds a durable fresh receipt after a crash before the completed marker", () => {
     seedCorruptPartition();
-    const crashing = new JournalManager(root, undefined, {
-      afterQuarantineReceipt: () => {
-        throw new Error("simulated crash after receipt");
+    const crashing = new JournalManager(root, {
+      faults: {
+        afterQuarantineReceipt: () => {
+          throw new Error("simulated crash after receipt");
+        },
       },
     });
     registerProbe(crashing);
@@ -227,9 +293,11 @@ describe("JournalManager", () => {
 
   it("fails closed when source and quarantine coexist without the exact receipt", () => {
     seedCorruptPartition();
-    const crashing = new JournalManager(root, undefined, {
-      afterQuarantineRename: () => {
-        throw new Error("simulated crash");
+    const crashing = new JournalManager(root, {
+      faults: {
+        afterQuarantineRename: () => {
+          throw new Error("simulated crash");
+        },
       },
     });
     registerProbe(crashing);

@@ -14,7 +14,8 @@
         },
         "partition": {
           "type": "string",
-          "const": "global"
+          "minLength": 1,
+          "maxLength": 256
         },
         "fingerprint": {
           "type": "string",

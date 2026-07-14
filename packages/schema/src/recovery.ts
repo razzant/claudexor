@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const Sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const Timestamp = z.string().datetime({ offset: true });
+const JournalPartition = z.string().trim().min(1).max(256);
 
 export const JournalRecoveryLocation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("byte"), byteOffset: z.number().int().nonnegative() }).strict(),
@@ -30,7 +31,7 @@ export const ControlJournalRecoveryState = z.discriminatedUnion("status", [
 
 const JournalInspectionFields = {
   schemaVersion: z.literal(1),
-  partition: z.literal("global"),
+  partition: JournalPartition,
   generation: z.number().int().nonnegative(),
   status: z.enum(["ready", "recovery_required"]),
   recovery: ControlJournalRecoveryState,
@@ -82,7 +83,7 @@ export const ControlJournalExportReceipt = z
   .object({
     schemaVersion: z.literal(1),
     exportId: z.string().min(1),
-    partition: z.literal("global"),
+    partition: JournalPartition,
     fingerprint: Sha256Hex,
     bundlePath: z.string().min(1),
     manifestSha256: Sha256Hex,
@@ -103,7 +104,7 @@ export const ControlJournalQuarantineReceipt = z
   .object({
     schemaVersion: z.literal(1),
     operationId: z.string().uuid(),
-    partition: z.literal("global"),
+    partition: JournalPartition,
     previousFingerprint: Sha256Hex,
     quarantineArtifactId: z.string().min(1),
     quarantinePath: z.string().min(1),

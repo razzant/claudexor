@@ -38,7 +38,7 @@ export class CommandStore {
     idempotencyParams?: unknown;
   }): { record: JobRecord; reused: boolean } {
     validateKey(input.idempotencyKey);
-    const { requestDigest, keyDigest } = digests(input);
+    const { requestDigest, keyDigest } = digests(this.journal.options.partition, input);
     const prior = this.idByKeyDigest.get(keyDigest);
     if (prior) {
       if (prior.requestDigest !== requestDigest) throw conflict();
@@ -69,7 +69,7 @@ export class CommandStore {
     operation?: string;
   }): JobRecord | null {
     validateKey(input.idempotencyKey);
-    const { requestDigest, keyDigest } = digests(input);
+    const { requestDigest, keyDigest } = digests(this.journal.options.partition, input);
     const prior = this.idByKeyDigest.get(keyDigest);
     if (!prior) return null;
     if (prior.requestDigest !== requestDigest) throw conflict();
@@ -204,18 +204,21 @@ function validateKey(key: string): void {
   }
 }
 
-function digests(input: {
-  params: unknown;
-  idempotencyKey: string;
-  clientId: string;
-  operation?: string;
-  idempotencyParams?: unknown;
-}): { requestDigest: string; keyDigest: string } {
+function digests(
+  partition: string,
+  input: {
+    params: unknown;
+    idempotencyKey: string;
+    clientId: string;
+    operation?: string;
+    idempotencyParams?: unknown;
+  },
+): { requestDigest: string; keyDigest: string } {
   return {
     requestDigest: hashJson(input.idempotencyParams ?? input.params),
     keyDigest: hashJson({
       client: input.clientId,
-      partition: "global",
+      partition,
       operation: input.operation ?? "run.create",
       key: input.idempotencyKey,
     }),
