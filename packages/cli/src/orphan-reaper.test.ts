@@ -1,58 +1,108 @@
-import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  ProcessGroupService,
+  defaultProcessGroupService,
+  parseProcessGroupHandle,
+  registerChildProcess,
+  type KnownProcessIdentity,
+  type ProcessGroupHandle,
+  unregisterChildProcess,
+} from "@claudexor/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
+
+function known(pid: number, startToken: string): KnownProcessIdentity {
+  return {
+    status: "known",
+    pid,
+    platform: "linux",
+    source: "procfs_stat",
+    startToken,
+    processGroupId: pid,
+  };
+}
+
+function handle(pid: number, startToken: string): ProcessGroupHandle {
+  return parseProcessGroupHandle({ schemaVersion: 1, pgid: pid, leader: known(pid, startToken) });
+}
+
+function processGroups(startToken: string, signalProcessGroup = vi.fn()): ProcessGroupService {
+  return new ProcessGroupService({
+    platform: "linux",
+    identity: {
+      read: (pid) => known(pid, startToken),
+      self: () => known(1, "linux:1"),
+    },
+    signalProcessGroup,
+  });
+}
 
 describe("orphan reaper", () => {
   let dir: string;
   afterEach(() => {
+    unregisterChildProcess(43);
     if (dir) rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
-  it("kills a recorded orphan whose command still matches, and skips recycled pids", async () => {
+  it("signals only an exact persisted process-group identity", () => {
+    vi.useFakeTimers();
     dir = mkdtempSync(join(tmpdir(), "claudexor-reaper-"));
     const pidsPath = join(dir, "pids.json");
-    // A real detached sleeper stands in for a surviving harness child.
-    const orphan = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
-    orphan.unref();
-    const orphanPid = orphan.pid as number;
-    // A second entry records a pid that now belongs to a DIFFERENT command
-    // (this test process) — the recycling guard must skip it.
+    const signal = vi.fn();
+    try {
+      writeFileSync(
+        pidsPath,
+        JSON.stringify({
+          pids: [{ pid: 41, cmd: "sleep", processGroup: handle(41, "linux:100") }],
+        }),
+      );
+      const actions = reapRecordedOrphans(pidsPath, processGroups("linux:100", signal));
+      expect(actions).toContain("SIGTERM orphan process group 41 (sleep)");
+      expect(signal).toHaveBeenCalledWith(-41, "SIGTERM");
+      vi.advanceTimersByTime(3_000);
+      expect(signal).toHaveBeenLastCalledWith(-41, "SIGKILL");
+      expect(existsSync(pidsPath)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips same-pid reuse and legacy pid/cmd snapshots fail-closed", () => {
+    dir = mkdtempSync(join(tmpdir(), "claudexor-reaper-"));
+    const pidsPath = join(dir, "pids.json");
+    const signal = vi.fn();
     writeFileSync(
       pidsPath,
       JSON.stringify({
         pids: [
-          { pid: orphanPid, cmd: "sleep" },
-          { pid: process.pid, cmd: "definitely-not-node" },
+          { pid: 41, cmd: "sleep", processGroup: handle(41, "linux:100") },
+          { pid: 42, cmd: "sleep" },
         ],
       }),
     );
-    const actions = reapRecordedOrphans(pidsPath);
-    expect(actions.some((a) => a.includes(`${orphanPid}`) && a.includes("SIGTERM"))).toBe(true);
-    expect(actions.some((a) => a.includes("recycled"))).toBe(true);
-    expect(existsSync(pidsPath)).toBe(false); // snapshot consumed
-    // The orphan (or its group) dies.
-    const deadline = Date.now() + 5_000;
-    let alive = true;
-    while (alive && Date.now() < deadline) {
-      try {
-        process.kill(orphanPid, 0);
-        await new Promise((r) => setTimeout(r, 100));
-      } catch {
-        alive = false;
-      }
-    }
-    expect(alive).toBe(false);
-  }, 15_000);
+    const actions = reapRecordedOrphans(pidsPath, processGroups("linux:200", signal));
+    expect(actions).toContain("skip orphan process group 41 (sleep): stale_leader");
+    expect(signal).not.toHaveBeenCalled();
+    expect(existsSync(pidsPath)).toBe(false);
+  });
 
   it("writePidsSnapshot writes live children and clears the file when none remain", () => {
     dir = mkdtempSync(join(tmpdir(), "claudexor-reaper-"));
     const pidsPath = join(dir, "pids.json");
-    // The registry is process-global; with no live spawnProcess children the
-    // snapshot must remove a stale file rather than leave it behind.
-    writeFileSync(pidsPath, JSON.stringify({ pids: [{ pid: 1, cmd: "stale" }] }));
+    const exact = handle(43, "linux:300");
+    vi.spyOn(defaultProcessGroupService, "captureLeader")
+      .mockReturnValueOnce({ status: "known", handle: exact })
+      .mockReturnValueOnce({ status: "unknown", pid: 44, reason: "helper_unavailable" });
+    registerChildProcess(43, "exact-child");
+    registerChildProcess(44, "unknown-child");
+    writePidsSnapshot(pidsPath);
+    expect(JSON.parse(readFileSync(pidsPath, "utf8"))).toEqual({
+      pids: [{ pid: 43, cmd: "exact-child", processGroup: exact }],
+    });
+    unregisterChildProcess(43);
     writePidsSnapshot(pidsPath);
     expect(existsSync(pidsPath)).toBe(false);
   });

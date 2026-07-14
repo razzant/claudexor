@@ -62,6 +62,7 @@ import {
   REQUIRED_TRIAD_MODELS,
   SCOPE_ITEMS,
   TRIAD_ITEMS,
+  buildTouchedFilePack,
   completionTermination,
   parseChecklistJson,
   pathIsWithin,
@@ -263,40 +264,6 @@ function changedFiles(base) {
   return git(["diff", "--name-only", `${base}..HEAD`]).trim();
 }
 
-function touchedFilePack(paths) {
-  let total = 0;
-  const out = [];
-  const omitted = [];
-  for (const p of paths) {
-    if (!existsSync(p)) {
-      out.push(`### ${p}\n\n(deleted by this diff)`);
-      continue;
-    }
-    let text;
-    try {
-      text = readFileSync(p, "utf8");
-    } catch {
-      omitted.push(`${p} (unreadable/binary)`);
-      continue;
-    }
-    if (text.length > MAX_FILE_BYTES) {
-      omitted.push(`${p} (${text.length}B > per-file cap; review via diff)`);
-      continue;
-    }
-    if (total + text.length > MAX_PACK_BYTES) {
-      omitted.push(`${p} (pack budget reached)`);
-      continue;
-    }
-    total += text.length;
-    out.push(`### ${p}\n\n\`\`\`\n${text}\n\`\`\``);
-  }
-  let pack = out.join("\n\n");
-  if (omitted.length > 0) {
-    pack += `\n\n⚠️ OMISSION NOTE: ${omitted.length} file(s) omitted from direct context: ${omitted.join(", ")}`;
-  }
-  return pack || "(no touched files could be read)";
-}
-
 /** Compact whole-repo atlas: every tracked path + byte size (scope reviewer's map). */
 function repoAtlas() {
   const lines = git(["ls-files"]).trim().split("\n");
@@ -364,7 +331,12 @@ ${readDoc("docs/ARCHITECTURE.md")}
 
 ## Current touched files (full content)
 
-${touchedFilePack(changedFiles(base).split("\n").filter(Boolean))}
+${buildTouchedFilePack(
+  changedFiles(base).split("\n").filter(Boolean),
+  git,
+  MAX_FILE_BYTES,
+  MAX_PACK_BYTES,
+)}
 
 ## Diff under review
 
@@ -436,7 +408,12 @@ ${repoAtlas()}
 
 ## Current touched files (post-change)
 
-${touchedFilePack(changedFiles(base).split("\n").filter(Boolean))}
+${buildTouchedFilePack(
+  changedFiles(base).split("\n").filter(Boolean),
+  git,
+  MAX_FILE_BYTES,
+  MAX_PACK_BYTES,
+)}
 
 ## Diff under review
 

@@ -66,6 +66,37 @@ export function validateFrozenReviewBinding(input) {
   return { ok: reasons.length === 0, reasons };
 }
 
+/** Build changed-file context from committed Git objects, never live paths. */
+export function buildTouchedFilePack(paths, git, maxFileBytes, maxPackBytes) {
+  let total = 0;
+  const out = [];
+  const omitted = [];
+  for (const path of paths) {
+    let text;
+    try {
+      text = git(["show", `HEAD:${path}`]);
+    } catch {
+      out.push(`### ${path}\n\n(deleted by this diff)`);
+      continue;
+    }
+    if (text.length > maxFileBytes) {
+      omitted.push(`${path} (${text.length}B > per-file cap; review via diff)`);
+      continue;
+    }
+    if (total + text.length > maxPackBytes) {
+      omitted.push(`${path} (pack budget reached)`);
+      continue;
+    }
+    total += text.length;
+    out.push(`### ${path}\n\n\`\`\`\n${text}\n\`\`\``);
+  }
+  let pack = out.join("\n\n");
+  if (omitted.length > 0) {
+    pack += `\n\n⚠️ OMISSION NOTE: ${omitted.length} file(s) omitted from direct context: ${omitted.join(", ")}`;
+  }
+  return pack || "(no touched files could be read)";
+}
+
 export function completionTermination(finishReason) {
   return finishReason === "stop"
     ? { complete: true, error: null }

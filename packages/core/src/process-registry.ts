@@ -6,17 +6,27 @@
  * process groups by design, so they outlive the daemon). Purely
  * observational: adapters gain no orchestration behavior.
  */
-const live = new Map<number, string>();
+import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
+
+interface LiveChildProcess {
+  pid: number;
+  cmd: string;
+  processGroup: ProcessGroupHandle;
+}
+
+const live = new Map<number, LiveChildProcess>();
 
 export function registerChildProcess(pid: number, cmd: string): void {
-  live.set(pid, cmd);
+  const captured = defaultProcessGroupService.captureLeader(pid);
+  if (captured.status === "known") live.set(pid, { pid, cmd, processGroup: captured.handle });
+  else live.delete(pid);
 }
 
 export function unregisterChildProcess(pid: number): void {
   live.delete(pid);
 }
 
-/** Snapshot of currently-live child process groups: pid + command name. */
-export function liveChildProcesses(): { pid: number; cmd: string }[] {
-  return [...live.entries()].map(([pid, cmd]) => ({ pid, cmd }));
+/** Snapshot of children whose exact kernel process-group identity was captured. */
+export function liveChildProcesses(): LiveChildProcess[] {
+  return [...live.values()];
 }

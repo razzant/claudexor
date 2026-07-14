@@ -1194,6 +1194,52 @@ describe("setup jobs", () => {
     expect(stopped.execution).toBeUndefined();
   });
 
+  it("persists a completed native command before cancellation terminalizes its result", async () => {
+    const invalidatedHarnesses: string[] = [];
+    const group = processGroupFixture();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "cancel-after-result"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      processGroups: group.service,
+      onCredentialStateMayHaveChanged: (harness) => invalidatedHarnesses.push(harness),
+    });
+    const job = manager.create(LOGIN_REQUEST);
+    const manifest = readLoginManifest(manager._store.paths(job.jobId).manifest);
+    const observedAt = new Date().toISOString();
+    const permitIssuedAt = new Date().toISOString();
+    manager._store.update(job.jobId, {
+      execution: {
+        executionId: manifest.executionId,
+        commandDigest: manifest.commandDigest,
+        manifestDigest: manifest.manifestDigest,
+        processGroup: { schemaVersion: 1, pgid: group.leader.pid, leader: group.leader },
+        observedAt,
+      },
+    });
+    manager._store.update(job.jobId, {
+      execution: { ...manager.status({ jobId: job.jobId }).execution!, permitIssuedAt },
+    });
+    manager._store.update(job.jobId, {
+      state: "waiting_for_input",
+      phase: "awaiting_user",
+    });
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    writeRunnerResultV2(manager, job.jobId, { permitIssuedAt });
+
+    const stopped = await manager.cancel({ jobId: job.jobId });
+
+    expect(stopped).toMatchObject({
+      state: "cancelled",
+      outcome: { reason: "cancelled_by_user", exitCode: 0, signal: null },
+      nativeCommand: { commandStarted: true, exitCode: 0, signal: null },
+    });
+    expect(invalidatedHarnesses).toEqual(["codex"]);
+    expect(group.signals).toEqual([]);
+    await manager.shutdown();
+  });
+
   it("never signals a PID-reused process when kernel start identity differs", async () => {
     const leader = knownLeader(21, "darwin:1710000000:000021");
     const group = processGroupFixture({ leader });

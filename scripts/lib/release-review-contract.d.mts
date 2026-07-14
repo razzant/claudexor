@@ -33,6 +33,12 @@ export function validateFrozenReviewBinding(input: {
   actualTree: string;
   dirty: boolean;
 }): { ok: boolean; reasons: string[] };
+export function buildTouchedFilePack(
+  paths: readonly string[],
+  git: (args: string[]) => string,
+  maxFileBytes: number,
+  maxPackBytes: number,
+): string;
 export function completionTermination(finishReason: unknown): {
   complete: boolean;
   error: string | null;

@@ -1,8 +1,13 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   REQUIRED_SCOPE_MODEL,
   REQUIRED_TRIAD_MODELS,
   TRIAD_ITEMS,
+  buildTouchedFilePack,
   completionTermination,
   exactPanelMatch,
   parseChecklistJson,
@@ -53,6 +58,41 @@ describe("release review fail-closed contract", () => {
     expect(validateFrozenReviewBinding(clean)).toEqual({ ok: true, reasons: [] });
     expect(validateFrozenReviewBinding({ ...clean, dirty: true }).ok).toBe(false);
     expect(validateFrozenReviewBinding({ ...clean, actualTree: "c".repeat(40) }).ok).toBe(false);
+  });
+
+  it("builds touched-file context from Git blobs without following tracked symlinks", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-review-pack-"));
+    const repo = join(root, "repo");
+    const outside = join(root, "outside.txt");
+    const sentinel = "OUTSIDE_SENTINEL_NOT_IN_GIT";
+    mkdirSync(repo);
+    writeFileSync(outside, sentinel);
+    writeFileSync(join(repo, "regular.txt"), "committed regular content\n");
+    symlinkSync(outside, join(repo, "leak.txt"));
+    const git = (args: string[]): string =>
+      execFileSync("git", args, {
+        cwd: repo,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "fixture",
+          GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+          GIT_COMMITTER_NAME: "fixture",
+          GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+        },
+      });
+    try {
+      git(["init", "-q"]);
+      git(["add", "regular.txt", "leak.txt"]);
+      git(["commit", "-qm", "fixture"]);
+      expect(git(["ls-files", "-s", "--", "leak.txt"])).toMatch(/^120000 /);
+      const pack = buildTouchedFilePack(["regular.txt", "leak.txt"], git, 200_000, 3_000_000);
+      expect(pack).toContain("committed regular content");
+      expect(pack).toContain(outside);
+      expect(pack).not.toContain(sentinel);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([null, "length", "max_tokens", "tool_calls"])(

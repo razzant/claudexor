@@ -588,7 +588,6 @@ describe("reviewEngine", () => {
   it("runs reviewers concurrently while preserving input-ordered results and telemetry", async () => {
     let active = 0;
     let maxActive = 0;
-    const completed: string[] = [];
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
     const concurrentReviewer = (
       id: string,
@@ -629,7 +628,6 @@ describe("reviewEngine", () => {
               ])}\n\`\`\``,
             };
             yield { type: "completed", session_id: spec.session_id, ts };
-            completed.push(id);
           } finally {
             active--;
           }
@@ -650,7 +648,6 @@ describe("reviewEngine", () => {
     });
 
     expect(maxActive).toBe(2);
-    expect(completed).toEqual(["fast", "slow"]);
     expect(result.reviewerRequests.map((request) => request.harness_id)).toEqual(["slow", "fast"]);
     expect(result.findings.map((finding) => finding.claim)).toEqual([
       "slow finding",

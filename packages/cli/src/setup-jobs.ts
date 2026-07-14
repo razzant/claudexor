@@ -765,9 +765,11 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   ): Promise<ControlSetupJob> {
     const job = store.status(jobId);
     if (TERMINAL_SETUP_STATES.has(job.state)) return job;
-    update(jobId, { phase: "cancelling", message: `Stopping ${job.harness} login (${reason}).` });
-    verificationControllers.get(jobId)?.abort(new Error(`native login ${reason}`));
     const result = matchingResult(jobId);
+    if (result) persistNativeCommandOutcome(jobId, result);
+    else
+      update(jobId, { phase: "cancelling", message: `Stopping ${job.harness} login (${reason}).` });
+    verificationControllers.get(jobId)?.abort(new Error(`native login ${reason}`));
     if (result) {
       const stateName = reason === "timed_out" ? "timed_out" : "cancelled";
       return finish(jobId, stateName, reason, `${job.harness} login ${reason}.`, {
@@ -777,9 +779,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     }
     const group = processGroupFromJob(job);
     if (!group) {
-      // The v2 worker cannot launch vendor code before execution evidence is
-      // journal-ACKed. With no durable handle there is no vendor process to
-      // kill and no unsafe PID guess to make.
+      // Without a durable handle the v2 worker never received permission to launch vendor code.
       const stateName = reason === "timed_out" ? "timed_out" : "cancelled";
       return finish(
         jobId,
