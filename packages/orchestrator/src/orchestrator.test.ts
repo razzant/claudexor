@@ -4022,7 +4022,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
   it("ENVELOPE ENFORCEMENT: a start_run sub-run executes in an isolated worktree, not the live repo root", async () => {
     const repo = await initRepo();
     // Capture the cwd the sub-run's implementer actually executes in. A safe
-    // envelope sub-run runs in an isolated worktree under .claudexor/workspaces,
+    // Envelope sub-run runs in an isolated worktree under the external project runtime,
     // NEVER the live repo root (inPlace=false enforced by assertEnvelopeSubRun).
     let subCwd: string | null = null;
     const recordingImpl: HarnessAdapter = {

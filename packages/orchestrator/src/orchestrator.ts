@@ -1986,8 +1986,8 @@ export class Orchestrator {
 
   /**
    * Guarantee a git boundary for write-mode runs. Non-git project folders are
-   * initialized in place (`.gitignore` seeded with `.claudexor/`, `git init`,
-   * deterministic baseline commit) and the action is announced via a
+   * initialized in place (`git init`, deterministic baseline commit) without
+   * creating or editing `.gitignore`, and the action is announced via a
    * `project.git.initialized` event. Returns the failure message when the
    * boundary cannot be established (the terminal failure events are already
    * emitted); null on success.

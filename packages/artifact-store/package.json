@@ -2,7 +2,7 @@
   "name": "@claudexor/artifact-store",
   "version": "1.0.1",
   "license": "MIT",
-  "description": "Files-first canonical artifact store (repo-local .claudexor/runs layout).",
+  "description": "Files-first canonical artifact store in an external per-project runtime namespace.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

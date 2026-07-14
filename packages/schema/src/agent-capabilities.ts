@@ -146,7 +146,7 @@ export const CatalogMutabilityMatrix = z
     isolationKinds: z
       .array(z.enum(["envelope", "live"]))
       .describe(
-        "Run isolation: envelope = isolated worktree under .claudexor/workspaces (default), live = the project tree itself.",
+        "Run isolation: envelope = isolated worktree in the external per-project runtime namespace (default), live = the project tree itself.",
       ),
     workspaceModes: z
       .array(WorkspaceMode)

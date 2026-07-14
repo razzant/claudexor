@@ -84,7 +84,7 @@ export interface JobRecord {
    * never on substring-matching the human message. */
   errorCode?: string;
   createdAt: string;
-  /** Surfaced as soon as the run starts so a client can tail .claudexor/runs/<runId>/events.jsonl. */
+  /** Surfaced as soon as the run starts so a client can tail the external run's events.jsonl. */
   runId?: string;
   taskId?: string;
   runDir?: string;

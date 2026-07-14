@@ -129,8 +129,9 @@ only. It never authorizes a model substitution or a scoped/truncated cumulative
 diff.
 
 Release review is cumulative and SHA-bound. First commit a clean candidate,
-then freeze its exact tree and evidence packet, run both required Tier 1
-critics, and only then run the exact triad plus scope reviewer described in
+then freeze its exact tree and evidence packet. Start both required Tier 1
+critics, all three exact triad slots, and the required scope reviewer in one
+parallel wave against that same sealed evidence, as described in
 `docs/CHECKLISTS.md`. Any tracked mutation makes every result stale and starts
 a new freeze. Staged-diff review is not release authority, so the old
 per-commit script and hook installer have been removed rather than retained as

@@ -32,7 +32,7 @@ export const RunExecution = z
       .enum(["envelope", "live"])
       .default("envelope")
       .describe(
-        "Run isolation: envelope (isolated worktree under .claudexor/workspaces, the default) or live (the project tree itself).",
+        "Run isolation: envelope (isolated worktree in the external per-project runtime namespace, the default) or live (the project tree itself).",
       ),
   })
   .strict()

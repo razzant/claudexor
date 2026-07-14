@@ -375,16 +375,17 @@ emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
 
 Envelope semantics are strict. Project runs execute under
-`.claudexor/workspaces/<task>/<attempt>/tree`, and the harness `cwd` is the
-envelope worktree. Proven work product is the git diff in that worktree, a
+`~/.claudexor/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
+the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
 declared run artifact, or an explicitly verified host side-effect. Absolute
 `/tmp/...` writes are host side effects and are not project diffs; project tmp
 requests default to `tmp/...` inside the project/envelope or to run artifacts.
 
 Write modes need a git boundary for that isolation. A NON-GIT project folder is
-initialized automatically before any candidate spawns: `.gitignore` is seeded
-with `.claudexor/` first, then `git init` plus a deterministic baseline commit
-(author `Claudexor`) make worktree diffs honest from the first run. The action
+initialized automatically before any candidate spawns: `git init` plus a
+deterministic baseline commit (author `Claudexor`) make worktree diffs honest
+from the first run. Claudexor never creates or edits the project's `.gitignore`;
+repo `.claudexor/` is user-owned config and runtime stays external. The action
 is announced via a `project.git.initialized` run event in the timeline — never
 a refusal (comparator: Codex CLI refuses outside git; Claudexor creates the
 boundary itself), never a silent mutation. Read-only modes and `--in-place`
@@ -401,10 +402,11 @@ persistent worktree for an `isolated` thread — the orchestrator's internal
 run-input carries this as `executionRoot`), so the
 routed harness resumes its own native CLI session and the next turn sees the
 work — no `session.rebound` for these. A best-of-N race still runs candidates in
-throwaway envelopes from the tree's current state and AUTO-ADOPTS the winner's
-patch into the execution tree (`git apply --3way`, disclosed via
-`work_product.adopted`); a conflict leaves `adopted:false` and offers a manual
-apply, never losing work. Blockers (NEEDS_HUMAN / non-clean terminal) stop
+throwaway envelopes from the tree's current state and may auto-adopt a verified
+winner through the shared preimage-bound protected apply path. It first runs
+`git apply --check`, then a plain all-or-nothing apply; stale or conflicting
+targets leave `adopted:false` without destructive rollback. Blockers
+(NEEDS_HUMAN / non-clean terminal) stop
 adoption. An isolated thread's accumulated worktree diff is delivered to the
 project on demand via `POST /v2/threads/:id/apply`.
 
@@ -849,18 +851,18 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
 4. **Best-of winner adoption** — a best-of-N thread race runs candidates in
    isolated envelopes and applies the winner's patch to the execution tree ONLY
    on a clean terminal (success or ungated); blockers stop adoption. Adoption
-   runs the PROTECTED apply path (`git apply --check` first, restore on a
-   `--3way` failure): `adopted:false` guarantees the tree is byte-identical,
-   and a failed restore is disclosed as `tree_mutated` on the adoption event
-   instead of hidden (INV-114).
+   runs the PROTECTED apply path (`git apply --check` first, then a plain
+   all-or-nothing apply). A stale or concurrent target is refused and no
+   destructive rollback is attempted; `adopted:false` reports whether the
+   observed target remained unchanged (INV-114).
 5. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
    accumulated worktree diff. Fences: a HEAD-RUN STATE GATE (a thread whose
    head run is blocked or failed 409s unless a typed operator decision covers
    that run — the audited `control.rejected` event records the refusal),
    a secret-like-token scan refuses the patch, a project-HEAD-moved check is
    disclosed as an advisory, and delivery reuses the shared protected
-   `deliver` path (`--check` first, restore on failure, honest
-   `treeMutated`).
+   `deliver` path (`--check` first, preimage-bound plain apply, no destructive
+   rollback, honest `treeMutated`).
 6. **Automatic git init** — a NON-GIT project folder is initialized before any
    write candidate spawns (`git init`,
    deterministic baseline commit). Fence: the mutation is announced via a typed
@@ -944,7 +946,8 @@ detail as `candidates` from attempt/review/decision artifacts.
 
 Repository release review is cumulative and SHA-bound. Reviewers inspect an
 external immutable packet for the exact clean committed candidate: both Tier 1
-critics run before the exact triad plus scope panel, and any tracked mutation
+critics, the three exact triad slots, and required scope reviewer start in one
+parallel wave against the same sealed evidence, and any tracked mutation
 invalidates every result. The old per-commit staged-diff hook, bypass log, and
 installer are removed so they cannot compete with or be mistaken for release
 authority. Product command `claudexor review --diff <file>` remains a normal
@@ -977,7 +980,9 @@ raw event reference, and are capped with an explicit truncation marker.
 
 ## 8. Artifact Layout
 
-Canonical output lives under `.claudexor/runs/<run_id>/`:
+Canonical project output lives under
+`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
+`~/.claudexor/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -1135,8 +1140,8 @@ code touching one of these areas must honor it or change it explicitly here.
   acceptance criteria count as covered only when required gates pass; there is
   no per-criterion acceptance evidence.
 - Run-artifact writes are non-atomic by design: the engine is the single
-  writer of a run directory; external writers into `.claudexor/runs` are
-  unsupported.
+  writer of a run directory; external writers into the external runtime
+  namespace are unsupported.
 - The durable v2 spec-session freeze endpoint has no spec-revision lineage and
   currently reports an empty SpecPack `changes` list. The lower-level SpecPack
   persistence helper can calculate a diff when an internal caller supplies a

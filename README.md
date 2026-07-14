@@ -257,14 +257,14 @@ claudexor auth login claude   # claude auth login --claudeai
 claudexor auth login cursor   # cursor-agent login
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
-claudexor secrets list --backend file   # force the 0600 file store (also: CLAUDEXOR_SECRETS_BACKEND=file)
 claudexor settings show
 claudexor settings set default_portfolio subscription-first
 ```
 
-Secrets default to the OS Keychain (or a `0600` file). `--backend file` /
-`CLAUDEXOR_SECRETS_BACKEND=file` forces the file store so a sandboxed run or test
-never touches the real login Keychain; an invalid value fails loudly.
+Secrets default to the OS Keychain (or a `0600` file).
+`CLAUDEXOR_SECRETS_BACKEND=file` selects the file store for sandboxed tests so
+they never touch the real login Keychain; an invalid value fails loudly. The
+public CLI cannot select a storage backend.
 
 `auth status` prints both typed readiness axes. Manifest auth sources say only
 what could be used; doctor source verification decides whether a route is
@@ -272,7 +272,9 @@ actually ready.
 
 ## Daemon And Control API
 
-The optional daemon owns durable local command queueing over a Unix socket. A
+The managed daemon is the mandatory runtime authority and normally auto-starts
+when a product command needs it. It owns durable local command queueing over a
+Unix socket. A
 create is acknowledged only after its checksummed global-journal frame reaches
 `fsync`; `Idempotency-Key` binds retries to the original request. After a crash,
 an accepted nonterminal command becomes `interrupted_unknown` and is never
@@ -345,9 +347,11 @@ claudexor daemon stop
 
 ## Artifact Layout
 
-Every project run creates files under `.claudexor/runs/<run_id>/`. App-launched
-Ask without a project uses an empty synthetic cwd at
-`~/.cache/claudexor/no-project` and writes artifacts to the user-level store
+Every project run creates files under the external per-project namespace
+`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; the repository's
+`.claudexor/` directory remains user-owned versioned config. App-launched Ask
+without a project uses an empty synthetic cwd at
+`~/.cache/claudexor/no-project` and writes artifacts to
 `~/.claudexor/runs/<run_id>/`:
 
 ```text
@@ -380,8 +384,9 @@ macOS run detail screen surfaces `Outcome`, `Timeline`, and `Diagnostics`
 directly from these artifacts/events, so successful answers and failed runs are
 inspectable instead of disappearing into logs.
 
-Project runs execute in isolated envelopes under
-`.claudexor/workspaces/.../tree`; harness `cwd` is that envelope worktree.
+Project runs execute in isolated envelopes under the same external project
+namespace at `~/.claudexor/projects/<project-sha256>/workspaces/.../tree`;
+harness `cwd` is that envelope worktree.
 Proven work product means a git diff in the envelope, a declared run artifact,
 or an explicitly verified host side-effect. Absolute `/tmp/...` writes are host
 side effects and do not count as project success. A project prompt asking for a
@@ -528,7 +533,8 @@ What 1.0 means here, per surface:
   keys on run paths (add-only); the control API endpoints and DTOs in
   `docs/reference/endpoints.json` + `packages/schema/generated/`
   (loopback + bearer token, add-only fields); the MCP tool set with their
-  input/output schemas; run artifact layout under `.claudexor/runs/`
+  input/output schemas; external run artifact layout under
+  `~/.claudexor/projects/<project-sha256>/runs/`
   (`final/`, `arbitration/`, `events.jsonl`).
 - **Experimental** (may change in minors, disclosed in the CHANGELOG):
   the ACP surface, the `release check-name` verb, host-plugin file layout

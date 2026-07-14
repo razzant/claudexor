@@ -13,7 +13,14 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +38,7 @@ const check = (phase, name, ok, detail = {}) => {
 // SHORT base path: the daemon's AF_UNIX socket lives under the config dir and
 // macOS caps socket paths at 104 bytes — the default $TMPDIR (/var/folders/…)
 // alone burns ~49 of them (the canary sandbox documents the same OS limit).
-const scratch = mkdtempSync("/tmp/cxi-");
+const scratch = mkdtempSync(join(realpathSync.native("/tmp"), "cxi-"));
 const scratchHome = join(scratch, "home");
 const fixtureRepo = join(scratch, "repo");
 mkdirSync(scratchHome, { recursive: true });
@@ -303,16 +310,18 @@ async function phaseD() {
       inspect.code === 0 && inspect.stdout.includes(runId ?? "@"),
       {},
     );
-    // Artifacts are PROJECT-scoped (the daemon tracks the run; evidence lives
-    // in the target repo's .claudexor/runs), exactly like a CLI run.
-    const runDir = join(fixtureRepo, ".claudexor", "runs", runId ?? "missing");
+    // Artifacts are PROJECT-scoped in the external runtime namespace. The
+    // daemon/inspect projection is the authority for the absolute location.
+    const runDir = inspect.json?.runDir;
     check(
       "D",
-      "run artifacts live under the project repo",
-      existsSync(join(runDir, "context", "task.yaml")),
+      "run artifacts live outside the project repo",
+      typeof runDir === "string" &&
+        !resolve(runDir).startsWith(resolve(fixtureRepo) + "/") &&
+        existsSync(join(runDir, "context", "task.yaml")),
       { runDir },
     );
-    const patchPath = join(runDir, "final", "patch.diff");
+    const patchPath = typeof runDir === "string" ? join(runDir, "final", "patch.diff") : "";
     const patch = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : "";
     check("D", "patch.diff captured", patch.length > 0, { bytes: patch.length });
   } finally {

@@ -270,7 +270,8 @@ persistent git worktree; turns accumulate there and an explicit thread apply
 delivers the accumulated diff to the project).
 
 Direct non-thread runs and race candidates keep the envelope default: they run
-in isolated envelopes under `.claudexor/workspaces/.../tree`, and the harness
+in isolated envelopes under the external per-project runtime namespace
+`~/.claudexor/projects/<project-sha256>/workspaces/.../tree`, and the harness
 `cwd` is the envelope worktree. Diffs come from git in the execution tree —
 envelope or in-place — never from model edit narration.
 
@@ -284,15 +285,16 @@ plugin downloads, sqlite logs, and transcripts are not captured in patches.
 
 Write-access modes need a git boundary for worktree isolation and honest
 diffs. A project folder that is not a git repository is initialized
-automatically instead of refused: `.claudexor/` is seeded into `.gitignore`
-first, then `git init` plus a deterministic Claudexor-authored baseline commit
-make diffs truthful from the very first run. The mutation is announced in the
-run timeline (`project.git.initialized`) — never silent.
+automatically instead of refused: `git init` plus a deterministic
+Claudexor-authored baseline commit make diffs truthful from the very first run.
+Claudexor never creates or edits the project's `.gitignore`; repo
+`.claudexor/` is user-owned config. The mutation is announced in the run
+timeline (`project.git.initialized`) — never silent.
 
 Captured diffs are byte-faithful and re-verified before they ship. Process
 capture never rides line-splitting (CRLF content and binary payloads survive
-exactly as git emitted them), a failed apply RESTORES the target tree — or
-reports the mutation honestly when restoration itself fails — and an
+exactly as git emitted them), and protected apply is preimage-bound and refuses
+stale targets without destructive rollback. An
 otherwise-adoptable race winner must additionally survive a FINAL VERIFY:
 its patch is applied onto a fresh tree at its own recorded base and the
 deterministic gates re-run there before adoption or apply eligibility. A
@@ -335,7 +337,8 @@ vendor credentials remain outside those disposable envelopes.
 ## Observability
 
 Run artifacts live in two honest planes that are never conflated. The run tree
-under `.claudexor/runs/<id>/` is Claudexor's internal orchestration evidence —
+under `~/.claudexor/projects/<project-sha256>/runs/<id>/` is Claudexor's
+internal orchestration evidence —
 contracts, events, attempts, reviews, decisions. The project's produced
 outputs — the repo `artifacts/` directory a run actually delivered, served
 through the produced-outputs endpoint — are user deliverables. Surfaces label

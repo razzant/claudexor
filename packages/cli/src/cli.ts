@@ -645,7 +645,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
  *   1. the project store rooted at the current cwd (the common case);
  *   2. the user-level store (~/.claudexor/runs) used by no-project Ask runs;
  *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
- *      runs live under `<thatProjectRoot>/.claudexor/runs/<runId>`, so we ask
+ *      runs live under that project's external runtime namespace, so we ask
  *      the daemon for the run's absolute runDir (GET /runs/:id ->
  *      summary.runDir) and rebuild a store whose runPaths(runId).root matches.
  * Returns null when no store can be located (the run does not exist anywhere
@@ -683,8 +683,8 @@ async function resolveRunStore(
       const detail = (await resp.json()) as { summary?: { runDir?: string } };
       const runDir = detail.summary?.runDir;
       if (runDir && existsSync(runDir)) {
-        // runDir = <repoRoot>/.claudexor/runs/<runId>; reconstruct a store whose
-        // runPaths(runId).root === runDir: runId -> runs -> .claudexor.
+        // Reconstruct a store from the daemon-authoritative absolute runDir:
+        // runId -> runs -> owned runtime root.
         const claudexorDir = resolve(runDir, "..", "..");
         const ds = new ArtifactStore(dirname(claudexorDir), { claudexorDir });
         if (existsSync(ds.runPaths(runId).root))

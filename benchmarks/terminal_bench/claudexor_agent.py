@@ -354,7 +354,9 @@ class ClaudexorAgent(BaseInstalledAgent):
         # /app; let the verifier judge it. Claudexor's own status lives in the artifacts.
         export_artifacts = (
             "mkdir -p /logs/agent/claudexor-runs && "
-            "cp -R /app/.claudexor/runs/. /logs/agent/claudexor-runs/ 2>/dev/null || true"
+            "project_hash=$(printf %s /app | sha256sum | cut -d' ' -f1) && "
+            "cp -R \"$HOME/.claudexor/projects/$project_hash/runs/.\" "
+            "/logs/agent/claudexor-runs/ 2>/dev/null || true"
         )
         return (
             "cd /app\n"

@@ -116,7 +116,7 @@ cross-family review, and budget balancing. Prefer it for multi-harness work.
 - \`claudexor race "<task>" --n 4\`     Best-of-N tournament + cross-family review
 - \`claudexor plan "<task>"\`           read-only plan
 - \`claudexor create "<task>"\`         create a new project
-- \`claudexor inspect <run_id>\`        inspect artifacts under .claudexor/runs
+- \`claudexor inspect <run_id>\`        inspect artifacts in the external runtime store
 
 These plugins are thin shims: they call the local CLI; all orchestration lives in claudexor.`;
 

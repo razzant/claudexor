@@ -192,7 +192,8 @@ process below. Never paper over the conflict.
   diff parser is the one owner. verify: policy tests; core diff parser
   tests.
 - **INV-051** Run artifacts live in two honest planes that are never
-  conflated: the run tree under `.claudexor/runs/<id>/` is Claudexor's
+  conflated: the run tree under the external per-project runtime namespace
+  (`~/.claudexor/projects/<project-sha256>/runs/<id>/`) is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
   repo `artifacts/` dir served via `/runs/:id/produced`) are user
   deliverables. Surfaces label which plane they show. verify: control-api
@@ -222,12 +223,10 @@ process below. Never paper over the conflict.
   prompts are durable artifacts and there is deliberately NO bypass flag.
   verify: secret-scan CI step; redaction tests; inline-secret rejection
   tests; canary `[INV-062:prompt-secret-block]`.
-- **INV-063** Scoped harness homes/config dirs stay outside the mutation
-  worktree so `git add -A` can never capture auth files, plugin downloads,
-  sqlite logs, or transcripts into a patch. Where a containment exception
-  exists (isolated-thread candidates keep scoped homes inside the thread
-  worktree), an explicit ignore boundary provides the same guarantee and the
-  mechanism is documented. verify: workspace env tests; T3 audit sweep.
+- **INV-063** Scoped harness homes/config dirs stay outside every mutation
+  worktree, in the external per-project runtime namespace, so `git add -A`
+  can never capture auth files, plugin downloads, sqlite logs, or transcripts
+  into a patch. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
   scoped store outside any worktree; attachment bytes never enter
   the command journal, task contracts, or `git add -A` scope. Direct non-thread
@@ -260,8 +259,10 @@ process below. Never paper over the conflict.
   is that the invoking directory IS the project scope. verify: canary
   `[INV-071:project-context-explicit]`; app no-project tests.
 - **INV-072** Ordinary project runs (and Best-of candidates) execute in
-  isolated envelopes under `.claudexor/workspaces/.../tree`, with the
-  harness cwd at the envelope worktree. verify: workspace manager tests.
+  isolated envelopes under the external per-project runtime namespace
+  (`~/.claudexor/projects/<project-sha256>/workspaces/.../tree`), with the
+  harness cwd at the envelope worktree. The repository's `.claudexor/`
+  remains user-owned versioned config. verify: workspace manager tests.
 - **INV-073** Chat thread WRITE turns run IN-PLACE in the thread's
   explicit execution tree — the live project for an `in_place` thread, or
   the thread's persistent worktree for an `isolated` thread — and the
@@ -273,10 +274,11 @@ process below. Never paper over the conflict.
   selects a verified host-side-effect mode. verify: tmp-semantics telemetry
   tests.
 - **INV-075** Write modes need a git boundary. A non-git project folder is
-  initialized automatically (`.gitignore` seeded with `.claudexor/` first,
-  then `git init` + a deterministic baseline commit), announced via a typed
-  `project.git.initialized` event — never a refusal, never a silent
-  mutation. verify: git-init workspace tests.
+  initialized automatically (`git init` + a deterministic baseline commit),
+  announced via a typed `project.git.initialized` event — never a refusal,
+  never a silent mutation. Claudexor never creates or edits the project's
+  `.gitignore`; repo `.claudexor/` is user-owned state and runtime stays
+  external. verify: git-init and gitignore non-interference workspace tests.
 
 ## 8. Spec-Driven Work Is First-Class
 

@@ -315,9 +315,11 @@ evidence rather than relying on final-answer claims.
 
 ## Storage
 
-Project runs write under the target repository's `.claudexor/runs/<run_id>/`.
-No-project Ask runs use a synthetic cwd and write artifacts under the user-level
-Claudexor store. See `docs/ARCHITECTURE.md` for the full current layout.
+Project runs write under the external per-project namespace
+`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; the target repository's
+`.claudexor/` remains user-owned config. No-project Ask runs use a synthetic cwd
+and write artifacts under `~/.claudexor/runs/`. See `docs/ARCHITECTURE.md` for
+the full current layout.
 
 ## Stability Rules
 

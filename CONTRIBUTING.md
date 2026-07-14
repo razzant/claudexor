@@ -60,7 +60,8 @@ node scripts/fixture-freshness-check.mjs  # recorded fixtures carry provenance +
 ```
 
 Review authority is the cumulative diff on an exact, clean, committed and
-frozen candidate SHA. Follow the Tier 1 then triad-and-scope procedure in
+frozen candidate SHA. Start Tier 1, the exact triad, and the required scope
+reviewer in one parallel wave following the procedure in
 [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md); any tracked mutation invalidates
 the evidence and requires a new freeze. Claudexor intentionally has no
 per-commit review hook or staged-diff review authority.

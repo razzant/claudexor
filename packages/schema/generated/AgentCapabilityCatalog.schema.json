@@ -264,7 +264,7 @@
                   "live"
                 ]
               },
-              "description": "Run isolation: envelope = isolated worktree under .claudexor/workspaces (default), live = the project tree itself."
+              "description": "Run isolation: envelope = isolated worktree in the external per-project runtime namespace (default), live = the project tree itself."
             },
             "workspaceModes": {
               "type": "array",

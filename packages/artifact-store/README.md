@@ -1,6 +1,6 @@
 # @claudexor/artifact-store
 
-Internal package of [Claudexor](https://github.com/razzant/claudexor) — Files-first canonical artifact store (repo-local .claudexor/runs layout).
+Internal package of [Claudexor](https://github.com/razzant/claudexor) — files-first canonical artifact store in an external per-project runtime namespace.
 
 Published as part of the Claudexor toolchain; it follows the monorepo's
 lockstep version and has no separate semver contract. Use the `claudexor`

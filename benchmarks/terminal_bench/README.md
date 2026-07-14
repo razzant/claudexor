@@ -19,7 +19,7 @@ ways to use this suite:
      runs out. Correct for stateful tasks (state is never thrown away).
    - **Best-of-N race** (`--harness codex,claude --n 2`): N candidates run in **isolated
      git worktrees**, cross-family review picks a winner, and the winner's **git diff** is
-     `git apply --3way`'d into `/app`. ⚠️ Only file changes are adopted — runtime-only
+     delivered through the preimage-bound protected apply path into `/app`. ⚠️ Only file changes are adopted — runtime-only
      state (started services, `apt`/`pip` installs, DB rows, untracked files) in the
      losing/disposed envelopes is NOT graded, so a race resolve% is a **lower bound** for
      runtime-state tasks. Use race only when you specifically want best-of-N semantics.
@@ -139,8 +139,8 @@ repo root on `PYTHONPATH` (the scripts set this). `install()` provisions Node 22
 Claude Code + Codex, then **uploads two prebuilt sibling Claudexor bundles** into the
 container — the CLI (`/opt/claudexor/claudexor-cli.js`) and its daemon
 (`/opt/claudexor/claudexord.js`) — no in-container clone, `pnpm install`, or `tsc`.
-`run()` invokes `claudexor agent --in-place ...` and exports `/app/.claudexor/runs` to
-`/logs/agent/`.
+`run()` invokes `claudexor agent --in-place ...` and exports the external
+`$HOME/.claudexor/projects/<sha256-of-/app>/runs` namespace to `/logs/agent/`.
 
 Why two files: `claudexor agent` routes through `ensureDaemon()`, which
 auto-starts the daemon by spawning the **sibling** `new URL("./claudexord.js",

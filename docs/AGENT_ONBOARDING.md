@@ -47,7 +47,8 @@ live surface disagree, trust the live surface.
 - `ask`, `plan`, `audit` (and `explore` = `audit --swarm`) never mutate the
   tree. `orchestrate` in the default suggest autonomy only plans.
 - `agent`, `best-of`, `create` produce tree changes — by default in an
-  ISOLATED envelope under `.claudexor/workspaces/`, never the live tree.
+  ISOLATED envelope under the external per-project runtime namespace
+  `~/.claudexor/projects/<project-sha256>/workspaces/`, never the live tree.
   The live tree changes only through `apply` (or an in-place turn you asked
   for explicitly).
 - A secret-like value inside a prompt is hard-blocked at every ingress with

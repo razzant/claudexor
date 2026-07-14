@@ -375,7 +375,7 @@ async function applyThreadDiff(
       detail: "patch contains a secret-like token; refusing apply",
     };
   // Best-effort: did the PROJECT advance past where this thread branched? (a
-  // warning, not a blocker — git apply --3way still merges or fails loudly.)
+  // warning; the protected preimage-bound apply still refuses stale content.)
   let headMoved = false;
   try {
     const head = (await git(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
