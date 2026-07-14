@@ -117,6 +117,10 @@ describe("mcp daemon body mapping", () => {
     void mcpSurfaceRunner; // body mapping is exercised through the daemon route below
     const daemonRun = await import("./daemon-run.js");
     const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false }) as never),
+    );
     const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
       client: {} as never,
       addr: { baseUrl: "http://x", token: "t" } as never,
@@ -137,6 +141,7 @@ describe("mcp daemon body mapping", () => {
     } finally {
       ensureSpy.mockRestore();
       enqueueSpy.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 });
