@@ -172,6 +172,7 @@ export interface DaemonControlApiOptions {
     setupJobSnapshot?: (input: unknown) => Promise<unknown>;
     setupJobEvents?: (input: unknown) => Promise<unknown>;
     cancelSetupJob?: (input: unknown) => Promise<unknown>;
+    reconcileSetupJob?: (input: unknown) => Promise<unknown>;
     extendSetupJob?: (input: unknown) => Promise<unknown>;
     recoveryInspectGlobal?: () => Promise<unknown>;
     recoveryValidateGlobal?: () => Promise<unknown>;
@@ -242,8 +243,6 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-// TERMINAL_STATES/readNewLines/redactedSseLine live in sse-shared.ts (used by
-// both the per-run stream module and this server).
 /** Artifact fetch cap: large logs are read from disk, not streamed through the facade. */
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 /** Larger cap for binary artifacts (images, etc.): they are naturally bounded and
@@ -788,8 +787,6 @@ export class DaemonControlApiServer {
       return this.streamGlobalEvents(req, res);
     }
 
-    // ---- Threads (chat/session-first): the Thread is the conversation SSOT;
-    // runs are turns inside it; native CLI sessions resume across turns. ----
     if (method === "POST" && path === "/threads") {
       const svc = this.opts.services?.createThread;
       if (!svc)
@@ -888,7 +885,6 @@ export class DaemonControlApiServer {
       }
     }
 
-    // PATCH /threads/:id — rename / archive; ThreadState is active|closed.
     if (method === "PATCH" && threadDetailMatch) {
       const svc = this.opts.services?.updateThread;
       if (!svc)
@@ -1050,12 +1046,6 @@ export class DaemonControlApiServer {
       return;
     }
 
-    // Produced PROJECT files — the run's real OUTPUTS (the repo's `artifacts/`
-    // convention dir where agents drop visuals like a rendered preview), distinct
-    // from the orchestration tree served by /artifacts (decision.yaml, telemetry,
-    // …) which belongs in Run Detail/Diagnostics. repoRoot comes from the TYPED
-    // run scope (producedRepoRoot — null for no-project, never the home dir);
-    // content is traversal-scoped to <repoRoot>/artifacts (never the whole repo).
     const producedRootMatch = /^\/runs\/([^/]+)\/produced$/.exec(path);
     if (method === "GET" && producedRootMatch) {
       const rec = await this.findRun(decodeURIComponent(producedRootMatch[1] as string));
@@ -1429,7 +1419,7 @@ export class DaemonControlApiServer {
         return this.requestError(res, error);
       }
     }
-    if (method === "GET" && path === "/setup/jobs") {
+    if (method === "GET" && path === "/v2/setup/jobs") {
       try {
         assertOnlyQueryParams(url, ["harness", "action", "active", "limit"]);
         for (const key of ["harness", "action", "active", "limit"]) {
@@ -1453,7 +1443,7 @@ export class DaemonControlApiServer {
         return this.requestError(res, err);
       }
     }
-    if (method === "POST" && path === "/setup/jobs") {
+    if (method === "POST" && path === "/v2/setup/jobs") {
       let body: ControlSetupJobCreateRequest;
       try {
         const raw = await this.readBody(req);
@@ -1464,7 +1454,7 @@ export class DaemonControlApiServer {
       }
       return this.service(res, "createSetupJob", body, ControlSetupJob);
     }
-    const setupJobMatch = /^\/setup\/jobs\/([^/]+)$/.exec(path);
+    const setupJobMatch = /^\/v2\/setup\/jobs\/([^/]+)$/.exec(path);
     if (method === "GET" && setupJobMatch) {
       return this.service(
         res,
@@ -1473,7 +1463,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobSnapshotMatch = /^\/setup\/jobs\/([^/]+)\/snapshot$/.exec(path);
+    const setupJobSnapshotMatch = /^\/v2\/setup\/jobs\/([^/]+)\/snapshot$/.exec(path);
     if (method === "GET" && setupJobSnapshotMatch) {
       return this.service(
         res,
@@ -1482,7 +1472,7 @@ export class DaemonControlApiServer {
         ControlSetupJobSnapshot,
       );
     }
-    const setupJobCancelMatch = /^\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
+    const setupJobCancelMatch = /^\/v2\/setup\/jobs\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && setupJobCancelMatch) {
       return this.service(
         res,
@@ -1491,7 +1481,16 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobExtendMatch = /^\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
+    const setupJobReconcileMatch = /^\/v2\/setup\/jobs\/([^/]+)\/reconcile$/.exec(path);
+    if (method === "POST" && setupJobReconcileMatch) {
+      return this.service(
+        res,
+        "reconcileSetupJob",
+        { jobId: decodeURIComponent(setupJobReconcileMatch[1] as string) },
+        ControlSetupJob,
+      );
+    }
+    const setupJobExtendMatch = /^\/v2\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
     if (method === "POST" && setupJobExtendMatch) {
       return this.service(
         res,
@@ -1500,7 +1499,7 @@ export class DaemonControlApiServer {
         ControlSetupJob,
       );
     }
-    const setupJobEventsMatch = /^\/setup\/jobs\/([^/]+)\/events$/.exec(path);
+    const setupJobEventsMatch = /^\/v2\/setup\/jobs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && setupJobEventsMatch) {
       return this.streamSetupJobEvents(
         decodeURIComponent(setupJobEventsMatch[1] as string),

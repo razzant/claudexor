@@ -1144,8 +1144,15 @@ import Testing
 
     @Test func terminationUnconfirmedIsNotSafeForCancelAndClose() {
         let unconfirmed = makeSetupJob(
-            id: "uncertain", state: "cancelled", phase: .completed,
+            id: "uncertain", state: "failed", phase: .completed,
             outcome: SetupJobOutcome(reason: .terminationUnconfirmed)
+        )
+        let reconciled = makeSetupJob(
+            id: "reconciled", state: "failed", phase: .completed,
+            outcome: SetupJobOutcome(reason: .terminationUnconfirmed),
+            terminationReconciliation: SetupTerminationReconciliation(
+                status: .empty, observedAt: "2026-07-13T00:00:03Z"
+            )
         )
         let confirmed = makeSetupJob(
             id: "cancelled", state: "cancelled", phase: .completed,
@@ -1156,13 +1163,15 @@ import Testing
         #expect(!unconfirmed.canRetry)
         #expect(!unconfirmed.hasConfirmedTermination)
         #expect(!confirmed.blocksReplacement)
+        #expect(!reconciled.blocksReplacement)
+        #expect(reconciled.canRetry)
         #expect(confirmed.canRetry)
         #expect(confirmed.hasConfirmedTermination)
     }
 
     @Test func controllerRecoversUnsafeTerminalAndDoesNotRetryIt() async {
         let unconfirmed = makeSetupJob(
-            id: "uncertain", state: "cancelled", phase: .completed,
+            id: "uncertain", state: "failed", phase: .completed,
             outcome: SetupJobOutcome(reason: .terminationUnconfirmed)
         )
         let gateway = FakeSetupGateway(
@@ -1182,6 +1191,31 @@ import Testing
         await controller.retry()
         #expect(!gateway.calls.contains("create:login"))
         #expect(await controller.snapshot().job == unconfirmed)
+    }
+
+    @Test func controllerReconcilesUnsafeTerminalBeforeEnablingRetry() async {
+        let unconfirmed = makeSetupJob(
+            id: "uncertain", state: "failed", phase: .completed,
+            outcome: SetupJobOutcome(reason: .terminationUnconfirmed)
+        )
+        let reconciled = makeSetupJob(
+            id: "uncertain", state: "failed", phase: .completed,
+            outcome: SetupJobOutcome(reason: .terminationUnconfirmed),
+            terminationReconciliation: SetupTerminationReconciliation(
+                status: .empty, observedAt: "2026-07-13T00:00:03Z"
+            )
+        )
+        let gateway = FakeSetupGateway(
+            listResult: [unconfirmed], snapshots: [reconciled], streams: []
+        )
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+
+        await controller.recoverActiveJob(harness: "claude")
+        await controller.reconnect(harness: "claude")
+
+        #expect(await controller.snapshot().job == reconciled)
+        #expect(await controller.snapshot().job?.canRetry == true)
+        #expect(gateway.calls.contains("reconcile:uncertain"))
     }
 
     @Test func zeroActiveRecoveryIgnoresOrdinaryTerminalHistory() async {
@@ -1377,7 +1411,7 @@ import Testing
 
         func install(_ body: String) {
             RequestStubURLProtocol.handler = { request in
-                guard request.url?.path == "/setup/jobs/j/events" else {
+                guard request.url?.path == "/v2/setup/jobs/j/events" else {
                     throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
                 }
                 let response = HTTPURLResponse(
@@ -1462,7 +1496,7 @@ import Testing
         RequestStubURLProtocol.handler = { request in
             let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
-            guard request.url?.path == "/setup/jobs",
+            guard request.url?.path == "/v2/setup/jobs",
                   values == ["harness":"claude", "active":"true", "limit":"1"] else {
                 throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
             }
@@ -1605,7 +1639,8 @@ private func makeSetupCapability(state: SetupJobState) -> AuthCapabilityLifecycl
 }
 
 private func makeSetupJob(id: String, state: String,
-                          phase: SetupJobPhase, outcome: SetupJobOutcome? = nil) -> SetupJob {
+                          phase: SetupJobPhase, outcome: SetupJobOutcome? = nil,
+                          terminationReconciliation: SetupTerminationReconciliation? = nil) -> SetupJob {
     let typedState = SetupJobState(rawValue: state)!
     let terminal = typedState == .succeeded || typedState == .failed || typedState == .cancelled
         || typedState == .timedOut || typedState == .interruptedUnknown || typedState == .notSupported
@@ -1623,7 +1658,8 @@ private func makeSetupJob(id: String, state: String,
              outcome: outcome ?? defaultOutcome, message: state, createdAt: "2026-07-13T00:00:00Z",
              startedAt: typedState == .queued ? nil : "2026-07-13T00:00:01Z",
              finishedAt: terminal ? "2026-07-13T00:00:02Z" : nil,
-             authCapability: makeSetupCapability(state: typedState))
+             authCapability: makeSetupCapability(state: typedState),
+             terminationReconciliation: terminationReconciliation)
 }
 
 private func firstSnapshot(
@@ -1716,6 +1752,11 @@ private final class FakeSetupGateway: SetupJobGateway, @unchecked Sendable {
         return try nextSetupJob(jobId: jobId)
     }
 
+    func reconcileSetupJob(jobId: String) async throws -> SetupJob {
+        lock.withLock { callsStorage.append("reconcile:\(jobId)") }
+        return try nextSetupJob(jobId: jobId)
+    }
+
     func extendSetupJob(jobId: String) async throws -> SetupJob { try nextSetupJob(jobId: jobId) }
 
     func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
@@ -1768,6 +1809,7 @@ private struct MutationRaceGateway: SetupJobGateway {
     func listSetupJobs(filter: SetupJobListFilter) async throws -> [SetupJob] { [active] }
     func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot { SetupJobSnapshot(job: active, cursor: "cursor", sequence: 1) }
     func extendSetupJob(jobId: String) async throws -> SetupJob { active }
+    func reconcileSetupJob(jobId: String) async throws -> SetupJob { active }
 
     func cancelSetupJob(jobId: String) async throws -> SetupJob {
         await cancelGate.wait()

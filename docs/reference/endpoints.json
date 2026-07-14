@@ -163,55 +163,6 @@
       "response_schema": null
     },
     {
-      "method": "GET",
-      "path": "/setup/jobs",
-      "mutating": false,
-      "request_schema": null,
-      "response_schema": "ControlSetupJobListResponse"
-    },
-    {
-      "method": "POST",
-      "path": "/setup/jobs",
-      "mutating": true,
-      "request_schema": "ControlSetupJobCreateRequest",
-      "response_schema": "ControlSetupJob"
-    },
-    {
-      "method": "GET",
-      "path": "/setup/jobs/:id",
-      "mutating": false,
-      "request_schema": null,
-      "response_schema": "ControlSetupJob"
-    },
-    {
-      "method": "POST",
-      "path": "/setup/jobs/:id/cancel",
-      "mutating": true,
-      "request_schema": null,
-      "response_schema": "ControlSetupJob"
-    },
-    {
-      "method": "GET",
-      "path": "/setup/jobs/:id/events",
-      "mutating": false,
-      "request_schema": null,
-      "response_schema": null
-    },
-    {
-      "method": "POST",
-      "path": "/setup/jobs/:id/extend",
-      "mutating": true,
-      "request_schema": null,
-      "response_schema": "ControlSetupJob"
-    },
-    {
-      "method": "GET",
-      "path": "/setup/jobs/:id/snapshot",
-      "mutating": false,
-      "request_schema": null,
-      "response_schema": "ControlSetupJobSnapshot"
-    },
-    {
       "method": "POST",
       "path": "/spec/freeze",
       "mutating": true,
@@ -322,6 +273,62 @@
       "mutating": true,
       "request_schema": null,
       "response_schema": "ControlJournalValidation"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/setup/jobs",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSetupJobListResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/setup/jobs",
+      "mutating": true,
+      "request_schema": "ControlSetupJobCreateRequest",
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/setup/jobs/:id",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/setup/jobs/:id/cancel",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/setup/jobs/:id/events",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "POST",
+      "path": "/v2/setup/jobs/:id/extend",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/setup/jobs/:id/reconcile",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlSetupJob"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/setup/jobs/:id/snapshot",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlSetupJobSnapshot"
     }
   ]
 }

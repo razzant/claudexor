@@ -296,11 +296,13 @@ struct AuthSheet: View {
                             .help("Create a new \(family.label) \(humanize(job.action.rawValue)) setup job.")
                     }
                     if lifecycle.connection == .streamLost || job.blocksReplacement {
-                        Button("Reconnect") { Task { await reconnectSetupState() } }
+                        Button(job.blocksReplacement ? "Reconcile" : "Reconnect") { Task { await reconnectSetupState() } }
                             .buttonStyle(.bordered)
                             .help(job.isActive
                                   ? "Re-snapshot this job and start a fresh bounded stream observation."
-                                  : "Re-snapshot setup state and refresh native readiness without starting another process.")
+                                  : job.blocksReplacement
+                                    ? "Ask the daemon to prove the recorded process group empty before allowing replacement."
+                                    : "Re-snapshot setup state and refresh native readiness without starting another process.")
                     }
                     if let raw = job.guideUrl, let url = URL(string: raw) {
                         Button("Guide") { NSWorkspace.shared.open(url) }

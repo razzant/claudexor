@@ -53,7 +53,6 @@ import {
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 async function main(): Promise<void> {
-  // No lock/token/log writer may run until both config and daemon roots have
   // been proven canonical without following links. Permission repair happens
   // inside that proof, never before it.
   ensureDaemonRuntimeRoot();
@@ -557,6 +556,7 @@ function controlServices(
     setupJobSnapshot: async (input: unknown) => setupJobs().snapshot(input),
     setupJobEvents: async (input: unknown) => setupJobs().events(input),
     cancelSetupJob: async (input: unknown) => setupJobs().cancel(input),
+    reconcileSetupJob: async (input: unknown) => setupJobs().reconcile(input),
     extendSetupJob: async (input: unknown) => setupJobs().extend(input),
     recoveryInspectGlobal: async () => journalManager.inspect(),
     recoveryValidateGlobal: async () => journalManager.validate(),

@@ -76,6 +76,18 @@ public struct SetupJobOutcome: Codable, Sendable, Equatable {
     }
 }
 
+public struct SetupTerminationReconciliation: Codable, Sendable, Equatable {
+    public enum Status: String, Codable, Sendable { case empty }
+
+    public let status: Status
+    public let observedAt: String
+
+    public init(status: Status, observedAt: String) {
+        self.status = status
+        self.observedAt = observedAt
+    }
+}
+
 public struct SetupJob: Codable, Sendable, Equatable {
     public let jobId: String
     public let harness: SetupHarness
@@ -94,10 +106,12 @@ public struct SetupJob: Codable, Sendable, Equatable {
     public let execution: SetupExecutionEvidence?
     public let authorization: SetupCommandAuthorization?
     public let nativeCommand: SetupNativeCommandReceipt?
+    public let terminationReconciliation: SetupTerminationReconciliation?
 
     enum CodingKeys: String, CodingKey, CaseIterable, StrictCodingKey {
         case jobId, harness, action, state, phase, deadlineAt, outcome, command, guideUrl
         case message, createdAt, startedAt, finishedAt, authCapability, execution, authorization, nativeCommand
+        case terminationReconciliation
     }
 
     public init(jobId: String, harness: SetupHarness, action: SetupJobAction, state: SetupJobState,
@@ -107,7 +121,8 @@ public struct SetupJob: Codable, Sendable, Equatable {
                 authCapability: AuthCapabilityLifecycle? = nil,
                 execution: SetupExecutionEvidence? = nil,
                 authorization: SetupCommandAuthorization? = nil,
-                nativeCommand: SetupNativeCommandReceipt? = nil) {
+                nativeCommand: SetupNativeCommandReceipt? = nil,
+                terminationReconciliation: SetupTerminationReconciliation? = nil) {
         self.jobId = jobId
         self.harness = harness
         self.action = action
@@ -125,6 +140,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
         self.execution = execution
         self.authorization = authorization
         self.nativeCommand = nativeCommand
+        self.terminationReconciliation = terminationReconciliation
     }
 
     public init(from decoder: Decoder) throws {
@@ -147,6 +163,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
         execution = try Self.decodeOptionalNonNull(SetupExecutionEvidence.self, from: container, forKey: .execution)
         authorization = try Self.decodeOptionalNonNull(SetupCommandAuthorization.self, from: container, forKey: .authorization)
         nativeCommand = try Self.decodeOptionalNonNull(SetupNativeCommandReceipt.self, from: container, forKey: .nativeCommand)
+        terminationReconciliation = try Self.decodeOptionalNonNull(SetupTerminationReconciliation.self, from: container, forKey: .terminationReconciliation)
         try validateEvidence(decoder: decoder)
     }
 
@@ -169,6 +186,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
         try container.encodeIfPresent(execution, forKey: .execution)
         try container.encodeIfPresent(authorization, forKey: .authorization)
         try container.encodeIfPresent(nativeCommand, forKey: .nativeCommand)
+        try container.encodeIfPresent(terminationReconciliation, forKey: .terminationReconciliation)
     }
 
     private func validateEvidence(decoder: Decoder) throws {
@@ -217,6 +235,10 @@ public struct SetupJob: Codable, Sendable, Equatable {
             && authCapability?.state != .interruptedUnknown {
             throw invalid("Interrupted login lacks interrupted capability evidence")
         }
+        if terminationReconciliation != nil
+            && (outcome?.reason != .terminationUnconfirmed || execution == nil) {
+            throw invalid("Termination reconciliation lacks the original process evidence")
+        }
     }
 
     private static func decodeRequiredNullable<T: Decodable>(
@@ -257,7 +279,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
     /// that record like an ordinary terminal failure would let Retry open a
     /// second Terminal window while the first login is still running.
     public var blocksReplacement: Bool {
-        outcome?.reason == .terminationUnconfirmed
+        outcome?.reason == .terminationUnconfirmed && terminationReconciliation == nil
     }
 
     public var canRetry: Bool { hasConfirmedTermination }

@@ -1323,6 +1323,16 @@ describe("setup jobs", () => {
     const result = await manager.cancel({ jobId: job.jobId });
     expect(result.outcome?.reason).toBe("termination_unconfirmed");
     expect(group.signals).toEqual([]);
+    expect(manager.create(LOGIN_REQUEST).jobId).toBe(job.jobId);
+    expect(() => manager.reconcile({ jobId: job.jobId })).toThrow(/not proven empty/);
+    group.setObserved({ status: "missing", pid: leader.pid, platform: "darwin" });
+    group.setAlive(false);
+    const reconciled = manager.reconcile({ jobId: job.jobId });
+    expect(reconciled).toMatchObject({
+      terminationReconciliation: { status: "empty" },
+    });
+    expect(manager.reconcile({ jobId: job.jobId })).toEqual(reconciled);
+    expect(manager.create(LOGIN_REQUEST).jobId).not.toBe(job.jobId);
     await manager.shutdown();
   });
 

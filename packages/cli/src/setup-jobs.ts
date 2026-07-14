@@ -112,7 +112,6 @@ export interface SetupJobManagerOptions {
   runnerPath?: string;
   nodePath?: string;
 }
-
 /**
  * The published ESM package ships the TypeScript output as `.js`, while the
  * self-contained macOS app places an esbuild CommonJS bundle beside the daemon
@@ -127,7 +126,6 @@ export function resolveSetupLoginRunnerPath(
   const bundled = resolve(directory, "setup-login-runner.cjs");
   return pathExists(bundled) ? bundled : resolve(directory, "setup-login-runner.js");
 }
-
 export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   const now = opts.now ?? (() => new Date());
   const sleep = opts.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -165,7 +163,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   const verifyPollMs = opts.verifyPollMs ?? 2_000;
   const terminationGraceMs = opts.terminationGraceMs ?? 5_000;
   let supervisor!: SetupSupervisor;
-
   const openTerminal =
     opts.openTerminal ??
     ((scriptPath: string) =>
@@ -173,19 +170,15 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         detached: true,
         stdio: "ignore",
       }));
-
   function iso(): string {
     return now().toISOString();
   }
-
   function update(jobId: string, patch: Partial<ControlSetupJob>): ControlSetupJob {
     return store.update(jobId, patch);
   }
-
   function log(jobId: string, line: string): void {
     store.appendLog(jobId, line);
   }
-
   function logAfterMutation(jobId: string, line: string): void {
     try {
       log(jobId, line);
@@ -241,9 +234,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       nativeCommand: receipt,
       message: `Persisted hash-bound ${job.harness} native command evidence before verification.`,
     });
-    // The update above is the durable boundary. A command that was never
-    // spawned cannot have changed credentials; every command that did start
-    // invalidates only its own harness, regardless of exit/smoke outcome.
     if (receipt.commandStarted) opts.onCredentialStateMayHaveChanged?.(job.harness);
     return job;
   }
@@ -776,7 +766,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     }
     const group = processGroupFromJob(job);
     if (!group) {
-      // Without a durable handle the v2 worker never received permission to launch vendor code.
       const stateName = reason === "timed_out" ? "timed_out" : "cancelled";
       return finish(
         jobId,
@@ -1048,11 +1037,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     },
   });
   let shutdownPromise: Promise<void> | null = null;
-
   function beginDrain(): void {
     supervisor.beginDrain();
   }
-
   function shutdown(): Promise<void> {
     shutdownPromise ??= (async () => {
       beginDrain();
@@ -1102,12 +1089,10 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     })();
     return shutdownPromise;
   }
-
   return {
     start: () => supervisor.start(),
     beginDrain,
     shutdown,
-
     create(input: unknown): ControlSetupJob {
       const { harness, action } = ControlSetupJobCreateRequest.parse(input);
       supervisor.assertCreateAllowed();
@@ -1115,7 +1100,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       const existing = jobs.findLast((job) => ACTIVE_SETUP_STATES.has(job.state));
       if (existing) return existing;
       const replacementFence = jobs.findLast(
-        (job) => job.outcome?.reason === "termination_unconfirmed",
+        (job) =>
+          job.outcome?.reason === "termination_unconfirmed" && !job.terminationReconciliation,
       );
       if (replacementFence) return replacementFence;
       const profile = SETUP_PROFILES[harness];
@@ -1155,28 +1141,23 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         );
       return startObservableLogin(base, spec);
     },
-
     list(filter?: ControlSetupJobListFilter): ControlSetupJob[] {
       return store.list(filter);
     },
-
     status(input: unknown): ControlSetupJob {
       const p = (input ?? {}) as Record<string, unknown>;
       return store.status(typeof p.jobId === "string" ? p.jobId : "");
     },
-
     snapshot(input: unknown) {
       const p = (input ?? {}) as Record<string, unknown>;
       return store.snapshot(typeof p.jobId === "string" ? p.jobId : "");
     },
-
     events(input: unknown) {
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p.jobId === "string" ? p.jobId : "";
       const afterCursor = typeof p.afterCursor === "string" ? p.afterCursor : null;
       return store.events(jobId, afterCursor);
     },
-
     async cancel(input: unknown): Promise<ControlSetupJob> {
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p.jobId === "string" ? p.jobId : "";
@@ -1184,7 +1165,31 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       if (TERMINAL_SETUP_STATES.has(job.state)) return job;
       return terminateLogin(jobId, "cancelled_by_user");
     },
-
+    reconcile(input: unknown): ControlSetupJob {
+      supervisor.assertCreateAllowed();
+      const p = (input ?? {}) as Record<string, unknown>;
+      const jobId = typeof p.jobId === "string" ? p.jobId : "";
+      const job = store.status(jobId);
+      if (job.terminationReconciliation) return job;
+      if (job.outcome?.reason !== "termination_unconfirmed") {
+        throw Object.assign(new Error("setup job has no unconfirmed termination to reconcile"), {
+          code: "setup_reconciliation_not_applicable",
+          status: 409,
+        });
+      }
+      const group = processGroupFromJob(job);
+      if (!group || processGroups.probeEmpty(group).status !== "empty") {
+        throw Object.assign(new Error("setup process group is not proven empty"), {
+          code: "setup_termination_unconfirmed",
+          status: 409,
+          requiredActions: ["retry_setup_reconciliation"],
+        });
+      }
+      return update(jobId, {
+        terminationReconciliation: { status: "empty", observedAt: iso() },
+        message: `${job.harness} login process group is confirmed empty; replacement is allowed.`,
+      });
+    },
     extend(input: unknown): ControlSetupJob {
       supervisor.assertCreateAllowed();
       const p = (input ?? {}) as Record<string, unknown>;
@@ -1202,12 +1207,10 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         message: `${job.harness} login deadline extended by 15 minutes.`,
       });
     },
-
     _store: store,
     _supervisorHealth: () => supervisor.health(),
   };
 }
-
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }

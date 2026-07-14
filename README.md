@@ -278,7 +278,7 @@ The canonical endpoint inventory lives in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from source;
 this README does not duplicate it.
 
-Harness setup is server-owned. `/setup/jobs` (create / status / confirm /
+Harness setup is server-owned. `/v2/setup/jobs` (create / status / reconcile /
 cancel / extend) is the only supported setup surface. Native login uses a
 bundled observable runner: 10-second launch watchdog, 15-minute user deadline,
 explicit unlimited `+15 min` extensions, identity-fenced TERM/KILL cancellation,
@@ -288,6 +288,8 @@ one-use permit; the runner's hash-bound result is journaled before verification.
 Cancel is asynchronous and becomes terminal only after termination is proven.
 Duplicate create returns the same active action, while a different active
 mutating action refuses instead of being laundered into success.
+A `termination_unconfirmed` fence clears only through the reconcile endpoint
+after a fresh server-side probe proves the recorded process group empty.
 
 The daemon's checksummed global journal is the only setup lifecycle authority.
 Per-job `0700` directories contain operational runner handshake files only;

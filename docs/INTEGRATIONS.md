@@ -57,7 +57,7 @@ the source of truth; API responses are projections over daemon state and run
 files. Native login commands are server allowlisted and use setup jobs with
 typed phase/deadline/outcome,
 restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
-stream (`/setup/jobs/:id/events`) that carries the complete job snapshot,
+stream (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
 heartbeats, and closes on every terminal state including `timed_out` and
 `interrupted_unknown`. A client that reconnects first GET-resnapshots the job;
 every event names its exact request-relative predecessor cursor. Missing,
@@ -82,14 +82,16 @@ payloads. Native login then runs an isolated same-harness
 capability smoke on the exact native route; status-probe success, another
 provider, or an API key cannot satisfy it. The receipt proves credential
 transport only, not plan tier, entitlement, quota, or zero cost.
-`GET /setup/jobs` optionally filters by `harness`, `action`, `active`, and
-`limit`; no-query behavior returns the v2 journal projection. `POST /setup/jobs/:id/extend`
+`GET /v2/setup/jobs` optionally filters by `harness`, `action`, `active`, and
+`limit`; no-query behavior returns the v2 journal projection. `POST /v2/setup/jobs/:id/extend`
 adds the fixed 15-minute login extension without a cumulative limit. Cancel is
 asynchronous and resolves only after termination is proved. Duplicate create
 returns the same active login instead of opening another Terminal. The checksummed global journal is the only
 lifecycle authority. Private per-job directories hold runner handshake
 artifacts only; v1 registries and per-job snapshots are neither read nor
 imported.
+`POST /v2/setup/jobs/:id/reconcile` is the sole replacement-fence recovery path:
+it succeeds only after a fresh daemon-side probe proves the recorded group empty.
 
 `GET /runs/:id` includes `lastSeq` (the snapshot's event cursor for
 gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,

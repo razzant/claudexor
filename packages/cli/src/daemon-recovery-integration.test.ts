@@ -172,7 +172,7 @@ describe("daemon recovery composition", () => {
         fingerprint: degraded.fingerprint,
       });
 
-      const unavailableSetup = await fetch(`${base}/setup/jobs`, {
+      const unavailableSetup = await fetch(`${base}/v2/setup/jobs`, {
         method: "POST",
         headers: jsonHeaders,
         body: JSON.stringify({
@@ -245,7 +245,7 @@ describe("daemon recovery composition", () => {
       });
       expect(handles).toHaveLength(1);
 
-      const createLogin = await fetch(`${base}/setup/jobs`, {
+      const createLogin = await fetch(`${base}/v2/setup/jobs`, {
         method: "POST",
         headers: jsonHeaders,
         body: JSON.stringify({
@@ -264,7 +264,7 @@ describe("daemon recovery composition", () => {
       });
       const jobId = String(created["jobId"]);
 
-      const staleCursor = await fetch(`${base}/setup/jobs/${encodeURIComponent(jobId)}/events`, {
+      const staleCursor = await fetch(`${base}/v2/setup/jobs/${encodeURIComponent(jobId)}/events`, {
         headers: { ...auth, "Last-Event-ID": oldCursor },
       });
       expect(staleCursor.status).toBe(409);

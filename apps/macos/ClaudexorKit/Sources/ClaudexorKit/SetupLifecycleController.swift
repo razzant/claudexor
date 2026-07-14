@@ -7,6 +7,7 @@ public protocol SetupJobGateway: Sendable {
     func listSetupJobs(filter: SetupJobListFilter) async throws -> [SetupJob]
     func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot
     func cancelSetupJob(jobId: String) async throws -> SetupJob
+    func reconcileSetupJob(jobId: String) async throws -> SetupJob
     func extendSetupJob(jobId: String) async throws -> SetupJob
     func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error>
 }
@@ -154,7 +155,9 @@ public actor SetupLifecycleController {
     /// lost), it performs the server-filtered active lookup before allowing a
     /// new start.
     public func reconnect(harness: String) async {
-        if let job = current.job, job.isActive {
+        if let job = current.job, job.blocksReplacement {
+            await performAction { try await gateway.reconcileSetupJob(jobId: job.jobId) }
+        } else if let job = current.job, job.isActive {
             adoptAndObserve(job)
         } else {
             await recoverActiveJob(harness: harness)

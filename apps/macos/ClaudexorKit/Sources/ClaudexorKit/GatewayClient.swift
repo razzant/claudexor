@@ -3,9 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Thin async client for the Claudexor control-api (loopback HTTP+SSE). It issues
-/// POST commands and consumes the live SSE event stream with Last-Event-ID resume.
-/// It owns no orchestration; it just talks to the local engine-service.
 public final class GatewayClient: Sendable {
     private let baseURL: URL
     private let token: String
@@ -34,8 +31,6 @@ public final class GatewayClient: Sendable {
     private static let encoder = JSONEncoder()
     private static let decoder = JSONDecoder()
 
-    /// AsyncStream buffers are not lossless. Every boundary must observe a
-    /// dropped element and fail the protocol instead of silently skipping it.
     private static func yieldChecked<Element: Sendable>(
         _ element: Element,
         to continuation: AsyncThrowingStream<Element, Error>.Continuation,
@@ -61,8 +56,6 @@ public final class GatewayClient: Sendable {
         return obj?["ok"]?.boolValue ?? false
     }
 
-    /// Start a run; returns either a real run id/dir or a queued job id if the
-    /// daemon has not produced the run artifact directory before the HTTP timeout.
     public func startRun(_ body: StartRunRequest) async throws -> RunStartResult {
         var req = request("runs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -126,7 +119,6 @@ public final class GatewayClient: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// List a run's artifacts (path/kind/bytes/mime) for the gallery.
     public func listRunArtifacts(runId: String) async throws -> [ArtifactInfo] {
         let req = request("runs/\(runId)/artifacts", method: "GET")
         let (data, resp) = try await session.data(for: req)
@@ -138,7 +130,6 @@ public final class GatewayClient: Sendable {
         return (try? Self.decoder.decode(Resp.self, from: data))?.artifacts ?? []
     }
 
-    /// Fetch raw artifact bytes (images, pdf) for inline rendering.
     public func artifactData(runId: String, path: String) async throws -> Data {
         let escaped = path.split(separator: "/").map { part in
             String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
@@ -165,7 +156,6 @@ public final class GatewayClient: Sendable {
         return (try? Self.decoder.decode(Resp.self, from: data))?.artifacts ?? []
     }
 
-    /// Fetch raw bytes of one produced output (images, pdf) for inline rendering.
     public func producedData(runId: String, path: String) async throws -> Data {
         let escaped = path.split(separator: "/").map { part in
             String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
@@ -235,7 +225,7 @@ public final class GatewayClient: Sendable {
     }
 
     public func createSetupJob(_ body: SetupJobCreateRequest) async throws -> SetupJob {
-        var req = request("setup/jobs", method: "POST")
+        var req = request("v2/setup/jobs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try Self.encoder.encode(body)
         let (data, resp) = try await session.data(for: req)
@@ -248,7 +238,7 @@ public final class GatewayClient: Sendable {
 
     public func setupJob(jobId: String) async throws -> SetupJob {
         let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
-        let req = request("setup/jobs/\(escaped)", method: "GET")
+        let req = request("v2/setup/jobs/\(escaped)", method: "GET")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -259,7 +249,7 @@ public final class GatewayClient: Sendable {
 
     public func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot {
         let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
-        let req = request("setup/jobs/\(escaped)/snapshot", method: "GET")
+        let req = request("v2/setup/jobs/\(escaped)/snapshot", method: "GET")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -274,7 +264,7 @@ public final class GatewayClient: Sendable {
         if let action = filter.action { query.append(URLQueryItem(name: "action", value: action)) }
         if let active = filter.active { query.append(URLQueryItem(name: "active", value: active ? "true" : "false")) }
         if let limit = filter.limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
-        let req = request("setup/jobs", method: "GET", queryItems: query)
+        let req = request("v2/setup/jobs", method: "GET", queryItems: query)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -285,7 +275,7 @@ public final class GatewayClient: Sendable {
 
     public func cancelSetupJob(jobId: String) async throws -> SetupJob {
         let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
-        let req = request("setup/jobs/\(escaped)/cancel", method: "POST")
+        let req = request("v2/setup/jobs/\(escaped)/cancel", method: "POST")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -294,11 +284,20 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(SetupJob.self, from: data)
     }
 
-    /// Extend the server-owned native-login deadline by its fixed 15-minute
-    /// increment. The amount deliberately is not a client-controlled field.
+    public func reconcileSetupJob(jobId: String) async throws -> SetupJob {
+        let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
+        let req = request("v2/setup/jobs/\(escaped)/reconcile", method: "POST")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SetupJob.self, from: data)
+    }
+
     public func extendSetupJob(jobId: String) async throws -> SetupJob {
         let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
-        let req = request("setup/jobs/\(escaped)/extend", method: "POST")
+        let req = request("v2/setup/jobs/\(escaped)/extend", method: "POST")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -577,7 +576,7 @@ public final class GatewayClient: Sendable {
     /// and buffer loss are protocol failures that force a scoped resnapshot.
     public func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
         let escaped = jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId
-        let frames = sseFrames(path: "setup/jobs/\(escaped)/events", lastEventId: lastEventId)
+        let frames = sseFrames(path: "v2/setup/jobs/\(escaped)/events", lastEventId: lastEventId)
         return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
             let task = Task {
                 do {

@@ -2248,10 +2248,40 @@ describe("DaemonControlApiServer", () => {
     });
     const seen: unknown[] = [];
     const listFilters: unknown[] = [];
+    const reconciledJob = setupJobFixture({
+      jobId: "setup-1",
+      harness: "cursor",
+      state: "failed",
+      phase: "completed",
+      outcome: { reason: "termination_unconfirmed" },
+      finishedAt: "2026-01-01T00:10:00.000Z",
+      execution: {
+        executionId: "execution-1",
+        commandDigest: "c".repeat(64),
+        manifestDigest: "d".repeat(64),
+        processGroup: {
+          schemaVersion: 1,
+          pgid: 42,
+          leader: {
+            status: "known",
+            pid: 42,
+            platform: "darwin",
+            source: "proc_pidinfo",
+            startToken: "start-42",
+            processGroupId: 42,
+          },
+        },
+        observedAt: "2026-01-01T00:00:01.000Z",
+      },
+      terminationReconciliation: {
+        status: "empty",
+        observedAt: "2026-01-01T00:10:00.000Z",
+      },
+    });
     await withDaemonServer(
       daemon,
       async (base) => {
-        const created = await fetch(`${base}/setup/jobs`, {
+        const created = await fetch(`${base}/v2/setup/jobs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -2263,9 +2293,13 @@ describe("DaemonControlApiServer", () => {
         expect(created.status).toBe(200);
         expect(await created.json()).toMatchObject({ jobId: "setup-1", action: "login" });
         expect(seen).toEqual([{ harness: "cursor", action: "login", authRequest: "subscription" }]);
+        const retired = await fetch(`${base}/setup/jobs`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(retired.status).toBe(404);
 
         const listed = await fetch(
-          `${base}/setup/jobs?harness=cursor&action=login&active=true&limit=1`,
+          `${base}/v2/setup/jobs?harness=cursor&action=login&active=true&limit=1`,
           {
             headers: { authorization: `Bearer ${token}` },
           },
@@ -2275,21 +2309,21 @@ describe("DaemonControlApiServer", () => {
         expect(listFilters).toEqual([
           { harness: "cursor", action: "login", active: true, limit: 1 },
         ]);
-        const invalidList = await fetch(`${base}/setup/jobs?state=running`, {
+        const invalidList = await fetch(`${base}/v2/setup/jobs?state=running`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalidList.status).toBe(400);
-        const invalidHarness = await fetch(`${base}/setup/jobs?harness=unknown`, {
+        const invalidHarness = await fetch(`${base}/v2/setup/jobs?harness=unknown`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(invalidHarness.status).toBe(400);
 
-        const status = await fetch(`${base}/setup/jobs/setup-1`, {
+        const status = await fetch(`${base}/v2/setup/jobs/setup-1`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(status.status).toBe(200);
         expect(await status.json()).toMatchObject({ jobId: "setup-1", state: "waiting_for_input" });
-        const snapshot = await fetch(`${base}/setup/jobs/setup-1/snapshot`, {
+        const snapshot = await fetch(`${base}/v2/setup/jobs/setup-1/snapshot`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(snapshot.status).toBe(200);
@@ -2302,7 +2336,7 @@ describe("DaemonControlApiServer", () => {
         // The lifecycle stream STAYS OPEN for a non-terminal job (it is a real
         // stream now, not a one-shot snapshot): read the first frame and abort.
         const sseAbort = new AbortController();
-        const events = await fetch(`${base}/setup/jobs/setup-1/events`, {
+        const events = await fetch(`${base}/v2/setup/jobs/setup-1/events`, {
           headers: { authorization: `Bearer ${token}` },
           signal: sseAbort.signal,
         });
@@ -2321,7 +2355,7 @@ describe("DaemonControlApiServer", () => {
         expect(sseText).not.toContain("event: end");
         sseAbort.abort();
 
-        const extended = await fetch(`${base}/setup/jobs/setup-1/extend`, {
+        const extended = await fetch(`${base}/v2/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -2331,7 +2365,17 @@ describe("DaemonControlApiServer", () => {
           deadlineAt: "2026-01-01T00:15:00.000Z",
         });
 
-        const cancelled = await fetch(`${base}/setup/jobs/setup-1/cancel`, {
+        const reconciled = await fetch(`${base}/v2/setup/jobs/setup-1/reconcile`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(reconciled.status).toBe(200);
+        expect(await reconciled.json()).toMatchObject({
+          jobId: "setup-1",
+          terminationReconciliation: { status: "empty" },
+        });
+
+        const cancelled = await fetch(`${base}/v2/setup/jobs/setup-1/cancel`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
@@ -2348,7 +2392,7 @@ describe("DaemonControlApiServer", () => {
           outcome: { reason: "timed_out" },
           finishedAt: new Date().toISOString(),
         };
-        const ended = await fetch(`${base}/setup/jobs/setup-1/events`, {
+        const ended = await fetch(`${base}/v2/setup/jobs/setup-1/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-41" },
         });
         expect(ended.status).toBe(200);
@@ -2400,6 +2444,7 @@ describe("DaemonControlApiServer", () => {
           message: "cancelled",
           outcome: { reason: "cancelled_by_user" },
         }),
+        reconcileSetupJob: async () => reconciledJob,
         extendSetupJob: async () => ({ ...job, deadlineAt: "2026-01-01T00:15:00.000Z" }),
       },
     );
@@ -2419,7 +2464,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/setup/jobs/${terminal.jobId}/events`, {
+        const response = await fetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "cursor-base" },
         });
         expect(response.status).toBe(200);
@@ -2459,7 +2504,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/setup/jobs/${terminal.jobId}/events`, {
+        const response = await fetch(`${base}/v2/setup/jobs/${terminal.jobId}/events`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(response.status).toBe(200);
@@ -2481,7 +2526,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const response = await fetch(`${base}/setup/jobs/${current.jobId}/events`, {
+        const response = await fetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
           headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "stale-cursor" },
         });
         expect(response.status).toBe(409);
@@ -2629,7 +2674,7 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const headers = { authorization: `Bearer ${token}` };
-        const typed = await fetch(`${base}/setup/jobs/job-corrupt`, { headers });
+        const typed = await fetch(`${base}/v2/setup/jobs/job-corrupt`, { headers });
         expect(typed.status).toBe(503);
         expect(typed.headers.get("content-type")).toBe("application/problem+json");
         expect(await typed.json()).toEqual({
@@ -2865,7 +2910,7 @@ describe("DaemonControlApiServer", () => {
       daemon,
       async (base) => {
         const abort = new AbortController();
-        const response = await fetch(`${base}/setup/jobs/${current.jobId}/events`, {
+        const response = await fetch(`${base}/v2/setup/jobs/${current.jobId}/events`, {
           headers: { authorization: `Bearer ${token}` },
           signal: abort.signal,
         });

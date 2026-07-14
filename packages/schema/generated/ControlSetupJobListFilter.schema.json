@@ -28,7 +28,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Supported GET /setup/jobs filters."
+      "description": "Supported GET /v2/setup/jobs filters."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

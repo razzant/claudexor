@@ -32,7 +32,7 @@ const ALLOWED_STATE_TRANSITIONS: Record<
     "interrupted_unknown",
   ]),
   succeeded: new Set(),
-  failed: new Set(),
+  failed: new Set(["failed"]),
   cancelled: new Set(),
   timed_out: new Set(),
   interrupted_unknown: new Set(),
@@ -56,7 +56,7 @@ const ALLOWED_PHASE_TRANSITIONS: Record<
   awaiting_user: new Set(["awaiting_user", "verifying", "cancelling", "completed"]),
   verifying: new Set(["verifying", "cancelling", "completed"]),
   cancelling: new Set(["cancelling", "completed"]),
-  completed: new Set(),
+  completed: new Set(["completed"]),
 };
 
 const OUTCOME_STATE: Record<
@@ -116,6 +116,7 @@ export function reduceSetupJob(current: ControlSetupJob, rawNext: unknown): Cont
       `invalid setup phase transition ${current.phase ?? "missing"} -> ${next.phase ?? "missing"}`,
     );
   }
+  if (isTerminal(current.state)) assertTerminalReconciliation(current, next);
   if (current.startedAt !== null && next.startedAt !== current.startedAt) {
     throw new SetupTransitionError("setup startedAt is immutable once observed");
   }
@@ -150,6 +151,23 @@ export function reduceSetupJob(current: ControlSetupJob, rawNext: unknown): Cont
   }
   assertChronology(next);
   return next;
+}
+
+function assertTerminalReconciliation(current: ControlSetupJob, next: ControlSetupJob): void {
+  if (
+    current.state !== "failed" ||
+    current.phase !== "completed" ||
+    current.outcome?.reason !== "termination_unconfirmed" ||
+    current.terminationReconciliation ||
+    next.terminationReconciliation?.status !== "empty"
+  ) {
+    throw new SetupTransitionError("terminal setup jobs are immutable outside reconciliation");
+  }
+  const { terminationReconciliation: _before, message: _beforeMessage, ...before } = current;
+  const { terminationReconciliation: _after, message: _afterMessage, ...after } = next;
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    throw new SetupTransitionError("termination reconciliation cannot rewrite setup evidence");
+  }
 }
 
 function assertNonterminalShape(job: ControlSetupJob): void {

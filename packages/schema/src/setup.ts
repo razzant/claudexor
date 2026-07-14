@@ -218,6 +218,15 @@ export const ControlSetupJobOutcome = z
   .describe("Typed terminal setup outcome with native command evidence when available.");
 export type ControlSetupJobOutcome = z.infer<typeof ControlSetupJobOutcome>;
 
+export const SetupTerminationReconciliation = z
+  .object({
+    status: z.literal("empty"),
+    observedAt: SetupTimestamp,
+  })
+  .strict()
+  .describe("Server-owned proof that a previously unconfirmed setup process group is empty.");
+export type SetupTerminationReconciliation = z.infer<typeof SetupTerminationReconciliation>;
+
 export const ControlSetupJobCreateRequest = z
   .object({
     harness: ControlHarnessSetupHarness,
@@ -260,6 +269,7 @@ export const ControlSetupJob = z
     nativeCommand: SetupNativeCommandReceipt.optional().describe(
       "Durable result of the hash-bound native login command, persisted before capability verification.",
     ),
+    terminationReconciliation: SetupTerminationReconciliation.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -344,6 +354,16 @@ export const ControlSetupJob = z
         message: "interrupted_unknown setup state requires interrupted auth capability evidence",
       });
     }
+    if (
+      value.terminationReconciliation &&
+      (value.outcome?.reason !== "termination_unconfirmed" || !value.execution)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["terminationReconciliation"],
+        message: "termination reconciliation requires the original unconfirmed process evidence",
+      });
+    }
   })
   .describe("One daemon-managed exact-subscription native-login job.");
 export type ControlSetupJob = z.infer<typeof ControlSetupJob>;
@@ -356,7 +376,7 @@ export const ControlSetupJobListFilter = z
     limit: z.number().int().positive().max(500).optional(),
   })
   .strict()
-  .describe("Supported GET /setup/jobs filters.");
+  .describe("Supported GET /v2/setup/jobs filters.");
 export type ControlSetupJobListFilter = z.infer<typeof ControlSetupJobListFilter>;
 
 export const ControlSetupJobEvent = z

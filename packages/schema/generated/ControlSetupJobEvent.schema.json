@@ -858,6 +858,24 @@
               ],
               "additionalProperties": false,
               "description": "Durable result of the hash-bound native login command, persisted before capability verification."
+            },
+            "terminationReconciliation": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "empty"
+                },
+                "observedAt": {
+                  "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                }
+              },
+              "required": [
+                "status",
+                "observedAt"
+              ],
+              "additionalProperties": false,
+              "description": "Server-owned proof that a previously unconfirmed setup process group is empty."
             }
           },
           "required": [

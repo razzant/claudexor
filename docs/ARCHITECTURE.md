@@ -474,13 +474,6 @@ files.
 - `DELETE /secrets/:id`
 - `GET /settings`
 - `POST /settings`
-- `GET /setup/jobs`
-- `POST /setup/jobs`
-- `GET /setup/jobs/:id`
-- `POST /setup/jobs/:id/cancel`
-- `GET /setup/jobs/:id/events`
-- `POST /setup/jobs/:id/extend`
-- `GET /setup/jobs/:id/snapshot`
 - `POST /spec/freeze`
 - `POST /spec/questions`
 - `GET /threads`
@@ -497,6 +490,14 @@ files.
 - `POST /v2/recovery/partitions/global/export`
 - `POST /v2/recovery/partitions/global/quarantine`
 - `POST /v2/recovery/partitions/global/validate`
+- `GET /v2/setup/jobs`
+- `POST /v2/setup/jobs`
+- `GET /v2/setup/jobs/:id`
+- `POST /v2/setup/jobs/:id/cancel`
+- `GET /v2/setup/jobs/:id/events`
+- `POST /v2/setup/jobs/:id/extend`
+- `POST /v2/setup/jobs/:id/reconcile`
+- `GET /v2/setup/jobs/:id/snapshot`
 <!-- END GENERATED ENDPOINTS -->
 
 Endpoint semantics beyond the inventory:
@@ -638,17 +639,20 @@ decline (`interaction.timeout`) — the model continues with stated assumptions
 and the run never hangs forever. Declined/timed-out interactive flow-control
 tools are benign timeline events, never blocking tool errors.
 
-`/setup/jobs` (create / status / snapshot / events / cancel / extend)
+`/v2/setup/jobs` (create / status / snapshot / events / cancel / reconcile / extend)
 is the native-login setup surface for Codex, Claude, and Cursor. Readiness and
 secret writes remain in their existing doctor/auth-readiness and secret services;
 setup does not duplicate them as jobs. Jobs expose a required typed phase, coarse state (including
 `timed_out` and `interrupted_unknown`), deadline, and typed terminal outcome.
-`GET /setup/jobs` accepts schema-validated `harness`, `action`, `active`, and
+`GET /v2/setup/jobs` accepts schema-validated `harness`, `action`, `active`, and
 `limit` filters. Setup SSE carries complete authoritative job snapshots from the
 global journal. Each event has an opaque cursor plus the exact request-relative
 `previousCursor`; global sequence gaps are valid, while a broken cursor chain,
 duplicate/regressive frame, malformed payload, or EOF without terminal evidence
 requires a resnapshot.
+`POST /v2/setup/jobs/:id/reconcile` clears an unconfirmed replacement fence only
+after the daemon proves the recorded process group empty. Unknown or nonempty
+state remains a typed refusal and cannot be bypassed by creating another job.
 
 Native login specs are a shared `{binary,args,displayCommand}` contract for
 Codex (`codex -c cli_auth_credentials_store=file login` in its dedicated
@@ -994,7 +998,7 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   delivery, decisions, and control (`/runs/:id/apply/check`, `/runs/:id/apply`,
   `/runs/:id/decision`, `/runs/:id/control`,
   `/runs/:id/interactions/:id/answer`), harness status (`/harnesses`,
-  `/harnesses/:id/models`), setup jobs (`/setup/jobs`), settings and secrets
+  `/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
   (`/settings`, `/secrets`), and the server-owned spec flow
   (`/spec/questions`, `/spec/freeze`; the app's Spec intent is a thin driver
   over these endpoints, not a new `ModeKind`).

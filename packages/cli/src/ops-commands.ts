@@ -264,7 +264,7 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
       );
     }
     const { addr } = await ensureDaemon();
-    const response = await fetch(`${addr.baseUrl}/setup/jobs`, {
+    const response = await fetch(`${addr.baseUrl}/v2/setup/jobs`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${addr.token}`,
