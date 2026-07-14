@@ -374,7 +374,7 @@ Review blocked on evidence.
   });
 });
 
-describe("commit-review panel lib", () => {
+describe("OpenRouter release-review panel lib", () => {
   it("requires exact OpenRouter route proof before a response can count", async () => {
     const { exactObservedModelMatch } = await import("../../../scripts/lib/openrouter-panel.mjs");
     expect(exactObservedModelMatch("openai/gpt-5.6-sol", "openai/gpt-5.6-sol")).toBe(true);

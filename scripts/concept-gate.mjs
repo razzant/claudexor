@@ -18,6 +18,12 @@
  *   - preamble/heading edits (outside any invariant block) require only the
  *     marker itself.
  *
+ * History remains append-only. If an immutable commit already carries a
+ * CONCEPT-CHANGE marker but omitted one approved touched id, a later
+ * descendant in the SAME checked release range may supplement it with
+ * CONCEPT-COVERAGE(<full-sha>: INV-…). Coverage cannot replace a missing
+ * original marker, target a non-ancestor, or attest a commit outside the range.
+ *
  * Usage:
  *   node scripts/concept-gate.mjs                    # checks HEAD
  *   node scripts/concept-gate.mjs --range A..B       # every commit in range
@@ -50,13 +56,50 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BIBLE = "CLAUDEXOR_BIBLE.md";
 const MARKER_RE = /CONCEPT-CHANGE\(\s*(INV-\d{3}(?:\s*,\s*INV-\d{3})*)\s*\)/;
+const COVERAGE_RE =
+  /CONCEPT-COVERAGE\(\s*([0-9a-f]{40})\s*:\s*(INV-\d{3}(?:\s*,\s*INV-\d{3})*)\s*\)/g;
 // Ids may carry annotations inside the bold span (e.g. **INV-042 (RETIRED)**).
 const ID_RE = /\*\*(INV-\d{3})[^*]*\*\*/g;
+let supplementalCoverage = new Map();
 
 const git = (args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
 
 function invIds(text) {
   return new Set([...text.matchAll(ID_RE)].map((m) => m[1]));
+}
+
+function markedInvariantIds(sha, marker) {
+  const ids = new Set(marker[1].split(",").map((s) => s.trim()));
+  for (const id of supplementalCoverage.get(sha) ?? []) ids.add(id);
+  return ids;
+}
+
+function collectSupplementalCoverage(shas) {
+  const checked = new Set(shas);
+  const coverage = new Map();
+  for (const attestationSha of shas) {
+    const message = git(["log", "-1", "--format=%B", attestationSha]);
+    for (const match of message.matchAll(COVERAGE_RE)) {
+      const targetSha = match[1];
+      if (!checked.has(targetSha)) continue;
+      if (targetSha === attestationSha) {
+        throw new Error(
+          `concept-gate: ${attestationSha.slice(0, 10)} cannot supplement its own marker; use CONCEPT-CHANGE directly`,
+        );
+      }
+      try {
+        git(["merge-base", "--is-ancestor", targetSha, attestationSha]);
+      } catch {
+        throw new Error(
+          `concept-gate: ${attestationSha.slice(0, 10)} cannot attest non-ancestor ${targetSha.slice(0, 10)}`,
+        );
+      }
+      const ids = coverage.get(targetSha) ?? new Set();
+      for (const id of match[2].split(",").map((s) => s.trim())) ids.add(id);
+      coverage.set(targetSha, ids);
+    }
+  }
+  return coverage;
 }
 
 /**
@@ -261,7 +304,7 @@ function checkCommit(sha) {
         `  or mark the merge itself if the owner approved the resolution.`
       );
     }
-    const markedIds = new Set(marker[1].split(",").map((s) => s.trim()));
+    const markedIds = markedInvariantIds(sha, marker);
     const uncovered = touchedInv.filter((id) => !markedIds.has(id));
     if (uncovered.length > 0) {
       return (
@@ -287,7 +330,7 @@ function checkCommit(sha) {
       `  and add it only when the owner explicitly approved the change.`
     );
   }
-  const markedIds = new Set(marker[1].split(",").map((s) => s.trim()));
+  const markedIds = markedInvariantIds(sha, marker);
 
   let before = "";
   if (parents.length === 1) {
@@ -374,7 +417,13 @@ function resolveShas() {
 }
 
 const failures = [];
-for (const sha of resolveShas()) {
+const shas = resolveShas();
+try {
+  supplementalCoverage = collectSupplementalCoverage(shas);
+} catch (e) {
+  failures.push(e.message);
+}
+for (const sha of shas) {
   try {
     const err = checkCommit(sha);
     if (err) failures.push(err);

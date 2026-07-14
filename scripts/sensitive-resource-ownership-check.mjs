@@ -8,10 +8,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = resolve(dirname(SCRIPT_PATH), "..");
 const OWNER = "packages/util/src/sensitive-resource.ts";
 const GATE = "scripts/sensitive-resource-ownership-check.mjs";
-const ALLOWED_DELEGATES = new Set([
-  "packages/util/src/index.ts:redactSecrets",
-  "scripts/commit-review.mjs:redactSecrets",
-]);
+const ALLOWED_DELEGATES = new Set(["packages/util/src/index.ts:redactSecrets"]);
 
 const OWNED_IDENTIFIER =
   /(?:sensitive|secret|credential).*(?:path|basename|extension|pattern|classifier|redact)|(?:path|basename|extension|pattern|classifier|redact).*(?:sensitive|secret|credential)/i;

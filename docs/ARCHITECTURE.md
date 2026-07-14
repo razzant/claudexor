@@ -871,15 +871,13 @@ as last-wins `plan.progress` run events and projected on the run detail as
 `planProgress`; per-candidate evidence cards are projected on the run
 detail as `candidates` from attempt/review/decision artifacts.
 
-Per-commit review gate for this repository: `claudexor review --diff
-<file>` reviews a diff through the engine's reviewer machinery (fail-closed:
-the pass bar is cross-family healthy AND verified with no
-INSUFFICIENT_EVIDENCE); `scripts/commit-review.mjs` runs it against an
-INDEX-SNAPSHOT worktree with a secret fence and a HEAD-read panel config
-(`.claudexor/review-panel.yaml` — versioned, chooses reviewers only), falling
-back to an OpenRouter triad-lite with strict finding-shape quorum; bypasses
-are audited (`review-bypass.jsonl` + commit-body disclosure). Hooks are
-opt-in via `scripts/install-hooks.sh`.
+Repository release review is cumulative and SHA-bound. Reviewers inspect an
+external immutable packet for the exact clean committed candidate: both Tier 1
+critics run before the exact triad plus scope panel, and any tracked mutation
+invalidates every result. The old per-commit staged-diff hook, bypass log, and
+installer are removed so they cannot compete with or be mistaken for release
+authority. Product command `claudexor review --diff <file>` remains a normal
+engine capability; it is not this repository's release attestation.
 
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)

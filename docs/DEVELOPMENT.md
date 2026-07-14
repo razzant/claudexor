@@ -127,24 +127,13 @@ remote reviewer, set `TRIAD_MAX_PACK_BYTES` to reduce supplemental context
 only. Do not use that as a reason to downgrade or substitute the pinned review
 panel.
 
-The PER-COMMIT review gate reviews the staged diff before it lands:
-
-```bash
-node scripts/commit-review.mjs      # or: bash scripts/install-hooks.sh (opt-in hooks)
-```
-
-PRIMARY route: `claudexor review --diff` against an index-snapshot worktree
-(engine reviewer machinery, file-backed evidence, fail closed on inconclusive
-panels). FALLBACK route: an OpenRouter triad-lite — this is the SECOND
-sanctioned prompt-transport diff reviewer (alongside triad-scope-review.mjs),
-allowed because it is the no-primary emergency path: strict finding-shape
-quorum, per-reviewer telemetry under `.claudexor/logs/commit-review/`, and an
-oversized-diff refusal instead of truncation. Its lower assurance relative to
-the engine panel is an accepted, recorded tradeoff. Blocking findings, quorum failures, secret-like
-diffs, and missing routes BLOCK the commit; `SKIP_COMMIT_REVIEW="<reason>"` is
-the audited bypass (logged to `review-bypass.jsonl` + echoed into the commit
-body). The panel lives in the committed `.claudexor/review-panel.yaml` and is
-read from HEAD — a staged panel change cannot weaken the gate reviewing it.
+Release review is cumulative and SHA-bound. First commit a clean candidate,
+then freeze its exact tree and evidence packet, run both required Tier 1
+critics, and only then run the exact triad plus scope reviewer described in
+`docs/CHECKLISTS.md`. Any tracked mutation makes every result stale and starts
+a new freeze. Staged-diff review is not release authority, so the old
+per-commit script and hook installer have been removed rather than retained as
+a competing workflow.
 
 RESTART `claudexord` AFTER REBUILDING: the daemon loads the engine at start
 and serves that build until stopped — a long-lived daemon silently runs

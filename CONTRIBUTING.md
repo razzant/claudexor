@@ -48,8 +48,10 @@ pnpm schema:gen && git diff --exit-code packages/schema/generated
 node scripts/validate-generated-schemas.mjs
 pnpm docs:check
 pnpm staged:check
+pnpm sensitive:check
 pnpm knip
 node scripts/complexity-ratchet.mjs
+pnpm format:check
 pnpm canary
 node scripts/concept-gate.mjs             # Bible edits need a CONCEPT-CHANGE(INV-xxx) marker
 node scripts/model-hints-freshness.mjs    # curated model hints stay fresh against adapter inventories
@@ -57,32 +59,15 @@ node scripts/mcp-cli-parity-check.mjs     # MCP tools stay in lockstep with CLI 
 node scripts/fixture-freshness-check.mjs  # recorded fixtures carry provenance + sanitization
 ```
 
-Run the per-commit review gate on your staged diff:
-
-```bash
-node scripts/commit-review.mjs
-```
-
-It reviews ONLY the staged diff with a multi-model panel — PRIMARY route is
-the engine's own reviewer machinery (`claudexor review --diff`,
-subscription-first dogfood), FALLBACK is an OpenRouter triad-lite (needs
-`OPENROUTER_API_KEY`). The panel lives in the committed
-`.claudexor/review-panel.yaml` (it chooses reviewers only — it cannot grant
-powers; panel changes are reviewed like code). Blocking findings, quorum
-failures, and unavailable routes BLOCK the commit (fail closed). The audited
-bypass is `SKIP_COMMIT_REVIEW="<reason>" git commit ...` — every bypass is
-appended to `.claudexor/logs/review-bypass.jsonl` and echoed into the commit
-body by the `prepare-commit-msg` hook. Local hooks are opt-in:
-
-```bash
-bash scripts/install-hooks.sh   # pre-commit review + bypass disclosure
-```
+Review authority is the cumulative diff on an exact, clean, committed and
+frozen candidate SHA. Follow the Tier 1 then triad-and-scope procedure in
+[`docs/CHECKLISTS.md`](docs/CHECKLISTS.md); any tracked mutation invalidates
+the evidence and requires a new freeze. Claudexor intentionally has no
+per-commit review hook or staged-diff review authority.
 
 **External contributors without working harness auth or an OpenRouter key:**
-the CI gate suite above is what your PR must pass; the multi-model review
-gate is then run by the maintainer during review — you are not expected to
-pay for reviewer models to contribute. Say in the PR description that the
-review gate was not run locally.
+the CI gate suite above is what your PR must pass. The maintainer runs the
+cumulative frozen-SHA review; contributors are not expected to pay for it.
 
 Contributions are accepted under the repository's MIT license
 (inbound = outbound); by opening a PR you license your change under MIT.
@@ -107,6 +92,13 @@ owner explicitly approved that invariant change. Invariant numbers are stable:
 a retired invariant keeps its number and is marked retired, never deleted or
 renumbered. Editing an invariant so its original direction is no longer
 recognizable is a delete, not an edit.
+
+History is never rewritten merely to repair an incomplete marker. If an
+already immutable marked commit omitted an approved invariant id, a later
+descendant may add exactly
+`CONCEPT-COVERAGE(<full-40-character-sha>: INV-xxx[, INV-yyy])`. The gate
+accepts this only for an ancestor inside the same checked release range; it
+supplements coverage but cannot replace the original `CONCEPT-CHANGE` marker.
 
 ## Canary golden stories
 
