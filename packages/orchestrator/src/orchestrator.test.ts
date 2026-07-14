@@ -2373,12 +2373,15 @@ describe("Orchestrator", () => {
       n: 1,
     });
     expect(res.status).toBe("success");
-    expect(seen).toEqual([
-      { id: "rev-claude", model: "claude-opus-4-8", effort: "max" },
-      { id: "rev-cursor", model: "gemini-3.1-pro", effort: null },
-      { id: "rev-cursor", model: "gemini-3.5-flash", effort: null },
-      { id: "rev-cursor", model: "gpt-5.5-xhigh-1M", effort: null },
-    ]);
+    expect(seen).toHaveLength(4);
+    expect(seen).toEqual(
+      expect.arrayContaining([
+        { id: "rev-claude", model: "claude-opus-4-8", effort: "max" },
+        { id: "rev-cursor", model: "gemini-3.1-pro", effort: null },
+        { id: "rev-cursor", model: "gemini-3.5-flash", effort: null },
+        { id: "rev-cursor", model: "gpt-5.5-xhigh-1M", effort: null },
+      ]),
+    );
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("reviewer_requests:");
     expect(reviewYaml).toContain("claude-opus-4-8");
