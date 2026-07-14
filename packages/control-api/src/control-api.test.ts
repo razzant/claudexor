@@ -34,7 +34,8 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
   }
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
-    url.pathname === "/v2/runs" &&
+    (url.pathname === "/v2/runs" ||
+      /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(url.pathname)) &&
     !headers.has("Idempotency-Key")
   ) {
     headers.set("Idempotency-Key", `test-${crypto.randomUUID()}`);
@@ -680,6 +681,7 @@ describe("DaemonControlApiServer", () => {
     const { daemon, record } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-"));
     let enqueued: Record<string, unknown> | undefined;
+    let enqueueOptions: Parameters<DaemonFacadeClient["enqueue"]>[1];
     // Minimal in-memory thread service double (the daemon's ThreadStore contract).
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
@@ -699,10 +701,12 @@ describe("DaemonControlApiServer", () => {
       state: "active",
     };
     const turns: Record<string, unknown>[] = [];
+    let turnIdempotency: unknown;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
-      async enqueue(params: unknown) {
+      async enqueue(params: unknown, options) {
         enqueued = params as Record<string, unknown>;
+        enqueueOptions = options;
         const job = await daemon.enqueue(params);
         // Simulate the daemon runner binding the started run to its pre-created
         // turn (single-writer: control-api creates the turn, runner binds it).
@@ -724,6 +728,7 @@ describe("DaemonControlApiServer", () => {
         return { thread: threadObj, sessions: [], turns };
       },
       createThreadTurn: async (id, prompt, opts) => {
+        turnIdempotency = opts.idempotency;
         const turn = {
           id: "tn-1",
           thread_id: id,
@@ -741,6 +746,19 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       wrapped,
       async (base) => {
+        const missingKey = await globalThis.fetch(`${base}/v2/threads/th-1/turns`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            "X-Claudexor-Protocol-Major": "2",
+          },
+          body: JSON.stringify({ prompt: "continue the plan" }),
+        });
+        expect(missingKey.status).toBe(400);
+        expect(await missingKey.json()).toMatchObject({ code: "idempotency_key_required" });
+        expect(turns).toHaveLength(0);
+
         const created = await apiFetch(`${base}/threads`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
@@ -768,6 +786,15 @@ describe("DaemonControlApiServer", () => {
           threadId: "th-1",
           mode: "agent",
           scope: { kind: "project", root: repo },
+        });
+        expect(turnIdempotency).toMatchObject({
+          client: "control-api",
+          request: { threadId: "th-1" },
+        });
+        expect(enqueueOptions).toMatchObject({
+          operation: "thread.turn.create",
+          clientId: "control-api",
+          idempotencyRequest: { threadId: "th-1" },
         });
 
         const detail = (await (

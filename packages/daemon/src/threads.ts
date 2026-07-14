@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import type { DurableJournal } from "@claudexor/journal";
 import type { Attachment, Session, Thread, ThreadTurn, WorkspaceMode } from "@claudexor/schema";
 import {
   SCHEMA_VERSION,
@@ -7,13 +6,22 @@ import {
   Thread as ThreadSchema,
   ThreadTurn as ThreadTurnSchema,
 } from "@claudexor/schema";
-import { newId, nowIso, redactSecrets } from "@claudexor/util";
+import { hashJson, newId, nowIso, redactSecrets } from "@claudexor/util";
 
 interface ThreadStoreState {
   threads: Thread[];
   sessions: Session[];
   turns: ThreadTurn[];
 }
+
+interface ThreadMutation {
+  threads?: Thread[];
+  sessions?: Session[];
+  turns?: ThreadTurn[];
+  idempotency?: { keyDigest: string; requestDigest: string; turnId: string };
+}
+
+const UPSERTED = "thread.entities_upserted";
 
 export interface CreateThreadInput {
   title?: string;
@@ -34,6 +42,7 @@ export interface CreateTurnInput {
   planRunId?: string | null;
   /** Files/images attached to this turn, already resolved to scoped on-disk paths. */
   attachments?: Attachment[];
+  idempotency?: { key: string; client: string; request: unknown };
 }
 
 export interface UpdateThreadInput {
@@ -57,89 +66,52 @@ function coercePrimaryToPool(primary: string | null, pool: string[]): string | n
   return primary;
 }
 
-/**
- * Durable thread/session registry (chat/session-first SSOT). The Thread is
- * the Claudexor-owned conversation; Sessions are re-hostable pointers to each
- * harness's native CLI session. Persisted as one JSON file with atomic writes
- * (temp + rename), mirroring the daemon job registry's durability contract.
- */
+/** Journal-backed thread/session projection. Returned mutations are fsynced. */
 export class ThreadStore {
   private state: ThreadStoreState = { threads: [], sessions: [], turns: [] };
+  private readonly turnIdByKey = new Map<string, { turnId: string; requestDigest: string }>();
 
-  constructor(private readonly path: string) {
-    this.load();
+  constructor(private readonly journal: DurableJournal) {
+    this.replay();
   }
 
-  private load(): void {
-    if (!existsSync(this.path)) return;
-    let raw: Partial<ThreadStoreState>;
-    try {
-      raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<ThreadStoreState>;
-    } catch {
-      // A corrupt store must not brick the daemon; threads are recoverable
-      // from run artifacts, so start empty rather than crash-looping.
-      this.state = { threads: [], sessions: [], turns: [] };
-      return;
+  validateProjection(): void {
+    for (const thread of this.state.threads) ThreadSchema.parse(thread);
+    for (const session of this.state.sessions) SessionSchema.parse(session);
+    for (const turn of this.state.turns) ThreadTurnSchema.parse(turn);
+    assertUnique(this.state.threads, "thread");
+    assertUnique(this.state.sessions, "session");
+    assertUnique(this.state.turns, "turn");
+    for (const value of this.turnIdByKey.values()) {
+      if (!this.getTurn(value.turnId)) throw new Error("thread idempotency index is dangling");
     }
-    // Per-record leniency: ONE invalid record must not wipe the whole history.
-    // A record stamped by a different schema_version is forward-migrated first
-    // (additive fields are covered by zod defaults); only a genuinely
-    // unparseable record is dropped — and then the original file is backed up
-    // and the loss is logged, so a schema change never SILENTLY erases history.
-    let dropped = 0;
-    const keep = <T>(
-      items: unknown[] | undefined,
-      schema: { safeParse(v: unknown): { success: boolean; data?: T } },
-    ): T[] =>
-      (items ?? []).flatMap((item) => {
-        let parsed = schema.safeParse(item);
-        if (!parsed.success && item && typeof item === "object") {
-          // Forward-migrate: bump schema_version AND coerce retired enum values
-          // (Thread.state "blocked" -> "active", ThreadTurnKind "orchestrate"
-          // -> "followup", SessionResumeKind "resume_latest"/"rehost" -> the
-          // values the daemon actually stamps) so an old record is migrated,
-          // not dropped.
-          const rec = item as Record<string, unknown>;
-          const migrated: Record<string, unknown> = { ...rec, schema_version: SCHEMA_VERSION };
-          if (migrated["state"] === "blocked") migrated["state"] = "active";
-          if (migrated["kind"] === "orchestrate") migrated["kind"] = "followup";
-          if (migrated["resume_kind"] === "resume_latest") migrated["resume_kind"] = "resume_by_id";
-          if (migrated["resume_kind"] === "rehost") {
-            // "rehost" meant "continued on a DIFFERENT harness — native resume
-            // impossible". resumeMap keys on state==="live" + native id, so the
-            // state must flip to "rebound" too or a stale live rehost record
-            // would still resume natively despite its own retirement semantics.
-            migrated["resume_kind"] = "none";
-            migrated["state"] = "rebound";
-          }
-          parsed = schema.safeParse(migrated);
-        }
-        if (parsed.success && parsed.data !== undefined) return [parsed.data];
-        dropped++;
-        return [];
-      });
-    this.state = {
-      threads: keep(raw.threads, ThreadSchema),
-      sessions: keep(raw.sessions, SessionSchema),
-      turns: keep(raw.turns, ThreadTurnSchema),
-    };
-    if (dropped > 0) {
-      try {
-        writeFileSync(`${this.path}.bak`, JSON.stringify(raw, null, 2), { mode: 0o600 });
-        console.error(
-          `[claudexor] threads store: ${dropped} record(s) unparseable after migration; original backed up to ${this.path}.bak`,
-        );
-      } catch {
-        /* best-effort backup */
+  }
+
+  private replay(): void {
+    for (const record of this.journal.records()) {
+      if (record.type === UPSERTED) this.apply(parseMutation(record.payload));
+    }
+    this.validateProjection();
+  }
+
+  private commit(mutation: ThreadMutation): void {
+    const parsed = parseMutation(mutation);
+    this.journal.append(UPSERTED, parsed);
+    this.apply(parsed);
+  }
+
+  private apply(mutation: ThreadMutation): void {
+    for (const thread of mutation.threads ?? []) upsert(this.state.threads, thread);
+    for (const session of mutation.sessions ?? []) upsert(this.state.sessions, session);
+    for (const turn of mutation.turns ?? []) upsert(this.state.turns, turn);
+    if (mutation.idempotency) {
+      const { keyDigest, requestDigest, turnId } = mutation.idempotency;
+      const prior = this.turnIdByKey.get(keyDigest);
+      if (prior && (prior.turnId !== turnId || prior.requestDigest !== requestDigest)) {
+        throw new Error("conflicting thread idempotency history");
       }
+      this.turnIdByKey.set(keyDigest, { turnId, requestDigest });
     }
-  }
-
-  private persist(): void {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const tmp = join(dirname(this.path), `.threads-${process.pid}.tmp`);
-    writeFileSync(tmp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.path);
   }
 
   createThread(input: CreateThreadInput): Thread {
@@ -171,8 +143,7 @@ export class ThreadStore {
       primary_harness: primary,
       eligible_harnesses: eligible,
     });
-    this.state.threads.push(thread);
-    this.persist();
+    this.commit({ threads: [thread] });
     return thread;
   }
 
@@ -180,28 +151,36 @@ export class ThreadStore {
   updateThread(id: string, patch: UpdateThreadInput): Thread {
     const thread = this.getThread(id);
     if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
-    if (patch.title !== undefined) thread.title = patch.title;
-    if (patch.state !== undefined) thread.state = patch.state;
-    if (patch.primaryHarness !== undefined) thread.primary_harness = patch.primaryHarness;
-    if (patch.eligibleHarnesses !== undefined) thread.eligible_harnesses = patch.eligibleHarnesses;
+    const next = ThreadSchema.parse({
+      ...thread,
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.state !== undefined ? { state: patch.state } : {}),
+      ...(patch.primaryHarness !== undefined ? { primary_harness: patch.primaryHarness } : {}),
+      ...(patch.eligibleHarnesses !== undefined
+        ? { eligible_harnesses: patch.eligibleHarnesses }
+        : {}),
+      updated_at: nowIso(),
+    });
     // Invariant (thread.ts contract): a sticky primary must be a member of a non-empty
     // eligible pool. If a PATCH leaves the primary outside the pool — e.g. the user
     // removed the primary harness from the pool — clear it to null (Auto) rather than
     // persist an incoherent state that the UI would show as "X answers in chat" while
     // the engine silently drops X. (An empty pool = auto, so it imposes no constraint.)
-    thread.primary_harness = coercePrimaryToPool(thread.primary_harness, thread.eligible_harnesses);
-    thread.updated_at = nowIso();
-    this.persist();
-    return thread;
+    next.primary_harness = coercePrimaryToPool(next.primary_harness, next.eligible_harnesses);
+    this.commit({ threads: [next] });
+    return next;
   }
 
   /** Persist the resolved isolated worktree path + base sha for a thread. */
   setThreadWorktree(id: string, worktreePath: string, baseSha: string): void {
     const thread = this.getThread(id);
     if (!thread) return;
-    thread.workspace = { ...thread.workspace, worktree_path: worktreePath, base_sha: baseSha };
-    thread.updated_at = nowIso();
-    this.persist();
+    const next = ThreadSchema.parse({
+      ...thread,
+      workspace: { ...thread.workspace, worktree_path: worktreePath, base_sha: baseSha },
+      updated_at: nowIso(),
+    });
+    this.commit({ threads: [next] });
   }
 
   listThreads(): Thread[] {
@@ -277,6 +256,16 @@ export class ThreadStore {
    * concurrent turns cannot both claim the same stale head.
    */
   createTurn(threadId: string, prompt: string, input: CreateTurnInput = {}): ThreadTurn {
+    const idempotency = turnIdempotency(threadId, input.idempotency);
+    if (idempotency) {
+      const prior = this.turnIdByKey.get(idempotency.keyDigest);
+      if (prior) {
+        if (prior.requestDigest !== idempotency.requestDigest) throw idempotencyConflict();
+        const existing = this.getTurn(prior.turnId);
+        if (!existing) throw new Error(`idempotency record points to missing turn ${prior.turnId}`);
+        return existing;
+      }
+    }
     const thread = this.getThread(threadId);
     if (!thread) throw Object.assign(new Error(`no such thread: ${threadId}`), { status: 404 });
     // Count TURNS, not run_ids: run_ids is only filled at bindTurnRun (which lags
@@ -297,11 +286,14 @@ export class ThreadStore {
       attachments: input.attachments ?? [],
       created_at: nowIso(),
     });
-    this.state.turns.push(turn);
     // First prompt names the thread (no LLM): cheap, honest, editable via rename.
-    if (!thread.title) thread.title = turn.prompt.split("\n")[0].slice(0, 60);
-    thread.updated_at = nowIso();
-    this.persist();
+    const nextThread = ThreadSchema.parse({
+      ...thread,
+      title: thread.title || turn.prompt.split("\n")[0].slice(0, 60),
+      updated_at: nowIso(),
+    });
+    if (idempotency) idempotency.turnId = turn.id;
+    this.commit({ threads: [nextThread], turns: [turn], ...(idempotency ? { idempotency } : {}) });
     return turn;
   }
 
@@ -309,17 +301,20 @@ export class ThreadStore {
   bindTurnRun(turnId: string, runId: string): void {
     const turn = this.state.turns.find((t) => t.id === turnId);
     if (!turn) return;
-    turn.run_id = runId;
+    const nextTurn = ThreadTurnSchema.parse({ ...turn, run_id: runId, enqueue_error: null });
     // A binding run supersedes any recorded refusal (the retry path): the
     // turn is no longer an orphan, so the stale error must not linger.
-    turn.enqueue_error = null;
     const thread = this.getThread(turn.thread_id);
+    let nextThread: Thread | undefined;
     if (thread) {
-      if (!thread.run_ids.includes(runId)) thread.run_ids.push(runId);
-      thread.head_run_id = runId;
-      thread.updated_at = nowIso();
+      nextThread = ThreadSchema.parse({
+        ...thread,
+        run_ids: thread.run_ids.includes(runId) ? thread.run_ids : [...thread.run_ids, runId],
+        head_run_id: runId,
+        updated_at: nowIso(),
+      });
     }
-    this.persist();
+    this.commit({ turns: [nextTurn], ...(nextThread ? { threads: [nextThread] } : {}) });
   }
 
   /**
@@ -340,10 +335,13 @@ export class ThreadStore {
   ): void {
     const turn = this.state.turns.find((t) => t.id === turnId);
     if (!turn || turn.run_id) return;
-    turn.enqueue_error = { message: redactSecrets(message), code, retryable, failed_at: nowIso() };
+    const nextTurn = ThreadTurnSchema.parse({
+      ...turn,
+      enqueue_error: { message: redactSecrets(message), code, retryable, failed_at: nowIso() },
+    });
     const thread = this.getThread(turn.thread_id);
-    if (thread) thread.updated_at = nowIso();
-    this.persist();
+    const nextThread = thread ? ThreadSchema.parse({ ...thread, updated_at: nowIso() }) : undefined;
+    this.commit({ turns: [nextTurn], ...(nextThread ? { threads: [nextThread] } : {}) });
   }
 
   /** Record/refresh the native CLI session a harness emitted for this thread. */
@@ -357,29 +355,100 @@ export class ThreadStore {
       (s) => s.thread_id === threadId && s.harness_id === harnessId,
     );
     const now = nowIso();
-    if (existing) {
-      existing.native_session_id = nativeSessionId;
-      existing.state = "live";
-      existing.resume_kind = "resume_by_id";
-      if (observedModel) existing.last_observed_model = observedModel;
-      existing.updated_at = now;
-    } else {
-      this.state.sessions.push(
-        SessionSchema.parse({
-          id: newId("se"),
-          thread_id: threadId,
-          harness_id: harnessId,
-          native_session_id: nativeSessionId,
-          last_observed_model: observedModel ?? null,
-          resume_kind: "resume_by_id",
-          state: "live",
-          created_at: now,
-          updated_at: now,
-        }),
-      );
-    }
+    const session = SessionSchema.parse({
+      ...(existing ?? {
+        id: newId("se"),
+        thread_id: threadId,
+        harness_id: harnessId,
+        created_at: now,
+      }),
+      native_session_id: nativeSessionId,
+      last_observed_model: observedModel || existing?.last_observed_model || null,
+      resume_kind: "resume_by_id",
+      state: "live",
+      updated_at: now,
+    });
     const thread = this.getThread(threadId);
-    if (thread) thread.updated_at = now;
-    this.persist();
+    const nextThread = thread ? ThreadSchema.parse({ ...thread, updated_at: now }) : undefined;
+    this.commit({ sessions: [session], ...(nextThread ? { threads: [nextThread] } : {}) });
+  }
+}
+
+export function threadProjection() {
+  return {
+    name: "threads",
+    create: (journal: DurableJournal) => new ThreadStore(journal),
+    validate: (store: ThreadStore) => store.validateProjection(),
+  };
+}
+
+function parseMutation(value: unknown): ThreadMutation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid thread mutation");
+  }
+  const mutation = value as ThreadMutation;
+  const idempotency = mutation.idempotency;
+  if (
+    idempotency !== undefined &&
+    (!idempotency ||
+      typeof idempotency.keyDigest !== "string" ||
+      typeof idempotency.requestDigest !== "string" ||
+      typeof idempotency.turnId !== "string")
+  ) {
+    throw new Error("invalid thread idempotency record");
+  }
+  return {
+    ...(mutation.threads
+      ? { threads: mutation.threads.map((item) => ThreadSchema.parse(item)) }
+      : {}),
+    ...(mutation.sessions
+      ? { sessions: mutation.sessions.map((item) => SessionSchema.parse(item)) }
+      : {}),
+    ...(mutation.turns
+      ? { turns: mutation.turns.map((item) => ThreadTurnSchema.parse(item)) }
+      : {}),
+    ...(idempotency ? { idempotency: { ...idempotency } } : {}),
+  };
+}
+
+function turnIdempotency(
+  threadId: string,
+  input: CreateTurnInput["idempotency"],
+): ThreadMutation["idempotency"] {
+  if (!input) return undefined;
+  if (!input.key || input.key.length > 256) {
+    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
+      code: "invalid_idempotency_key",
+      status: 400,
+    });
+  }
+  return {
+    keyDigest: hashJson({
+      client: input.client,
+      partition: "global",
+      operation: "thread.turn.create",
+      key: input.key,
+    }),
+    requestDigest: hashJson(input.request),
+    turnId: "",
+  };
+}
+
+function idempotencyConflict(): Error & { code: string; status: number } {
+  return Object.assign(new Error("idempotency key was already used with a different request"), {
+    code: "idempotency_conflict",
+    status: 409,
+  });
+}
+
+function upsert<T extends { id: string }>(items: T[], value: T): void {
+  const index = items.findIndex((item) => item.id === value.id);
+  if (index < 0) items.push(value);
+  else items[index] = value;
+}
+
+function assertUnique(items: Array<{ id: string }>, kind: string): void {
+  if (new Set(items.map((item) => item.id)).size !== items.length) {
+    throw new Error(`duplicate ${kind} id in journal projection`);
   }
 }

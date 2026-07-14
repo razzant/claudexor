@@ -88,12 +88,7 @@ export interface JobRecord {
   finishedAt?: string;
 }
 
-/**
- * Local daemon: Unix-socket JSON-RPC with token auth + a bounded-concurrency
- * worker pool (up to maxConcurrent jobs in parallel) backed by an optional
- * durable, atomically-written job registry. It does NOT contain a second
- * scheduler — it calls the injected runner (the same Orchestrator the CLI uses).
- */
+/** Unix-socket worker pool; scheduling stays in the injected Orchestrator. */
 export class DaemonServer {
   private server?: Server;
   private readonly sockets = new Set<Socket>();
@@ -318,6 +313,7 @@ export class DaemonServer {
           idempotencyKey?: unknown;
           clientId?: unknown;
           idempotencyRequest?: unknown;
+          operation?: unknown;
         };
         const request = envelope?.request;
         const idempotencyKey = String(envelope?.idempotencyKey ?? "");
@@ -328,6 +324,7 @@ export class DaemonServer {
           idempotencyKey,
           clientId,
           envelope.idempotencyRequest,
+          typeof envelope.operation === "string" ? envelope.operation : undefined,
         );
         if (!accepted.reused) this.queue.push(accepted.record.id);
         void this.drain();
@@ -345,6 +342,7 @@ export class DaemonServer {
           params: params?.request,
           idempotencyKey: String(params?.idempotencyKey ?? ""),
           clientId: String(params?.clientId ?? "daemon-client"),
+          operation: typeof params?.operation === "string" ? params.operation : undefined,
         });
         return record ? publicJobRecord(record) : null;
       }
@@ -408,6 +406,7 @@ export class DaemonServer {
     idempotencyKey: string,
     clientId: string,
     idempotencyParams?: unknown,
+    operation?: string,
   ) {
     const store = this.opts.commands?.current();
     if (store)
@@ -417,6 +416,7 @@ export class DaemonServer {
         idempotencyKey,
         clientId,
         idempotencyParams,
+        operation,
       });
     const record: JobRecord = { id: newId("job"), state: "queued", params, createdAt: nowIso() };
     this.records.set(record.id, record);

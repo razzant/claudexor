@@ -175,7 +175,8 @@ export function controlApiFetch(
     headers.set("X-Claudexor-Protocol-Major", String(CONTROL_PROTOCOL_MAJOR));
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
-    externalPath === "/v2/runs" &&
+    (externalPath === "/v2/runs" ||
+      /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath)) &&
     !headers.has("Idempotency-Key")
   ) {
     headers.set("Idempotency-Key", randomUUID());

@@ -191,8 +191,12 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadApplyRequest",
     "ControlThreadApplyResponse",
   ),
-  j("POST", "/v2/threads/:id/turns", "mutating"),
-  j("POST", "/v2/threads/:id/turns/:id/retry", "mutating"),
+  j("POST", "/v2/threads/:id/turns", "mutating", null, null, {
+    idempotency: "key_required",
+  }),
+  j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, null, {
+    idempotency: "key_required",
+  }),
   j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse"),
   j("POST", "/v2/trust", "mutating", "ControlTrustUpdateRequest", "ControlTrustState", {
     idempotency: "natural",

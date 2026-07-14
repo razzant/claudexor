@@ -31,7 +31,7 @@ import {
   recordTurnEnqueueFailure,
   type ThreadTurnRouteCtx,
 } from "./thread-turn-routes.js";
-import { handleRunCreate, normalizeRunStart, validateAbsoluteRepoRoot } from "./run-start.js";
+import * as runStart from "./run-start.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import {
@@ -133,11 +133,16 @@ export interface DaemonRunRecord {
 export interface DaemonFacadeClient {
   enqueue(
     params: unknown,
-    options?: { idempotencyKey?: string; clientId?: string; idempotencyRequest?: unknown },
+    options?: {
+      idempotencyKey?: string;
+      clientId?: string;
+      idempotencyRequest?: unknown;
+      operation?: string;
+    },
   ): Promise<{ id: string; state: string }>;
   findAccepted?(
     params: unknown,
-    options: { idempotencyKey: string; clientId?: string },
+    options: { idempotencyKey: string; clientId?: string; operation?: string },
   ): Promise<DaemonRunRecord | null>;
   status(id: string): Promise<DaemonRunRecord>;
   list(): Promise<DaemonRunRecord[]>;
@@ -211,6 +216,7 @@ export interface DaemonControlApiOptions {
         parentRunId?: string | null;
         planRunId?: string | null;
         attachments?: AttachmentInput[];
+        idempotency?: { key: string; client: string; request: unknown };
       },
     ) => Promise<unknown>;
     /** Rename / archive a thread or switch its sticky primary/pool. */
@@ -614,7 +620,7 @@ export class DaemonControlApiServer {
     }
     const path = protocol.path;
     if (method === "POST" && path === "/runs") {
-      return handleRunCreate(
+      return runStart.handleRunCreate(
         {
           daemon: this.opts.daemon,
           readBody: (request) => this.readBody(request),
@@ -701,7 +707,7 @@ export class DaemonControlApiServer {
         let repoRoot: string | null = null;
         if (parsed.scope.kind === "project") {
           repoRoot = parsed.scope.root.trim();
-          const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+          const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
           if (absoluteRepoError) throw Object.assign(new Error(absoluteRepoError), { status: 400 });
           if (!existsSync(repoRoot) || !lstatSync(repoRoot).isDirectory()) {
             throw Object.assign(
@@ -820,11 +826,7 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(raw);
         const body = ControlThreadApplyRequest.parse(raw);
         const threadId = decodeURIComponent(threadApplyMatch[1] as string);
-        // Head-run state gate (INV-113): the cumulative thread
-        // diff spans turns, so there is no single WorkProduct to hash-bind —
-        // but a thread whose HEAD run is blocked (NEEDS_HUMAN) or failed must
-        // NOT deliver with one POST unless a typed operator decision exists.
-        // This closes the last undocumented bypass of the apply-gate doctrine.
+        // INV-113: blocked or failed thread heads require a typed decision before delivery.
         const detail = await detailSvc(threadId);
         const headRunId = (detail.thread as { head_run_id?: string | null }).head_run_id ?? null;
         if (headRunId) {
@@ -848,8 +850,6 @@ export class DaemonControlApiServer {
                 reason: `head run is ${headRec.state} without a typed operator decision`,
               });
               return this.json(res, 409, {
-                // State-specific remediation: decisions unblock only BLOCKED
-                // runs; a failed head needs a fixing rerun, not an override.
                 error:
                   headRec.state === "blocked"
                     ? `thread head run ${headRunId} is blocked; apply requires a typed operator decision first (POST /runs/${headRunId}/decision)`
@@ -875,29 +875,33 @@ export class DaemonControlApiServer {
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
       }
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
-      // Read the body BEFORE chaining: a request body is a one-shot stream, so
-      // reading it inside the chain would block on the previous turn and could
-      // time out. Parse/secret-scan eagerly, then serialize the rest.
       let body: Record<string, unknown>;
+      let idempotencyKey: string;
       try {
+        idempotencyKey = runStart.requiredIdempotencyKey(req);
         body = ((await this.readBody(req)) ?? {}) as Record<string, unknown>;
         assertNoInlineSecretValues(body);
       } catch (err) {
         return this.requestError(res, err);
       }
-      return handleThreadTurnCreate(this.threadTurnRouteCtx(), res, threadId, body);
+      return handleThreadTurnCreate(this.threadTurnRouteCtx(), res, threadId, body, idempotencyKey);
     }
 
     const turnRetryMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/retry$/.exec(path);
     if (method === "POST" && turnRetryMatch) {
       if (!this.opts.services?.threadDetail)
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
-      return handleThreadTurnRetry(
-        this.threadTurnRouteCtx(),
-        res,
-        decodeURIComponent(turnRetryMatch[1] as string),
-        decodeURIComponent(turnRetryMatch[2] as string),
-      );
+      try {
+        return handleThreadTurnRetry(
+          this.threadTurnRouteCtx(),
+          res,
+          decodeURIComponent(turnRetryMatch[1] as string),
+          decodeURIComponent(turnRetryMatch[2] as string),
+          runStart.requiredIdempotencyKey(req),
+        );
+      } catch (error) {
+        return this.requestError(res, error);
+      }
     }
 
     const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
@@ -1009,7 +1013,7 @@ export class DaemonControlApiServer {
       const repoRoot = applyTargetRoot(body.target, rec);
       if (!repoRoot)
         return this.json(res, 400, { error: "project root is required for apply check" });
-      const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+      const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const gateError = applyGateError(rec, patch, repoRoot);
       if (gateError) return this.json(res, 409, { error: gateError });
@@ -1034,7 +1038,7 @@ export class DaemonControlApiServer {
         return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
       const repoRoot = applyTargetRoot(body.target, rec);
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
-      const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+      const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const gateError = applyGateError(rec, patch, repoRoot);
       if (gateError) return this.json(res, 409, { error: gateError });
@@ -1118,7 +1122,7 @@ export class DaemonControlApiServer {
           return this.json(res, 400, {
             error: "cannot resolve the in-place project root to revert",
           });
-        const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+        const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
         let revert;
         try {
@@ -1166,7 +1170,7 @@ export class DaemonControlApiServer {
           return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
         const repoRoot = applyTargetRoot(body.target ?? { kind: "original_project" }, rec);
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
-        const absoluteRepoError = validateAbsoluteRepoRoot(repoRoot);
+        const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
         const gateError = applyGateError(rec, patch, repoRoot);
         if (gateError) return this.json(res, 409, { error: gateError });
@@ -1199,7 +1203,7 @@ export class DaemonControlApiServer {
       const { turnId: _turnId, planRunId: _planRunId, ...pRest } = p;
       let params: ControlRunStartRequest;
       try {
-        params = normalizeRunStart(
+        params = runStart.normalizeRunStart(
           ControlRunStartRequest.parse({
             ...pRest,
             prompt: `${originalPrompt}\n\n## Reviewer feedback to address (operator decision)\n${body.feedback}`,
@@ -1825,11 +1829,8 @@ export class DaemonControlApiServer {
       );
     }
     const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-    return this.json(
-      res,
-      status,
-      ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
-    );
+    const body = ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error });
+    return this.json(res, status, body);
   }
 
   private async findRun(id: string): Promise<DaemonRunRecord | null> {
@@ -1837,16 +1838,13 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
-  /** Bound helper context for the extracted thread-turn write routes.
-   * Callers guard the required services (threadDetail/createThreadTurn)
-   * before routing here. */
   private threadTurnRouteCtx(): ThreadTurnRouteCtx {
     const services = this.opts.services ?? {};
     return {
       json: (res, status, body) => this.json(res, status, body),
       waitForRunStart: (jobId) => this.waitForRunStart(jobId),
       readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
-      normalizeStart: normalizeRunStart,
+      normalizeStart: runStart.normalizeRunStart,
       isTerminalState: (state) => TERMINAL_STATES.has(state),
       daemon: this.opts.daemon,
       threadDetail: services.threadDetail as NonNullable<typeof services.threadDetail>,
@@ -1856,7 +1854,6 @@ export class DaemonControlApiServer {
     };
   }
 
-  /** Read a run's text artifact (e.g. final/plan.md) for the "Implement plan" turn. */
   private async readRunArtifactText(runId: string, rel: string): Promise<string | null> {
     const rec = await this.findRun(runId);
     if (!rec) return null;

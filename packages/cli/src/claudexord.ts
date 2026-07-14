@@ -9,6 +9,7 @@ import {
   InteractionRegistry,
   RunEventBus,
   ThreadStore,
+  threadProjection,
   daemonDir,
   defaultSocketPath,
   ensureToken,
@@ -66,14 +67,26 @@ async function main(): Promise<void> {
       throw new Error("daemon shutdown coordinator is not initialized");
     };
 
+    // Refuse before opening the single-writer journal or sweeping state.
+    if (await socketAlive(socketPath)) {
+      throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
+    }
+    await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
+
     // Live events are pushed for SSE latency; the event log remains canonical, and
     // harness questions park in the interaction registry until answered.
     const bus = new RunEventBus();
     const interactions = new InteractionRegistry();
-    // Durable conversation registry retains vendor session resume anchors.
-    const threads = new ThreadStore(join(daemonDir(), "threads.json"));
     const journalManager = new JournalManager(daemonDir());
     const commandStoreSlot = journalManager.registerProjection(commandProjection());
+    const threadStoreSlot = journalManager.registerProjection(threadProjection());
+    const setupStoreSlot = journalManager.registerProjection({
+      name: "setup",
+      create: (journal) => new SetupJobStore(daemonDir(), { journal }),
+      validate: (store) => store.validateProjection(),
+    });
+    journalManager.start();
+    const threads = threadStoreSlot.current();
 
     const server = new DaemonServer({
       socketPath,
@@ -214,28 +227,6 @@ async function main(): Promise<void> {
       },
     });
 
-    // SINGLETON GUARD FIRST: a second claudexord must refuse BEFORE crash GC —
-    // otherwise it would reap the LIVE daemon's recorded children and sweep
-    // envelopes its running jobs still own. server.start() re-checks (race-safe
-    // enough: the window between the probe and listen is milliseconds, and GC
-    // only runs when the probe found no live daemon).
-    if (await socketAlive(socketPath)) {
-      throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
-    }
-
-    // Crash GC before any new work (reap surviving children, sweep orphaned
-    // envelopes/branches/tmp-homes), then arm live-children bookkeeping and
-    // graceful SIGTERM/SIGINT shutdown.
-    await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
-
-    // One composition-root journal owner. A corrupt global partition is a
-    // supported degraded startup: setup routes fail closed while recovery
-    // inspect/export/validate/quarantine remain available on the control plane.
-    const setupStoreSlot = journalManager.registerProjection({
-      name: "setup",
-      create: (journal) => new SetupJobStore(daemonDir(), { journal }),
-      validate: (store) => store.validateProjection(),
-    });
     const authReadiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
       cwd: NO_PROJECT_ROOT,
     });
@@ -279,7 +270,6 @@ async function main(): Promise<void> {
       stop: () => shutdownRuntime!.request(),
     });
 
-    journalManager.start();
     await setupBinding.start();
     if (!shutdownRuntime.requested()) await server.start();
     if (!shutdownRuntime.requested()) {
@@ -476,6 +466,7 @@ function controlServices(
         parentRunId?: string | null;
         planRunId?: string | null;
         attachments?: AttachmentInput[];
+        idempotency?: { key: string; client: string; request: unknown };
       },
     ) =>
       threads.createTurn(id, prompt, {
@@ -483,6 +474,7 @@ function controlServices(
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
         attachments: resolveAttachments(opts.attachments),
+        idempotency: opts.idempotency,
       }),
     updateThread: async (
       id: string,

@@ -78,10 +78,7 @@ describe("crash-GC live-owner guard", () => {
       const legacy = envelope(root, "task-legacy", "a01");
 
       const journalRoot = recordProject(stateDir, root);
-      const actions = await sweepOrphanWorkspaces({
-        journalRoot,
-        threadsPath: join(stateDir, "threads.json"),
-      });
+      const actions = await sweepOrphanWorkspaces({ journalRoot });
 
       expect(existsSync(live)).toBe(true);
       expect(existsSync(dead)).toBe(false);
@@ -131,7 +128,7 @@ describe("crash-GC live-owner guard", () => {
         utimesSync(path, old, old);
       }
       // tree/work.txt keeps its fresh mtime (just created).
-      await sweepOrphanWorkspaces({ journalRoot, threadsPath: join(stateDir, "threads.json") });
+      await sweepOrphanWorkspaces({ journalRoot });
       expect(existsSync(fresh)).toBe(true);
       expect(existsSync(stale)).toBe(false);
       expect(existsSync(nested)).toBe(true);

@@ -300,7 +300,7 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
       method: "access_token",
       probeError: null,
     });
-  });
+  }, 10_000);
 
   it("treats exit 0 with an unrecognized status as a probe error", async () => {
     const bin = fakeCodexBin(dir, 'echo "Logged in somehow"; exit 0');

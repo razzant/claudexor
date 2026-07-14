@@ -62,13 +62,19 @@ export class DaemonClient {
   }
   enqueue(
     request: unknown,
-    options: { idempotencyKey?: string; clientId?: string; idempotencyRequest?: unknown } = {},
+    options: {
+      idempotencyKey?: string;
+      clientId?: string;
+      idempotencyRequest?: unknown;
+      operation?: string;
+    } = {},
   ) {
     return this.call<{ id: string; state: string }>("claudexor.enqueue", {
       request,
       idempotencyKey: options.idempotencyKey ?? randomUUID(),
       clientId: options.clientId ?? "daemon-client",
       idempotencyRequest: options.idempotencyRequest,
+      operation: options.operation,
     });
   }
   status(id: string) {
@@ -86,11 +92,15 @@ export class DaemonClient {
       finishedAt?: string;
     }>("claudexor.status", { id });
   }
-  findAccepted(request: unknown, options: { idempotencyKey: string; clientId?: string }) {
+  findAccepted(
+    request: unknown,
+    options: { idempotencyKey: string; clientId?: string; operation?: string },
+  ) {
     return this.call<Awaited<ReturnType<DaemonClient["status"]>> | null>("claudexor.findAccepted", {
       request,
       idempotencyKey: options.idempotencyKey,
       clientId: options.clientId ?? "daemon-client",
+      operation: options.operation,
     });
   }
   list() {

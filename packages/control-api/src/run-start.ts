@@ -152,6 +152,7 @@ export interface RunCreateRouteContext {
       parentRunId?: string | null;
       planRunId?: string | null;
       attachments?: ControlRunStartRequest["attachments"];
+      idempotency?: { key: string; client: string; request: unknown };
     },
   ) => Promise<unknown>;
   threadDetail?: (id: string) => Promise<unknown>;

@@ -118,7 +118,10 @@ process below. Never paper over the conflict.
   `[INV-033:verbs-renamed]`.
 - **INV-034** A thread is the Claudexor-owned conversation (runs are its
   turns); the vendor CLI session is a re-hostable cache that later turns
-  resume natively. verify: thread schema; session-resume orchestrator tests.
+  resume natively. Thread, turn, and session mutations are fsync-before-ACK
+  journal records; create and Exact Retry bind `Idempotency-Key` to the
+  original request and never duplicate a turn. verify: thread journal restart
+  and idempotency tests; session-resume orchestrator tests.
 
 ## 5. Evidence Beats Summaries
 

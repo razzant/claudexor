@@ -29,13 +29,12 @@ const RO_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 interface SweepInput {
   journalRoot: string;
-  threadsPath: string;
 }
 
 export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]> {
   const actions: string[] = [];
   const roots = knownProjectRoots(input.journalRoot);
-  const liveThreadIds = knownThreadIds(input.threadsPath);
+  const liveThreadIds = knownThreadIds(input.journalRoot);
 
   for (const root of roots) {
     const trees = [root, ...threadTreesUnder(root)];
@@ -77,16 +76,21 @@ function knownProjectRoots(journalRoot: string): string[] {
   return [...roots];
 }
 
-function knownThreadIds(threadsPath: string): Set<string> {
+function knownThreadIds(journalRoot: string): Set<string> {
+  let journal: DurableJournal | null = null;
   try {
-    const raw = JSON.parse(readFileSync(threadsPath, "utf8")) as {
-      threads?: Array<{ id?: unknown }>;
-    };
-    return new Set(
-      (raw.threads ?? []).map((t) => t?.id).filter((id): id is string => typeof id === "string"),
-    );
+    journal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
+    const ids = new Set<string>();
+    for (const entry of journal.records()) {
+      if (entry.type !== "thread.entities_upserted") continue;
+      const threads = (entry.payload as { threads?: Array<{ id?: unknown }> }).threads ?? [];
+      for (const thread of threads) if (typeof thread.id === "string") ids.add(thread.id);
+    }
+    return ids;
   } catch {
     return new Set();
+  } finally {
+    journal?.close();
   }
 }
 

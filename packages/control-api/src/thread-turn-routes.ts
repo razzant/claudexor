@@ -28,6 +28,7 @@ export interface ThreadTurnRouteCtx {
       parentRunId?: string | null;
       planRunId?: string | null;
       attachments?: AttachmentInput[];
+      idempotency?: { key: string; client: string; request: unknown };
     },
   ): Promise<unknown>;
   setTurnEnqueueError?: (
@@ -107,6 +108,48 @@ export function recordTurnEnqueueFailure(
   }
 }
 
+async function respondToTurnJob(
+  ctx: ThreadTurnRouteCtx,
+  res: ServerResponse,
+  jobId: string,
+  threadId: string,
+  turnId: string,
+): Promise<void> {
+  let rec: DaemonRunRecord;
+  try {
+    rec = await ctx.waitForRunStart(jobId);
+  } catch (error) {
+    return ctx.json(res, 500, {
+      error: `job ${jobId} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+      jobId,
+      turnId,
+      threadId,
+    });
+  }
+  if (rec.runId && rec.runDir) {
+    return ctx.json(res, 200, {
+      ...ControlRunStartInfo.parse({
+        jobId: rec.id,
+        runId: rec.runId,
+        taskId: rec.taskId,
+        runDir: rec.runDir,
+      }),
+      turnId,
+      threadId,
+    });
+  }
+  if (ctx.isTerminalState(rec.state)) {
+    return ctx.json(res, 500, {
+      jobId: rec.id,
+      turnId,
+      threadId,
+      state: rec.state,
+      error: rec.error ?? `run ended pre-start: ${rec.state}`,
+    });
+  }
+  return ctx.json(res, 202, { jobId: rec.id, turnId, threadId, state: rec.state });
+}
+
 /**
  * POST /threads/:id/turns — create the turn record FIRST (single-writer), then
  * enqueue its run. Per-thread serialization: concurrent turns on one thread
@@ -117,6 +160,7 @@ export function handleThreadTurnCreate(
   res: ServerResponse,
   threadId: string,
   body: Record<string, unknown>,
+  idempotencyKey: string,
 ): Promise<void> {
   return chainOnThread(ctx, threadId, async () => {
     // Once the turn record exists, any later failure in this handler must
@@ -218,6 +262,11 @@ export function handleThreadTurnCreate(
         parentRunId: thread.head_run_id ?? null,
         planRunId,
         attachments: params.attachments,
+        idempotency: {
+          key: idempotencyKey,
+          client: "control-api",
+          request: { threadId, body },
+        },
       })) as { id: string };
       createdTurnId = turn.id;
       // Strip base64 attachment bytes from the enqueued params: the command journal must
@@ -228,7 +277,15 @@ export function handleThreadTurnCreate(
       // refusal as retryable:false (nothing to replay).
       let job: { id: string };
       try {
-        job = await ctx.daemon.enqueue({ ...enqueueParams, turnId: turn.id });
+        job = await ctx.daemon.enqueue(
+          { ...enqueueParams, turnId: turn.id },
+          {
+            idempotencyKey,
+            clientId: "control-api",
+            operation: "thread.turn.create",
+            idempotencyRequest: { threadId, body },
+          },
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : "enqueue failed";
         try {
@@ -244,49 +301,7 @@ export function handleThreadTurnCreate(
           retryable: false,
         });
       }
-      // POST-ENQUEUE phase: the job EXISTS now. A status-poll throw here is
-      // transient observation loss, NOT a refusal — record nothing on the
-      // turn (the run may be starting fine; the runner hook records real
-      // pre-start deaths) and never claim retryable:false.
-      let rec: DaemonRunRecord;
-      try {
-        rec = await ctx.waitForRunStart(job.id);
-      } catch (err) {
-        return ctx.json(res, 500, {
-          error: `job ${job.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
-          jobId: job.id,
-          turnId: turn.id,
-          threadId,
-        });
-      }
-      if (rec.runId && rec.runDir) {
-        return ctx.json(res, 200, {
-          ...ControlRunStartInfo.parse({
-            jobId: rec.id,
-            runId: rec.runId,
-            taskId: rec.taskId,
-            runDir: rec.runDir,
-          }),
-          turnId: turn.id,
-          threadId,
-        });
-      }
-      // A job that went TERMINAL without ever binding a run is a pre-start
-      // failure (trust/preflight refusal inside the runner): report it as one
-      // (mirrors POST /runs' 500), never as an accepted queued turn. The
-      // daemon hook has already persisted the refusal on the turn record.
-      if (ctx.isTerminalState(rec.state)) {
-        return ctx.json(res, 500, {
-          jobId: rec.id,
-          turnId: turn.id,
-          threadId,
-          state: rec.state,
-          error: rec.error ?? `run ended pre-start: ${rec.state}`,
-        });
-      }
-      // The turn IS recorded (turnId) and the job is canonical in the daemon;
-      // the runner binds the run when it starts. Return 202 without cancelling.
-      return ctx.json(res, 202, { jobId: rec.id, turnId: turn.id, threadId, state: rec.state });
+      return respondToTurnJob(ctx, res, job.id, threadId, turn.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "bad request";
       // PRE-ENQUEUE failures only reach here (plan read, param validation,
@@ -311,7 +326,7 @@ export function handleThreadTurnCreate(
 
 /**
  * POST /threads/:id/turns/:turnId/retry — re-enqueue a REFUSED turn (same
- * prompt/options/attachment refs: the job registry is the SSOT of enqueue
+ * prompt/options/attachment refs: the command journal is the SSOT of enqueue
  * params, replayed verbatim). No duplicate bubble: the run binds to the SAME
  * turn, which also clears enqueue_error.
  */
@@ -320,6 +335,7 @@ export function handleThreadTurnRetry(
   res: ServerResponse,
   threadId: string,
   turnId: string,
+  idempotencyKey: string,
 ): Promise<void> {
   // Same per-thread serialization as turn creation: a retry racing a new
   // turn would otherwise interleave lineage bookkeeping.
@@ -330,28 +346,40 @@ export function handleThreadTurnRetry(
       const turn = turns.find((t) => t["id"] === turnId);
       if (!turn)
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
+      const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
+      if (!turn["run_id"] && recorded?.retryable === false) {
+        throw Object.assign(
+          new Error(
+            `turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`,
+          ),
+          { status: 409 },
+        );
+      }
+      const jobs = (await ctx.daemon.list())
+        .filter((record) => {
+          const params = record.params as { turnId?: unknown } | null | undefined;
+          return Boolean(params && typeof params === "object" && params.turnId === turnId);
+        })
+        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+      const last = jobs[jobs.length - 1];
+      if (last && ctx.daemon.findAccepted) {
+        const prior = await ctx.daemon.findAccepted(last.params, {
+          idempotencyKey,
+          clientId: "control-api",
+          operation: "thread.turn.retry",
+        });
+        if (prior) return respondToTurnJob(ctx, res, prior.id, threadId, turnId);
+      }
       if (turn["run_id"]) {
         throw Object.assign(
           new Error(`turn ${turnId} already has a run; retry only repairs refused turns`),
           { status: 409 },
         );
       }
-      const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
       if (!recorded) {
         throw Object.assign(
           new Error(
             `turn ${turnId} has no recorded refusal; its job may still be queued or starting`,
-          ),
-          { status: 409 },
-        );
-      }
-      // Recorded as NOT replayable (the original enqueue threw before any
-      // job existed): refuse immediately — no registry lookup can find
-      // params that were never recorded.
-      if (recorded.retryable === false) {
-        throw Object.assign(
-          new Error(
-            `turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`,
           ),
           { status: 409 },
         );
@@ -369,13 +397,6 @@ export function handleThreadTurnRetry(
           { status: 409 },
         );
       }
-      const jobs = (await ctx.daemon.list())
-        .filter((r) => {
-          const p = r.params as { turnId?: unknown } | null | undefined;
-          return Boolean(p && typeof p === "object" && p.turnId === turnId);
-        })
-        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
-      const last = jobs[jobs.length - 1];
       if (!last) {
         // The refusal happened before any job existed (enqueue itself threw):
         // there are no recorded params to replay faithfully — honest refusal.
@@ -400,7 +421,12 @@ export function handleThreadTurnRetry(
       // the replay fails. Honest, ordering-independent, no lost refusals.
       let job: { id: string };
       try {
-        job = await ctx.daemon.enqueue(last.params);
+        job = await ctx.daemon.enqueue(last.params, {
+          idempotencyKey,
+          clientId: "control-api",
+          operation: "thread.turn.retry",
+          idempotencyRequest: last.params,
+        });
       } catch (err) {
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job
         // params remain in the registry, so the turn STAYS replayable.
@@ -413,45 +439,7 @@ export function handleThreadTurnRetry(
         }
         return ctx.json(res, errStatus(err, 500), { error: message, turnId, threadId });
       }
-      // POST-ENQUEUE: the replay job exists; a status-poll throw is
-      // observation loss, NOT a refusal — record nothing on the turn.
-      let rec: DaemonRunRecord;
-      try {
-        rec = await ctx.waitForRunStart(job.id);
-      } catch (err) {
-        return ctx.json(res, 500, {
-          error: `replay job ${job.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
-          jobId: job.id,
-          turnId,
-          threadId,
-        });
-      }
-      if (rec.runId && rec.runDir) {
-        return ctx.json(res, 200, {
-          ...ControlRunStartInfo.parse({
-            jobId: rec.id,
-            runId: rec.runId,
-            taskId: rec.taskId,
-            runDir: rec.runDir,
-          }),
-          turnId,
-          threadId,
-        });
-      }
-      // A job that went TERMINAL without ever binding a run is a pre-start
-      // failure (trust/preflight refusal inside the runner) — report it as
-      // one (mirrors POST /runs), never as an accepted queued turn. The
-      // runner hook has already persisted the refusal on the turn.
-      if (ctx.isTerminalState(rec.state)) {
-        return ctx.json(res, 500, {
-          jobId: rec.id,
-          turnId,
-          threadId,
-          state: rec.state,
-          error: rec.error ?? `run ended pre-start: ${rec.state}`,
-        });
-      }
-      return ctx.json(res, 202, { jobId: rec.id, turnId, threadId, state: rec.state });
+      return respondToTurnJob(ctx, res, job.id, threadId, turnId);
     } catch (err) {
       // Guard refusals only (404/409): never overwrite the original recorded
       // refusal with bookkeeping noise.

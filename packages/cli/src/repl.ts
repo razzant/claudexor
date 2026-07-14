@@ -224,7 +224,7 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
 async function runLocalRepl(repoRoot: string): Promise<number> {
   // No daemon (and it could not be auto-started): in-process engine with
   // EPHEMERAL, in-memory continuity. There is no durable thread store here (the
-  // daemon owns threads.json single-writer); native session ids are kept in
+  // daemon owns the thread journal single-writer); native session ids are kept in
   // memory for this process so plan->continue still resumes within the session,
   // and nothing is persisted/shared. This path is READ-ONLY — mutating
   // (agent) turns are refused, never run in-process and left un-unblockable.

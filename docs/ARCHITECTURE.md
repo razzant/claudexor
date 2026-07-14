@@ -120,7 +120,7 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/artifact-store`, `packages/event-log`: run artifact tree and
   append-only event log writers.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
-- `packages/daemon`: durable local Unix-socket queue and job registry.
+- `packages/daemon`: durable local Unix-socket queue and journal projections for commands and threads.
 - `packages/interview`: spec interview engine for Plan/draft flows.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
@@ -527,10 +527,13 @@ Endpoint semantics beyond the inventory:
   throw), the daemon persists the reason on the turn (`ThreadTurn.enqueue_error`,
   projected as `enqueueError`) so every surface renders the refusal inline
   instead of an eternally-empty bubble. `POST /v2/threads/:id/turns/:turnId/retry`
-  re-enqueues that SAME turn by replaying the recorded command params verbatim (no
-  duplicate turn); a successful run binding clears the error, a repeat refusal
-  replaces it. Retry refuses turns that already have a run, have no recorded
-  refusal, or still have an active job (409).
+  creates a new command attempt for that SAME turn by replaying the immutable
+  original command params through fresh preflight (no duplicate turn); a
+  successful run binding clears the error, a repeat refusal replaces it.
+  Turn create and Exact Retry require `Idempotency-Key`; the same key/request
+  returns the original durable handles, while key reuse with another request
+  returns typed `409 idempotency_conflict`. Retry refuses turns that already
+  have a run, have no recorded refusal, or still have an active job (409).
 - `GET /v2/trust` + `POST /v2/trust` are the NARROW user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
