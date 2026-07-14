@@ -4730,6 +4730,75 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("streams durable global/project journal events with partition-scoped resume cursors", async () => {
+    const { daemon } = fakeDaemon();
+    const calls: string[] = [];
+    const emitted = new Set<string>();
+    const services: DaemonControlApiOptions["services"] = {
+      journalEvents: async (partition, afterCursor) => {
+        const call = `${partition}:${afterCursor ?? ""}`;
+        calls.push(call);
+        if (afterCursor === "stale")
+          throw Object.assign(new Error("journal cursor is stale; resnapshot is required"), {
+            code: "journal_cursor_invalid",
+            status: 409,
+          });
+        if (emitted.has(call)) return [];
+        emitted.add(call);
+        return [
+          {
+            schemaVersion: 1,
+            cursor: partition === "global" ? "global-next" : "project-next",
+            partition,
+            type: "command.enqueued",
+            observedAt: "2026-07-14T00:00:00.000Z",
+            payload: { id: "cmd-1" },
+          },
+        ];
+      },
+    };
+    const readOne = async (response: Response): Promise<string> => {
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      while (!text.includes("data:")) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+      await reader.cancel();
+      return text;
+    };
+
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const global = await apiFetch(`${base}/v2/global/events`, {
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "global-prev" },
+        });
+        expect(global.status).toBe(200);
+        expect(await readOne(global)).toContain("id: global-next");
+
+        const project = await apiFetch(`${base}/v2/projects/prj-1/events`, {
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "project-prev" },
+        });
+        expect(project.status).toBe(200);
+        const projectBody = await readOne(project);
+        expect(projectBody).toContain("id: project-next");
+        expect(projectBody).toContain('"partition":"project:prj-1"');
+
+        const stale = await apiFetch(`${base}/v2/global/events`, {
+          headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "stale" },
+        });
+        expect(stale.status).toBe(409);
+      },
+      undefined,
+      services,
+    );
+    expect(calls).toContain("global:global-prev");
+    expect(calls).toContain("project:prj-1:project-prev");
+  });
+
   it("accepts a non-git existing project root (the engine initializes git itself) but 400s a missing one", async () => {
     const { daemon } = fakeDaemon();
     const nonGit = mkdtempSync(join(tmpdir(), "claudexor-nongit-api-"));

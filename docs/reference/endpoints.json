@@ -23,6 +23,13 @@
       "response_schema": null
     },
     {
+      "method": "GET",
+      "path": "/v2/global/events",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
       "method": "POST",
       "path": "/v2/handshake",
       "mutating": false,
@@ -70,6 +77,13 @@
       "mutating": true,
       "request_schema": "ControlProjectRegisterRequest",
       "response_schema": "ControlProject"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/projects/:id/events",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": null
     },
     {
       "method": "POST",

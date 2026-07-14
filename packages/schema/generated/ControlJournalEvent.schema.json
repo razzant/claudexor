@@ -1,0 +1,42 @@
+{
+  "$ref": "#/definitions/ControlJournalEvent",
+  "definitions": {
+    "ControlJournalEvent": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque partition-scoped resume cursor."
+        },
+        "partition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "payload": {}
+      },
+      "required": [
+        "schemaVersion",
+        "cursor",
+        "partition",
+        "type",
+        "observedAt"
+      ],
+      "additionalProperties": false,
+      "description": "One durable event from a global or project journal partition."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

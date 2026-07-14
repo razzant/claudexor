@@ -21,7 +21,7 @@ import {
 } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
-import { TERMINAL_STATES, redactedSseLine } from "./sse-shared.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
@@ -36,6 +36,7 @@ export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
+import { handleJournalEventRoute, streamLiveRunEvents } from "./journal-event-routes.js";
 import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -182,6 +183,7 @@ export interface DaemonControlApiOptions {
     recoveryValidatePartition?: (partition: string) => Promise<unknown>;
     recoveryExportPartition?: (partition: string) => Promise<unknown>;
     recoveryQuarantinePartition?: (partition: string, input: unknown) => Promise<unknown>;
+    journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
     settings?: () => Promise<unknown>;
     updateSettings?: (patch: unknown) => Promise<unknown>;
     listSecrets?: () => Promise<unknown>;
@@ -687,8 +689,34 @@ export class DaemonControlApiServer {
     }
 
     if (method === "GET" && path === "/events") {
-      return this.streamGlobalEvents(req, res);
+      return streamLiveRunEvents(
+        {
+          bus: this.opts.bus,
+          heartbeatMs: this.opts.heartbeatMs,
+          sseClients: this.sseClients,
+          json: (response, status, body) => this.json(response, status, body),
+        },
+        req,
+        res,
+      );
     }
+    if (
+      await handleJournalEventRoute(
+        {
+          services: this.opts.services,
+          pollMs: this.opts.pollMs,
+          heartbeatMs: this.opts.heartbeatMs,
+          sseClients: this.sseClients,
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
 
     if (method === "POST" && path === "/threads") {
       const svc = this.opts.services?.createThread;
@@ -1919,52 +1947,6 @@ export class DaemonControlApiServer {
       req,
       res,
     );
-  }
-
-  /**
-   * Global live-only event multiplex (GET /events): every run's events as they
-   * happen, tagged with run_id, no replay. Documented asymmetry vs the per-run
-   * stream: reconnecting clients re-snapshot /runs first, then resume per-run
-   * streams (which DO replay via persisted seq) where they need gap-free state.
-   */
-  private streamGlobalEvents(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.opts.bus) {
-      this.json(res, 501, { error: "global event stream requires the daemon event bus" });
-      return;
-    }
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    });
-    res.write(": connected\n\n");
-    this.sseClients.add(res);
-    let closed = false;
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(`: ping ${Date.now()}\n\n`);
-    }, this.opts.heartbeatMs ?? 15_000);
-    heartbeat.unref?.();
-    const unsubscribe = this.opts.bus.subscribe((event) => {
-      if (closed) return;
-      try {
-        const raw = JSON.stringify(event);
-        const type = String((event as { type?: string }).type ?? "run");
-        const seq = (event as { seq?: number }).seq;
-        res.write(
-          `${typeof seq === "number" ? `id: ${seq}\n` : ""}event: ${type}\ndata: ${redactedSseLine(raw)}\n\n`,
-        );
-      } catch {
-        /* one bad event must not kill the stream */
-      }
-    });
-    const cleanup = () => {
-      closed = true;
-      clearInterval(heartbeat);
-      unsubscribe();
-      this.sseClients.delete(res);
-    };
-    req.on("close", cleanup);
-    res.on("close", cleanup);
   }
 
   private pendingInteractionsFor(rec: DaemonRunRecord): ControlPendingInteraction[] {

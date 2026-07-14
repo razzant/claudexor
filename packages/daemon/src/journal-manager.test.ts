@@ -72,6 +72,21 @@ function storedOperation(): StoredOperation {
 }
 
 describe("JournalManager", () => {
+  it("projects durable events behind opaque partition cursors", () => {
+    const manager = new JournalManager(root, { partition: "project:events" });
+    const slot = registerProbe(manager);
+    manager.start();
+    slot.current().journal.append("probe.first", { value: 1 });
+    slot.current().journal.append("probe.second", { value: 2 });
+    const events = manager.events();
+    expect(events.map((event) => [event.partition, event.type])).toEqual([
+      ["project:events", "probe.first"],
+      ["project:events", "probe.second"],
+    ]);
+    expect(manager.events(events[0]!.cursor).map((event) => event.type)).toEqual(["probe.second"]);
+    manager.close();
+  });
+
   it("isolates recovery and projection availability by partition", () => {
     const partitions = ["global", "project:a", "project:b"] as const;
     const seeded = partitions.map((partition) => {

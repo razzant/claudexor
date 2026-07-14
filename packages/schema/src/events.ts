@@ -2,6 +2,19 @@ import { z } from "zod";
 import { FallbackReason, Id } from "./primitives.js";
 import { AuthMode } from "./budget.js";
 
+export const ControlJournalEvent = z
+  .object({
+    schemaVersion: z.literal(1),
+    cursor: z.string().min(1).describe("Opaque partition-scoped resume cursor."),
+    partition: z.string().min(1),
+    type: z.string().min(1),
+    observedAt: z.string().datetime({ offset: true }),
+    payload: z.unknown(),
+  })
+  .strict()
+  .describe("One durable event from a global or project journal partition.");
+export type ControlJournalEvent = z.infer<typeof ControlJournalEvent>;
+
 export const RunEventType = z
   .enum([
     "run.created",

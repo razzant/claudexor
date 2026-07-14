@@ -18,7 +18,36 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/journal";
 import { ensureCanonicalPrivateDirectory } from "@claudexor/util";
+
+export function recoveryFrom(
+  error: unknown,
+  fallback: string,
+): Extract<JournalRecoveryState, { status: "recovery_required" }> {
+  if (error instanceof JournalRecoveryRequiredError) return cloneRecovery(error.recovery) as never;
+  return recoveryAt(0, `${fallback}: ${safeMessage(error)}`);
+}
+
+export function recoveryAt(
+  byteOffset: number,
+  reason: string,
+): Extract<JournalRecoveryState, { status: "recovery_required" }> {
+  return {
+    status: "recovery_required",
+    location: { kind: "byte", byteOffset },
+    reason,
+    discardedTailBytes: 0,
+  };
+}
+
+export function cloneRecovery(value: JournalRecoveryState): JournalRecoveryState {
+  return value.status === "ready" ? { ...value } : { ...value, location: { ...value.location } };
+}
+
+export function safeMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
 
 export function fingerprintPartition(path: string): string {
   const hash = createHash("sha256");

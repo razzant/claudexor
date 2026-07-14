@@ -49,6 +49,7 @@ describe("DurableJournal", () => {
     const first = journal.append("setup.job.saved", { id: "one" });
     const second = journal.append("setup.job.saved", { id: "two" });
     const cursor = journal.currentCursor();
+    const firstCursor = journal.cursorAt(first.seq);
     expect(second.previousFrameHash).toBe(first.frameHash);
     journal.close();
 
@@ -58,6 +59,7 @@ describe("DurableJournal", () => {
       [2, "epoch-test"],
     ]);
     expect(reopened.sequenceAfter(cursor)).toBe(2);
+    expect(reopened.sequenceAfter(firstCursor)).toBe(1);
     expect(reopened.records(1).map((record) => record.seq)).toEqual([2]);
     expect(() => reopened.sequenceAfter(`${cursor}!!!`)).toThrow(/malformed/);
     reopened.close();

@@ -453,6 +453,7 @@ files.
 - `GET /healthz`
 - `GET /v2/agent-capabilities`
 - `GET /v2/events`
+- `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
@@ -460,6 +461,7 @@ files.
 - `GET /v2/operations`
 - `GET /v2/projects`
 - `POST /v2/projects`
+- `GET /v2/projects/:id/events`
 - `POST /v2/projects/:id/relink`
 - `GET /v2/recovery/partitions/:id`
 - `POST /v2/recovery/partitions/:id/export`
@@ -597,6 +599,14 @@ has applied the terminal event provably has the output. `GET /v2/events` is the
 global LIVE-ONLY multiplex (events tagged with `run_id`, no replay): on
 reconnect a client re-snapshots `/runs` first and uses per-run streams where it
 needs gap-free state.
+
+`GET /v2/global/events` and `GET /v2/projects/:id/events` replay the durable
+global or project journal partition and then tail it. Their `Last-Event-ID`
+values are opaque, partition-scoped cursors: a cursor from another partition or
+epoch is rejected so the client can re-snapshot that scope. The API does not
+claim a total order across partitions. The older `/v2/events` live run
+multiplex remains available to existing clients while surfaces move to the
+durable scoped streams.
 
 A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds

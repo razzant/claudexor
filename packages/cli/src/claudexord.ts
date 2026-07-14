@@ -540,6 +540,8 @@ function controlServices(
     cancelSetupJob: async (input: unknown) => setupJobs().cancel(input),
     reconcileSetupJob: async (input: unknown) => setupJobs().reconcile(input),
     extendSetupJob: async (input: unknown) => setupJobs().extend(input),
+    journalEvents: async (partition: string, afterCursor?: string) =>
+      journalPartition(partition).events(afterCursor),
     recoveryInspectPartition: async (partition: string) => journalPartition(partition).inspect(),
     recoveryValidatePartition: async (partition: string) => journalPartition(partition).validate(),
     recoveryExportPartition: async (partition: string) =>
@@ -647,9 +649,7 @@ function controlServices(
       const value = typeof p["value"] === "string" ? p["value"] : "";
       if (!name || !value) throw new Error("name and value are required");
       const backend = secretStore.set(name, value);
-      // A new key changes auth readiness immediately: drop the doctor TTL cache.
       invalidateDoctorCache();
-      // Keychain->file degradation is disclosed, not silent (UI shows it).
       return {
         name,
         backend,

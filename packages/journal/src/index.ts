@@ -16,7 +16,6 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { ensureCanonicalPrivateDirectory } from "@claudexor/util";
-
 const MAGIC = Buffer.from([0x43, 0x4c, 0x58, 0x4a, 0x4e, 0x4c, 0x32, 0x00]);
 const VERSION = 1;
 const PREFIX_CORE_BYTES = MAGIC.length + 2 + 4 + 4;
@@ -26,7 +25,6 @@ const HASH_BYTES = 32;
 const MAX_HEADER_BYTES = 64 * 1024;
 const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const ZERO_HASH = "0".repeat(64);
-
 export interface JournalRecord<T = unknown> {
   partition: string;
   epoch: string;
@@ -38,7 +36,6 @@ export interface JournalRecord<T = unknown> {
   payload: T;
   byteOffset: number;
 }
-
 export type JournalRecoveryLocation =
   | { kind: "byte"; byteOffset: number }
   | { kind: "cursor"; epoch: string; seq: number };
@@ -51,7 +48,6 @@ export type JournalRecoveryState =
       reason: string;
       discardedTailBytes: number;
     };
-
 export interface DurableJournalOptions {
   rootDir: string;
   partition: string;
@@ -180,6 +176,14 @@ export class DurableJournal {
   currentCursor(): string {
     this.assertReadable();
     return encodeCursor(this.options.partition, this.epoch, this.nextSeq - 1);
+  }
+
+  cursorAt(seq: number): string {
+    this.assertReadable();
+    if (!Number.isSafeInteger(seq) || seq < 0 || seq >= this.nextSeq) {
+      throw new JournalCursorError("journal cursor sequence is outside the current epoch");
+    }
+    return encodeCursor(this.options.partition, this.epoch, seq);
   }
 
   currentSequence(): number {

@@ -20,12 +20,17 @@ import {
   exportPartitionEntries,
   fingerprintPartition,
   fsyncDirectory,
+  cloneRecovery,
   readOwnedFile,
+  recoveryAt,
+  recoveryFrom,
+  safeMessage,
   sha256,
   sha256File,
   writeAtomicPrivateJson,
   writeExclusiveFile,
 } from "./journal-recovery-files.js";
+import { journalEvents } from "./journal-events.js";
 
 export type JournalQuarantineRequest = ControlJournalQuarantineRequest & {
   idempotencyKey: string;
@@ -154,6 +159,11 @@ export class JournalManager {
     const after = fingerprintPartition(this.partitionDir);
     if (before !== after) this.enterRecovery(recoveryAt(0, "journal changed during validation"));
     return { ...this.inspection(after), projectionStatus };
+  }
+
+  events(afterCursor?: string) {
+    this.assertStarted();
+    return journalEvents(this.journal, this.recovery, afterCursor);
   }
 
   exportRecovery(): ControlJournalExportReceipt {
@@ -558,40 +568,12 @@ function quarantineRequestDigest(partition: string, input: JournalQuarantineRequ
   );
 }
 
-function recoveryFrom(
-  error: unknown,
-  fallback: string,
-): Extract<JournalRecoveryState, { status: "recovery_required" }> {
-  if (error instanceof JournalRecoveryRequiredError) return cloneRecovery(error.recovery) as any;
-  return recoveryAt(0, `${fallback}: ${safeMessage(error)}`);
-}
-
-function recoveryAt(
-  byteOffset: number,
-  reason: string,
-): Extract<JournalRecoveryState, { status: "recovery_required" }> {
-  return {
-    status: "recovery_required",
-    location: { kind: "byte", byteOffset },
-    reason,
-    discardedTailBytes: 0,
-  };
-}
-
-function cloneRecovery(value: JournalRecoveryState): JournalRecoveryState {
-  return value.status === "ready" ? { ...value } : { ...value, location: { ...value.location } };
-}
-
 function conflict(code: string): Error & { code: string; status: number } {
   return typedError(code, 409, code.replaceAll("_", " "));
 }
 
 function typedError(code: string, status: number, message: string) {
   return Object.assign(new Error(message), { code, status });
-}
-
-function safeMessage(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
