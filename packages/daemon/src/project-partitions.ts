@@ -2,6 +2,7 @@ import type { Project, Thread, ThreadTurn } from "@claudexor/schema";
 import { hashJson } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
+import { interactionProjection, type InteractionStore } from "./interactions.js";
 import type { ProjectStore } from "./projects.js";
 import {
   threadProjection,
@@ -15,6 +16,7 @@ import type { CommandAuthority } from "./command-authority.js";
 interface ProjectPartition {
   manager: JournalManager;
   commands: JournalProjectionSlot<CommandStore>;
+  interactions: JournalProjectionSlot<InteractionStore>;
   threads: JournalProjectionSlot<ThreadStore>;
 }
 
@@ -25,6 +27,7 @@ export class ProjectPartitions implements CommandAuthority {
     private readonly rootDir: string,
     private readonly projects: JournalProjectionSlot<ProjectStore>,
     private readonly globalCommands: JournalProjectionSlot<CommandStore>,
+    private readonly globalInteractions: JournalProjectionSlot<InteractionStore>,
     private readonly globalThreads: JournalProjectionSlot<ThreadStore>,
   ) {
     this.sync();
@@ -35,6 +38,21 @@ export class ProjectPartitions implements CommandAuthority {
       this.globalCommands.current(),
       ...this.healthy().map((entry) => entry.commands.current()),
     ];
+  }
+
+  interactionStores(): InteractionStore[] {
+    return [
+      this.globalInteractions.current(),
+      ...this.healthy().map((entry) => entry.interactions.current()),
+    ];
+  }
+
+  interactionsForRequest(params: unknown): InteractionStore {
+    const commandStore = this.forRequest(params);
+    if (commandStore === this.globalCommands.current()) return this.globalInteractions.current();
+    const entry = this.healthy().find((candidate) => candidate.commands.current() === commandStore);
+    if (!entry) throw new Error("command partition has no interaction authority");
+    return entry.interactions.current();
   }
 
   forRequest(params: unknown): CommandStore {
@@ -178,9 +196,10 @@ export class ProjectPartitions implements CommandAuthority {
     if (existing) return existing;
     const manager = new JournalManager(this.rootDir, { partition: `project:${projectId}` });
     const commands = manager.registerProjection(commandProjection());
+    const interactions = manager.registerProjection(interactionProjection());
     const threads = manager.registerProjection(threadProjection());
     manager.start();
-    const entry = { manager, commands, threads };
+    const entry = { manager, commands, interactions, threads };
     this.partitions.set(projectId, entry);
     return entry;
   }

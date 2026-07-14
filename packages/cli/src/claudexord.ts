@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import {
   DaemonClient,
   commandProjection,
+  interactionProjection,
   JournalManager,
   DaemonServer,
   InteractionRegistry,
@@ -73,9 +74,9 @@ async function main(): Promise<void> {
     await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
 
     const bus = new RunEventBus();
-    const interactions = new InteractionRegistry();
     const journalManager = new JournalManager(daemonDir());
     const commandStoreSlot = journalManager.registerProjection(commandProjection());
+    const interactionStoreSlot = journalManager.registerProjection(interactionProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
@@ -88,8 +89,13 @@ async function main(): Promise<void> {
       daemonDir(),
       projectStoreSlot,
       commandStoreSlot,
+      interactionStoreSlot,
       threadStoreSlot,
     );
+    const interactions = new InteractionRegistry({
+      forRequest: (params) => threads.interactionsForRequest(params),
+      all: () => threads.interactionStores(),
+    });
 
     const server = new DaemonServer({
       socketPath,
@@ -156,7 +162,7 @@ async function main(): Promise<void> {
         };
         return orchestrator.run({
           onEvent: (event) => bus.publish(event),
-          onInteraction: (ctx2) => interactions.register(ctx2),
+          onInteraction: (ctx2) => interactions.register(ctx2, p),
           interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
           threadId,
           executionRoot,
@@ -667,11 +673,8 @@ function controlServices(
       const prompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
       if (!prompt.trim()) throw new Error("prompt is required");
       const repoRoot = projectRootFromScopedInput(p, "spec questions");
-      // Drive an interactive, CHOICE-BASED interview: the read-only grounding plan
-      // must end with a structured "## Open Questions" section that
-      // extractQuestionsFromPlan parses into single/multi/text questions with options.
-      // The instruction + its parser are a co-located contract pair in spec.ts.
-      // Prior tiers' answers: carried so each round goes DEEPER (adaptive interview).
+      // The grounding contract and its question parser are co-located in spec.ts;
+      // prior decisions make each interview tier go deeper instead of repeating.
       const priorDecisions = Array.isArray(p["priorDecisions"])
         ? (p["priorDecisions"] as unknown[]).filter(
             (d): d is { question: string; answer: string } =>
@@ -707,10 +710,8 @@ function controlServices(
           : (readTextSafe(join(planDir, "final", "plan.md")) ?? "");
       if (!prompt.trim() || !plan.trim()) throw new Error("prompt and plan/planDir are required");
       const repoRoot = projectRootFromScopedInput(p, "spec freeze");
-      // Forward the full SpecAnswersFile shape — not just answers — so a client that
-      // edited the draft's summary / criteria / non-goals / gates doesn't have them
-      // silently dropped from the frozen SpecPack. Fail LOUDLY on a malformed field
-      // (e.g. tests:[123]) rather than silently filtering it.
+      // Forward the full draft shape so client edits are not silently dropped;
+      // malformed fields fail loudly instead of being filtered.
       const strArr = (v: unknown, field: string): string[] | undefined => {
         if (v === undefined) return undefined;
         if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
@@ -723,9 +724,7 @@ function controlServices(
         if (typeof v !== "string") throw new Error(`spec freeze: "${field}" must be a string`);
         return v;
       };
-      // Schema-parse the answers at the wire boundary (Bible §3): a malformed item
-      // (missing/typed question_id, bad option_ids) fails loudly with a typed error,
-      // rather than slipping through an `as never[]` cast. Absent => no answers.
+      // Schema-parse answers at the wire boundary; absent means no answers.
       const answers = p["answers"] === undefined ? [] : InterviewAnswer.array().parse(p["answers"]);
       // Multi-tier interview: prior-tier decisions are folded into decided_tradeoffs
       // so the frozen SpecPack carries EVERY tier, not just the last one the client

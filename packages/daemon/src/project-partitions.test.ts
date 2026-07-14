@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { commandProjection } from "./command-store.js";
+import { interactionProjection } from "./interactions.js";
 import { JournalManager } from "./journal-manager.js";
 import { ProjectPartitions } from "./project-partitions.js";
 import { projectProjection } from "./projects.js";
@@ -19,6 +20,7 @@ function fixture() {
   roots.push(root);
   const manager = new JournalManager(root);
   const commands = manager.registerProjection(commandProjection());
+  const interactions = manager.registerProjection(interactionProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
@@ -26,7 +28,7 @@ function fixture() {
     root,
     manager,
     projects,
-    partitions: new ProjectPartitions(root, projects, commands, threads),
+    partitions: new ProjectPartitions(root, projects, commands, interactions, threads),
   };
 }
 
@@ -66,6 +68,19 @@ describe("ProjectPartitions", () => {
       idempotency: { key: "same", client: "test", request: { prompt: "B" } },
     });
     expect(turnA.id).not.toBe(turnB.id);
+    const aInteractions = f.partitions.interactionsForRequest({
+      scope: { kind: "project", root: projectA },
+    });
+    aInteractions.request({
+      runId: "run-a",
+      taskId: "task-a",
+      attemptId: "a01",
+      harnessId: "test",
+      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+      requestedAt: new Date().toISOString(),
+      timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(aInteractions.pendingForRun("run-a")).toHaveLength(1);
 
     f.partitions.relinkProject(b.id, projectB2);
     expect(f.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));
@@ -78,6 +93,9 @@ describe("ProjectPartitions", () => {
       expect.arrayContaining([threadA.id, threadB.id]),
     );
     expect(restarted.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));
+    expect(
+      restarted.partitions.interactionStores().flatMap((store) => store.pendingForRun("run-a")),
+    ).toEqual([]);
     restarted.partitions.close();
     restarted.manager.close();
   });
@@ -100,11 +118,12 @@ describe("ProjectPartitions", () => {
 function fixtureAt(root: string) {
   const manager = new JournalManager(root);
   const commands = manager.registerProjection(commandProjection());
+  const interactions = manager.registerProjection(interactionProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
   return {
     manager,
-    partitions: new ProjectPartitions(root, projects, commands, threads),
+    partitions: new ProjectPartitions(root, projects, commands, interactions, threads),
   };
 }

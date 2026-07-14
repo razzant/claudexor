@@ -5,7 +5,7 @@ import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
-import { InteractionRegistry } from "./interactions.js";
+import { InteractionRegistry, InteractionStore } from "./interactions.js";
 import { DaemonServer, type JobRecord } from "./server.js";
 
 function tempDir(name = "daemon"): string {
@@ -331,7 +331,12 @@ describe("DaemonServer", () => {
 
 describe("InteractionRegistry", () => {
   it("isolates identical native interaction ids by run", async () => {
-    const registry = new InteractionRegistry();
+    const journal = new DurableJournal({
+      rootDir: join(tempDir("interactions"), "journal"),
+      partition: "global",
+    });
+    const store = new InteractionStore(journal);
+    const registry = new InteractionRegistry({ forRequest: () => store, all: () => [store] });
     const context = (runId: string) => ({
       runId,
       taskId: `task-${runId}`,
@@ -345,8 +350,8 @@ describe("InteractionRegistry", () => {
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    const first = registry.register(context("run-a"));
-    const second = registry.register(context("run-b"));
+    const first = registry.register(context("run-a"), {});
+    const second = registry.register(context("run-b"), {});
     expect(registry.pendingForRun("run-a")).toHaveLength(1);
     expect(registry.pendingForRun("run-b")).toHaveLength(1);
     const answer = { interaction_id: "same", answers: [] };
@@ -354,12 +359,40 @@ describe("InteractionRegistry", () => {
     registry.answer("run-b", "same", answer);
     await expect(first).resolves.toEqual(answer);
     await expect(second).resolves.toEqual(answer);
+    journal.close();
   });
 
   it("drops pending questions when a run terminates", async () => {
-    const registry = new InteractionRegistry();
-    const pending = registry.register({
-      runId: "run",
+    const journal = new DurableJournal({
+      rootDir: join(tempDir("interactions"), "journal"),
+      partition: "global",
+    });
+    const store = new InteractionStore(journal);
+    const registry = new InteractionRegistry({ forRequest: () => store, all: () => [store] });
+    const pending = registry.register(
+      {
+        runId: "run",
+        taskId: "task",
+        attemptId: "a01",
+        harnessId: "test",
+        request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+        requestedAt: new Date().toISOString(),
+        timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      {},
+    );
+    registry.dropForRun("run");
+    await expect(pending).resolves.toBeNull();
+    expect(registry.pendingForRun("run")).toEqual([]);
+    journal.close();
+  });
+
+  it("interrupts pending interactions on journal restart", () => {
+    const rootDir = join(tempDir("interaction-restart"), "journal");
+    const firstJournal = new DurableJournal({ rootDir, partition: "global" });
+    const first = new InteractionStore(firstJournal);
+    first.request({
+      runId: "run-restart",
       taskId: "task",
       attemptId: "a01",
       harnessId: "test",
@@ -367,8 +400,12 @@ describe("InteractionRegistry", () => {
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    registry.dropForRun("run");
-    await expect(pending).resolves.toBeNull();
-    expect(registry.pendingForRun("run")).toEqual([]);
+    firstJournal.close();
+
+    const secondJournal = new DurableJournal({ rootDir, partition: "global" });
+    const second = new InteractionStore(secondJournal);
+    expect(second.pendingForRun("run-restart")).toEqual([]);
+    expect(second.status("run-restart", "question")).toBe("resolved");
+    secondJournal.close();
   });
 });

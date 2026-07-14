@@ -551,13 +551,12 @@ Endpoint semantics beyond the inventory:
   returns the original durable handles, while key reuse with another request
   returns typed `409 idempotency_conflict`. Retry refuses turns that already
   have a run, have no recorded refusal, or still have an active job (409).
-- `GET /v2/trust` + `POST /v2/trust` are the NARROW user-level trust surface: the GET
+- `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
-  pre-provenance files show a null root), and the POST accepts exactly
-  `{repoRoot, allowFullAccess}` (strict — unknown fields are 400) to grant or
-  revoke unsandboxed full access for ONE repo. Every other trust field stays
-  CLI-only (`claudexor trust`). This backs the macOS one-click remedy on a
+  pre-provenance files show a null root), and the POST accepts `repoRoot` plus
+  `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
+  update one repo. CLI trust commands use this same boundary. This backs the macOS one-click remedy on a
   trust-refused turn and the Settings trust section (list + revoke).
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` persist an auditable patch-hash-bound
@@ -678,10 +677,13 @@ stream-json control protocol) can raise typed user questions mid-run; the
 orchestrator OFFERS the interaction channel only to routes whose manifest
 declares `interactive`. The
 engine emits `interaction.requested` (questions, options, timeout deadline),
-parks ONLY that attempt, and the daemon registry exposes the pending question
-via `GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
+parks ONLY that attempt, and the daemon journals the pending projection in the
+run's global or `project:<id>` partition before exposing it via
+`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
-live session (`interaction.answered`); an unanswered question times out after
+live session only after the resolution is journaled (`interaction.answered`).
+After daemon restart an unresolved question becomes interrupted rather than
+resurrecting a dead in-process continuation. An unanswered question times out after
 the configurable `interaction_timeout_ms` (default 15 min) into a benign
 decline (`interaction.timeout`) — the model continues with stated assumptions
 and the run never hangs forever. Declined/timed-out interactive flow-control

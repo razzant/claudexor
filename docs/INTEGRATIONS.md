@@ -119,13 +119,15 @@ Interactive runs use the typed interaction surface instead of raw input
 forwarding: `interaction.requested` events carry the questions, the macOS app
 and `claudexor follow` answer via `POST /v2/runs/:id/interactions/:id/answer`,
 and an unanswered question declines benignly after the configurable
-`interaction_timeout_ms`.
+`interaction_timeout_ms`. Pending and resolved interaction projections are
+fsynced in the run's journal partition; daemon restart terminalizes unresolved
+questions instead of presenting a stale prompt as live.
 
 A thread turn whose run is refused before it starts (trust gate, preflight)
 carries the persisted reason in its projection (`enqueueError`);
 `POST /v2/threads/:id/turns/:turnId/retry` re-enqueues that same turn.
-`GET /v2/trust` / `POST /v2/trust` expose the narrow user-level full-access surface
-(`{repoRoot, allowFullAccess}` only); all other trust fields stay CLI-only.
+`GET /v2/trust` / `POST /v2/trust` are the sole CLI/app trust boundary for the
+user-level full-access grant and `readonly|workspace_write` access default.
 
 ## MCP
 

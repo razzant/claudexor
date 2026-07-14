@@ -324,7 +324,8 @@ instead of guessing artifact paths or displaying fake zero spend/quota values.
 Interactive harnesses (Claude Code) can ask typed questions mid-run: the run
 parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
 interactions endpoint, and unanswered questions decline benignly after the
-configurable timeout.
+configurable timeout. The pending projection is journal-backed, so a daemon
+restart cannot resurrect a prompt whose live harness continuation is gone.
 
 Runtime resilience is evidence-driven: adapters can emit typed transient
 network/stream/timeout signals, the orchestrator retries them only within the

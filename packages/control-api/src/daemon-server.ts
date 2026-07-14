@@ -1878,9 +1878,9 @@ export class DaemonControlApiServer {
   }
 
   /**
-   * Cached artifact projection + LIVE waiting_on_user overlay. Pending
-   * interactions are in-process daemon state, not an artifact, so they must
-   * never be frozen into the fingerprint cache.
+   * Cached artifact projection + journal-backed waiting_on_user overlay. Pending
+   * interactions are not part of the run artifact fingerprint, so they must
+   * never be frozen into the summary cache.
    */
   private summarizeRunLive(rec: DaemonRunRecord): ControlRunSummary {
     const summary = this.summarizeRunCached(rec);
