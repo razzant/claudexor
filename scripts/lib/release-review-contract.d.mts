@@ -19,10 +19,25 @@ export interface ChecklistValidation {
 }
 
 export function exactPanelMatch(triadModels: readonly string[], scopeModel: string): boolean;
+export function pathIsWithin(root: string, target: string): boolean;
+export function validateNewReviewOutput(
+  candidateRoot: string,
+  packetRoot: string,
+  outDir: string,
+  exists: boolean,
+): { ok: boolean; reasons: string[] };
+export function validateFrozenReviewBinding(input: {
+  candidateSha: string;
+  candidateTree: string;
+  actualSha: string;
+  actualTree: string;
+  dirty: boolean;
+}): { ok: boolean; reasons: string[] };
 export function completionTermination(finishReason: unknown): {
   complete: boolean;
   error: string | null;
 };
+export function parseChecklistJson(raw: unknown): unknown[] | null;
 export function validateChecklistResponse(
   items: unknown,
   model: string,

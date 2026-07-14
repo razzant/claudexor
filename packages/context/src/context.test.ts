@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -14,10 +15,45 @@ import { TaskContract } from "@claudexor/schema";
 import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
 import { buildScopeAtlas } from "./atlas.js";
 import { assertMandatoryContext, buildContextPack } from "./contextpack.js";
-import { preflightEvidence, writeEvidencePacket } from "./evidence.js";
+import {
+  FROZEN_REVIEW_EVIDENCE_FILES,
+  preflightEvidence,
+  validatePacketManifest,
+  verifySealedEvidencePacket,
+  writeEvidencePacket,
+} from "./evidence.js";
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), "claudexor-ctx-"));
+}
+
+function digest(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function writeSealedPacket(
+  dir: string,
+  input: {
+    baseSha: string;
+    candidateSha: string;
+    candidateTree: string;
+    diff?: string;
+  },
+): string {
+  mkdirSync(dir, { recursive: true });
+  for (const file of FROZEN_REVIEW_EVIDENCE_FILES) {
+    let content = `${file}\n`;
+    if (file === "FREEZE.json") content = `${JSON.stringify(input)}\n`;
+    if (file === "DIFF.patch") content = input.diff ?? "diff --git a/a b/a\n";
+    if (file.endsWith(".json") && file !== "FREEZE.json") content = "{}\n";
+    writeFileSync(join(dir, file), content);
+  }
+  const manifest = FROZEN_REVIEW_EVIDENCE_FILES.map((file) => {
+    const bytes = readFileSync(join(dir, file));
+    return `${digest(bytes)}  ${file}`;
+  }).join("\n");
+  writeFileSync(join(dir, "MANIFEST.sha256"), `${manifest}\n`);
+  return digest(`${manifest}\n`);
 }
 
 describe("ScopeAtlas", () => {
@@ -152,6 +188,69 @@ describe("assertMandatoryContext (uniform preflight)", () => {
 });
 
 describe("evidence packet", () => {
+  it("verifies one sealed manifest/FREEZE contract and rejects a tampered packet", () => {
+    const dir = join(tmp(), "packet");
+    const baseSha = "a".repeat(40);
+    const candidateSha = "b".repeat(40);
+    const candidateTree = "c".repeat(40);
+    const manifestSha256 = writeSealedPacket(dir, { baseSha, candidateSha, candidateTree });
+
+    expect(
+      verifySealedEvidencePacket({
+        evidenceDir: dir,
+        candidateSha,
+        candidateTree,
+        expectedManifestSha256: manifestSha256,
+      }),
+    ).toMatchObject({ baseSha, candidateSha, candidateTree, manifestSha256 });
+
+    writeFileSync(join(dir, "TESTS.txt"), "tampered\n");
+    expect(() =>
+      verifySealedEvidencePacket({ evidenceDir: dir, candidateSha, candidateTree }),
+    ).toThrow(/manifest digest mismatch: TESTS\.txt/);
+  });
+
+  it("fails closed on manifest identity, unsealed files, traversal, and stale FREEZE", () => {
+    const baseSha = "a".repeat(40);
+    const candidateSha = "b".repeat(40);
+    const candidateTree = "c".repeat(40);
+    const dir = join(tmp(), "packet");
+    writeSealedPacket(dir, { baseSha, candidateSha, candidateTree });
+
+    expect(() =>
+      verifySealedEvidencePacket({
+        evidenceDir: dir,
+        candidateSha,
+        candidateTree,
+        expectedManifestSha256: "d".repeat(64),
+      }),
+    ).toThrow(/manifest identity mismatch/);
+
+    writeFileSync(join(dir, "EXTRA.md"), "not sealed\n");
+    expect(() =>
+      verifySealedEvidencePacket({ evidenceDir: dir, candidateSha, candidateTree }),
+    ).toThrow(/unsealed packet file: EXTRA\.md/);
+
+    const hash = "e".repeat(64);
+    expect(validatePacketManifest(`${hash}  ..\/escape\n`, [])).toMatchObject({ ok: false });
+
+    const stale = join(tmp(), "stale-packet");
+    writeSealedPacket(stale, {
+      baseSha,
+      candidateSha: "f".repeat(40),
+      candidateTree,
+    });
+    expect(() =>
+      verifySealedEvidencePacket({ evidenceDir: stale, candidateSha, candidateTree }),
+    ).toThrow(/candidate SHA does not match/);
+
+    const invalidBase = join(tmp(), "invalid-base-packet");
+    writeSealedPacket(invalidBase, { baseSha: "short", candidateSha, candidateTree });
+    expect(() =>
+      verifySealedEvidencePacket({ evidenceDir: invalidBase, candidateSha, candidateTree }),
+    ).toThrow(/FREEZE\.json base SHA must be exactly 40/);
+  });
+
   it("writes mandatory files and preflight passes", () => {
     const dir = join(tmp(), ".adversarial-review");
     writeEvidencePacket(dir, { userIntent: "do X", diff: "diff --git a b\n" });

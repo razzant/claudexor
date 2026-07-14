@@ -14,17 +14,20 @@
  *
  * Usage:
  *   OPENROUTER_API_KEY=... node scripts/triad-scope-review.mjs \
- *     --base <sha>            # diff base (default: HEAD~1)
+ *     --packet <dir>          # external sealed packet with FREEZE.json + MANIFEST.sha256
+ *     --packet-manifest-digest <sha256> # expected identity of MANIFEST.sha256
+ *     --candidate-sha <sha>   # exact full commit SHA checked out in cwd
+ *     --candidate-tree <sha>  # exact full tree SHA checked out in cwd
+ *     --panel-lock <path>     # panel lock outside the candidate worktree
  *     --round <n>             # round number for the output dir
- *     --out <dir>             # default .adversarial-review/triad
- *     --goal-file <path>      # user intent / goal text file
+ *     --out <dir>             # output root outside candidate and sealed packet
  *
  * The release panel and transport are immutable in source:
  *   triad: openai/gpt-5.6-sol, anthropic/claude-fable-5,
  *          google/gemini-3.5-flash
  *   scope: anthropic/claude-fable-5
  *   route: OpenRouter only
- * A matching local PANEL.lock is written after the first responsive run.
+ * A matching external panel lock is written after the first responsive run.
  * Environment overrides, substitutions, direct-provider routes, and
  * --skip-scope fail before evidence leaves the machine.
  *
@@ -39,11 +42,20 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 // Relative dist import: the root package has no workspace dep on util, so the
 // bare specifier does not resolve for repo scripts. Requires `pnpm build` first.
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
+import { verifySealedEvidencePacket } from "../packages/context/dist/evidence.js";
 import { exactObservedModelMatch } from "./lib/openrouter-panel.mjs";
 import {
   REQUIRED_SCOPE_MODEL,
@@ -51,11 +63,13 @@ import {
   SCOPE_ITEMS,
   TRIAD_ITEMS,
   completionTermination,
+  parseChecklistJson,
+  pathIsWithin,
   releaseReviewDecision,
   validateChecklistResponse,
+  validateFrozenReviewBinding,
+  validateNewReviewOutput,
 } from "./lib/release-review-contract.mjs";
-
-const PANEL_LOCK_PATH = resolve(".adversarial-review", "PANEL.lock");
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(`--${name}`);
@@ -64,11 +78,14 @@ function arg(name, fallback = null) {
   return next && !next.startsWith("--") ? next : true;
 }
 
-function readPanelLock() {
-  if (!existsSync(PANEL_LOCK_PATH)) return {};
+function readPanelLock(path) {
+  if (!existsSync(path)) return {};
+  if (lstatSync(path).isSymbolicLink()) throw new Error("panel lock must not be a symlink");
   const out = {};
-  for (const line of readFileSync(PANEL_LOCK_PATH, "utf8").split("\n")) {
-    const m = line.match(/^\s*(triad|scope)\s*:\s*(.+?)\s*$/);
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const m = line.match(
+      /^\s*(triad|scope|candidate_sha|candidate_tree|packet_manifest_sha256)\s*:\s*(.+?)\s*$/,
+    );
     if (m) out[m[1]] = m[2];
   }
   return out;
@@ -77,7 +94,6 @@ function readPanelLock() {
 const TRIAD_MODELS = [...REQUIRED_TRIAD_MODELS];
 const SCOPE_MODEL = REQUIRED_SCOPE_MODEL;
 const expectedTriad = TRIAD_MODELS.join(",");
-const panelLock = readPanelLock();
 
 for (const [name, actual, expected] of [
   ["TRIAD_MODELS", process.env.TRIAD_MODELS, expectedTriad],
@@ -102,18 +118,6 @@ if (arg("skip-scope") !== null) {
   );
   process.exit(2);
 }
-if (
-  (panelLock.triad && panelLock.triad.trim() !== expectedTriad) ||
-  (panelLock.scope && panelLock.scope.trim() !== SCOPE_MODEL) ||
-  Boolean(panelLock.triad) !== Boolean(panelLock.scope)
-) {
-  console.error(`${PANEL_LOCK_PATH} does not contain the exact complete v2 reviewer panel.`);
-  process.exit(2);
-}
-
-const panelPinPending = !panelLock.triad && !panelLock.scope;
-let panelPinnedNow = false;
-
 function positiveIntEnv(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -143,12 +147,65 @@ function readDoc(path) {
   }
 }
 
+function requiredArg(name) {
+  const value = arg(name);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`--${name} is required`);
+  return value;
+}
+
+function assertExternalPath(candidateRoot, path, label) {
+  if (pathIsWithin(candidateRoot, path)) {
+    throw new Error(`${label} must be outside the candidate worktree`);
+  }
+}
+
+function loadFrozenPacket(candidateRoot, candidateSha, candidateTree, packetManifestDigest) {
+  const sealed = verifySealedEvidencePacket({
+    evidenceDir: requiredArg("packet"),
+    candidateSha,
+    candidateTree,
+    expectedManifestSha256: packetManifestDigest,
+  });
+  const packet = sealed.evidenceDir;
+  assertExternalPath(candidateRoot, packet, "packet");
+  const actualSha = git(["rev-parse", "HEAD"]).trim();
+  const actualTree = git(["rev-parse", "HEAD^{tree}"]).trim();
+  const dirty = git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0;
+  const binding = validateFrozenReviewBinding({
+    candidateSha,
+    candidateTree,
+    actualSha,
+    actualTree,
+    dirty,
+  });
+  if (!binding.ok) throw new Error(`frozen candidate check failed: ${binding.reasons.join("; ")}`);
+  const requestedBase = arg("base");
+  if (requestedBase !== null && requestedBase !== sealed.baseSha) {
+    throw new Error(`--base mismatch: packet has ${sealed.baseSha}, got ${String(requestedBase)}`);
+  }
+  const actualDiff = git(["diff", "--binary", `${sealed.baseSha}..${candidateSha}`]);
+  if (sealed.diff !== actualDiff) {
+    throw new Error("sealed DIFF.patch does not match base..candidate");
+  }
+
+  const sections = sealed.files
+    .filter((file) => file !== "DIFF.patch")
+    .map((file) => `### ${file}\n\n${readFileSync(join(packet, file), "utf8")}`);
+  return {
+    base: sealed.baseSha,
+    diff: sealed.diff,
+    manifestSha256: sealed.manifestSha256,
+    packet,
+    prompt: `## Sealed evidence packet\n\n${sections.join("\n\n")}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Prompt blocks (shared reviewer preamble + per-pass checklists)
 // ---------------------------------------------------------------------------
 
 const PREAMBLE =
-  "You are a pre-commit reviewer for Claudexor, a local-first control plane for AI coding harnesses.\n" +
+  "You are a frozen-release reviewer for Claudexor, a local-first control plane for AI coding harnesses.\n" +
   "Its constitution is CLAUDEXOR_BIBLE.md. Its contributor handbook is docs/DEVELOPMENT.md.\n" +
   "Claudexor does NOT self-modify; you are reviewing a human/agent-authored change to the product.\n";
 
@@ -196,32 +253,14 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
 - For PASS: brief reason is fine. For FAIL: cite the specific file, line/symbol, what is wrong,
   and provide a CONCRETE fix suggestion so the developer knows exactly what to change.
 - Do NOT call tools, search, browse, or request external context. Use only the
-  prompt's file pack, diff, repository atlas, and documentation context.`;
+  prompt's sealed packet, file pack, diff, repository atlas, and documentation context.`;
 
 // ---------------------------------------------------------------------------
 // Context builders
 // ---------------------------------------------------------------------------
 
-// Optional `--paths a,b,c` pathspec to scope a large diff to the risky files
-// (the full-tree diff can exceed reviewer context). Empty => whole diff.
-const PATHSPEC = (() => {
-  const i = process.argv.indexOf("--paths");
-  const v = i >= 0 ? process.argv[i + 1] : undefined;
-  return v
-    ? v
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
-})();
-const pathArgs = PATHSPEC.length > 0 ? ["--", ...PATHSPEC] : [];
-
 function changedFiles(base) {
-  return git(["diff", "--name-only", `${base}..HEAD`, ...pathArgs]).trim();
-}
-
-function diffText(base) {
-  return git(["diff", `${base}..HEAD`, ...pathArgs]);
+  return git(["diff", "--name-only", `${base}..HEAD`]).trim();
 }
 
 function touchedFilePack(paths) {
@@ -278,13 +317,7 @@ function checklistSection(title) {
   return m ? m[0] : `(section "${title}" not found in docs/CHECKLISTS.md)`;
 }
 
-function goalSection() {
-  const goalFile = arg("goal-file");
-  const goal = goalFile ? readDoc(goalFile) : "(no explicit goal file provided)";
-  return `## Goal / user intent\n\n${goal}`;
-}
-
-function buildTriadPrompt(base) {
+function buildTriadPrompt(base, packetPrompt, diff) {
   return `${PREAMBLE}
 ## Review instructions
 
@@ -315,7 +348,7 @@ ${checklistSection("Security And Secrets")}
 
 - Output ONLY a valid JSON array. No markdown fences, no text outside the JSON.
 
-${goalSection()}
+${packetPrompt}
 
 ## CLAUDEXOR_BIBLE.md
 
@@ -335,7 +368,7 @@ ${touchedFilePack(changedFiles(base).split("\n").filter(Boolean))}
 
 ## Diff under review
 
-${diffText(base)}
+${diff}
 
 ## Changed files
 
@@ -343,7 +376,7 @@ ${changedFiles(base)}
 `;
 }
 
-function buildScopePrompt(base) {
+function buildScopePrompt(base, packetPrompt, diff) {
   return `${PREAMBLE}
 ## Your role
 
@@ -389,7 +422,7 @@ ${ANTI_PATTERN_LOCK}
 
 ${CRITICAL_CALIBRATION}
 
-${goalSection()}
+${packetPrompt}
 
 ## Canonical documentation context
 
@@ -407,7 +440,7 @@ ${touchedFilePack(changedFiles(base).split("\n").filter(Boolean))}
 
 ## Diff under review
 
-${diffText(base)}
+${diff}
 `;
 }
 
@@ -568,76 +601,86 @@ async function callOpenRouter(model, prompt) {
   }
 }
 
-function extractJsonArray(raw) {
-  const text = String(raw ?? "").trim();
-  const candidates = [text];
-  if (text.includes("```")) {
-    for (let chunk of text.split("```")) {
-      chunk = chunk.trim();
-      if (chunk.startsWith("json")) chunk = chunk.slice(4).trim();
-      if (chunk) candidates.push(chunk);
-    }
-  }
-  for (const candidate of candidates) {
-    try {
-      const obj = JSON.parse(candidate);
-      if (Array.isArray(obj)) return obj;
-    } catch {
-      /* fall through to bracket scan */
-    }
-    const ends = [];
-    for (let pos = candidate.indexOf("]"); pos !== -1; pos = candidate.indexOf("]", pos + 1))
-      ends.push(pos);
-    for (const end of ends.reverse()) {
-      const starts = [];
-      for (
-        let pos = candidate.indexOf("[");
-        pos !== -1 && pos <= end;
-        pos = candidate.indexOf("[", pos + 1)
-      )
-        starts.push(pos);
-      for (const start of starts.reverse()) {
-        try {
-          const obj = JSON.parse(candidate.slice(start, end + 1));
-          if (Array.isArray(obj)) return obj;
-        } catch {
-          /* keep scanning */
-        }
-      }
-    }
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const base = arg("base", "HEAD~1");
-  const round = arg("round", "1");
-  const outDir = resolve(arg("out", ".adversarial-review/triad"), `round-${round}`);
-  mkdirSync(outDir, { recursive: true });
-
-  const triadPrompt = buildTriadPrompt(base);
+  if (arg("paths") !== null || arg("goal-file") !== null) {
+    throw new Error("--paths and --goal-file are not allowed for a sealed cumulative review");
+  }
+  const candidateSha = requiredArg("candidate-sha");
+  const candidateTree = requiredArg("candidate-tree");
+  const packetManifestDigest = requiredArg("packet-manifest-digest");
+  if (!/^[0-9a-f]{40}$/.test(candidateSha) || !/^[0-9a-f]{40}$/.test(candidateTree)) {
+    throw new Error("--candidate-sha and --candidate-tree must be full lowercase Git object ids");
+  }
+  const candidateRoot = realpathSync(git(["rev-parse", "--show-toplevel"]).trim());
+  const frozen = loadFrozenPacket(candidateRoot, candidateSha, candidateTree, packetManifestDigest);
+  const base = frozen.base;
+  const panelLockPath = resolve(requiredArg("panel-lock"));
+  assertExternalPath(candidateRoot, panelLockPath, "panel lock");
+  if (pathIsWithin(frozen.packet, panelLockPath)) {
+    throw new Error("panel lock must not mutate the sealed packet");
+  }
+  const panelLockExists = existsSync(panelLockPath);
+  const panelLock = readPanelLock(panelLockPath);
+  if (
+    panelLockExists &&
+    (panelLock.triad?.trim() !== expectedTriad ||
+      panelLock.scope?.trim() !== SCOPE_MODEL ||
+      panelLock.candidate_sha?.trim() !== candidateSha ||
+      panelLock.candidate_tree?.trim() !== candidateTree ||
+      panelLock.packet_manifest_sha256?.trim() !== frozen.manifestSha256)
+  ) {
+    throw new Error(`${panelLockPath} does not contain the exact frozen v2 reviewer panel.`);
+  }
+  const panelPinPending = !panelLockExists;
+  let panelPinnedNow = false;
+  const round = String(arg("round", "1"));
+  if (!/^[1-9]\d*$/.test(round)) throw new Error("--round must be a positive integer");
+  const outDir = resolve(requiredArg("out"), `round-${round}`);
+  const outputCheck = validateNewReviewOutput(
+    candidateRoot,
+    frozen.packet,
+    outDir,
+    existsSync(outDir),
+  );
+  if (!outputCheck.ok) {
+    throw new Error(`invalid review output '${outDir}': ${outputCheck.reasons.join("; ")}`);
+  }
+  const triadPrompt = buildTriadPrompt(base, frozen.prompt, frozen.diff);
+  const scopePrompt = buildScopePrompt(base, frozen.prompt, frozen.diff);
   // Fail BEFORE remote submission if the evidence contains a token-like value:
   // a leaked secret must not reach OpenRouter or the persisted artifacts.
-  if (containsSecretLikeToken(triadPrompt)) {
-    console.error(
-      "ABORT: review evidence contains a secret-like token; scrub the diff/files first.",
-    );
-    process.exit(1);
+  if (containsSecretLikeToken(triadPrompt) || containsSecretLikeToken(scopePrompt)) {
+    throw new Error("review evidence contains a secret-like token; scrub the sealed packet");
   }
+  mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, "triad-prompt.md"), redactSecrets(triadPrompt));
+  writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
   console.error(`triad prompt: ${triadPrompt.length} chars; models: ${TRIAD_MODELS.join(", ")}`);
+  console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
 
-  // Reviewer progress telemetry (CHECKLISTS Review Protocol): a sequential or
-  // hung panel must be diagnosable from disk, not indistinguishable from a hang.
+  // Write every start before any call, then launch the exact four slots in one
+  // Promise.all so the Tier-2 evidence has one unambiguous concurrency boundary.
   const progressPath = join(outDir, "reviewer-progress.jsonl");
   const progress = (entry) => appendFileSync(progressPath, JSON.stringify(entry) + "\n");
   for (const model of TRIAD_MODELS)
     progress({ ts: new Date().toISOString(), type: "reviewer.started", model });
-  const triadResults = await Promise.all(TRIAD_MODELS.map((m) => callModel(m, triadPrompt)));
+  progress({
+    ts: new Date().toISOString(),
+    type: "reviewer.started",
+    model: SCOPE_MODEL,
+    role: "scope",
+  });
+  const slotResults = await Promise.all([
+    ...TRIAD_MODELS.map((model) => callModel(model, triadPrompt)),
+    callModel(SCOPE_MODEL, scopePrompt),
+  ]);
+  const triadResults = slotResults.slice(0, TRIAD_MODELS.length);
+  const scopeResult = slotResults[TRIAD_MODELS.length];
+  const terminalProgress = [];
 
   const actorRecords = [];
   const findings = [];
@@ -649,7 +692,7 @@ async function main() {
     let parseError = result.error ?? null;
     let missingItems = [...TRIAD_ITEMS];
     if (status === "responded") {
-      const arr = extractJsonArray(result.raw);
+      const arr = parseChecklistJson(result.raw);
       if (arr === null) {
         status = "parse_failure";
         parseError = "no_parseable_json_array";
@@ -711,7 +754,7 @@ async function main() {
       JSON.stringify(record, null, 2) + "\n",
     );
     if (record.first_event_at) {
-      progress({
+      terminalProgress.push({
         ts: record.first_event_at,
         type: "reviewer.first_event",
         model: result.model,
@@ -720,7 +763,7 @@ async function main() {
         transport: record.transport,
       });
     }
-    progress({
+    terminalProgress.push({
       ts: record.completed_at ?? new Date().toISOString(),
       type:
         status === "responded"
@@ -745,24 +788,8 @@ async function main() {
 
   let scope = null;
   {
-    const scopePrompt = buildScopePrompt(base);
-    if (containsSecretLikeToken(scopePrompt)) {
-      console.error(
-        "ABORT: scope evidence contains a secret-like token; scrub the diff/atlas first.",
-      );
-      process.exit(1);
-    }
-    writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
-    console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
-    progress({
-      ts: new Date().toISOString(),
-      type: "reviewer.started",
-      model: SCOPE_MODEL,
-      role: "scope",
-    });
-    const scopeResult = await callModel(SCOPE_MODEL, scopePrompt);
     if (scopeResult.firstEventAt) {
-      progress({
+      terminalProgress.push({
         ts: scopeResult.firstEventAt,
         type: "reviewer.first_event",
         model: SCOPE_MODEL,
@@ -798,7 +825,7 @@ async function main() {
       raw_file: "scope.raw.txt",
     };
     if (scopeStatus === "responded") {
-      const arr = extractJsonArray(scopeResult.raw);
+      const arr = parseChecklistJson(scopeResult.raw);
       if (arr === null) {
         scopeStatus = "parse_failure";
         scopeError = "no_parseable_json_array";
@@ -852,7 +879,7 @@ async function main() {
     scopeMeta.findings = scopeFindings;
     scopeMeta.missing_items = scopeMissing;
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
-    progress({
+    terminalProgress.push({
       ts: scopeResult.completedAt ?? new Date().toISOString(),
       type:
         scopeStatus === "responded"
@@ -870,22 +897,38 @@ async function main() {
     });
   }
 
+  terminalProgress
+    .sort((a, b) => String(a.ts).localeCompare(String(b.ts)) || a.type.localeCompare(b.type))
+    .forEach(progress);
+
   // "responded" only: a partial/parse-failed scope pass exits this run FAILED
   // (missing items are release-blocking), and a failed first run must never
   // freeze its panel into the gate config.
   if (panelPinPending && quorumMet && scope?.status === "responded") {
-    mkdirSync(resolve(".adversarial-review"), { recursive: true });
-    writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
-    panelPinnedNow = true;
-    console.error(
-      `panel pinned: wrote the exact immutable v2 reviewer panel to ${PANEL_LOCK_PATH}.`,
+    mkdirSync(dirname(panelLockPath), { recursive: true });
+    writeFileSync(
+      panelLockPath,
+      [
+        `triad: ${TRIAD_MODELS.join(",")}`,
+        `scope: ${SCOPE_MODEL}`,
+        `candidate_sha: ${candidateSha}`,
+        `candidate_tree: ${candidateTree}`,
+        `packet_manifest_sha256: ${frozen.manifestSha256}`,
+        "",
+      ].join("\n"),
+      { flag: "wx", mode: 0o600 },
     );
+    panelPinnedNow = true;
+    console.error(`panel pinned: wrote the exact immutable v2 reviewer panel to ${panelLockPath}.`);
   }
 
   const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
   const summary = {
     round: Number(round),
     base,
+    candidate_sha: candidateSha,
+    candidate_tree: candidateTree,
+    packet_manifest_sha256: frozen.manifestSha256,
     generated_at: new Date().toISOString(),
     panel: { triad: TRIAD_MODELS, scope: SCOPE_MODEL },
     panel_source: "built_in_exact",

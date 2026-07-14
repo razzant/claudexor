@@ -585,6 +585,89 @@ describe("reviewEngine", () => {
     expect(res.routeProofs.every((p) => p.status === "verified")).toBe(true);
   });
 
+  it("runs reviewers concurrently while preserving input-ordered results and telemetry", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const completed: string[] = [];
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const concurrentReviewer = (
+      id: string,
+      family: ProviderFamily,
+      delayMs: number,
+    ): ReviewerSpec => {
+      const adapter: HarnessAdapter = {
+        id,
+        async discover() {
+          throw new Error("not used");
+        },
+        async doctor() {
+          throw new Error("not used");
+        },
+        async *run(spec) {
+          active++;
+          maxActive = Math.max(maxActive, active);
+          try {
+            const ts = new Date().toISOString();
+            yield {
+              type: "started",
+              session_id: spec.session_id,
+              ts,
+              observed_model: `${id}-model`,
+            };
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            yield {
+              type: "message",
+              session_id: spec.session_id,
+              ts,
+              text: `\`\`\`json\n${JSON.stringify([
+                {
+                  severity: "WARN",
+                  category: "maintainability",
+                  claim: `${id} finding`,
+                  evidence: { files: [{ path: "DIFF.patch" }] },
+                },
+              ])}\n\`\`\``,
+            };
+            yield { type: "completed", session_id: spec.session_id, ts };
+            completed.push(id);
+          } finally {
+            active--;
+          }
+        },
+      };
+      return { adapter, providerFamily: family, requestedModel: `${id}-model` };
+    };
+
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      ...makeReviewWorkspace(),
+      artifactsDir,
+      reviewers: [
+        concurrentReviewer("slow", "openai", 80),
+        concurrentReviewer("fast", "anthropic", 10),
+      ],
+    });
+
+    expect(maxActive).toBe(2);
+    expect(completed).toEqual(["fast", "slow"]);
+    expect(result.reviewerRequests.map((request) => request.harness_id)).toEqual(["slow", "fast"]);
+    expect(result.findings.map((finding) => finding.claim)).toEqual([
+      "slow finding",
+      "fast finding",
+    ]);
+    for (const [dir, id] of [
+      ["01-slow", "slow"],
+      ["02-fast", "fast"],
+    ] as const) {
+      const metadata = readFileSync(join(artifactsDir, dir, "metadata.json"), "utf8");
+      expect(metadata).toContain('"start_time"');
+      expect(metadata).toContain('"first_event_time"');
+      expect(metadata).toContain('"completion_time"');
+      expect(metadata).toContain(`"harness_id": "${id}"`);
+    }
+  });
+
   it("records malformed reviewer output as insufficient evidence", async () => {
     const adapter: HarnessAdapter = {
       id: "bad-reviewer",
@@ -859,9 +942,20 @@ describe("reviewEngine", () => {
     expect(metadata).toContain("stalled-model");
   });
 
-  it("cancels an active reviewer immediately when the parent run signal aborts", async () => {
+  it("cancels every active reviewer immediately when the parent run signal aborts", async () => {
     let childSignal: AbortSignal | undefined;
+    let secondSignal: AbortSignal | undefined;
     let secondStarted = false;
+    let ready = 0;
+    let releaseBoth!: () => void;
+    const bothReady = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const waitForBoth = async () => {
+      ready++;
+      if (ready === 2) releaseBoth();
+      await bothReady;
+    };
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
     const parent = new AbortController();
     const stalled: HarnessAdapter = {
@@ -885,6 +979,7 @@ describe("reviewEngine", () => {
       async *run(spec) {
         const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
         childSignal = signal;
+        await waitForBoth();
         const ts = new Date().toISOString();
         yield {
           type: "started",
@@ -919,9 +1014,23 @@ describe("reviewEngine", () => {
           enabled_intents: ["review"],
         });
       },
-      async *run() {
+      async *run(spec) {
         secondStarted = true;
-        yield { type: "message", session_id: "s", ts: new Date().toISOString(), text: "[]" };
+        secondSignal = spec.extra["abortSignal"] as AbortSignal | undefined;
+        await waitForBoth();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          observed_model: "second-model",
+        };
+        await new Promise<void>((resolve) => {
+          if (secondSignal?.aborted) {
+            resolve();
+            return;
+          }
+          secondSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
       },
     };
     const res = await reviewCandidate({
@@ -940,7 +1049,8 @@ describe("reviewEngine", () => {
       },
     });
     expect(childSignal?.aborted).toBe(true);
-    expect(secondStarted).toBe(false);
+    expect(secondStarted).toBe(true);
+    expect(secondSignal?.aborted).toBe(true);
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.claim).toContain("Reviewer failed: Reviewer cancelled");
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -954,6 +1064,30 @@ describe("reviewEngine", () => {
     );
     expect(metadata).toContain('"status": "failed"');
     expect(metadata).toContain("Reviewer cancelled");
+  });
+
+  it("does not launch reviewer adapters when the parent signal is already aborted", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    controller.abort();
+    const spec = makeReviewer("pre-aborted", "openai", []);
+    const run = spec.adapter.run.bind(spec.adapter);
+    spec.adapter.run = (input) => {
+      calls++;
+      return run(input);
+    };
+
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      ...makeReviewWorkspace(),
+      reviewers: [spec],
+      signal: controller.signal,
+    });
+
+    expect(calls).toBe(0);
+    expect(result.reviewerRequests).toHaveLength(1);
+    expect(result.routeProofs[0]?.observed.evidence_source).toBe("unavailable");
   });
 
   it("retries a reviewer once it emits typed transient failure with no output", async () => {

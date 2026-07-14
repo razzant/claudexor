@@ -47,26 +47,21 @@ export interface ReviewerSpec {
 }
 
 export interface ReviewCandidateInput {
-  /** Anonymized label (e.g. "Candidate A") — never reveal which model produced it. */
   candidateLabel: string;
   diff: string;
   evidenceDir: string;
-  /** Persistent local artifact directory for raw reviewer telemetry. Defaults under evidenceDir for tests. */
   artifactsDir?: string;
+  evidenceReadOnly?: boolean;
+  frozenIdentity?: {
+    candidateSha: string;
+    candidateTree: string;
+    packetManifestSha256: string;
+  };
   cwd: string;
   reviewers: ReviewerSpec[];
   reviewerTimeoutMs?: number;
   transientRetryPolicy?: TransientRetryPolicy;
-  /** Child-env composition for the reviewer harnesses (defaults to mirror_native).
-   * Reviewer runs are paid harness children too, so they must honor the configured
-   * env isolation (clean) the same way candidate runs do. */
   envInheritance?: "mirror_native" | "clean";
-  /** Scoped harness HOME/config-dir env (HOME, CODEX_HOME, CLAUDE_CONFIG_DIR, …)
-   * for the reviewer children, so a reviewer's native state (codex session
-   * rollouts, claude config) is contained in a per-review scoped home instead of
-   * the operator's real ~/.codex / ~/.claude (CLAUDEXOR_BIBLE §6). The codex
-   * route-proof transcript is read from this same CODEX_HOME, so route proof still
-   * verifies. Adapters seed auth into these dirs. */
   env?: Record<string, string>;
   signal?: AbortSignal;
   onReviewerEvent?: (event: ReviewerProgressEvent) => void;
@@ -81,13 +76,10 @@ export interface ReviewCandidateResult {
     requested_model: string | null;
     requested_effort: string | null;
   }[];
-  /** True only when >=2 distinct provider families returned parseable JSON. Not a route-proof claim. */
   crossFamilyHealthy: boolean;
   healthyProviders: ProviderFamily[];
-  /** True only when >=2 distinct provider families have verified route proofs. */
   crossFamilyVerified: boolean;
   distinctProviders: ProviderFamily[];
-  /** Observed reviewer panel spend (budget truth: reviewers are paid work). */
   reviewSpendUsd: number;
   reviewSpendEstimated: boolean;
 }
@@ -103,6 +95,10 @@ const DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY: TransientRetryPolicy = {
   initialDelayMs: 1_000,
   maxDelayMs: 10_000,
 };
+const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
+  "auth cache daemon home homes logs runs secrets state tmp workspaces".split(" "),
+);
+const TEXT_EVIDENCE_SUFFIXES = [".md", ".txt", ".json", ".yaml", ".yml", ".patch"];
 
 export interface ReviewerProgressEvent {
   type:
@@ -132,7 +128,6 @@ interface ReviewerOutput {
   text: string;
   observedModel?: string;
   observedSource: RouteProof["observed"]["evidence_source"];
-  artifactDir: string;
   costUsd: number;
   costEstimated: boolean;
 }
@@ -149,23 +144,72 @@ interface ReviewerArtifactContext {
   metadata: Record<string, unknown>;
 }
 
-type ReviewPatchEvidence = DiffEvidence;
-
 interface ReviewerWorkspace {
   root: string;
   evidenceDir: string;
+}
+
+function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
+  const diffText = diff.endsWith("\n") ? diff : `${diff}\n`;
+  const summaryPath = join(dir, "DIFF_SUMMARY.md");
+  const summary = readTextSafe(summaryPath);
+  if (summary === null) throw new Error("sealed review packet is missing DIFF_SUMMARY.md");
+  return {
+    diffPath: join(dir, "DIFF.patch"),
+    summaryPath,
+    diffSha256: sha256(diffText),
+    summary,
+  };
+}
+
+function reviewerRouteProof(
+  reviewer: ReviewerSpec,
+  modelId: string | null,
+  source: RouteProof["observed"]["evidence_source"],
+  peerFamilies: ProviderFamily[],
+): RouteProof {
+  return buildRouteProof(
+    {
+      harness_id: reviewer.adapter.id,
+      provider_family: reviewer.providerFamily,
+      model_hint: reviewer.requestedModel ?? null,
+    },
+    {
+      provider: reviewer.providerFamily,
+      model_id: modelId,
+      evidence_source: modelId ? source : "unavailable",
+    },
+    peerFamilies,
+  );
+}
+
+function reviewerInfo(
+  reviewer: ReviewerSpec,
+  routeProofStatus: RouteProof["status"],
+  observedModel: string | null = null,
+): ReviewerInfo {
+  return {
+    harness_id: reviewer.adapter.id,
+    requested_model: reviewer.requestedModel ?? null,
+    requested_effort: reviewer.requestedEffort ?? null,
+    observed_model: observedModel,
+    route_proof_status: routeProofStatus,
+  };
 }
 
 function reviewPrompt(
   label: string,
   candidateRoot: string,
   evidenceDir: string,
-  patch: ReviewPatchEvidence,
+  patch: DiffEvidence,
+  sealed = false,
 ): string {
   return [
     "You are an adversarial code reviewer.",
     `Candidate root: ${candidateRoot}.`,
-    `First read the evidence packet in ${evidenceDir} (USER_INTENT.md, FORBIDDEN_FINDINGS.md, PLAN_ACCEPTED.md, DECIDED_TRADEOFFS.md, TESTS.txt, DIFF.patch, DIFF_SUMMARY.md). If a mandatory file is missing, return INSUFFICIENT_EVIDENCE.`,
+    sealed
+      ? `First verify MANIFEST.sha256 and read every file it seals in ${evidenceDir}, including FREEZE.json and DECIDED_TRADEOFFS.md. If the manifest or a sealed file is missing, return INSUFFICIENT_EVIDENCE.`
+      : `First read the evidence packet in ${evidenceDir} (USER_INTENT.md, FORBIDDEN_FINDINGS.md, PLAN_ACCEPTED.md, DECIDED_TRADEOFFS.md, TESTS.txt, DIFF.patch, DIFF_SUMMARY.md). If a mandatory file is missing, return INSUFFICIENT_EVIDENCE.`,
     `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
     "All code/file evidence must come from Candidate root or the evidence packet. Do not inspect or cite sibling/base repository paths outside Candidate root; if required evidence is unavailable there, return INSUFFICIENT_EVIDENCE.",
     "Treat TESTS.txt as the gate evidence. Do not rerun full build/test gates from the review; run only small targeted commands when needed to verify a concrete finding.",
@@ -179,26 +223,50 @@ function reviewPrompt(
   ].join("\n");
 }
 
-/**
- * Cross-family review of one anonymized candidate. Each reviewer runs its review
- * intent and emits JSON findings; we attach route proofs and verify the
- * reviewers span >= 2 distinct provider families.
- */
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
   const findingsByReviewer: ReviewFinding[][] = input.reviewers.map(() => []);
-  const routeProofs: RouteProof[] = [];
-  const reviewerRequests: ReviewCandidateResult["reviewerRequests"] = [];
-  const healthyFamilies = new Set<ProviderFamily>();
+  const reviewerFamilies = input.reviewers.map((reviewer) => reviewer.providerFamily);
+  const routeProofs: RouteProof[] = input.reviewers.map((reviewer, index) =>
+    reviewerRouteProof(
+      reviewer,
+      null,
+      "unavailable",
+      reviewerFamilies.filter((_, otherIndex) => otherIndex !== index),
+    ),
+  );
+  const reviewerRequests: ReviewCandidateResult["reviewerRequests"] = input.reviewers.map(
+    (reviewer) => ({
+      harness_id: reviewer.adapter.id,
+      provider_family: reviewer.providerFamily,
+      requested_model: reviewer.requestedModel ?? null,
+      requested_effort: reviewer.requestedEffort ?? null,
+    }),
+  );
   const healthyReviewerIndexes = new Set<number>();
-  let reviewSpendUsd = 0;
-  let reviewSpendEstimated = false;
+  const reviewSpendByReviewer = input.reviewers.map(() => 0);
+  const reviewSpendEstimatedByReviewer = input.reviewers.map(() => false);
   const reviewerTimeoutMs = input.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
+  const frozenMetadata = input.frozenIdentity
+    ? {
+        candidate_sha: input.frozenIdentity.candidateSha,
+        candidate_tree: input.frozenIdentity.candidateTree,
+        packet_manifest_sha256: input.frozenIdentity.packetManifestSha256,
+      }
+    : {};
   if (containsSecretLikeToken(input.diff || "(empty diff)\n")) {
     throw new Error(
       "diff evidence contains a secret-like token; refusing to persist raw DIFF.patch",
     );
   }
-  writeDiffEvidence(input.evidenceDir, input.diff);
+  if (input.evidenceReadOnly) {
+    const packetDiff = readTextSafe(join(input.evidenceDir, "DIFF.patch"));
+    const normalizedDiff = input.diff.endsWith("\n") ? input.diff : `${input.diff}\n`;
+    if (packetDiff === null || packetDiff !== normalizedDiff) {
+      throw new Error("sealed review packet DIFF.patch does not match the verified review diff");
+    }
+  } else {
+    writeDiffEvidence(input.evidenceDir, input.diff);
+  }
   const preflight = preflightEvidence(input.evidenceDir);
   if (!preflight.ok) {
     const parts = [
@@ -210,18 +278,29 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const artifactsBaseDir = input.artifactsDir ?? join(input.evidenceDir, "reviewer-artifacts");
   ensureDir(artifactsBaseDir);
   const persistentEvidenceDir = join(artifactsBaseDir, "evidence");
-  await copyReviewEvidencePacket(input.evidenceDir, persistentEvidenceDir);
-  const persistentPatch = writeDiffEvidence(persistentEvidenceDir, input.diff);
-  writeJson(join(persistentEvidenceDir, "metadata.json"), {
-    source_evidence_dir: input.evidenceDir,
-    candidate_root: input.cwd,
-    persistent_evidence_dir: persistentEvidenceDir,
-    diff_path: persistentPatch.diffPath,
-    summary_path: persistentPatch.summaryPath,
-    diff_sha256: persistentPatch.diffSha256,
-  });
-  const artifacts: ReviewerArtifactContext[] = [];
-  const reviewerFamilies = input.reviewers.map((r) => r.providerFamily);
+  await copyReviewEvidencePacket(
+    input.evidenceDir,
+    persistentEvidenceDir,
+    input.evidenceReadOnly === true,
+  );
+  const persistentPatch = input.evidenceReadOnly
+    ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
+    : writeDiffEvidence(persistentEvidenceDir, input.diff);
+  writeJson(
+    input.evidenceReadOnly
+      ? join(artifactsBaseDir, "evidence-metadata.json")
+      : join(persistentEvidenceDir, "metadata.json"),
+    {
+      source_evidence_dir: input.evidenceDir,
+      candidate_root: input.cwd,
+      persistent_evidence_dir: persistentEvidenceDir,
+      diff_path: persistentPatch.diffPath,
+      summary_path: persistentPatch.summaryPath,
+      diff_sha256: persistentPatch.diffSha256,
+      ...frozenMetadata,
+    },
+  );
+  const artifacts: (ReviewerArtifactContext | undefined)[] = input.reviewers.map(() => undefined);
   const preservePaths = extractDiffTouchedPaths(input.diff);
   const reviewerWorkspaceBaseDir = selectReviewerWorkspaceBaseDir(
     input.cwd,
@@ -229,61 +308,59 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     input.evidenceDir,
   );
 
-  try {
-    for (const [index, reviewer] of input.reviewers.entries()) {
-      if (input.signal?.aborted) break;
-      reviewerRequests.push({
-        harness_id: reviewer.adapter.id,
-        provider_family: reviewer.providerFamily,
-        requested_model: reviewer.requestedModel ?? null,
-        requested_effort: reviewer.requestedEffort ?? null,
+  const runReviewer = async (reviewer: ReviewerSpec, index: number): Promise<void> => {
+    if (input.signal?.aborted) return;
+    const artifact = createReviewerArtifactContext(artifactsBaseDir, index, reviewer);
+    artifacts[index] = artifact;
+    let reviewerWorkspace: ReviewerWorkspace | null = null;
+    let spec: HarnessRunSpec | null = null;
+    try {
+      reviewerWorkspace = await prepareReviewerWorkspace({
+        sourceRoot: input.cwd,
+        sourceEvidenceDir: persistentEvidenceDir,
+        workspaceBaseDir: reviewerWorkspaceBaseDir,
+        reviewerDirName: `${String(index + 1).padStart(2, "0")}-${safeFilePart(reviewer.adapter.id)}`,
+        excludeRoots: [artifactsBaseDir],
+        preservePaths,
+        preserveEvidenceBytes: input.evidenceReadOnly === true,
       });
-      const artifact = createReviewerArtifactContext(artifactsBaseDir, index, reviewer);
-      artifacts.push(artifact);
-      let reviewerWorkspace: ReviewerWorkspace | null = null;
-      let spec: HarnessRunSpec | null = null;
-      try {
-        reviewerWorkspace = await prepareReviewerWorkspace({
-          sourceRoot: input.cwd,
-          sourceEvidenceDir: persistentEvidenceDir,
-          workspaceBaseDir: reviewerWorkspaceBaseDir,
-          reviewerDirName: `${String(index + 1).padStart(2, "0")}-${safeFilePart(reviewer.adapter.id)}`,
-          excludeRoots: [artifactsBaseDir],
-          preservePaths,
-        });
-        const reviewerPatch = writeDiffEvidence(reviewerWorkspace.evidenceDir, input.diff);
-        updateReviewerMetadata(artifact, {
-          candidate_evidence_dir: reviewerWorkspace.evidenceDir,
-          candidate_root: reviewerWorkspace.root,
-          source_candidate_evidence_dir: input.evidenceDir,
-          source_candidate_root: input.cwd,
-          reviewer_workspace_root: reviewerWorkspace.root,
-          persistent_evidence_dir: persistentEvidenceDir,
-          persistent_diff_path: persistentPatch.diffPath,
-          persistent_summary_path: persistentPatch.summaryPath,
-          diff_sha256: persistentPatch.diffSha256,
-        });
-        const runtimePrompt = reviewPrompt(
-          input.candidateLabel,
-          reviewerWorkspace.root,
-          reviewerWorkspace.evidenceDir,
-          reviewerPatch,
-        );
-        spec = HarnessRunSpec.parse({
-          session_id: newId("rev"),
-          intent: "review",
-          prompt: runtimePrompt,
-          cwd: reviewerWorkspace.root,
-          access: "readonly",
-          model_hint: reviewer.requestedModel ?? null,
-          effort_hint: reviewer.requestedEffort ?? null,
-          auth_preference: reviewer.authPreference ?? "auto",
-          env_inheritance: input.envInheritance ?? "mirror_native",
-          ...(input.env ? { env: input.env } : {}),
-        });
-        writeText(
-          artifact.promptPath,
-          redactSecrets(`Persistent local replay evidence:
+      const reviewerPatch = input.evidenceReadOnly
+        ? readExistingDiffEvidence(reviewerWorkspace.evidenceDir, input.diff)
+        : writeDiffEvidence(reviewerWorkspace.evidenceDir, input.diff);
+      updateReviewerMetadata(artifact, {
+        candidate_evidence_dir: reviewerWorkspace.evidenceDir,
+        candidate_root: reviewerWorkspace.root,
+        source_candidate_evidence_dir: input.evidenceDir,
+        source_candidate_root: input.cwd,
+        reviewer_workspace_root: reviewerWorkspace.root,
+        persistent_evidence_dir: persistentEvidenceDir,
+        persistent_diff_path: persistentPatch.diffPath,
+        persistent_summary_path: persistentPatch.summaryPath,
+        diff_sha256: persistentPatch.diffSha256,
+        ...frozenMetadata,
+      });
+      const runtimePrompt = reviewPrompt(
+        input.candidateLabel,
+        reviewerWorkspace.root,
+        reviewerWorkspace.evidenceDir,
+        reviewerPatch,
+        input.evidenceReadOnly === true,
+      );
+      spec = HarnessRunSpec.parse({
+        session_id: newId("rev"),
+        intent: "review",
+        prompt: runtimePrompt,
+        cwd: reviewerWorkspace.root,
+        access: "readonly",
+        model_hint: reviewer.requestedModel ?? null,
+        effort_hint: reviewer.requestedEffort ?? null,
+        auth_preference: reviewer.authPreference ?? "auto",
+        env_inheritance: input.envInheritance ?? "mirror_native",
+        ...(input.env ? { env: input.env } : {}),
+      });
+      writeText(
+        artifact.promptPath,
+        redactSecrets(`Persistent local replay evidence:
 - evidence_dir: ${persistentEvidenceDir}
 - candidate_root: ${reviewerWorkspace.root}
 - source_candidate_root: ${input.cwd}
@@ -295,208 +372,164 @@ Runtime prompt used during review follows. Its candidate-tree paths may be trans
 
 ${runtimePrompt}
 `),
-        );
-      } catch (err) {
-        const failedAt = nowIso();
-        const message = redactSecrets(err instanceof Error ? err.message : String(err));
-        updateReviewerMetadata(artifact, {
-          status: "failed",
-          failure_time: failedAt,
-          error: `reviewer setup failed: ${message}`,
-        });
-        writeParseError(artifact, { error: `reviewer setup failed: ${message}` });
-        emitReviewerProgress(artifact, reviewer, input.onReviewerEvent, {
-          type: "reviewer.failed",
-          at: failedAt,
-          duration_ms: 0,
-          message: `Reviewer setup failed: ${message}`,
-        });
-        if (reviewerWorkspace) await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
-        const proof = buildRouteProof(
-          {
-            harness_id: reviewer.adapter.id,
-            provider_family: reviewer.providerFamily,
-            model_hint: reviewer.requestedModel ?? null,
-          },
-          {
-            provider: reviewer.providerFamily,
-            model_id: null,
-            evidence_source: "unavailable",
-          },
-          reviewerFamilies,
-        );
-        routeProofs.push(proof);
-        findingsByReviewer[index]?.push(
-          insufficientEvidenceFinding(
-            {
-              harness_id: reviewer.adapter.id,
-              requested_model: reviewer.requestedModel ?? null,
-              requested_effort: reviewer.requestedEffort ?? null,
-              observed_model: null,
-              route_proof_status: proof.status,
-            },
-            `Reviewer setup failed: ${message}`,
-          ),
-        );
-        continue;
-      }
-      if (!reviewerWorkspace || !spec) continue;
-
-      let text = "";
-      // Stream-observed model: ONLY a model the native CLI actually emitted in its
-      // stream (stream_event/transcript/model_catalog). This is the honest
-      // `observed_model` for findings — an accepted argv echo is NOT an observation.
-      let streamObservedModel: string | undefined;
-      // Route-proof model: stream-observed when present, else the accepted argv arg
-      // (metadata tier). Drives RouteProof.observed.model_id + status.
-      let routeModel: string | undefined;
-      let routeSource: RouteProof["observed"]["evidence_source"] = "unavailable";
-      let reviewerError: string | null = null;
-      try {
-        const out = await collectReviewerOutput(
-          reviewer,
-          spec,
-          reviewerTimeoutMs,
-          input.transientRetryPolicy ?? DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY,
-          artifact,
-          input.onReviewerEvent,
-          input.signal,
-        );
-        text = out.text;
-        streamObservedModel = out.observedModel;
-        routeModel = out.observedModel;
-        routeSource = out.observedSource;
-        reviewSpendUsd += out.costUsd;
-        if (out.costEstimated) reviewSpendEstimated = true;
-        // accepted_model_arg semantics: when WE passed an explicit model argument
-        // and the native CLI completed without rejecting it, the accepted argv is
-        // metadata-level route evidence (weaker than stream-observed, stronger
-        // than nothing). Some CLIs (codex exec --json) never echo the model. This
-        // populates ONLY the route proof — never streamObservedModel, so the
-        // finding's observed_model stays null (an argv echo is not an observation).
-        if (!routeModel && reviewer.requestedModel) {
-          routeModel = reviewer.requestedModel;
-          routeSource = "metadata";
-        }
-      } catch (err) {
-        reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
-        // Budget truth: a reviewer that streamed paid tokens then timed out/failed
-        // still spent money. Fold the partial cost into the ledger (the success
-        // path adds out.costUsd above; these paths are mutually exclusive).
-        const partial = err as {
-          partialCostUsd?: number;
-          partialCostEstimated?: boolean;
-          partialObservedModel?: string;
-          partialObservedSource?: RouteProof["observed"]["evidence_source"];
-          partialText?: string;
-        };
-        if (typeof partial?.partialText === "string" && partial.partialText.trim() !== "") {
-          text = partial.partialText;
-        }
-        if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
-          reviewSpendUsd += partial.partialCostUsd;
-          if (partial.partialCostEstimated) reviewSpendEstimated = true;
-        }
-        if (partial?.partialObservedModel) {
-          streamObservedModel = partial.partialObservedModel;
-          routeModel = partial.partialObservedModel;
-          routeSource = partial.partialObservedSource ?? "stream_event";
-        }
-        writeParseError(artifact, { error: reviewerError });
-      } finally {
-        await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
-      }
-
-      const proof = buildRouteProof(
-        {
-          harness_id: reviewer.adapter.id,
-          provider_family: reviewer.providerFamily,
-          model_hint: reviewer.requestedModel ?? null,
-        },
-        {
-          provider: reviewer.providerFamily,
-          model_id: routeModel ?? null,
-          evidence_source: routeModel ? routeSource : "unavailable",
-        },
-        // The other reviewers' families this route is meant to be diverse against
-        // (mirrors the implementer route proof; reviewer diversity is otherwise
-        // enforced via classifyDiversity's same_model_fallback status below).
-        reviewerFamilies.filter((_, i) => i !== index),
       );
-      routeProofs.push(proof);
+    } catch (err) {
+      const failedAt = nowIso();
+      const message = redactSecrets(err instanceof Error ? err.message : String(err));
+      updateReviewerMetadata(artifact, {
+        status: "failed",
+        failure_time: failedAt,
+        error: `reviewer setup failed: ${message}`,
+      });
+      writeParseError(artifact, { error: `reviewer setup failed: ${message}` });
+      emitReviewerProgress(artifact, reviewer, input.onReviewerEvent, {
+        type: "reviewer.failed",
+        at: failedAt,
+        duration_ms: 0,
+        message: `Reviewer setup failed: ${message}`,
+      });
+      if (reviewerWorkspace) await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
+      const proof = reviewerRouteProof(reviewer, null, "unavailable", reviewerFamilies);
+      routeProofs[index] = proof;
+      findingsByReviewer[index]?.push(
+        insufficientEvidenceFinding(
+          reviewerInfo(reviewer, proof.status),
+          `Reviewer setup failed: ${message}`,
+        ),
+      );
+      return;
+    }
+    if (!reviewerWorkspace || !spec) return;
 
-      const info: ReviewerInfo = {
-        harness_id: reviewer.adapter.id,
-        requested_model: reviewer.requestedModel ?? null,
-        requested_effort: reviewer.requestedEffort ?? null,
-        // Honest observation only: a finding's observed_model is the STREAM-observed
-        // model or null. An accepted argv arg lives in the route proof's model_id,
-        // not here — it must not masquerade as an observed model.
-        observed_model: streamObservedModel ?? null,
-        route_proof_status: proof.status,
+    let text = "";
+    let streamObservedModel: string | undefined;
+    let routeModel: string | undefined;
+    let routeSource: RouteProof["observed"]["evidence_source"] = "unavailable";
+    let reviewerError: string | null = null;
+    try {
+      const out = await collectReviewerOutput(
+        reviewer,
+        spec,
+        reviewerTimeoutMs,
+        input.transientRetryPolicy ?? DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY,
+        artifact,
+        input.onReviewerEvent,
+        input.signal,
+      );
+      text = out.text;
+      streamObservedModel = out.observedModel;
+      routeModel = out.observedModel;
+      routeSource = out.observedSource;
+      reviewSpendByReviewer[index] = out.costUsd;
+      reviewSpendEstimatedByReviewer[index] = out.costEstimated;
+      if (!routeModel && reviewer.requestedModel) {
+        routeModel = reviewer.requestedModel;
+        routeSource = "metadata";
+      }
+    } catch (err) {
+      reviewerError = redactSecrets(err instanceof Error ? err.message : String(err));
+      const partial = err as {
+        partialCostUsd?: number;
+        partialCostEstimated?: boolean;
+        partialObservedModel?: string;
+        partialObservedSource?: RouteProof["observed"]["evidence_source"];
+        partialText?: string;
       };
-      const jsonBlocks = extractJsonBlocks(text);
-      writeJson(artifact.parsedPath, redactValue(jsonBlocks));
-      if (reviewerError && (text.trim() === "" || jsonBlocks.length === 0)) {
-        findingsByReviewer[index]?.push(
-          insufficientEvidenceFinding(info, `Reviewer failed: ${reviewerError}`),
-        );
-        continue;
+      if (typeof partial?.partialText === "string" && partial.partialText.trim() !== "") {
+        text = partial.partialText;
       }
-      if (text.trim() === "" || jsonBlocks.length === 0) {
-        writeParseError(artifact, { error: "no_parseable_json", text_sha256: sha256(text) });
-        findingsByReviewer[index]?.push(
-          insufficientEvidenceFinding(info, "Reviewer produced no parseable JSON findings."),
-        );
-        continue;
+      if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
+        reviewSpendByReviewer[index] = partial.partialCostUsd;
+        reviewSpendEstimatedByReviewer[index] = partial.partialCostEstimated === true;
       }
-      const parsed = parseFindingsDetailed(text, info);
-      const parseError: Record<string, unknown> = {};
-      let parsedFindingsRecorded = false;
-      const recordParsedFindings = () => {
-        if (parsedFindingsRecorded) return;
-        findingsByReviewer[index]?.push(...parsed.findings);
-        parsedFindingsRecorded = true;
-      };
-      if (parsed.malformed > 0) {
-        Object.assign(parseError, {
-          error: "malformed_findings",
-          malformed: parsed.malformed,
-          text_sha256: sha256(text),
-        });
-        recordParsedFindings();
-        findingsByReviewer[index]?.push(
-          insufficientEvidenceFinding(
-            info,
-            `Reviewer produced ${parsed.malformed} malformed finding item(s).`,
-          ),
-        );
+      if (partial?.partialObservedModel) {
+        streamObservedModel = partial.partialObservedModel;
+        routeModel = partial.partialObservedModel;
+        routeSource = partial.partialObservedSource ?? "stream_event";
       }
-      if (reviewerError) {
-        Object.assign(parseError, {
-          error: reviewerError,
-          recovered_json_blocks: jsonBlocks.length,
-          text_sha256: sha256(text),
-        });
-        recordParsedFindings();
-        findingsByReviewer[index]?.push(
-          insufficientEvidenceFinding(
-            info,
-            parsed.findings.length === 0
-              ? `Reviewer failed after parseable JSON with no findings: ${reviewerError}`
-              : `Reviewer failed after parseable JSON output: ${reviewerError}`,
-          ),
-        );
-      }
-      if (Object.keys(parseError).length > 0) {
-        writeParseError(artifact, parseError);
-        continue;
-      }
-      if (reviewer.providerFamily !== "unknown") healthyFamilies.add(reviewer.providerFamily);
-      healthyReviewerIndexes.add(index);
-      findingsByReviewer[index]?.push(...parsed.findings);
+      writeParseError(artifact, { error: reviewerError });
+    } finally {
+      await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
     }
 
+    const proof = reviewerRouteProof(
+      reviewer,
+      routeModel ?? null,
+      routeSource,
+      reviewerFamilies.filter((_, i) => i !== index),
+    );
+    routeProofs[index] = proof;
+
+    const info = reviewerInfo(reviewer, proof.status, streamObservedModel ?? null);
+    const jsonBlocks = extractJsonBlocks(text);
+    writeJson(artifact.parsedPath, redactValue(jsonBlocks));
+    if (reviewerError && (text.trim() === "" || jsonBlocks.length === 0)) {
+      findingsByReviewer[index]?.push(
+        insufficientEvidenceFinding(info, `Reviewer failed: ${reviewerError}`),
+      );
+      return;
+    }
+    if (text.trim() === "" || jsonBlocks.length === 0) {
+      writeParseError(artifact, { error: "no_parseable_json", text_sha256: sha256(text) });
+      findingsByReviewer[index]?.push(
+        insufficientEvidenceFinding(info, "Reviewer produced no parseable JSON findings."),
+      );
+      return;
+    }
+    const parsed = parseFindingsDetailed(text, info);
+    const parseError: Record<string, unknown> = {};
+    let parsedFindingsRecorded = false;
+    const recordParsedFindings = () => {
+      if (parsedFindingsRecorded) return;
+      findingsByReviewer[index]?.push(...parsed.findings);
+      parsedFindingsRecorded = true;
+    };
+    if (parsed.malformed > 0) {
+      Object.assign(parseError, {
+        error: "malformed_findings",
+        malformed: parsed.malformed,
+        text_sha256: sha256(text),
+      });
+      recordParsedFindings();
+      findingsByReviewer[index]?.push(
+        insufficientEvidenceFinding(
+          info,
+          `Reviewer produced ${parsed.malformed} malformed finding item(s).`,
+        ),
+      );
+    }
+    if (reviewerError) {
+      Object.assign(parseError, {
+        error: reviewerError,
+        recovered_json_blocks: jsonBlocks.length,
+        text_sha256: sha256(text),
+      });
+      recordParsedFindings();
+      findingsByReviewer[index]?.push(
+        insufficientEvidenceFinding(
+          info,
+          parsed.findings.length === 0
+            ? `Reviewer failed after parseable JSON with no findings: ${reviewerError}`
+            : `Reviewer failed after parseable JSON output: ${reviewerError}`,
+        ),
+      );
+    }
+    if (Object.keys(parseError).length > 0) {
+      writeParseError(artifact, parseError);
+      return;
+    }
+    healthyReviewerIndexes.add(index);
+    findingsByReviewer[index]?.push(...parsed.findings);
+  };
+
+  try {
+    const reviewerRuns = await Promise.allSettled(
+      input.reviewers.map((reviewer, index) => runReviewer(reviewer, index)),
+    );
+    const failedRun = reviewerRuns.find(
+      (run): run is PromiseRejectedResult => run.status === "rejected",
+    );
+    if (failedRun) throw failedRun.reason;
     const classifiedProofs = classifyDiversity(routeProofs);
     for (const [index, proof] of classifiedProofs.entries()) {
       const artifact = artifacts[index];
@@ -517,12 +550,14 @@ ${runtimePrompt}
         });
       });
     });
-    const healthyProviders = [...healthyFamilies];
-    // Two-tier route proof: crossFamilyVerified — the strong tier that unblocks
-    // apply — requires the model to have been OBSERVED in the reviewer stream
-    // (status "verified"). An argv/metadata echo ("accepted_model_arg") is a weaker
-    // tier: it proves we PASSED a model arg, not that the CLI ran it, so it must
-    // NOT unblock apply on unobserved proof. same_model_fallback never counts.
+    const healthyProviders = [
+      ...new Set(
+        input.reviewers
+          .filter((_, index) => healthyReviewerIndexes.has(index))
+          .map((reviewer) => reviewer.providerFamily)
+          .filter((family) => family !== "unknown"),
+      ),
+    ];
     const observedFamilies = [
       ...new Set(
         classifiedProofs
@@ -539,8 +574,8 @@ ${runtimePrompt}
       healthyProviders,
       crossFamilyVerified: observedFamilies.length >= 2,
       distinctProviders: observedFamilies,
-      reviewSpendUsd,
-      reviewSpendEstimated,
+      reviewSpendUsd: reviewSpendByReviewer.reduce((sum, spend) => sum + spend, 0),
+      reviewSpendEstimated: reviewSpendEstimatedByReviewer.some(Boolean),
     };
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);
@@ -582,9 +617,6 @@ async function collectReviewerOutput(
   let firstEventTime: string | null = null;
   let observedModel: string | undefined;
   let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
-  // Reviewer spend tracked at function scope so a timed-out/failed reviewer still
-  // contributes its PARTIAL cost to the ledger (budget truth). It is attached to
-  // the thrown error so the caller can fold it in.
   let costUsd = 0;
   let costEstimated = false;
   let partialText = "";
@@ -714,14 +746,13 @@ async function collectReviewerOutput(
       text,
       observedModel: attemptObservedModel,
       observedSource: attemptObservedSource,
-      artifactDir: artifact.dir,
       costUsd,
       costEstimated,
     };
   };
   const consume = consumeOnce(0);
 
-  const removeExternalAbortListeners: Array<() => void> = [];
+  let removeExternalAbortListener = () => {};
   const cancelled = new Promise<never>((_, reject) => {
     if (!signal) return;
     const onAbort = () => {
@@ -741,7 +772,7 @@ async function collectReviewerOutput(
     };
     if (signal.aborted) queueMicrotask(onAbort);
     else signal.addEventListener("abort", onAbort, { once: true });
-    removeExternalAbortListeners.push(() => signal.removeEventListener("abort", onAbort));
+    removeExternalAbortListener = () => signal.removeEventListener("abort", onAbort);
   });
 
   const timed = new Promise<never>((_, reject) => {
@@ -820,9 +851,7 @@ async function collectReviewerOutput(
   } finally {
     settled = true;
     if (timeout) clearTimeout(timeout);
-    for (const removeExternalAbortListener of removeExternalAbortListeners) {
-      removeExternalAbortListener();
-    }
+    removeExternalAbortListener();
     consume.catch(() => {
       /* timeout path: consume may reject after the race already returned */
     });
@@ -872,6 +901,7 @@ async function prepareReviewerWorkspace(input: {
   reviewerDirName: string;
   excludeRoots: string[];
   preservePaths?: Set<string>;
+  preserveEvidenceBytes?: boolean;
 }): Promise<ReviewerWorkspace> {
   const sourceRoot = resolve(input.sourceRoot);
   const workspaceBaseDir = resolve(input.workspaceBaseDir);
@@ -909,17 +939,23 @@ async function prepareReviewerWorkspace(input: {
         (root) => !isSameOrInside(root, sourceEvidenceDir),
       );
       await rm(evidenceDir, { recursive: true, force: true });
-      await cp(sourceEvidenceDir, evidenceDir, {
-        recursive: true,
-        dereference: false,
-        filter: (sourcePath) =>
-          shouldCopyReviewerPath(
-            sourceEvidenceDir,
-            resolvedSourceEvidenceDir,
-            sourcePath,
-            evidenceExcludeRoots,
-          ),
-      });
+      await cp(
+        sourceEvidenceDir,
+        evidenceDir,
+        input.preserveEvidenceBytes
+          ? { recursive: true, dereference: false }
+          : {
+              recursive: true,
+              dereference: false,
+              filter: (sourcePath) =>
+                shouldCopyReviewerPath(
+                  sourceEvidenceDir,
+                  resolvedSourceEvidenceDir,
+                  sourcePath,
+                  evidenceExcludeRoots,
+                ),
+            },
+      );
     }
     await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
 
@@ -934,14 +970,21 @@ async function prepareReviewerWorkspace(input: {
 async function copyReviewEvidencePacket(
   sourceEvidenceDir: string,
   persistentEvidenceDir: string,
+  preserveBytes = false,
 ): Promise<void> {
   const source = resolve(sourceEvidenceDir);
   const target = resolve(persistentEvidenceDir);
   await rm(target, { recursive: true, force: true });
-  await mkdir(target, { recursive: true, mode: 0o700 });
   if (!existsSync(source)) {
+    await mkdir(target, { recursive: true, mode: 0o700 });
     return;
   }
+  if (preserveBytes) {
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await cp(source, target, { recursive: true, dereference: false });
+    return;
+  }
+  await mkdir(target, { recursive: true, mode: 0o700 });
   const resolvedSource = realpathSync(source);
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const sourcePath = join(source, entry.name);
@@ -1007,15 +1050,7 @@ async function copyReviewEvidenceEntry(
 }
 
 function shouldTextSanitizeEvidenceFile(path: string): boolean {
-  const lower = path.toLowerCase();
-  return (
-    lower.endsWith(".md") ||
-    lower.endsWith(".txt") ||
-    lower.endsWith(".json") ||
-    lower.endsWith(".yaml") ||
-    lower.endsWith(".yml") ||
-    lower.endsWith(".patch")
-  );
+  return TEXT_EVIDENCE_SUFFIXES.some((extension) => path.toLowerCase().endsWith(extension));
 }
 
 function shouldFailClosedEvidenceFile(path: string): boolean {
@@ -1146,24 +1181,7 @@ function isCopyableReviewerClaudexorPath(
     return true;
   }
   const runtimeRoot = parts[1]?.toLowerCase();
-  if (
-    runtimeRoot &&
-    [
-      "auth",
-      "cache",
-      "daemon",
-      "home",
-      "homes",
-      "logs",
-      "runs",
-      "secrets",
-      "state",
-      "tmp",
-      "workspaces",
-    ].includes(runtimeRoot)
-  ) {
-    return false;
-  }
+  if (runtimeRoot && BLOCKED_REVIEWER_RUNTIME_ROOTS.has(runtimeRoot)) return false;
   return isPreservedReviewerPath(rel, preservePaths);
 }
 
@@ -1178,16 +1196,11 @@ function isPreservedReviewerPath(rel: string, preservePaths: Set<string>): boole
   return false;
 }
 
-/** Test-only alias for the preserve-set extractor. */
 export function __testExtractDiffTouchedPaths(diff: string): Set<string> {
   return extractDiffTouchedPaths(diff);
 }
 
 function extractDiffTouchedPaths(diff: string): Set<string> {
-  // One structural parser owns diff headers (INV-050): parseUnifiedDiff is
-  // quote-aware and decodes git's C-quoted paths (incl. octal escapes for
-  // non-ASCII), which the old private tokenizer mis-decoded — a mis-decoded
-  // touched path silently dropped the file from the reviewer preserve set.
   const paths = new Set<string>();
   for (const file of parseUnifiedDiff(diff).files) {
     if (file.oldPath) addReviewerPreservePath(paths, file.oldPath);
@@ -1248,31 +1261,17 @@ function isCopyableReviewerSymlink(
 }
 
 async function initializeReviewerWorkspaceGit(root: string): Promise<void> {
-  await runGitOrThrow("init", root, [
-    "-c",
-    "init.templateDir=",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "init",
-  ]);
-  await runGitOrThrow("config user.email", root, [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "config",
-    "user.email",
-    "claudexor-review@example.invalid",
-  ]);
-  await runGitOrThrow("config user.name", root, [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "config",
-    "user.name",
-    "Claudexor Review",
-  ]);
-  await runGitOrThrow("add", root, ["-c", "core.hooksPath=/dev/null", "add", "-A", "--force"]);
+  const noHooks = ["-c", "core.hooksPath=/dev/null"];
+  await runGitOrThrow("init", root, ["-c", "init.templateDir=", ...noHooks, "init"]);
+  for (const [key, value] of [
+    ["user.email", "claudexor-review@example.invalid"],
+    ["user.name", "Claudexor Review"],
+  ]) {
+    await runGitOrThrow(`config ${key}`, root, [...noHooks, "config", key, value]);
+  }
+  await runGitOrThrow("add", root, [...noHooks, "add", "-A", "--force"]);
   await runGitOrThrow("commit", root, [
-    "-c",
-    "core.hooksPath=/dev/null",
+    ...noHooks,
     "commit",
     "--allow-empty",
     "--no-verify",

@@ -8,7 +8,7 @@
   "packages/acp-server/src/index.ts": 506,
   "packages/cli/src/claudexord.ts": 789,
   "packages/cli/src/cli.ts": 1706,
-  "packages/cli/src/command-registry.ts": 728,
+  "packages/cli/src/command-registry.ts": 644,
   "packages/cli/src/plugins.ts": 1866,
   "packages/cli/src/setup-jobs.ts": 1217,
   "packages/control-api/src/daemon-server.ts": 2966,
@@ -18,7 +18,7 @@
   "packages/harness-cursor/src/index.ts": 790,
   "packages/mcp-server/src/index.ts": 699,
   "packages/orchestrator/src/orchestrator.ts": 6487,
-  "packages/review/src/reviewEngine.ts": 1428,
+  "packages/review/src/reviewEngine.ts": 1427,
   "packages/schema/src/control.ts": 1587,
   "packages/schema/src/harness.ts": 855
 }

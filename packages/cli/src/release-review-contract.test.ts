@@ -5,7 +5,11 @@ import {
   TRIAD_ITEMS,
   completionTermination,
   exactPanelMatch,
+  parseChecklistJson,
+  pathIsWithin,
   releaseReviewDecision,
+  validateFrozenReviewBinding,
+  validateNewReviewOutput,
   validateChecklistResponse,
 } from "../../../scripts/lib/release-review-contract.mjs";
 
@@ -26,6 +30,31 @@ describe("release review fail-closed contract", () => {
     expect(exactPanelMatch(REQUIRED_TRIAD_MODELS.slice(0, 2), REQUIRED_SCOPE_MODEL)).toBe(false);
   });
 
+  it("distinguishes candidate/packet descendants from external review artifacts", () => {
+    expect(pathIsWithin("/candidate", "/candidate")).toBe(true);
+    expect(pathIsWithin("/candidate", "/candidate/reviews/round-1")).toBe(true);
+    expect(pathIsWithin("/candidate", "/candidate-sibling/reviews")).toBe(false);
+    expect(pathIsWithin("/packet", "/external/reviews/round-1")).toBe(false);
+    expect(
+      validateNewReviewOutput("/candidate", "/packet", "/external/reviews/round-1", true),
+    ).toMatchObject({ ok: false, reasons: ["review output already exists"] });
+  });
+
+  it("binds a clean worktree and sealed packet to the exact candidate SHA and tree", () => {
+    const candidateSha = "a".repeat(40);
+    const candidateTree = "b".repeat(40);
+    const clean = {
+      candidateSha,
+      candidateTree,
+      actualSha: candidateSha,
+      actualTree: candidateTree,
+      dirty: false,
+    };
+    expect(validateFrozenReviewBinding(clean)).toEqual({ ok: true, reasons: [] });
+    expect(validateFrozenReviewBinding({ ...clean, dirty: true }).ok).toBe(false);
+    expect(validateFrozenReviewBinding({ ...clean, actualTree: "c".repeat(40) }).ok).toBe(false);
+  });
+
   it.each([null, "length", "max_tokens", "tool_calls"])(
     "rejects non-terminal or truncated finish reason %s",
     (finishReason) => {
@@ -35,6 +64,12 @@ describe("release review fail-closed contract", () => {
 
   it("accepts only the terminal stop finish reason", () => {
     expect(completionTermination("stop")).toEqual({ complete: true, error: null });
+  });
+
+  it("parses only a whole JSON-array response", () => {
+    expect(parseChecklistJson(JSON.stringify(cleanRows()))).toEqual(cleanRows());
+    expect(parseChecklistJson(`review:\n${JSON.stringify(cleanRows())}`)).toBeNull();
+    expect(parseChecklistJson(`\`\`\`json\n${JSON.stringify(cleanRows())}\n\`\`\``)).toBeNull();
   });
 
   it.each([
@@ -85,5 +120,18 @@ describe("release review fail-closed contract", () => {
     expect(decision.passed).toBe(false);
     expect(decision.blockingFindings).toHaveLength(1);
     expect(decision.reasons[0]).toContain("FAIL");
+  });
+
+  it("fails closed when the required scope slot is missing", () => {
+    const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
+    const decision = releaseReviewDecision({
+      triadActors: [
+        { status: "responded", findings },
+        { status: "responded", findings },
+      ],
+      scope: null,
+    });
+    expect(decision.passed).toBe(false);
+    expect(decision.reasons).toContain("scope reviewer is missing");
   });
 });

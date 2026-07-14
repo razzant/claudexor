@@ -1,6 +1,6 @@
 /**
- * `claudexor review --diff <file>`: thin surface over the engine's
- * scoped diff review — the per-commit gate's PRIMARY route. FAIL CLOSED: an
+ * `claudexor review`: thin surface over the engine's scoped review. It accepts
+ * either an ad-hoc diff or a SHA-bound sealed packet. FAIL CLOSED: an
  * inconclusive reviewer panel (unhealthy cross-family state or
  * INSUFFICIENT_EVIDENCE findings) never reads as a pass.
  */
@@ -18,20 +18,46 @@ function panelFlags(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
 
 export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const diffPath = flagStr(args, "diff");
-  if (!diffPath) {
+  const evidenceDir = flagStr(args, "evidence-dir");
+  const artifactsDir = flagStr(args, "artifacts-dir");
+  const candidateSha = flagStr(args, "candidate-sha");
+  const candidateTree = flagStr(args, "candidate-tree");
+  const packetManifestSha256 = flagStr(args, "packet-manifest-digest");
+  const frozenValues = [
+    evidenceDir,
+    artifactsDir,
+    candidateSha,
+    candidateTree,
+    packetManifestSha256,
+  ];
+  const frozenRequested = frozenValues.some((value) => value !== undefined);
+  const usage =
+    'usage: claudexor review --diff <file> [--intent "<text>"] [--tests "<evidence>"] [--reviewer-panel <list>] [--json]\n' +
+    "   or: claudexor review --evidence-dir <path> --artifacts-dir <external-path> --candidate-sha <sha> --candidate-tree <tree> --packet-manifest-digest <sha256> [--reviewer-panel <list>] [--json]";
+  if ((!diffPath && !frozenRequested) || (frozenRequested && frozenValues.some((v) => !v))) {
+    return printUsageError(json, usage);
+  }
+  if (
+    frozenRequested &&
+    (diffPath !== undefined ||
+      flagStr(args, "intent") !== undefined ||
+      flagStr(args, "tests") !== undefined)
+  ) {
     return printUsageError(
       json,
-      'usage: claudexor review --diff <file> [--intent "<text>"] [--tests "<evidence>"] [--reviewer-panel <list>] [--json]',
+      "claudexor review: sealed packet mode cannot be combined with --diff, --intent, or --tests",
     );
   }
-  let diffText: string;
-  try {
-    diffText = readFileSync(diffPath, "utf8");
-  } catch (err) {
-    return printUsageError(
-      json,
-      `claudexor review: cannot read --diff '${diffPath}': ${err instanceof Error ? err.message : String(err)}`,
-    );
+  let diffText: string | undefined;
+  if (diffPath) {
+    try {
+      diffText = readFileSync(diffPath, "utf8");
+    } catch (err) {
+      return printUsageError(
+        json,
+        `claudexor review: cannot read --diff '${diffPath}': ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
   try {
     const orch = new Orchestrator({
@@ -40,9 +66,21 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
     });
     const result = await orch.reviewDiff({
       repoRoot: process.cwd(),
-      diff: diffText,
-      userIntent: flagStr(args, "intent"),
-      tests: flagStr(args, "tests"),
+      ...(frozenRequested
+        ? {
+            frozen: {
+              evidenceDir: evidenceDir!,
+              artifactsDir: artifactsDir!,
+              candidateSha: candidateSha!,
+              candidateTree: candidateTree!,
+              packetManifestSha256: packetManifestSha256!,
+            },
+          }
+        : {
+            diff: diffText!,
+            userIntent: flagStr(args, "intent"),
+            tests: flagStr(args, "tests"),
+          }),
     });
     const blockers = result.findings.filter((f) => isBlocking(f));
     // FAIL CLOSED: reviewer setup/parse failures surface as

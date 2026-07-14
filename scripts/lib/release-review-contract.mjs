@@ -5,6 +5,8 @@
  * them without network access.
  */
 
+import { relative, resolve, sep } from "node:path";
+
 export const REQUIRED_TRIAD_MODELS = Object.freeze([
   "openai/gpt-5.6-sol",
   "anthropic/claude-fable-5",
@@ -39,6 +41,31 @@ export function exactPanelMatch(triadModels, scopeModel) {
   );
 }
 
+export function pathIsWithin(root, target) {
+  const rel = relative(resolve(root), resolve(target));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+export function validateNewReviewOutput(candidateRoot, packetRoot, outDir, exists) {
+  const reasons = [];
+  if (pathIsWithin(candidateRoot, outDir)) reasons.push("review output is inside candidate");
+  if (pathIsWithin(packetRoot, outDir)) reasons.push("review output is inside sealed packet");
+  if (exists) reasons.push("review output already exists");
+  return { ok: reasons.length === 0, reasons };
+}
+
+export function validateFrozenReviewBinding(input) {
+  const reasons = [];
+  for (const [label, expected, actual] of [
+    ["candidate SHA", input.candidateSha, input.actualSha],
+    ["candidate tree", input.candidateTree, input.actualTree],
+  ]) {
+    if (expected !== actual) reasons.push(`${label} mismatch: expected ${expected}, got ${actual}`);
+  }
+  if (input.dirty) reasons.push("candidate worktree is dirty");
+  return { ok: reasons.length === 0, reasons };
+}
+
 export function completionTermination(finishReason) {
   return finishReason === "stop"
     ? { complete: true, error: null }
@@ -46,6 +73,16 @@ export function completionTermination(finishReason) {
         complete: false,
         error: `review completion is truncated or non-terminal (finish_reason=${String(finishReason)})`,
       };
+}
+
+/** Parse only the complete reviewer response; prose/fences are contract failures. */
+export function parseChecklistJson(raw) {
+  try {
+    const parsed = JSON.parse(String(raw ?? "").trim());
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -128,7 +165,9 @@ export function releaseReviewDecision({ triadActors, scope, quorum = 2 }) {
   if (responsiveTriad.length < quorum) {
     reasons.push(`triad quorum not met: ${responsiveTriad.length}/${quorum}`);
   }
-  if (scope && scope.status !== "responded") {
+  if (!scope) {
+    reasons.push("scope reviewer is missing");
+  } else if (scope.status !== "responded") {
     reasons.push(`scope reviewer status is ${scope.status}`);
   }
   if (failures.length > 0) {

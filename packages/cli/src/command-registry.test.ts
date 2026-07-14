@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BOOLEAN_FLAGS,
   CLI_COMMANDS,
@@ -13,6 +13,7 @@ import {
   renderHelp,
   renderReplHelp,
 } from "./command-registry.js";
+import { reviewCommand } from "./review-command.js";
 
 describe("command registry — the one owner of the CLI surface", () => {
   it("flag kinds partition KNOWN_FLAGS exactly (no orphan or double-classified flag)", () => {
@@ -81,6 +82,52 @@ describe("command registry — the one owner of the CLI surface", () => {
       'claudexor best-of "..." --n 4',
     ]);
     expect(recoveryVerbs()).toEqual(["inspect", "follow", "apply", "decision"]);
+  });
+
+  it("advertises the complete frozen review packet contract and rejects partial or mixed input", async () => {
+    const review = CLI_COMMANDS.find((command) => command.id === "review");
+    expect(review?.flags).toEqual(
+      expect.arrayContaining([
+        "evidence-dir",
+        "artifacts-dir",
+        "candidate-sha",
+        "candidate-tree",
+        "packet-manifest-digest",
+      ]),
+    );
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((
+      value: string | Uint8Array,
+    ) => {
+      output.push(String(value));
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      expect(
+        await reviewCommand({ _: ["review"], flags: { "evidence-dir": "/tmp/packet" } }, true),
+      ).toBe(2);
+      expect(JSON.parse(output.pop() ?? "{}").error).toContain("usage: claudexor review");
+
+      expect(
+        await reviewCommand(
+          {
+            _: ["review"],
+            flags: {
+              diff: "/tmp/diff",
+              "evidence-dir": "/tmp/packet",
+              "artifacts-dir": "/tmp/artifacts",
+              "candidate-sha": "a".repeat(40),
+              "candidate-tree": "b".repeat(40),
+              "packet-manifest-digest": "c".repeat(64),
+            },
+          },
+          true,
+        ),
+      ).toBe(2);
+      expect(JSON.parse(output.pop() ?? "{}").error).toContain("cannot be combined");
+    } finally {
+      write.mockRestore();
+    }
   });
 
   it("REPL help lists every slash command", () => {

@@ -120,12 +120,13 @@ public`; note npm provenance attestation is only produced by the CI job).
 Version BUMPS still go through changesets (`pnpm changeset` +
 `pnpm version-packages`, fixed lockstep group); only the publish step is
 tag-driven.
-The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` (reviewer
-models come from `TRIAD_MODELS`/`SCOPE_MODEL` or a pinned local
-`.adversarial-review/PANEL.lock`); when the release diff is too large for a
-remote reviewer, set `TRIAD_MAX_PACK_BYTES` to reduce supplemental context
-only. Do not use that as a reason to downgrade or substitute the pinned review
-panel.
+The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` with the
+exact source-pinned models. It requires the sealed packet, full candidate SHA
+and tree, the packet manifest's expected SHA-256 digest, and a panel-lock path
+outside the candidate worktree; the three triad slots and required scope slot
+start concurrently. `TRIAD_MAX_PACK_BYTES` may reduce supplemental context
+only. It never authorizes a model substitution or a scoped/truncated cumulative
+diff.
 
 Release review is cumulative and SHA-bound. First commit a clean candidate,
 then freeze its exact tree and evidence packet, run both required Tier 1
