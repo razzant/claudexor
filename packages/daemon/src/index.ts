@@ -7,3 +7,5 @@ export * from "./threads.js";
 export * from "./projects.js";
 export * from "./journal-manager.js";
 export * from "./command-store.js";
+export * from "./command-authority.js";
+export * from "./project-partitions.js";

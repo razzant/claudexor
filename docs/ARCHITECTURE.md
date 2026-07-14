@@ -609,16 +609,21 @@ lost" when the stream ends without a terminal event.
 
 `claudexord` shuts down gracefully on SIGTERM/SIGINT (same path as the
 `claudexor.shutdown` RPC: abort in-flight runs and complete their journaled
-terminal transitions). Command acceptance, start binding, and terminal state
-are frames in the checksummed global journal; the socket returns an enqueue ACK
-only after append + `fsync`. Create idempotency is scoped by client, partition,
-operation, and key. A restart maps every accepted nonterminal command to
-`interrupted_unknown`; mutating commands are never auto-replayed.
-The global journal also owns the deliberately empty-on-v2-start project
-registry. `GET/POST /v2/projects` list/register canonical local roots and
+terminal transitions). No-project command state, setup, and the project registry
+are frames in the checksummed global journal. Each registered project's commands,
+threads, turns, and vendor-session cache live in `project:<stable-project-id>`;
+one corrupt project partition does not make healthy projects unreadable. The
+socket returns an enqueue ACK only after append + `fsync`. Create idempotency is
+scoped by client, partition, operation, and key. A restart maps every accepted
+nonterminal command to `interrupted_unknown`; mutating commands are never
+auto-replayed.
+The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
+list/register canonical local roots and
 `POST /v2/projects/:id/relink` moves an existing stable project id. The CLI
-projects the same surface as `claudexor project list|register|relink`; no v1
-config, thread, or run path is imported as a project registration.
+projects the same surface as `claudexor project list|register|relink` and
+auto-registers the current root before a run; no v1 config, thread, or run path
+is imported as a project registration. Relink updates project-thread root
+projections without changing their partition identity.
 While running it snapshots its live harness child process groups to
 `daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace

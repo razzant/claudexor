@@ -11,6 +11,7 @@ import {
   type DaemonClient as DaemonClientType,
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
+import { hashJson } from "@claudexor/util";
 import {
   controlApiAddress,
   controlApiFetch,
@@ -192,6 +193,7 @@ export async function enqueueAndAwait(
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
+  await ensureRunProject(addr, body);
   const startRes = await controlApiFetch(addr, "/runs", {
     method: "POST",
     headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
@@ -292,6 +294,31 @@ export async function enqueueAndAwait(
     }
   } finally {
     removeSignalHandlers();
+  }
+}
+
+async function ensureRunProject(
+  addr: ControlApiAddress,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const scope = body["scope"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) return;
+  const project = scope as Record<string, unknown>;
+  if (project["kind"] !== "project" || typeof project["root"] !== "string") return;
+  const root = project["root"];
+  const response = await controlApiFetch(addr, "/projects", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": `auto-register-${hashJson(root)}`,
+    },
+    body: JSON.stringify({ root }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `project registration failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+    );
   }
 }
 

@@ -125,8 +125,10 @@ process below. Never paper over the conflict.
 - **INV-035** A v2 project has a stable daemon-owned id bound to one canonical
   local root. The v2 registry starts empty, never imports v1 state implicitly,
   and registration is request-idempotent; relink moves the same project id
-  instead of creating a second authority. verify: ProjectStore restart,
-  idempotency, canonical-root, and relink tests; `/v2/projects` API tests.
+  instead of creating a second authority. Registered project commands, threads,
+  turns, and sessions live in that stable id's isolated journal partition;
+  no-project state remains global. verify: ProjectStore restart, partition
+  routing/idempotency/recovery isolation, relink tests, and `/v2/projects` API tests.
 
 ## 5. Evidence Beats Summaries
 

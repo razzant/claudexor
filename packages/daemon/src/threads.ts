@@ -256,7 +256,11 @@ export class ThreadStore {
    * concurrent turns cannot both claim the same stale head.
    */
   createTurn(threadId: string, prompt: string, input: CreateTurnInput = {}): ThreadTurn {
-    const idempotency = turnIdempotency(threadId, input.idempotency);
+    const idempotency = turnIdempotency(
+      this.journal.options.partition,
+      threadId,
+      input.idempotency,
+    );
     if (idempotency) {
       const prior = this.turnIdByKey.get(idempotency.keyDigest);
       if (prior) {
@@ -372,6 +376,19 @@ export class ThreadStore {
     const nextThread = thread ? ThreadSchema.parse({ ...thread, updated_at: now }) : undefined;
     this.commit({ sessions: [session], ...(nextThread ? { threads: [nextThread] } : {}) });
   }
+
+  relinkProjectRoot(root: string): void {
+    const threads = this.state.threads
+      .filter((thread) => thread.repo && thread.repo.root !== root)
+      .map((thread) =>
+        ThreadSchema.parse({
+          ...thread,
+          repo: { ...thread.repo!, root },
+          updated_at: nowIso(),
+        }),
+      );
+    if (threads.length > 0) this.commit({ threads });
+  }
 }
 
 export function threadProjection() {
@@ -412,6 +429,7 @@ function parseMutation(value: unknown): ThreadMutation {
 }
 
 function turnIdempotency(
+  partition: string,
   threadId: string,
   input: CreateTurnInput["idempotency"],
 ): ThreadMutation["idempotency"] {
@@ -425,7 +443,7 @@ function turnIdempotency(
   return {
     keyDigest: hashJson({
       client: input.client,
-      partition: "global",
+      partition,
       operation: "thread.turn.create",
       key: input.key,
     }),

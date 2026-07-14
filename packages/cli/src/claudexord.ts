@@ -7,10 +7,10 @@ import {
   JournalManager,
   DaemonServer,
   InteractionRegistry,
+  ProjectPartitions,
   ProjectStore,
   projectProjection,
   RunEventBus,
-  ThreadStore,
   threadProjection,
   daemonDir,
   defaultSocketPath,
@@ -57,8 +57,6 @@ import {
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 async function main(): Promise<void> {
-  // been proven canonical without following links. Permission repair happens
-  // inside that proof, never before it.
   ensureDaemonRuntimeRoot();
   let shutdownRuntime: DaemonRuntimeShutdown | null = null;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
@@ -86,13 +84,17 @@ async function main(): Promise<void> {
       validate: (store) => store.validateProjection(),
     });
     journalManager.start();
-    const projects = projectStoreSlot.current();
-    const threads = threadStoreSlot.current();
+    const threads = new ProjectPartitions(
+      daemonDir(),
+      projectStoreSlot,
+      commandStoreSlot,
+      threadStoreSlot,
+    );
 
     const server = new DaemonServer({
       socketPath,
       token,
-      commands: commandStoreSlot,
+      commands: threads,
       onRunTerminal: (runId) => interactions.dropForRun(runId),
       onTurnEnqueueFailed: (turnId, error, code) =>
         threads.setTurnEnqueueError(turnId, error, code),
@@ -158,30 +160,20 @@ async function main(): Promise<void> {
           interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
           threadId,
           executionRoot,
-          // Native session continuity: resume each routed harness's own prior
-          // conversation in this thread; record new native ids for future turns.
           resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
           onSessionObserved: threadId
             ? (harnessId, nativeSessionId, observedModel) =>
                 threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
             : undefined,
           authPreference: p.authPreference,
-          // Orchestrate autonomy (suggest/auto_safe/auto_full): consumed by the
-          // executor in runOrchestrate. The daemon also lends the executor a live
-          // answer-delivery service for answer_question steps (the engine does not
-          // own the interaction registry).
           autonomy: p.autonomy,
           answerInteraction: async (subRunId, interactionId, answers) =>
             interactions.answer(subRunId, interactionId, answers).status === "delivered",
           repoRoot,
           prompt: String(p.prompt ?? ""),
-          // Attachments ride on the turn (resolved to scoped paths); a direct
-          // POST /runs without a turn resolves them here. Never base64 in the command journal.
           attachments: turnId
             ? (threads.getTurn(turnId)?.attachments ?? [])
             : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
-          // Agent-driven browser opt-in (Playwright MCP). The orchestrator gates it
-          // on the harness's browser_tool capability + web policy != off.
           browser: (p as { browser?: boolean }).browser === true,
           mode: p.mode,
           contextMode: noProjectAsk
@@ -198,7 +190,6 @@ async function main(): Promise<void> {
           swarm: p.swarm === true,
           create: p.create === true,
           synthesis: p.synthesis,
-          // Policy from the GUI composer / API client (applied, not just displayed).
           maxUsd: p.maxUsd ?? null,
           maxToolCalls: p.maxToolCalls ?? null,
           access: p.access,
@@ -236,7 +227,12 @@ async function main(): Promise<void> {
       daemon: server,
       setup: setupBinding,
       control: () => control,
-      journal: journalManager,
+      journal: {
+        close: () => {
+          threads.close();
+          journalManager.close();
+        },
+      },
     });
     requestRootShutdown = () => shutdownRuntime!.request();
     control =
@@ -249,7 +245,7 @@ async function main(): Promise<void> {
             bus,
             services: controlServices(
               interactions,
-              projects,
+              () => projectStoreSlot.current(),
               threads,
               setupBinding,
               journalManager,
@@ -350,7 +346,7 @@ function projectRootFromScopedInput(p: Record<string, unknown>, purpose: string)
 
 /** Deliver an isolated thread's accumulated worktree diff to its project. */
 async function applyThreadDiff(
-  threads: ThreadStore,
+  threads: ProjectPartitions,
   id: string,
   opts: { mode: string; branch?: string; message?: string },
 ): Promise<{ applied: boolean; status: string; headMoved: boolean; detail: string | null }> {
@@ -417,8 +413,8 @@ type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
 
 function controlServices(
   interactions: InteractionRegistry,
-  projects: ProjectStore,
-  threads: ThreadStore,
+  projects: () => ProjectStore,
+  threads: ProjectPartitions,
   setupBinding: SetupBinding,
   journalManager: JournalManager,
   authReadiness: AuthReadinessService,
@@ -442,12 +438,12 @@ function controlServices(
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
-    listProjects: async () => ({ projects: projects.list() as unknown[] }),
+    listProjects: async () => ({ projects: projects().list() as unknown[] }),
     registerProject: async (input: Parameters<ProjectStore["register"]>[0]) =>
-      projects.register(input),
-    relinkProject: async (id: string, root: string) => projects.relink(id, root),
+      threads.registerProject(input),
+    relinkProject: async (id: string, root: string) => threads.relinkProject(id, root),
     createThread: async (input: unknown) =>
-      threads.createThread((input ?? {}) as Parameters<ThreadStore["createThread"]>[0]),
+      threads.createThread((input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0]),
     listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),
     threadDetail: async (id: string) => {
       const thread = threads.getThread(id);

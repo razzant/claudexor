@@ -10,7 +10,12 @@ import {
   pathExists,
   redactSecrets,
 } from "@claudexor/util";
-import type { CommandStore } from "./command-store.js";
+import {
+  commandStoreForId,
+  commandStoreForRequest,
+  commandStores,
+  type CommandAuthority,
+} from "./command-authority.js";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -27,8 +32,7 @@ export interface DaemonOptions {
   runner: RunnerFn;
   /** Max concurrently-running jobs (parallel projects/runs). Default 4. */
   maxConcurrent?: number;
-  /** Replaceable projection over the global durable journal. */
-  commands?: { current(): CommandStore };
+  commands?: CommandAuthority;
   /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
   /** Called when a job reaches a terminal state (any path) with its runId —
@@ -129,7 +133,6 @@ export class DaemonServer {
   }
 
   private async startOnce(): Promise<void> {
-    // Refuse to clobber a live daemon or violate single-writer ownership.
     if (pathExists(this.opts.socketPath) && (await socketAlive(this.opts.socketPath))) {
       throw new Error(
         `a claudexor daemon is already listening on ${this.opts.socketPath}; stop it first`,
@@ -137,7 +140,7 @@ export class DaemonServer {
     }
     await this.opts.startupBarrier?.("before_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
-    this.opts.commands?.current();
+    commandStores(this.opts.commands);
     await this.opts.startupBarrier?.("after_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
     try {
@@ -150,9 +153,6 @@ export class DaemonServer {
       this.server = createServer((sock) => this.onConnection(sock));
       this.server.once("error", reject);
       this.server.listen(this.opts.socketPath, () => {
-        // Owner-only socket: the bearer token is the auth layer, but a
-        // world-connectable socket needlessly exposes the RPC surface to every
-        // local user; chmod narrows it to the owning account.
         try {
           chmodSync(this.opts.socketPath, 0o600);
         } catch {
@@ -164,7 +164,6 @@ export class DaemonServer {
   }
 
   stop(): Promise<void> {
-    // The admission fence is synchronous even when a caller does not await.
     this.stopping = true;
     this.stopPromise ??= this.stopOnce();
     return this.stopPromise;
@@ -273,8 +272,6 @@ export class DaemonServer {
     try {
       this.send(sock, { id, result: await this.dispatch(method, params) });
     } catch (err) {
-      // Carry the machine-readable error code (e.g. inline_secret_rejected)
-      // alongside the redacted message so socket clients get the typed class.
       const code = errorCode(err);
       this.send(sock, {
         id,
@@ -336,7 +333,7 @@ export class DaemonServer {
         return publicJobRecord(rec);
       }
       case "claudexor.findAccepted": {
-        const store = this.opts.commands?.current();
+        const store = commandStoreForRequest(this.opts.commands, params?.request);
         if (!store) return null;
         const record = store.find({
           params: params?.request,
@@ -350,14 +347,10 @@ export class DaemonServer {
         return this.allRecords().map(publicJobRecord);
       case "claudexor.cancel": {
         const jid = String(params?.id);
-        // Honesty: cancelling an unknown id must fail loudly (like status),
-        // never claim `{cancelled:true}` for a job that does not exist.
         const rec = this.getRecord(jid);
         if (!rec) throw new Error(`no such job: ${jid}`);
         this.cancelled.add(jid);
         if (rec.state === "queued") this.updateRecord(rec, { state: "cancelled" });
-        // Abort the in-flight run; the runner (Orchestrator) honors the signal,
-        // cancels the harness, then settles this job as cancelled.
         this.controllers.get(jid)?.abort();
         return { id: jid, cancelled: true };
       }
@@ -394,7 +387,9 @@ export class DaemonServer {
     if (terminal.length <= cap) return;
     terminal.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
     const removed = terminal.slice(0, terminal.length - cap).map((record) => record.id);
-    this.opts.commands?.current().prune(removed);
+    for (const store of commandStores(this.opts.commands)) {
+      store.prune(removed.filter((id) => store.get(id)));
+    }
     for (const id of removed) {
       this.records.delete(id);
       this.cancelled.delete(id);
@@ -408,7 +403,7 @@ export class DaemonServer {
     idempotencyParams?: unknown,
     operation?: string,
   ) {
-    const store = this.opts.commands?.current();
+    const store = commandStoreForRequest(this.opts.commands, params);
     if (store)
       return store.accept({
         id: newId("job"),
@@ -424,15 +419,18 @@ export class DaemonServer {
   }
 
   private allRecords(): JobRecord[] {
-    return this.opts.commands?.current().records() ?? [...this.records.values()];
+    const stores = commandStores(this.opts.commands);
+    return stores.length > 0
+      ? stores.flatMap((store) => store.records())
+      : [...this.records.values()];
   }
 
   private getRecord(id: string): JobRecord | undefined {
-    return this.opts.commands?.current().get(id) ?? this.records.get(id);
+    return commandStoreForId(this.opts.commands, id)?.get(id) ?? this.records.get(id);
   }
 
   private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
-    const store = this.opts.commands?.current();
+    const store = commandStoreForId(this.opts.commands, record.id);
     if (store) return store.update(record.id, patch);
     Object.assign(record, patch);
     return record;

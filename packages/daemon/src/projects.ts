@@ -39,6 +39,11 @@ export class ProjectStore {
     return this.projects.get(id);
   }
 
+  findByRoot(root: string): Project | undefined {
+    const id = this.projectIdByRoot.get(canonicalRoot(root));
+    return id ? this.projects.get(id) : undefined;
+  }
+
   register(input: { root: string; idempotencyKey: string; clientId: string }): Project {
     validateKey(input.idempotencyKey);
     const root = canonicalRoot(input.root);
