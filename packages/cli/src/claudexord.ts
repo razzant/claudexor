@@ -7,6 +7,7 @@ import {
   interactionProjection,
   operatorDecisionProjection,
   type OperatorDecisionRecord,
+  runEventProjection,
   JournalManager,
   DaemonServer,
   InteractionRegistry,
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
     const operatorDecisionStoreSlot = journalManager.registerProjection(
       operatorDecisionProjection(),
     );
+    const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
@@ -101,6 +103,7 @@ async function main(): Promise<void> {
       commandStoreSlot,
       interactionStoreSlot,
       operatorDecisionStoreSlot,
+      runEventStoreSlot,
       threadStoreSlot,
     );
     const interactions = new InteractionRegistry({
@@ -144,17 +147,11 @@ async function main(): Promise<void> {
           if (thread?.workspace.mode === "isolated") {
             const wt = await ensureThreadWorktree(repoRoot, threadId);
             executionRoot = wt.path;
-            // Persist the base ONLY on creation: `apply` advances base_sha, and a
-            // later turn must not clobber it back to the worktree HEAD (which never
-            // moves, since turns don't commit) — that would re-apply old work.
+            // Only creation owns the base; apply advances it independently.
             if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
             inPlace = true; // isolated turns run in-place WITHIN the worktree
           }
         }
-        // Single-writer turn binding: control-api pre-creates the turn and passes
-        // its id, which we bind when the run starts. A thread run WITHOUT a
-        // pre-created turn (a direct POST /runs with threadId) gets its turn
-        // created and bound here, so "a run is always recorded on its thread".
         const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
           ctx.onRunStart?.(info);
           if (!threadId) return;
@@ -172,7 +169,10 @@ async function main(): Promise<void> {
           }
         };
         return orchestrator.run({
-          onEvent: (event) => bus.publish(event),
+          onEvent: (event) => {
+            threads.recordRunEvent(p, event);
+            bus.publish(event);
+          },
           onInteraction: (ctx2) => interactions.register(ctx2, p),
           interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
           threadId,

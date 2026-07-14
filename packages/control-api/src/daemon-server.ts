@@ -389,8 +389,8 @@ function originIsLoopback(origin: string | undefined): boolean {
 /**
  * HTTP/SSE facade over the durable daemon. Canonical run/job state comes from the
  * daemon (journal-backed commands over the unix-socket JSON-RPC API). This server is a live
- * viewport only: POST/GET/cancel delegate to daemon, and event streams replay/tail
- * the canonical `.claudexor/runs/<runId>/events.jsonl` file.
+ * viewport only: POST/GET/cancel delegate to daemon. Scoped streams replay the
+ * journal; the compatibility per-run stream tails the `events.jsonl` projection.
  */
 export class DaemonControlApiServer {
   private server?: Server;

@@ -611,11 +611,15 @@ freeze, no post-freeze spec-version ladder.
 
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
+In the daemon composition root, each emitted event is also appended to its
+owning global/project journal partition before live bus publication; scoped
+journal streams therefore replay run progress after restart.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
 already reflected in that snapshot — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
-no gaps and no duplicates. The per-run stream replays from the canonical
-`events.jsonl` (legacy pre-seq lines fall back to line-number ids) and is
+no gaps and no duplicates. During the Phase 1 compatibility window, the
+per-run stream replays from the run artifact projection `events.jsonl` (legacy
+pre-seq lines fall back to line-number ids) and is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that

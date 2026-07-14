@@ -8,6 +8,7 @@ import { JournalManager } from "./journal-manager.js";
 import { operatorDecisionProjection } from "./operator-decisions.js";
 import { ProjectPartitions } from "./project-partitions.js";
 import { projectProjection } from "./projects.js";
+import { runEventProjection } from "./run-events.js";
 import { threadProjection } from "./threads.js";
 
 const roots: string[] = [];
@@ -23,6 +24,7 @@ function fixture() {
   const commands = manager.registerProjection(commandProjection());
   const interactions = manager.registerProjection(interactionProjection());
   const decisions = manager.registerProjection(operatorDecisionProjection());
+  const runEvents = manager.registerProjection(runEventProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
@@ -30,7 +32,15 @@ function fixture() {
     root,
     manager,
     projects,
-    partitions: new ProjectPartitions(root, projects, commands, interactions, decisions, threads),
+    partitions: new ProjectPartitions(
+      root,
+      projects,
+      commands,
+      interactions,
+      decisions,
+      runEvents,
+      threads,
+    ),
   };
 }
 
@@ -83,6 +93,23 @@ describe("ProjectPartitions", () => {
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
     expect(aInteractions.pendingForRun("run-a")).toHaveLength(1);
+    f.partitions.recordRunEvent(
+      { scope: { kind: "project", root: projectA } },
+      {
+        seq: 1,
+        ts: "2026-01-01T00:00:00.000Z",
+        run_id: "run-a",
+        task_id: "task-a",
+        type: "run.created",
+        payload: { mode: "agent" },
+      },
+    );
+    expect(
+      f.partitions
+        .journal(`project:${a.id}`)
+        .events()
+        .some((event) => event.type === "run.event"),
+    ).toBe(true);
     f.partitions.recordOperatorDecision(
       { scope: { kind: "project", root: projectA } },
       {
@@ -113,6 +140,15 @@ describe("ProjectPartitions", () => {
       restarted.partitions.operatorDecision({ scope: { kind: "project", root: projectA } }, "run-a")
         ?.patchSha256,
     ).toBe(`sha256:${"a".repeat(64)}`);
+    expect(
+      restarted.partitions
+        .journal(`project:${a.id}`)
+        .events()
+        .some(
+          (event) =>
+            event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
+        ),
+    ).toBe(true);
     restarted.partitions.close();
     restarted.manager.close();
   });
@@ -137,11 +173,20 @@ function fixtureAt(root: string) {
   const commands = manager.registerProjection(commandProjection());
   const interactions = manager.registerProjection(interactionProjection());
   const decisions = manager.registerProjection(operatorDecisionProjection());
+  const runEvents = manager.registerProjection(runEventProjection());
   const projects = manager.registerProjection(projectProjection());
   const threads = manager.registerProjection(threadProjection());
   manager.start();
   return {
     manager,
-    partitions: new ProjectPartitions(root, projects, commands, interactions, decisions, threads),
+    partitions: new ProjectPartitions(
+      root,
+      projects,
+      commands,
+      interactions,
+      decisions,
+      runEvents,
+      threads,
+    ),
   };
 }

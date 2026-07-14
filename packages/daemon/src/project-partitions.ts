@@ -1,4 +1,4 @@
-import type { Project, Thread, ThreadTurn } from "@claudexor/schema";
+import type { Project, RunEvent, Thread, ThreadTurn } from "@claudexor/schema";
 import { hashJson } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
@@ -8,6 +8,7 @@ import {
   type OperatorDecisionRecord,
   type OperatorDecisionStore,
 } from "./operator-decisions.js";
+import { runEventProjection, type RunEventStore } from "./run-events.js";
 import { specSessionProjection, type SpecSessionStore } from "./spec-sessions.js";
 import type { ProjectStore } from "./projects.js";
 import {
@@ -24,6 +25,7 @@ interface ProjectPartition {
   commands: JournalProjectionSlot<CommandStore>;
   interactions: JournalProjectionSlot<InteractionStore>;
   decisions: JournalProjectionSlot<OperatorDecisionStore>;
+  runEvents: JournalProjectionSlot<RunEventStore>;
   specs: JournalProjectionSlot<SpecSessionStore>;
   threads: JournalProjectionSlot<ThreadStore>;
 }
@@ -37,6 +39,7 @@ export class ProjectPartitions implements CommandAuthority {
     private readonly globalCommands: JournalProjectionSlot<CommandStore>,
     private readonly globalInteractions: JournalProjectionSlot<InteractionStore>,
     private readonly globalDecisions: JournalProjectionSlot<OperatorDecisionStore>,
+    private readonly globalRunEvents: JournalProjectionSlot<RunEventStore>,
     private readonly globalThreads: JournalProjectionSlot<ThreadStore>,
   ) {
     this.sync();
@@ -73,6 +76,10 @@ export class ProjectPartitions implements CommandAuthority {
     decision: OperatorDecisionRecord,
   ): OperatorDecisionRecord {
     return this.decisionStoreForRequest(params).record(decision);
+  }
+
+  recordRunEvent(params: unknown, event: RunEvent): RunEvent {
+    return this.runEventStoreForRequest(params).record(event);
   }
 
   specsForRequest(params: unknown): SpecSessionStore {
@@ -236,10 +243,11 @@ export class ProjectPartitions implements CommandAuthority {
     const commands = manager.registerProjection(commandProjection());
     const interactions = manager.registerProjection(interactionProjection());
     const decisions = manager.registerProjection(operatorDecisionProjection());
+    const runEvents = manager.registerProjection(runEventProjection());
     const specs = manager.registerProjection(specSessionProjection());
     const threads = manager.registerProjection(threadProjection());
     manager.start();
-    const entry = { manager, commands, interactions, decisions, specs, threads };
+    const entry = { manager, commands, interactions, decisions, runEvents, specs, threads };
     this.partitions.set(projectId, entry);
     return entry;
   }
@@ -306,6 +314,14 @@ export class ProjectPartitions implements CommandAuthority {
     const entry = this.healthy().find((candidate) => candidate.commands.current() === commands);
     if (!entry) throw new Error("command partition has no operator-decision authority");
     return entry.decisions.current();
+  }
+
+  private runEventStoreForRequest(params: unknown): RunEventStore {
+    const commands = this.forRequest(params);
+    if (commands === this.globalCommands.current()) return this.globalRunEvents.current();
+    const entry = this.healthy().find((candidate) => candidate.commands.current() === commands);
+    if (!entry) throw new Error("command partition has no run-event authority");
+    return entry.runEvents.current();
   }
 }
 
