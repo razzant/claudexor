@@ -165,10 +165,10 @@ Tests and local smokes must never touch real user state:
 - Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
   run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
   plugin files by pointing `HOME` at a temp dir.
-- `CLAUDEXOR_SECRETS_BACKEND=file` (or `claudexor secrets --backend file`) forces
-  the 0600 file store so secret reads/writes never hit the real macOS login
-  Keychain — which `CLAUDEXOR_CONFIG_DIR` alone cannot redirect because the
-  Keychain is not path-scoped.
+- `CLAUDEXOR_SECRETS_BACKEND=file` forces the daemon-owned 0600 file store so
+  secret reads/writes never hit the real macOS login Keychain — which
+  `CLAUDEXOR_CONFIG_DIR` alone cannot redirect because the Keychain is not
+  path-scoped. The public CLI cannot select a storage backend.
 - Setup-job/runner tests inject filesystem, clock, launcher, process identity,
   signal, and timer dependencies and use temp roots only. They checksum the
   legacy registry before/after, exercise PID reuse and symlink/path fences, and

@@ -111,7 +111,6 @@ const CLI_ONLY_EXEMPT = {
   autonomy: "orchestrate executor autonomy; MCP orchestrate is suggest-mode (plan only)",
   portfolio: "portfolio routing preset; MCP callers pick explicit harness/primaryHarness",
   answers: "spec-interview plumbing (CLI spec flow only)",
-  previous: "spec-interview plumbing (CLI spec flow only)",
   spec: "spec-file attach (CLI spec flow only)",
   attach:
     "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only; a prompt cannot carry an image)",
@@ -120,7 +119,6 @@ const CLI_ONLY_EXEMPT = {
   "access-default":
     "trust subcommand flag, not a run control (was invisible to the old VALUE_FLAGS source-regex; the registry surfaces it)",
   "from-env": "secrets subcommand flag, not a run control",
-  backend: "secrets subcommand flag, not a run control",
   "apply-mode": "decision subcommand flag, not a run control",
   feedback: "decision subcommand flag, not a run control",
   diff: "review verb flag, not a run control",

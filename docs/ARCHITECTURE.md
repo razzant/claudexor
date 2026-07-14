@@ -1137,10 +1137,10 @@ code touching one of these areas must honor it or change it explicitly here.
 - Run-artifact writes are non-atomic by design: the engine is the single
   writer of a run directory; external writers into `.claudexor/runs` are
   unsupported.
-- SpecPack revision diffs (the `changes` list) are produced only when the
-  caller supplies a previous SpecPack (CLI `--previous`); the daemon freeze
-  endpoint has no spec-revision lineage and always reports an empty change
-  list.
+- The durable v2 spec-session freeze endpoint has no spec-revision lineage and
+  currently reports an empty SpecPack `changes` list. The lower-level SpecPack
+  persistence helper can calculate a diff when an internal caller supplies a
+  previous pack, but no public CLI flag exposes that compatibility path.
 - Spec interviews parse the harness's instructed `## Open Questions` block by
   delimiters (never as governance); output deviating from the instructed
   format degrades to free-text questions instead of failing the interview.
